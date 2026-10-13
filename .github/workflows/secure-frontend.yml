@@ -2,14 +2,17 @@ name: secure-frontend
 
 # Blocking: linux-gcc, linux-clang, windows-llvm-mingw-cross, windows-msys2-clang,
 # top-level-integration. Non-blocking: windows-msvc (informational).
-# Nothing here downloads models or enables a GPU backend; the only network
-# fetches are the actions themselves, pinned pip wheels from requirements.txt,
-# MSYS2 packages, and the pinned, sha256-checked llvm-mingw tarball.
+# Network fetches, exactly: the GitHub actions used below; the pip wheels pinned
+# in requirements.txt (scripts/dev/bootstrap-linux.sh, plus a pip wheel when the
+# venv has no pip); MSYS2 packages via msys2/setup-msys2; and the pinned,
+# sha256-checked llvm-mingw tarball (scripts/dev/bootstrap-llvm-mingw.sh).
+# No models are downloaded and no GPU backend is enabled. The root configure
+# runs with STRATA_NATIVE_EXPERTS=OFF, so no llama.cpp clone (FetchContent) occurs.
 on:
   push:
-    paths: ["secure_frontend/**", "CMakeLists.txt", "scripts/dev/**", "requirements.txt", "pytest.ini", ".github/workflows/secure-frontend.yml"]
+    paths: ["secure_frontend/**", "CMakeLists.txt", "scripts/dev/**", "requirements.txt", "pytest.ini", "tools/**", ".github/workflows/secure-frontend.yml"]
   pull_request:
-    paths: ["secure_frontend/**", "CMakeLists.txt", "scripts/dev/**", "requirements.txt", "pytest.ini", ".github/workflows/secure-frontend.yml"]
+    paths: ["secure_frontend/**", "CMakeLists.txt", "scripts/dev/**", "requirements.txt", "pytest.ini", "tools/**", ".github/workflows/secure-frontend.yml"]
   workflow_dispatch:
 
 permissions:
@@ -52,6 +55,7 @@ jobs:
         with:
           name: windows-x86_64-llvm-mingw
           path: secure_frontend/out/build/windows-llvm-mingw-cross/*.exe
+          if-no-files-found: error
 
   windows-msys2:
     name: windows-msys2-clang (runtime tests on Windows)
@@ -93,10 +97,8 @@ jobs:
       - uses: actions/checkout@v4
       - run: scripts/dev/bootstrap-linux.sh
       - run: echo "$GITHUB_WORKSPACE/.venv-dev/bin" >> "$GITHUB_PATH"
-      - run: cmake -S . -B out/root -G Ninja -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_ENABLE_HIP=OFF -DSTRATA_BUILD_SECURE_FRONTEND=ON -DSTRATA_BUILD_SECURE_FRONTEND_TESTS=ON
+      - run: cmake -S . -B out/root -G Ninja -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_ENABLE_HIP=OFF -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_BUILD_SECURE_FRONTEND=ON -DSTRATA_BUILD_SECURE_FRONTEND_TESTS=ON
       - run: cmake --build out/root --target strata-secure-server secure_frontend_config_tests --parallel
-      # The root CMakeLists.txt calls enable_testing() only for its conversation
-      # tests, so out/root has no CTestTestfile and `ctest --test-dir out/root`
-      # finds nothing and still exits 0. Point at the subproject's test dir and
-      # make "no tests" a failure so this step cannot pass vacuously.
+      # With these flags the root build registers no tests, so ctest must target
+      # the frontend's test dir; --no-tests=error stops a vacuous pass.
       - run: ctest --test-dir out/root/secure_frontend -R secure_frontend_config_tests --no-tests=error --output-on-failure
