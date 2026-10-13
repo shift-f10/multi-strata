@@ -5,8 +5,7 @@
 #include <string_view>
 
 #ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
+#include "secure_frontend/win32_prelude.hpp"
 #else
 #include <arpa/inet.h>
 #endif

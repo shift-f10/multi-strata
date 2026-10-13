@@ -3,11 +3,12 @@
 #include <array>
 #include <cerrno>
 #include <cstdlib>
+#include <iterator>
 #include <string_view>
 #include <utility>
 
 #ifdef _WIN32
-#include <windows.h>
+#include "secure_frontend/win32_prelude.hpp"
 #include <aclapi.h>
 #include <sddl.h>
 #else
@@ -342,10 +343,11 @@ TokenReadResult read_protected_file_windows(const SecretSource& source,
 
   std::filesystem::path current_path = absolute_root;
   const std::filesystem::path relative = source_relative_path(source.location());
-  const auto last = std::prev(relative.end());
   for (auto component = relative.begin(); component != relative.end(); ++component) {
     current_path /= *component;
-    const bool is_final = component == last;
+    // std::next, not std::prev(end()): libc++ tags path::iterator as an input
+    // iterator, so prev() is ill-formed there.
+    const bool is_final = std::next(component) == relative.end();
     WindowsHandle opened(CreateFileW(current_path.c_str(), is_final ? GENERIC_READ : FILE_READ_ATTRIBUTES,
                                      FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                                      (is_final ? 0U : FILE_FLAG_BACKUP_SEMANTICS) |

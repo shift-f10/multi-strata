@@ -4,12 +4,13 @@
 #include <array>
 #include <cerrno>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <string_view>
 #include <vector>
 
 #if defined(_WIN32)
-#include <windows.h>
+#include "secure_frontend/win32_prelude.hpp"
 #else
 #include <csignal>
 #include <fcntl.h>
@@ -87,9 +88,8 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
   if (const auto error = validate(command); error.has_value()) return error;
   cleanup(); pending_stdout_.clear();
 #if defined(_WIN32)
-  auto executable = to_wide(command.executable.u8string());
-  if (!executable) return ProcessError{ProcessErrorCode::invalid_command, "engine executable is not valid UTF-8"};
-  std::wstring line = quote(*executable);
+  const std::wstring executable = command.executable.wstring();
+  std::wstring line = quote(executable);
   line += L" --serve";
   for (const auto& arg : command.arguments) { auto wide = to_wide(arg); if (!wide) return ProcessError{ProcessErrorCode::invalid_command, "engine argument is not valid UTF-8"}; line += L' ' + quote(*wide); }
   std::wstring environment;
@@ -121,7 +121,7 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
   startup.StartupInfo.hStdError = child_stderr;
   startup.lpAttributeList = attribute_list;
   PROCESS_INFORMATION info{};
-  const BOOL created = CreateProcessW(executable->c_str(), line.data(), nullptr, nullptr, TRUE,
+  const BOOL created = CreateProcessW(executable.c_str(), line.data(), nullptr, nullptr, TRUE,
                                       CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
                                       environment.data(), nullptr, &startup.StartupInfo, &info);
   DeleteProcThreadAttributeList(attribute_list);

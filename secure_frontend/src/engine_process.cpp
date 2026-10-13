@@ -8,7 +8,7 @@
 #include <thread>
 
 #if defined(_WIN32)
-#include <windows.h>
+#include "secure_frontend/win32_prelude.hpp"
 #else
 #include <csignal>
 #include <fcntl.h>
@@ -20,7 +20,10 @@
 namespace secure_frontend {
 namespace {
 
+#if !defined(_WIN32)
+// POSIX-only: the Windows wait path blocks on the process handle instead.
 constexpr auto kPollInterval = std::chrono::milliseconds(10);
+#endif
 
 bool invalid_environment_name(const std::string& name) {
   return name.empty() || name.find('=') != std::string::npos || name.find('\0') != std::string::npos;
@@ -50,10 +53,9 @@ std::optional<ProcessError> validate_command(const EngineCommand& command) {
   return std::nullopt;
 }
 
+#if !defined(_WIN32)
+// POSIX-only: Windows reads the exit code directly with GetExitCodeProcess.
 int normalized_exit_code(const int status) {
-#if defined(_WIN32)
-  return status;
-#else
   if (WIFEXITED(status)) {
     return WEXITSTATUS(status);
   }
@@ -61,8 +63,8 @@ int normalized_exit_code(const int status) {
     return 128 + WTERMSIG(status);
   }
   return 1;
-#endif
 }
+#endif
 
 #if defined(_WIN32)
 std::optional<std::wstring> utf8_to_wide(const std::string& text) {

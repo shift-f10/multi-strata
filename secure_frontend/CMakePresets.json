@@ -41,6 +41,16 @@
       "inherits": "secure-frontend-base",
       "generator": "Visual Studio 17 2022",
       "architecture": "x64"
+    },
+    {
+      "name": "windows-llvm-mingw-cross",
+      "displayName": "Windows x86_64 (llvm-mingw cross from Linux)",
+      "inherits": "secure-frontend-base",
+      "generator": "Ninja",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/llvm-mingw-x86_64.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
     }
   ],
   "buildPresets": [
@@ -56,6 +66,10 @@
       "name": "windows-msvc",
       "configurePreset": "windows-msvc",
       "configuration": "Release"
+    },
+    {
+      "name": "windows-llvm-mingw-cross",
+      "configurePreset": "windows-llvm-mingw-cross"
     }
   ],
   "testPresets": [
@@ -77,6 +91,13 @@
       "name": "windows-msvc",
       "configurePreset": "windows-msvc",
       "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-llvm-mingw-cross",
+      "configurePreset": "windows-llvm-mingw-cross",
       "output": {
         "outputOnFailure": true
       }

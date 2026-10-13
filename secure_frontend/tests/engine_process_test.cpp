@@ -9,7 +9,7 @@
 #include <vector>
 
 #if defined(_WIN32)
-#include <windows.h>
+#include "secure_frontend/win32_prelude.hpp"
 #else
 #include <unistd.h>
 #endif
