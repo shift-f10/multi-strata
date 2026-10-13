@@ -45,7 +45,8 @@ struct Fixture final {
   std::string error;
   std::string host{"127.0.0.1"};
 
-  explicit Fixture(std::string bind_host = "127.0.0.1") : host(std::move(bind_host)) {
+  explicit Fixture(secure_frontend::HttpSocketServerLimits limits = {}, std::string bind_host = "127.0.0.1")
+      : host(std::move(bind_host)) {
     for (std::uint16_t port = 20000; port < 20100 && !server.has_value(); ++port) {
       const bool v6 = host.find(':') != std::string::npos;
       const std::string authority = (v6 ? "[" + host + "]" : host) + ":" + std::to_string(port);
@@ -59,11 +60,11 @@ struct Fixture final {
               return secure_frontend::HttpResponse{200, {{"Content-Type", "application/json; charset=utf-8"}}, "{\"status\":\"ok\"}\n"};
             }
             if (method == "GET" && target == "/big") {
-              return secure_frontend::HttpResponse{200, {{"Content-Type", "text/plain"}}, std::string(256U * 1024U, 'x')};
+              return secure_frontend::HttpResponse{200, {{"Content-Type", "text/plain"}}, std::string(4U * 1024U * 1024U, 'x')};
             }
             return secure_frontend::HttpResponse{404, {{"Content-Type", "application/json; charset=utf-8"}}, "{\"error\":\"Not Found\"}\n"};
           },
-          &error);
+          &error, limits);
     }
   }
   std::string authority() const {
@@ -100,13 +101,20 @@ struct Fixture final {
     if (rc != 0) { close_socket(client); return kBad; }
     return client;
   }
+  // The listener has no accept timeout, so a worker thread blocked in
+  // serve_one() would never return if the test's own connect failed. A
+  // throwaway connection lets that worker finish before join().
+  void unblock_accept() const {
+    const NativeSocket throwaway = connect_client();
+    if (throwaway != kBad) close_socket(throwaway);
+  }
   // Sends one full health request and returns the whole response (read to EOF).
   std::string round_trip() {
     std::string response;
     bool served = false;
     std::thread worker([&] { served = server->serve_one(&error); });
     const NativeSocket client = connect_client();
-    if (client == kBad) { worker.join(); return {}; }
+    if (client == kBad) { unblock_accept(); worker.join(); return {}; }
     (void)send_bytes(client, health_request());
     char chunk[1024];
     for (;;) { const int n = recv_bytes(client, chunk, sizeof(chunk)); if (n <= 0) break; response.append(chunk, static_cast<std::size_t>(n)); }
@@ -131,12 +139,12 @@ void socket_server_survives_client_early_close() {
   Fixture f;
   if (!f.server) { expect(false, "bind failed: " + f.error); return; }
   std::thread worker([&] { (void)f.server->serve_one(&f.error); });
-  // A 1-byte receive window and a 256 KiB response: the response cannot be
+  // A 1-byte receive window and a 4 MiB response: the response cannot be
   // absorbed by socket buffers before we close, so the server's send() is
   // guaranteed to hit a closed peer (EPIPE) instead of depending on timing.
   const NativeSocket client = f.connect_client(1);
   expect(client != kBad, "client should connect");
-  if (client == kBad) { worker.join(); return; }
+  if (client == kBad) { f.unblock_accept(); worker.join(); return; }
   (void)send_bytes(client, f.request_for("/big"));
   close_socket(client);
   worker.join();
@@ -144,11 +152,56 @@ void socket_server_survives_client_early_close() {
   const std::string response = f.round_trip();
   expect(response.rfind("HTTP/1.1 200 OK", 0) == 0, "listener must serve the next client after an early close");
 }
+
+// S3: one byte every 400 ms must not hold the listener past the deadline.
+void socket_server_rejects_slow_request_past_deadline() {
+  Fixture f({.request_deadline = std::chrono::milliseconds(1000)});
+  if (!f.server) { expect(false, "bind failed: " + f.error); return; }
+  bool served = true;
+  const auto start = std::chrono::steady_clock::now();
+  std::thread worker([&] { served = f.server->serve_one(&f.error); });
+  const NativeSocket client = f.connect_client();
+  if (client == kBad) { f.unblock_accept(); worker.join(); expect(false, "client should connect"); return; }
+  const std::string request = f.health_request();
+  for (std::size_t i = 0; i < request.size() - 1; ++i) {  // never send the final byte
+    if (send_bytes(client, request.substr(i, 1)) <= 0) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    if (std::chrono::steady_clock::now() - start > std::chrono::seconds(4)) break;
+  }
+  worker.join();
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  close_socket(client);
+  std::cerr << "S3 elapsed ms: " << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() << '\n';
+  expect(!served, "a dripping client must be rejected, not served");
+  expect(elapsed >= std::chrono::milliseconds(900) && elapsed < std::chrono::milliseconds(2500),
+         "listener must give up at the deadline, not per-recv");
+}
+
+// S2: a peer that never reads must not block send_all forever.
+void socket_server_send_times_out_on_stalled_reader() {
+  Fixture f({.request_deadline = std::chrono::milliseconds(1000)});
+  if (!f.server) { expect(false, "bind failed: " + f.error); return; }
+  bool served = true;
+  std::thread worker([&] { served = f.server->serve_one(&f.error); });
+  // SO_RCVBUF only shrinks the advertised window when set before connect(),
+  // so use the fixture's pre-connect option rather than setting it afterwards.
+  const NativeSocket client = f.connect_client(1);
+  if (client == kBad) { f.unblock_accept(); worker.join(); expect(false, "client should connect"); return; }
+  (void)send_bytes(client, "GET /big HTTP/1.1\r\nHost: " + f.authority() + "\r\nAuthorization: Bearer test-token\r\n\r\n");
+  const auto start = std::chrono::steady_clock::now();
+  worker.join();  // must return without us ever reading
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  close_socket(client);
+  std::cerr << "S2 elapsed ms: " << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() << '\n';
+  expect(!served && elapsed < std::chrono::seconds(3), "send to a stalled reader must time out at the deadline");
+}
 }  // namespace
 
 int main() {
   secure_frontend::install_process_defaults();
   serves_a_loopback_request_without_outbound_connections();
   socket_server_survives_client_early_close();
+  socket_server_rejects_slow_request_past_deadline();
+  socket_server_send_times_out_on_stalled_reader();
   return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

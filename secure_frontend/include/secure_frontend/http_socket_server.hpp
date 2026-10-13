@@ -3,12 +3,22 @@
 #include "secure_frontend/config.hpp"
 #include "secure_frontend/http_request_handler.hpp"
 
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
 
 namespace secure_frontend {
+
+// Listener bounds. request_deadline covers reading the whole request (header
+// and body) from accept(); the response send gets the remaining budget, but
+// never less than one second. SP1 replaces this with typed configuration.
+struct HttpSocketServerLimits final {
+  std::chrono::milliseconds request_deadline{std::chrono::seconds(30)};  // header+body, total
+  std::size_t max_request_bytes{64U * 1024U};
+};
 
 // A deliberately small, synchronous listener for the authenticated HTTP
 // boundary. It only accepts TCP clients; it never creates outbound sockets or
@@ -20,7 +30,8 @@ class HttpSocketServer final {
                                                               HttpPolicy policy,
                                                               BearerTokenValidator validator,
                                                               RequestDispatcher dispatcher,
-                                                              std::string* error);
+                                                              std::string* error,
+                                                              HttpSocketServerLimits limits = {});
   HttpSocketServer(HttpSocketServer&&) noexcept;
   HttpSocketServer& operator=(HttpSocketServer&&) noexcept;
   ~HttpSocketServer();

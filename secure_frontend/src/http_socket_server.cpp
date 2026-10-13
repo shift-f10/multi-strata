@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cerrno>
+#include <chrono>
 #include <climits>
 #include <cstddef>
 #include <cstdint>
@@ -24,7 +26,10 @@
 
 namespace secure_frontend {
 namespace {
-constexpr std::size_t kMaximumRequestBytes = 64U * 1024U;
+using Clock = std::chrono::steady_clock;
+// A response that is ready to go always gets at least this long to be sent,
+// so a legitimate large response is not cut off by a nearly spent deadline.
+constexpr std::chrono::milliseconds kMinimumSendBudget{1000};
 
 #ifdef _WIN32
 using NativeSocket = SOCKET;
@@ -45,14 +50,35 @@ void close_socket(const NativeSocket socket) {
 #endif
 }
 
-bool set_timeout(const NativeSocket socket) {
+// Applies the same receive and send timeout. Values below 1 ms are clamped to
+// 1 ms because a zero timeout means "wait forever" to the socket layer.
+bool set_socket_timeouts(const NativeSocket socket, const std::chrono::milliseconds remaining) {
+  const auto clamped = std::clamp<long long>(remaining.count(), 1, 3600000);
 #ifdef _WIN32
-  const DWORD timeout_ms = 5000;
-  return setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout_ms),
-                    sizeof(timeout_ms)) == 0;
+  const DWORD ms = static_cast<DWORD>(clamped);
+  return setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&ms), sizeof(ms)) == 0 &&
+         setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&ms), sizeof(ms)) == 0;
 #else
-  const timeval timeout{5, 0};
-  return setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0;
+  timeval tv{static_cast<time_t>(clamped / 1000), static_cast<suseconds_t>((clamped % 1000) * 1000)};
+  return setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0 &&
+         setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) == 0;
+#endif
+}
+
+// Whole milliseconds left until deadline, rounded up so a timeout derived
+// from it never fires before the deadline itself.
+std::chrono::milliseconds remaining_until(const Clock::time_point deadline) {
+  return std::chrono::ceil<std::chrono::milliseconds>(deadline - Clock::now());
+}
+
+// True when the last socket call failed only because its timeout elapsed (or
+// it was interrupted), so the caller should re-check its deadline and retry.
+bool last_call_timed_out() {
+#ifdef _WIN32
+  const int code = WSAGetLastError();
+  return code == WSAETIMEDOUT || code == WSAEWOULDBLOCK || code == WSAEINTR;
+#else
+  return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
 #endif
 }
 
@@ -72,7 +98,8 @@ bool ascii_case_equal(const std::string_view left, const std::string_view right)
 // field. A malformed or duplicate field leaves the whole message to the HTTP
 // policy layer, which will issue its generic 400 response without waiting for
 // untrusted bytes.
-std::size_t required_message_size(const std::string& bytes, const std::size_t headers_end) {
+std::size_t required_message_size(const std::string& bytes, const std::size_t headers_end,
+                                  const std::size_t maximum_request_bytes) {
   std::size_t start = bytes.find("\r\n") + 2U;
   std::optional<std::size_t> content_length;
   while (start < headers_end) {
@@ -87,7 +114,7 @@ std::size_t required_message_size(const std::string& bytes, const std::size_t he
       std::size_t parsed = 0;
       if (value.empty()) return headers_end + 4U;
       for (const char character : value) {
-        if (character < '0' || character > '9' || parsed > (kMaximumRequestBytes / 10U)) {
+        if (character < '0' || character > '9' || parsed > (maximum_request_bytes / 10U)) {
           return headers_end + 4U;
         }
         parsed = (parsed * 10U) + static_cast<std::size_t>(character - '0');
@@ -97,7 +124,7 @@ std::size_t required_message_size(const std::string& bytes, const std::size_t he
     start = end + 2U;
   }
   const std::size_t base = headers_end + 4U;
-  if (!content_length.has_value() || *content_length > kMaximumRequestBytes - base) return base;
+  if (!content_length.has_value() || *content_length > maximum_request_bytes - base) return base;
   return base + *content_length;
 }
 
@@ -109,14 +136,19 @@ const char* reason_phrase(const int status) {
     case 401: return "Unauthorized";
     case 403: return "Forbidden";
     case 404: return "Not Found";
+    case 408: return "Request Timeout";
     case 503: return "Service Unavailable";
     default: return "Internal Server Error";
   }
 }
 
-bool send_all(const NativeSocket socket, const std::string_view bytes) {
+// Sends every byte or gives up at send_deadline. Each send() gets only the
+// time left, so a peer that stops reading cannot hold the listener.
+bool send_all(const NativeSocket socket, const std::string_view bytes, const Clock::time_point send_deadline) {
   std::size_t sent = 0;
   while (sent < bytes.size()) {
+    const std::chrono::milliseconds budget = remaining_until(send_deadline);
+    if (budget.count() <= 0 || !set_socket_timeouts(socket, budget)) return false;
     const std::size_t remaining = bytes.size() - sent;
 #ifdef _WIN32
     const int result = send(socket, bytes.data() + sent,
@@ -165,6 +197,7 @@ struct HttpSocketServer::State final {
   HttpPolicy policy;
   BearerTokenValidator validator;
   RequestDispatcher dispatcher;
+  HttpSocketServerLimits limits;
 #ifdef _WIN32
   bool winsock_started{false};
 #endif
@@ -183,7 +216,8 @@ HttpSocketServer::~HttpSocketServer() = default;
 
 std::optional<HttpSocketServer> HttpSocketServer::bind(const Config& listener_config, HttpPolicy policy,
                                                         BearerTokenValidator validator,
-                                                        RequestDispatcher dispatcher, std::string* error) {
+                                                        RequestDispatcher dispatcher, std::string* error,
+                                                        HttpSocketServerLimits limits) {
   if (error != nullptr) error->clear();
   // Config is a public value type, so do not assume a caller obtained it via
   // validate_config. Re-apply the bind-related policy before opening a socket.
@@ -226,7 +260,9 @@ std::optional<HttpSocketServer> HttpSocketServer::bind(const Config& listener_co
     return std::nullopt;
   }
   state->socket = socket(family, SOCK_STREAM, IPPROTO_TCP);
-  if (state->socket == kInvalidSocket || !set_timeout(state->socket) ||
+  // No timeout on the listening socket: accept() blocks until a client
+  // arrives. Per-client bounds are applied to each accepted socket.
+  if (state->socket == kInvalidSocket ||
       ::bind(state->socket, reinterpret_cast<const sockaddr*>(&address), address_size) != 0 ||
       listen(state->socket, 16) != 0) {
     if (error != nullptr) *error = "listener socket setup failed";
@@ -236,6 +272,7 @@ std::optional<HttpSocketServer> HttpSocketServer::bind(const Config& listener_co
   state->policy = std::move(policy);
   state->validator = std::move(validator);
   state->dispatcher = std::move(dispatcher);
+  state->limits = limits;
   return HttpSocketServer{std::move(state)};
 }
 
@@ -248,36 +285,53 @@ bool HttpSocketServer::serve_one(std::string* error) {
   { const int one = 1; (void)setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one)); }
 #endif
   struct ClientCloser final { NativeSocket value; ~ClientCloser() { close_socket(value); } } closer{client};
-  if (!set_timeout(client)) { if (error != nullptr) *error = "client timeout setup failed"; return false; }
+  // One total budget for the whole request (header and body), measured from
+  // accept(). A per-recv timeout alone lets a client drip one byte at a time.
+  const Clock::time_point deadline = Clock::now() + state_->limits.request_deadline;
+  const std::size_t maximum_request_bytes = state_->limits.max_request_bytes;
+  const auto send_deadline = [&deadline] { return std::max(deadline, Clock::now() + kMinimumSendBudget); };
   std::string request;
   request.reserve(4096U);
   std::array<char, 4096> chunk{};
   std::size_t expected_size = 0;
-  while (request.size() < kMaximumRequestBytes) {
+  while (request.size() < maximum_request_bytes) {
+    const std::chrono::milliseconds remaining = remaining_until(deadline);
+    if (remaining.count() <= 0) {
+      const HttpResponse timed_out{.status = 408, .headers = {{"Content-Type", "text/plain; charset=utf-8"}},
+                                   .body = "Request Timeout\n"};
+      static_cast<void>(send_all(client, serialize_response(timed_out), Clock::now() + kMinimumSendBudget));
+      if (error != nullptr) *error = "request deadline exceeded";
+      return false;
+    }
+    if (!set_socket_timeouts(client, remaining)) {
+      if (error != nullptr) *error = "client timeout setup failed";
+      return false;
+    }
 #ifdef _WIN32
     const int received = recv(client, chunk.data(), static_cast<int>(chunk.size()), 0);
 #else
     const ssize_t received = recv(client, chunk.data(), chunk.size(), 0);
 #endif
+    if (received < 0 && last_call_timed_out()) continue;  // the deadline check above decides
     if (received <= 0) { if (error != nullptr) *error = "incomplete client request"; return false; }
     const std::size_t count = static_cast<std::size_t>(received);
-    if (count > kMaximumRequestBytes - request.size()) break;
+    if (count > maximum_request_bytes - request.size()) break;
     request.append(chunk.data(), count);
     const std::size_t headers_end = request.find("\r\n\r\n");
     if (headers_end != std::string::npos && expected_size == 0U) {
-      expected_size = required_message_size(request, headers_end);
-      if (expected_size > kMaximumRequestBytes) break;
+      expected_size = required_message_size(request, headers_end, maximum_request_bytes);
+      if (expected_size > maximum_request_bytes) break;
     }
     if (expected_size != 0U && request.size() >= expected_size) {
       request.resize(expected_size);
       const std::string response = serialize_response(
           handle_http_request(request, state_->policy, state_->validator, state_->dispatcher));
-      if (!send_all(client, response)) { if (error != nullptr) *error = "response send failed"; return false; }
+      if (!send_all(client, response, send_deadline())) { if (error != nullptr) *error = "response send failed"; return false; }
       return true;
     }
   }
   const HttpResponse bad{.status = 400, .headers = {{"Content-Type", "text/plain; charset=utf-8"}}, .body = "Bad Request\n"};
-  static_cast<void>(send_all(client, serialize_response(bad)));
+  static_cast<void>(send_all(client, serialize_response(bad), send_deadline()));
   if (error != nullptr) *error = "request exceeded listener bounds";
   return false;
 }
