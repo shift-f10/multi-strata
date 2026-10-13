@@ -1,75 +1,20 @@
-# Generated, not source: deterministic build products of tools/ (see docs/).
-# tiny-qwen4exp.gguf is ~113 MB, over GitHub's 100 MB file limit -- regenerate with
-#   python tools/make_tiny_model.py
-bench/tiny-*.gguf
-bench/wide-*.gguf
-bench/micro/*.exe
-bench/micro/*.obj
-bench/micro/*.bin
-bench/micro/*.dll
-bench/micro/*.txt
-*.log
-build*/
-pack/
-logs/
-__pycache__/
-.pytest_cache/
-*.pyc
+# Secure Strata (ours). Upstream's own ignores live in upstream/.gitignore.
 
-# plan v0.3 P1 (repository hygiene, review E1): profiler captures and large diagnostic dumps stay out of git.
-*.nsys-rep
-
-# Pi harness metadata (local session state, not project source)
-*.sqlite
-*.npz
-*.occ1
-td.log
-
-# created by setup.py on the user's machine
-/.venv/
-/build/
-/third_party/llama.cpp
-/models/
-/packs/
-/mtp/
-/run-*.bat
-/run-*.sh
-/strata-*.json
-/strata-*.log
-/build-strata.bat
-/build-strata-cuda12.bat
-/build-cuda12/
-/.strata-mcp/
-
-# image encoder (setup.py --vision): build output and the generated build script
-build-vision*/
-build-vision.bat
-build-vision-cuda12.bat
-
-# setup.py outputs (engine, downloads) and release builds
-/engine/
-/engine-cuda12/
-/build-release*/
-/dist/
-*.done
-/third_party/*.zip
-
-# IDEs
-.vscode/
-.idea/
-.cursor/
-
-/.ccache/
-/.rocm-win/
-
-# secure frontend developer environment (scripts/dev/bootstrap-*.sh)
-/.venv-dev/
-/.toolchains/
-/secure_frontend/out/
-/secure_frontend/build/
+# developer environment (scripts/dev/bootstrap-*.sh); no trailing slash so the
+# symlinks inside .worktrees/<name>/ are ignored too
+/.venv-dev
+/.toolchains
 
 # parallel sub-project worktrees (superpowers finishing skill cleans these)
 /.worktrees/
+# superpowers execution state
+/.superpowers/
 
-# root build directories (our root CMakeLists.txt; see docs/secure-frontend-ci.md)
+# build output: secure_frontend/ presets and our root CMakeLists.txt
+/secure_frontend/out/
+/secure_frontend/build/
 /out/
+
+# Python
+__pycache__/
+.pytest_cache/
