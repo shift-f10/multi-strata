@@ -57,6 +57,9 @@
       "displayName": "Windows x86_64 (MSYS2 CLANG64)",
       "inherits": "secure-frontend-base",
       "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_EXE_LINKER_FLAGS": "-static"
+      },
       "environment": {
         "CC": "clang",
         "CXX": "clang++"
