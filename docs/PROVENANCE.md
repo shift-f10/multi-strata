@@ -46,8 +46,9 @@ Our code lives in our own directories (`secure_frontend/`, `scripts/dev/`,
 `scripts/secure_distribution_check.py`, `docs/security/`, `docs/superpowers/`,
 `tests/security/`, and our own `docs/*.md`). A file that exists in upstream
 `v0.1.43`, or a new file placed where upstream owns the layout (the repository
-root), may be touched only if it is on this allowlist, and each touch is
-recorded below so `git merge upstream/main` conflicts can be resolved
+root), may be touched only if it is on this allowlist; any exception is
+marked as such below and needs the owner's approval. Each touch is recorded
+below so `git merge upstream/main` conflicts can be resolved
 deliberately.
 
 Allowlist (owner decision, 2026-10-13):
@@ -55,17 +56,15 @@ Allowlist (owner decision, 2026-10-13):
 - root `CMakeLists.txt` — only the secure-frontend integration hunk at the end
   of the file;
 - `.gitignore` — appended entries only;
-- `requirements.txt` — if ever needed (not touched so far);
-- root `pytest.ini` — a new file, not an upstream edit, but it sits in
-  upstream's root directory and must be kept through merges.
+- `requirements.txt` — if ever needed (not touched so far).
 
 Recorded touches:
 
 | File | Change | Commit(s) |
 | --- | --- | --- |
-| `CMakeLists.txt` (lines 1660–1668 at the SP0 branch head) | Secure baseline added the integration hunk: `STRATA_BUILD_SECURE_FRONTEND`, `STRATA_BUILD_SECURE_FRONTEND_TESTS`, `add_subdirectory(secure_frontend)` (9 lines). SP0 changed the option default `ON` → `OFF` and added the one-line opt-in comment. | `7de35b0c`, `556e031a` |
+| `CMakeLists.txt` (lines 1660–1668 at the SP0 branch head) | Secure baseline added the integration hunk: `STRATA_BUILD_SECURE_FRONTEND`, `STRATA_BUILD_SECURE_FRONTEND_TESTS`, `add_subdirectory(secure_frontend)` (9 lines at head). SP0 changed the option default `ON` → `OFF` and added the one-line opt-in comment. | `7de35b0c`, `556e031a` |
 | `.gitignore` | Appended six lines: a comment plus `/.venv-dev/`, `/.toolchains/`, `/secure_frontend/out/`, `/secure_frontend/build/`. | `f5f19f77` |
-| `pytest.ini` (new, root) | Collects `tools/test_*.py` only; ignores and deselects recorded with reasons in the file. | `f5f19f77`, `7e3bc409` |
+| `pytest.ini` | New root file added by SP0 (implementer addition, not an upstream edit; keep on upstream merges; owner approval of its placement pending). Collects `tools/test_*.py` only; ignores and deselects recorded with reasons in the file. | `f5f19f77`, `7e3bc409` |
 | `tools/strata_tokenizer.py` | **Outside the allowlist; pre-dates it.** The secure baseline added the `glm4` / `chatglm-bpe` pre-tokenizer aliases (35 lines changed; see the GLM-5.3 section above). Expect merge conflicts here; a later sub-project should move this into our own directory or upstream it. | `7de35b0c` |
 
 The upstream Python service (`serve/`), installer (`setup.py`) and engine

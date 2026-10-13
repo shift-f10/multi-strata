@@ -52,7 +52,7 @@ without asking the owner.
 6. **Upstream-trackability.** Our code lives only in our own directories.
    Upstream-owned files are touched only from an allowlist (the root
    `CMakeLists.txt` frontend hunk, `.gitignore`, `requirements.txt` if ever
-   needed, and the new root `pytest.ini`). The allowlist is defined in
+   needed). The allowlist is defined in
    [`PROVENANCE.md`](PROVENANCE.md), which records each touch (including one
    pre-allowlist baseline edit to `tools/strata_tokenizer.py`). The upstream Python
    service stays in-tree, untouched (quarantined at package time). Merge
