@@ -19,8 +19,10 @@ the configured root and target, opens every protected-file component with
 `O_NOFOLLOW`, and accepts only a current-user-owned regular file with no
 group/world permissions. On Windows it opens each component without following
 reparse points, verifies final paths remain beneath the root, and requires a
-current-user-owned protected DACL. The Windows branch is fail-closed and still
-needs MSVC/Windows runtime validation before a release claim.
+current-user-owned protected DACL. The Windows branch is fail-closed and
+compiles in the llvm-mingw cross build, but it has no runtime test yet:
+`secure_frontend_token_reader_tests` is built only on UNIX, so not even the
+`windows-msys2-clang` CI job exercises it.
 
 ## Security contract
 
@@ -42,25 +44,65 @@ needs MSVC/Windows runtime validation before a release claim.
   rejected before a platform reader resolves the path below its canonical root.
 - HTTP messages are bounded, require exactly one trusted `Host`, reject
   untrusted or ambiguous browser `Origin`, keep CORS off by default, and require
-  exactly one bearer token before reaching route dispatch. The current success
-  body is a placeholder until real routes are connected.
+  exactly one bearer token before reaching route dispatch.
+- The socket listener (`HttpSocketServerLimits`) gives each connection a 30 s
+  total deadline for the whole request and a send timeout, answers a request
+  over 64 KiB with `413`, binds `::` as IPv6-only, survives clients that close
+  or reset early, and stops only when the listening socket itself fails.
 - Engine children are started directly without a shell, with a minimal
   allowlisted environment. Embedded NUL bytes in the executable path, argv, or
   environment are rejected before the platform process API can truncate them.
-  Linux uses a process group for cleanup; Windows uses a Job Object.
+  On Linux, argv/env are built before `fork`, pipes are `O_CLOEXEC`, every
+  descriptor above stdio is closed in the child, the child runs in its own
+  process group, and a killed child is reaped. On Windows the child starts
+  suspended, is assigned to a Job Object, and only then resumes.
+- The engine protocol has a total generation deadline, recovers from a timed-out
+  generation with `STOP` and a bounded drain (or marks the engine failed),
+  sizes the outbound `GEN` cap from the engine's `READY` context, and reports
+  its state through `/health` (`503` once the engine has failed). The engine
+  facts these limits rely on are in
+  [`docs/security/engine-protocol-limits.md`](../docs/security/engine-protocol-limits.md).
 
-## Build and test
+## Build
 
-No packages are fetched during configuration or testing.
+No packages are fetched during CMake configuration or testing. On Linux, create
+the pinned tool environment once (no root needed; it installs cmake, ninja and
+pytest from `requirements.txt` into `.venv-dev`):
 
 ```sh
-cmake -S . -B build -DBUILD_TESTING=ON
-cmake --build build --parallel
-ctest --test-dir build --output-on-failure
+scripts/dev/bootstrap-linux.sh                # from the repository root
+export PATH=$PWD/.venv-dev/bin:$PATH
+cd secure_frontend
+cmake --preset linux-gcc && cmake --build --preset linux-gcc && ctest --preset linux-gcc
 ```
 
-On Windows, use a Visual Studio developer shell or a CMake preset supplied by
-the parent project. `ws2_32` is linked automatically for IP-literal parsing.
+`CMakePresets.json` has five presets:
+
+| Preset | Where it runs |
+| --- | --- |
+| `linux-gcc` | Linux, GCC, Ninja |
+| `linux-clang` | Linux, Clang, Ninja |
+| `windows-llvm-mingw-cross` | Linux host, cross-compiles Windows x86_64 `.exe` files with llvm-mingw (`scripts/dev/bootstrap-llvm-mingw.sh` fetches the pinned, sha256-checked toolchain); `ctest` runs them under wine |
+| `windows-msys2-clang` | Windows, MSYS2 CLANG64 clang |
+| `windows-msvc` | Windows, Visual Studio 2022 (informational only) |
+
+Warnings are errors by default (`SECURE_FRONTEND_WERROR`, which follows
+`STRATA_WERROR` when the parent project sets it). The top-level Strata build
+includes this directory only when configured with
+`-DSTRATA_BUILD_SECURE_FRONTEND=ON` (default `OFF`). `ws2_32` is linked
+automatically on Windows. See [`docs/secure-frontend-ci.md`](../docs/secure-frontend-ci.md)
+for the CI jobs.
+
+Windows binaries are cross-compiled with llvm-mingw and smoke-tested under
+wine on Linux. wine does not implement Job Objects or protected-file DACLs
+faithfully; Windows runtime behavior is validated only by the `windows-msys2-clang`
+CI job on a real Windows runner. The `windows-msvc` job is informational.
+
+On Windows (wine or CI) `ctest` runs 17 entries. `secure_frontend_token_reader_tests`
+and `secure_frontend_http_socket_server_tests` are built only on UNIX, so the
+Windows protected-file reader and the Windows socket listener have no runtime
+test yet, and the Job Object launch path (`CREATE_SUSPENDED`, assign, resume) has
+no runtime assertion either.
 
 ## Runnable smoke server
 
@@ -87,7 +129,7 @@ environment and run it on loopback:
 
 ```sh
 export STRATA_SMOKE_TOKEN='replace-with-a-long-random-token'
-./build/strata-secure-smoke-server \
+./out/build/linux-gcc/strata-secure-smoke-server \
   --models-root /absolute/path/to/local/models \
   --token-env STRATA_SMOKE_TOKEN
 ```
@@ -107,7 +149,7 @@ For Linux protected-file tokens, create an owner-only file below a dedicated
 secret root and pass `--token-file token.txt --secret-root /path/to/root`.
 The relative token-file name is validated before the secure reader opens it.
 Windows protected-file tokens require an explicitly protected owner-only DACL;
-the implementation is fail-closed pending Windows CI/runtime validation.
+the implementation is fail-closed and has no Windows runtime test yet.
 
 Remote/wildcard binds are rejected unless the corresponding explicit flags are
 provided. CORS remains disabled, and the executable neither sends outbound
@@ -126,18 +168,21 @@ downloads, and a request whose `model` is not the one model selected at startup.
 
 The model directory must already contain the selected `.gguf`; the tokenizer
 pack must already contain `vocab.json`, `merges.txt`, and `token_type.json`.
-Give each engine switch and value as its own `--engine-arg`; `--serve` is added
-by the server and must not be supplied. The engine child receives an empty
-environment allowlist, so encode all required engine options explicitly.
+The server adds `--serve` and, for this default profile, `--native <model>`
+built from the local inventory entry named by `--model-id`; never pass the
+model path yourself. Give any other engine switch and value as its own
+`--engine-arg`. `--native`, `--pack`, `--serve`, `--batch`, `--slots` and
+`--vision` are rejected there, in both `--flag value` and `--flag=value` forms.
+The engine child receives an empty environment allowlist, so encode all
+required engine options explicitly.
 
 ```sh
 export STRATA_API_TOKEN='replace-with-a-long-random-token'
-./build/strata-secure-server \
+./out/build/linux-gcc/strata-secure-server \
   --models-root /absolute/path/to/models \
   --model-id local-model-name \
   --tokenizer-pack /absolute/path/to/tokenizer-pack \
   --engine /absolute/path/to/strata-engine \
-  --engine-arg --model --engine-arg /absolute/path/to/models/local-model-name.gguf \
   --token-env STRATA_API_TOKEN
 ```
 
@@ -170,12 +215,13 @@ any framing literal. It does not build, download, or embed the LightTransport
 fork. Build and audit a compatible `strata-glm-decode` executable separately,
 then pass that build's required positional engine arguments unchanged with
 repeated `--engine-arg`. The server adds only `--serve` immediately after the
-executable; it does not reinterpret or synthesize positional arguments. The
+executable; it does not reinterpret or synthesize positional arguments, does
+not add `--native`, and rejects only `--serve` and NUL bytes in them. The
 tokenizer pack must match that exact engine/model build and provide the fixed
 GLM framing markers as CONTROL tokens.
 
 ```sh
-./build/strata-secure-server \
+./out/build/linux-gcc/strata-secure-server \
   --profile glm53 \
   --models-root /absolute/path/to/models \
   --model-id glm53-local \

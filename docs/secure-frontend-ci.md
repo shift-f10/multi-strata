@@ -2,27 +2,23 @@
 
 `secure_frontend` is built as an independent CMake project. This is
 deliberate: portability checks must not configure the legacy inference engine,
-select a CUDA/HIP/SYCL backend, fetch dependencies, or need a GPU.
+select a CUDA/HIP/SYCL backend, or need a GPU. The top-level Strata build
+includes it only with `-DSTRATA_BUILD_SECURE_FRONTEND=ON` (default `OFF`).
 
-The checked-in presets cover the supported native toolchains:
+The checked-in presets (`secure_frontend/CMakePresets.json`):
 
-| Preset | Platform and compiler |
-| --- | --- |
-| `linux-gcc` | Linux, GCC |
-| `linux-clang` | Linux, Clang |
-| `windows-msvc` | Windows, Visual Studio 2022/MSVC x64 |
+| Preset | Platform and compiler | Role |
+| --- | --- | --- |
+| `linux-gcc` | Linux, GCC, Ninja | Blocking CI; primary local preset |
+| `linux-clang` | Linux, Clang, Ninja | Blocking CI |
+| `windows-llvm-mingw-cross` | Linux host, llvm-mingw cross to Windows x86_64 | Blocking CI (compile + link with `-Werror`); locally, `ctest` runs the `.exe` files under wine as a smoke test only |
+| `windows-msys2-clang` | Windows, MSYS2 CLANG64 clang | Blocking CI; the only job that runs the tests on real Windows |
+| `windows-msvc` | Windows, Visual Studio 2022/MSVC x64 | Informational, non-blocking (`continue-on-error`) |
 
-Run a preset from the `secure_frontend` directory:
-
-```sh
-cmake --preset linux-gcc
-cmake --build --preset linux-gcc --parallel
-ctest --preset linux-gcc
-```
-
-Use `linux-clang` or `windows-msvc` in place of `linux-gcc` for the other
-toolchains. The Windows preset is intended for a Visual Studio developer
-environment (including the GitHub Actions Windows runner).
+The Windows toolchain is open source: llvm-mingw and MSYS2 clang. MSVC is kept
+only as an informational job. Caveat: CUDA engine builds on Windows still need
+MSVC as the nvcc host compiler; that concerns the engine (`src/`), not this
+frontend.
 
 ## Building locally (Linux)
 
@@ -35,11 +31,54 @@ The venv needs no root. For an offline machine, pre-download the wheels from
 `requirements.txt` into a directory and run the script with
 `STRATA_WHEEL_DIR=/path/to/wheels`.
 
-`pytest -q` from the repository root runs only `tools/` (see `pytest.ini`).
-After merging an upstream Strata update, also run `pytest serve` explicitly.
+Windows cross build from the same Linux host:
 
-The `Secure frontend portability` workflow runs this exact matrix. It checks
-out the repository but downloads no build dependencies; the CMake project is
-dependency-free and the workflow installs no packages. Do not change it to
-configure the repository root: that would exercise the upstream engine rather
-than the isolated, security-sensitive portable frontend.
+    scripts/dev/bootstrap-llvm-mingw.sh     # pinned llvm-mingw 20261006, sha256 checked
+    cd secure_frontend
+    cmake --preset windows-llvm-mingw-cross
+    cmake --build --preset windows-llvm-mingw-cross
+    ctest --preset windows-llvm-mingw-cross # under wine; WINEPREFIX=secure_frontend/out/wineprefix
+
+Windows binaries are cross-compiled with llvm-mingw and smoke-tested under
+wine on Linux. wine does not implement Job Objects or protected-file DACLs
+faithfully; Windows runtime behavior is validated only by the `windows-msys2-clang`
+CI job on a real Windows runner. The `windows-msvc` job is informational.
+
+The cross build produces 19 `.exe` files (three executables, sixteen test
+binaries) and `ctest` registers 17 entries on Windows against 19 on Linux:
+`secure_frontend_token_reader_tests` and `secure_frontend_http_socket_server_tests`
+are UNIX-only targets. The Windows protected-file reader, the Windows socket
+listener, and the Job Object launch path therefore have no runtime test even in
+the `windows-msys2-clang` job yet.
+
+## Python tests
+
+`pytest -q` from the repository root runs only `tools/` (see `pytest.ini`) and
+takes about 20 s; the owner's pre-push hook runs it. `pytest.ini` ignores
+`tools/test_iq_pack.py` (needs llama.cpp's `gguf` module) and
+`tools/test_setup_engine_hash.py` (reaches GitHub), and deselects three
+`tools/test_setup_choices.py` vision tests that fail against the current
+upstream `setup.py`. After merging an upstream Strata update, also run
+`pytest serve` explicitly (about 4.5 minutes; the upstream service suite).
+
+## Workflow
+
+`.github/workflows/secure-frontend.yml` defines these jobs:
+
+| Job | Runs on | Blocking |
+| --- | --- | --- |
+| `linux` (matrix `linux-gcc`, `linux-clang`) | ubuntu-latest; `linux-gcc` also runs `pytest -q` | yes |
+| `windows-cross` (`windows-llvm-mingw-cross`) | ubuntu-latest; uploads the `.exe` files | yes |
+| `windows-msys2` (`windows-msys2-clang`) | windows-latest, MSYS2 CLANG64; runs `ctest` | yes |
+| `windows-msvc` | windows-latest | no |
+| `top-level-integration` | ubuntu-latest; root CMake with `STRATA_BUILD_SECURE_FRONTEND=ON`, `STRATA_NATIVE_EXPERTS=OFF`, CUDA/HIP off (no llama.cpp clone) | yes |
+
+Network fetches are limited to the GitHub actions, the pinned pip wheels in
+`requirements.txt`, MSYS2 packages through `msys2/setup-msys2`, and the pinned,
+sha256-checked llvm-mingw tarball. No model is downloaded and no GPU backend is
+enabled. Do not change the frontend jobs to configure the repository root: that
+would exercise the upstream engine rather than the isolated,
+security-sensitive portable frontend.
+
+Status (2026-10-13): the workflow has been rewritten but has **not run yet**; it
+first runs when the owner pushes the `sp0-foundation-hardening` branch.
