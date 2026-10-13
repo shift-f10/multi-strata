@@ -1,6 +1,6 @@
 # Sub-project 1 — Typed configuration, canonical paths, and tokens for `secure_frontend`
 
-Date: 2026-10-13. Status: DRAFT for owner review — not yet approved. Parent
+Date: 2026-10-13. Status: APPROVED by rflores 2026-10-13 19:03 UTC (open questions 1-5 resolved per recommendations). Parent
 effort: Secure Strata full release path (SP0–SP7), see `docs/AGENT_HANDOFF.md`.
 Base: `main` at `7f0da806`. Fact base:
 [`../research/sp1-config-paths-tokens.md`](../research/sp1-config-paths-tokens.md)

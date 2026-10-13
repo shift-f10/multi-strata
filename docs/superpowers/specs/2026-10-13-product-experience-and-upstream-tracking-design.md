@@ -1,6 +1,6 @@
 # Product experience and upstream tracking — design
 
-Status: DRAFT for owner review — not yet approved
+Status: APPROVED by rflores 2026-10-13 19:03 UTC (all ten recommendations accepted)
 
 Date: 2026-10-13. Sits between SP0 and SP1 (owner decision 4 in
 [`docs/AGENT_HANDOFF.md`](../../AGENT_HANDOFF.md)). Inputs:
