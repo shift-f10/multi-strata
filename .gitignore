@@ -70,3 +70,6 @@ build-vision-cuda12.bat
 
 # parallel sub-project worktrees (superpowers finishing skill cleans these)
 /.worktrees/
+
+# root build directories (our root CMakeLists.txt; see docs/secure-frontend-ci.md)
+/out/
