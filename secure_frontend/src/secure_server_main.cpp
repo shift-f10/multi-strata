@@ -2,6 +2,7 @@
 #include "secure_frontend/chat_execution.hpp"
 #include "secure_frontend/chat_schema.hpp"
 #include "secure_frontend/config.hpp"
+#include "secure_frontend/engine_arguments.hpp"
 #include "secure_frontend/engine_stdio_process.hpp"
 #include "secure_frontend/http_request_handler.hpp"
 #include "secure_frontend/http_socket_server.hpp"
@@ -47,7 +48,7 @@ struct Options final {
 
 void usage(std::ostream& output) {
   output << "Usage: strata-secure-server --models-root PATH --tokenizer-pack PATH --engine PATH "
-            "--model-id ID --engine-arg ARG [--engine-arg ARG ...] "
+            "--model-id ID [--engine-arg ARG ...] "
             "(--token-env NAME | --token-file RELATIVE --secret-root PATH) [options]\n"
             "\n"
             "Options:\n"
@@ -60,7 +61,9 @@ void usage(std::ostream& output) {
             "  --model-id ID             Local model ID selected for this engine process\n"
             "  --tokenizer-pack PATH     Local directory with vocab.json, merges.txt, token_type.json\n"
             "  --engine PATH             Local Strata engine executable\n"
-            "  --engine-arg ARG          One literal engine argument; repeat as needed\n"
+            "  --engine-arg ARG          Optional literal engine argument; repeat as needed.\n"
+            "                            --native, --pack, --serve, --batch, --slots and\n"
+            "                            --vision are rejected\n"
             "  --token-env NAME          Read bearer token from one environment variable\n"
             "  --token-file RELATIVE     Read token from owner-only file below --secret-root\n"
             "  --secret-root PATH        Required with --token-file\n"
@@ -71,9 +74,13 @@ void usage(std::ostream& output) {
             "and non-streaming text-only POST /v1/chat/completions. Streaming, tools, "
             "downloads, remote URLs, telemetry, and MCP are disabled.\n"
             "\n"
+            "The engine loads exactly the model named by --model-id: this server supplies "
+            "--native <model> from the local inventory, so the model path is never passed "
+            "with --engine-arg.\n"
+            "\n"
             "The glm53 profile requires a separately built LightTransport-compatible "
             "strata-glm-decode engine. Supply its required positional engine arguments "
-            "unchanged using repeated --engine-arg; this server only adds --serve.\n";
+            "unchanged using repeated --engine-arg; this server adds --serve and --native <model>.\n";
 }
 
 bool next_value(const int argc, char* argv[], int* index, std::string* output, std::string* error) {
@@ -177,7 +184,6 @@ bool parse_options(const int argc, char* argv[], Options* options, bool* help, s
     *error = "--models-root, --tokenizer-pack, --engine, and --model-id are required";
     return false;
   }
-  if (options->engine_arguments.empty()) { *error = "at least one --engine-arg is required"; return false; }
   if (options->token_environment.has_value() == options->token_file.has_value()) {
     *error = "supply exactly one of --token-env or --token-file";
     return false;
@@ -241,16 +247,19 @@ int run(const Options& options) {
   const auto models_result = secure_frontend::enumerate_local_models(*options.models_root);
   const auto* manifests = std::get_if<std::vector<secure_frontend::ModelManifest>>(&models_result);
   if (manifests == nullptr) { std::cerr << "Unable to inventory local models.\n"; return EXIT_FAILURE; }
-  const bool selected_model_present = std::any_of(manifests->begin(), manifests->end(), [&options](const auto& model) {
+  const auto selected = std::find_if(manifests->begin(), manifests->end(), [&options](const auto& model) {
     return model.id == *options.model_id;
   });
-  if (!selected_model_present) { std::cerr << "Selected model is not present in --models-root.\n"; return EXIT_FAILURE; }
+  if (selected == manifests->end()) { std::cerr << "Selected model is not present in --models-root.\n"; return EXIT_FAILURE; }
+  auto engine_arguments_result = secure_frontend::build_engine_arguments(*selected, *options.models_root, options.engine_arguments);
+  auto* engine_arguments = std::get_if<std::vector<std::string>>(&engine_arguments_result);
+  if (engine_arguments == nullptr) { std::cerr << "Engine arguments rejected.\n"; return EXIT_FAILURE; }
   std::vector<secure_frontend::ApiModel> models;
   models.reserve(manifests->size());
   for (const auto& manifest : *manifests) models.push_back({.id = manifest.id, .owned_by = manifest.owned_by});
 
   secure_frontend::EngineStdioProcess engine;
-  const secure_frontend::EngineCommand command{.executable = *options.engine, .arguments = options.engine_arguments, .environment = {}};
+  const secure_frontend::EngineCommand command{.executable = *options.engine, .arguments = std::move(*engine_arguments), .environment = {}};
   if (engine.start(command).has_value()) { std::cerr << "Unable to start local engine.\n"; return EXIT_FAILURE; }
   const auto protocol_flavor = options.profile == secure_frontend::NativeChatProfile::glm53
       ? secure_frontend::EngineProtocolFlavor::lighttransport_glm53

@@ -72,6 +72,10 @@ add_library(secure_frontend_model_inventory
     src/model_inventory.cpp
 )
 
+add_library(secure_frontend_engine_arguments
+    src/engine_arguments.cpp
+)
+
 add_library(secure_frontend_chat_schema
     src/chat_schema.cpp
 )
@@ -169,6 +173,13 @@ target_include_directories(secure_frontend_model_inventory
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
+target_compile_features(secure_frontend_engine_arguments PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_engine_arguments
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(secure_frontend_engine_arguments PUBLIC secure_frontend_model_inventory)
 target_compile_features(secure_frontend_chat_schema PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_chat_schema
     PUBLIC
@@ -223,7 +234,7 @@ target_link_libraries(strata-secure-server PRIVATE secure_frontend_config secure
     secure_frontend_http_policy secure_frontend_http_request_handler secure_frontend_http_socket_server
     secure_frontend_api_router secure_frontend_model_inventory secure_frontend_tokenizer_pack
     secure_frontend_engine_protocol_client secure_frontend_engine_stdio_process secure_frontend_chat_schema
-    secure_frontend_chat_generation_plan secure_frontend_chat_execution)
+    secure_frontend_chat_generation_plan secure_frontend_chat_execution secure_frontend_engine_arguments)
 target_compile_features(strata-secure-server PRIVATE cxx_std_20)
 
 target_compile_features(secure_frontend_config PUBLIC cxx_std_20)
@@ -251,7 +262,8 @@ foreach(_target IN ITEMS
         secure_frontend_config secure_frontend_token_reader secure_frontend_http_policy
         secure_frontend_http_request_handler secure_frontend_api_router secure_frontend_engine_process
         secure_frontend_engine_protocol_client secure_frontend_engine_stdio_process
-        secure_frontend_http_socket_server secure_frontend_model_inventory secure_frontend_chat_schema
+        secure_frontend_http_socket_server secure_frontend_model_inventory secure_frontend_engine_arguments
+        secure_frontend_chat_schema
         secure_frontend_tokenizer_pack secure_frontend_qwen_prompt_renderer secure_frontend_glm_prompt_renderer
         secure_frontend_chat_generation_plan secure_frontend_chat_execution
         secure-frontend-smoke strata-secure-smoke-server strata-secure-server)
@@ -339,6 +351,12 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     target_compile_features(secure_frontend_model_inventory_tests PRIVATE cxx_std_20)
     secure_frontend_set_warnings(secure_frontend_model_inventory_tests)
     add_test(NAME secure_frontend_model_inventory_tests COMMAND secure_frontend_model_inventory_tests)
+
+    add_executable(secure_frontend_engine_arguments_tests tests/engine_arguments_test.cpp)
+    target_link_libraries(secure_frontend_engine_arguments_tests PRIVATE secure_frontend_engine_arguments)
+    target_compile_features(secure_frontend_engine_arguments_tests PRIVATE cxx_std_20)
+    secure_frontend_set_warnings(secure_frontend_engine_arguments_tests)
+    add_test(NAME secure_frontend_engine_arguments_tests COMMAND secure_frontend_engine_arguments_tests)
 
     add_executable(secure_frontend_chat_schema_tests tests/chat_schema_test.cpp)
     target_link_libraries(secure_frontend_chat_schema_tests PRIVATE secure_frontend_chat_schema)
