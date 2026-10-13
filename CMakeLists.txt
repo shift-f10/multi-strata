@@ -1660,7 +1660,8 @@ endif()
 # The portable native service boundary is intentionally isolated from the
 # inference engine while it reaches feature parity.  It is dependency-free and
 # is built on Windows and Linux; keep it available to downstream packagers.
-option(STRATA_BUILD_SECURE_FRONTEND "Build the portable hardened frontend foundation" ON)
+# Opt-in (AGENTS.md: new features are opt-in; the default build stays byte-identical).
+option(STRATA_BUILD_SECURE_FRONTEND "Build the portable hardened frontend foundation" OFF)
 option(STRATA_BUILD_SECURE_FRONTEND_TESTS "Build the portable frontend tests" ${STRATA_BUILD_TESTS})
 if(STRATA_BUILD_SECURE_FRONTEND)
   add_subdirectory(secure_frontend)
