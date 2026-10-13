@@ -35,6 +35,9 @@ The venv needs no root. For an offline machine, pre-download the wheels from
 `requirements.txt` into a directory and run the script with
 `STRATA_WHEEL_DIR=/path/to/wheels`.
 
+`pytest -q` from the repository root runs only `tools/` (see `pytest.ini`).
+After merging an upstream Strata update, also run `pytest serve` explicitly.
+
 The `Secure frontend portability` workflow runs this exact matrix. It checks
 out the repository but downloads no build dependencies; the CMake project is
 dependency-free and the workflow installs no packages. Do not change it to
