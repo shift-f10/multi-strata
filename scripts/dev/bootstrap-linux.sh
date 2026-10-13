@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Creates the project-local developer environment for the secure frontend on
-# Linux without root: a venv holding cmake/ninja pinned in requirements.txt and
-# pytest (with its dependencies) pinned in scripts/dev/requirements-dev.txt.
+# Linux without root: a venv holding cmake, ninja, regex, pytest and pytest's
+# dependencies, all pinned in scripts/dev/requirements-dev.txt (the only file
+# read; upstream's requirements.txt in the upstream/ submodule is not ours).
 # Idempotent. Offline: set STRATA_WHEEL_DIR to a directory holding every wheel
-# both files name PLUS a pip wheel (pip-*.whl) for the venv's pip bootstrap;
+# that file names PLUS a pip wheel (pip-*.whl) for the venv's pip bootstrap;
 # nothing is fetched from the network when it is set.
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -37,7 +38,7 @@ if [[ ! -x "$venv/bin/pip" ]]; then
     exit 1
   fi
 fi
-pip_args=(-q -r "$repo/requirements.txt" -r "$repo/scripts/dev/requirements-dev.txt")
+pip_args=(-q -r "$repo/scripts/dev/requirements-dev.txt")
 if [[ -n "${STRATA_WHEEL_DIR:-}" ]]; then
   pip_args=(--no-index --find-links "$STRATA_WHEEL_DIR" "${pip_args[@]}")
 fi

@@ -3,7 +3,9 @@
 
 This is a packaging gate, not a malware scanner.  It checks the selected
 staging directory; it intentionally does *not* scan this source checkout,
-which contains the quarantined upstream implementation for provenance.
+which holds upstream Strata as the git submodule `upstream/` for provenance.
+Any staged path with an `upstream` component is rejected, and the quarantined
+names below are matched at any depth, not only at the staging root.
 """
 
 from __future__ import annotations
@@ -17,8 +19,9 @@ from typing import Any
 
 
 # These paths are deliberate quarantine boundaries, documented in
-# docs/security/privacy-migration.md.  Match path components rather than a
-# substring so an unrelated README cannot cause a false positive.
+# docs/security/privacy-migration.md.  Match whole path components (at any
+# depth) rather than a substring so an unrelated README cannot cause a false
+# positive.
 FORBIDDEN_PATHS = {
     "start-here.bat",
     "setup.py",
@@ -48,14 +51,19 @@ def normal_relative(path: Path, root: Path) -> str:
     return relative.as_posix().lower()
 
 
+def _contains_components(parts: list[str], sequence: list[str]) -> bool:
+    """True when `sequence` occurs as consecutive whole components of `parts`."""
+    width = len(sequence)
+    return any(parts[i:i + width] == sequence for i in range(len(parts) - width + 1))
+
+
 def forbidden_reason(relative: str) -> str | None:
     parts = relative.split("/")
-    if relative in FORBIDDEN_PATHS:
+    if "upstream" in parts:
+        return "upstream source tree (the git submodule upstream/) is never part of a secure-native package"
+    if any(parts[-len(p.split("/")):] == p.split("/") for p in FORBIDDEN_PATHS):
         return "quarantined legacy installer, updater, dependency bootstrap, or MCP documentation"
-    if any(
-        relative == directory or relative.startswith(directory + "/")
-        for directory in FORBIDDEN_DIRECTORIES
-    ):
+    if any(_contains_components(parts, directory.split("/")) for directory in FORBIDDEN_DIRECTORIES):
         return "quarantined legacy Python service/MCP/telemetry directory"
     if parts[-1] in FORBIDDEN_PYTHON_NAMES:
         return "quarantined legacy Python server, MCP, telemetry, or metrics module"

@@ -1,6 +1,12 @@
-# Developer-only test tooling for the secure frontend bootstrap
-# (scripts/dev/bootstrap-linux.sh), pinned at the versions verified in
-# .venv-dev on 2026-10-13. requirements.txt stays the runtime/build set.
+# Developer tooling for the secure frontend (scripts/dev/bootstrap-linux.sh),
+# pinned at the versions verified in .venv-dev on 2026-10-13. This is the only
+# requirements file the bootstrap reads: upstream's requirements.txt lives in
+# the upstream/ submodule and is not installed into .venv-dev.
+# build tools for the presets and the root build
+cmake==4.4.3
+ninja==1.13.2
+# tools/secure: the GLM tokenizer wrapper imports upstream's tokenizer, which needs regex
+regex==2026.9.10
 pytest==9.1.1
 # pytest's dependencies
 pluggy==1.6.0

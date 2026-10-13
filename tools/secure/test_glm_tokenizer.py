@@ -9,15 +9,10 @@ import sys
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "tools"))
-from strata_tokenizer import (  # noqa: E402
-    GLM4_PATTERN,
-    QWEN35_PATTERN,
-    Tokenizer,
-    bytes_to_unicode,
-    pre_tokenizer_pattern,
-)
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+from secure_tokenizer import (GLM4_PATTERN, QWEN35_PATTERN, Tokenizer,  # noqa: E402
+                              bytes_to_unicode, pre_tokenizer_pattern)
 
 
 class GlmTokenizerTest(unittest.TestCase):
