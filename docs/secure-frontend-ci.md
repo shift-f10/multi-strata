@@ -22,14 +22,16 @@ frontend.
 
 ## Building locally (Linux)
 
-    scripts/dev/bootstrap-linux.sh          # once; creates .venv-dev with pinned cmake/ninja/pytest
+    scripts/dev/bootstrap-linux.sh          # once; creates .venv-dev (cmake/ninja pinned in requirements.txt; pytest currently unpinned)
     export PATH=$PWD/.venv-dev/bin:$PATH
     cd secure_frontend
     cmake --preset linux-gcc && cmake --build --preset linux-gcc && ctest --preset linux-gcc
 
-The venv needs no root. For an offline machine, pre-download the wheels from
-`requirements.txt` into a directory and run the script with
-`STRATA_WHEEL_DIR=/path/to/wheels`.
+The venv needs no root. The script installs `-r requirements.txt pytest`:
+cmake 4.4.3 and ninja 1.13.2 are pinned in `requirements.txt`; pytest is
+currently unpinned. Offline use needs the `requirements.txt` wheels **plus** pip and pytest
+(with its dependencies) wheels in `STRATA_WHEEL_DIR`; the pip-bootstrap step on a
+fresh venv does not yet honor `STRATA_WHEEL_DIR` (it runs `pip download pip`).
 
 Windows cross build from the same Linux host:
 
@@ -54,7 +56,7 @@ the `windows-msys2-clang` job yet.
 ## Python tests
 
 `pytest -q` from the repository root runs only `tools/` (see `pytest.ini`) and
-takes about 20 s; the owner's pre-push hook runs it. `pytest.ini` ignores
+takes about 20.6 s on the dev host; the owner's pre-push hook runs it. `pytest.ini` ignores
 `tools/test_iq_pack.py` (needs llama.cpp's `gguf` module) and
 `tools/test_setup_engine_hash.py` (reaches GitHub), and deselects three
 `tools/test_setup_choices.py` vision tests that fail against the current
@@ -73,8 +75,9 @@ upstream `setup.py`. After merging an upstream Strata update, also run
 | `windows-msvc` | windows-latest | no |
 | `top-level-integration` | ubuntu-latest; root CMake with `STRATA_BUILD_SECURE_FRONTEND=ON`, `STRATA_NATIVE_EXPERTS=OFF`, CUDA/HIP off (no llama.cpp clone) | yes |
 
-Network fetches are limited to the GitHub actions, the pinned pip wheels in
-`requirements.txt`, MSYS2 packages through `msys2/setup-msys2`, and the pinned,
+Network fetches are limited to the GitHub actions, the pip wheels for
+`requirements.txt` (cmake/ninja pinned) plus an unpinned pytest and, on a fresh
+venv, pip itself, MSYS2 packages through `msys2/setup-msys2`, and the pinned,
 sha256-checked llvm-mingw tarball. No model is downloaded and no GPU backend is
 enabled. Do not change the frontend jobs to configure the repository root: that
 would exercise the upstream engine rather than the isolated,

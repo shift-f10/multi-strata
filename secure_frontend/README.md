@@ -66,8 +66,11 @@ compiles in the llvm-mingw cross build, but it has no runtime test yet:
 ## Build
 
 No packages are fetched during CMake configuration or testing. On Linux, create
-the pinned tool environment once (no root needed; it installs cmake, ninja and
-pytest from `requirements.txt` into `.venv-dev`):
+the tool environment once (no root needed). It installs `-r requirements.txt
+pytest` into `.venv-dev`: cmake/ninja are pinned in `requirements.txt`; pytest is
+currently unpinned. Offline use needs the `requirements.txt` wheels **plus** pip and pytest
+(with its dependencies) wheels in `STRATA_WHEEL_DIR`; the pip-bootstrap step on a
+fresh venv does not yet honor `STRATA_WHEEL_DIR` (it runs `pip download pip`).
 
 ```sh
 scripts/dev/bootstrap-linux.sh                # from the repository root

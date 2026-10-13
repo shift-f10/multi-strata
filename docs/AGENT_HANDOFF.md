@@ -52,7 +52,9 @@ without asking the owner.
 6. **Upstream-trackability.** Our code lives only in our own directories.
    Upstream-owned files are touched only from an allowlist (the root
    `CMakeLists.txt` frontend hunk, `.gitignore`, `requirements.txt` if ever
-   needed), and each touch is recorded in `PROVENANCE.md`. The upstream Python
+   needed, and the new root `pytest.ini`). The allowlist is defined in
+   [`PROVENANCE.md`](PROVENANCE.md), which records each touch (including one
+   pre-allowlist baseline edit to `tools/strata_tokenizer.py`). The upstream Python
    service stays in-tree, untouched (quarantined at package time). Merge
    runbook: `git fetch upstream && git merge upstream/main`, then run every gate
    below. An upstream-delta script plus a CI gate for it are still to be added.
@@ -67,7 +69,7 @@ without asking the owner.
    - ignored: `tools/test_iq_pack.py` (needs llama.cpp's `gguf` module) and
      `tools/test_setup_engine_hash.py` (reaches GitHub; tests must be hermetic).
 8. **Pre-push hook.** The owner's pre-push hook runs `pytest -q`. With
-   `pytest.ini` it collects `tools/` only and passes in about 20 s.
+   `pytest.ini` it collects `tools/` only and passes in about 20.6 s on the dev host.
    `pytest serve` is the explicit run of the upstream service suite (about
    4.5 minutes) after an upstream merge.
 9. **CI status: the workflow is rewritten but has not run yet**; it waits for
@@ -101,7 +103,7 @@ without asking the owner.
 
 | Area | Files | Status |
 | --- | --- | --- |
-| Provenance | `docs/PROVENANCE.md` | Complete baseline/attribution record. |
+| Provenance | `docs/PROVENANCE.md` | Complete baseline/attribution record. SP0 added the upstream-touch allowlist and the record of every touch to an upstream-owned file. |
 | Security/privacy contract | `docs/security/threat-model.md`, `tests/security/README.md`, `docs/security/privacy-migration.md`, `docs/security/deployment.md` | Complete specification, legacy-network inventory, platform deployment prerequisites, and package-readiness procedure; most acceptance tests are not implemented yet. |
 | Secure package gate | `scripts/secure_distribution_check.py` | Checks a selected staging directory (never this source tree) for quarantined Python installer/service/MCP/update artifacts and symlinks; `--release` additionally requires a privacy declaration manifest and SBOM. |
 | Native frontend foundation | `secure_frontend/` | C++20 configuration, secret/token-reader, HTTP policy/request-handler/socket adapter, API router, local model inventory, and process-supervision libraries with unit tests. |
@@ -117,7 +119,7 @@ says why it has none.
 
 | Item | What changed | Regression test / check |
 | --- | --- | --- |
-| Tooling (T1, T5) | `scripts/dev/bootstrap-linux.sh` creates `.venv-dev` with pinned cmake/ninja/pytest from `requirements.txt` (no root; offline via `STRATA_WHEEL_DIR`). `pytest.ini` collects `tools/test_*.py` only, with the exclusions listed above. | Bootstrap is idempotent; `pytest -q` passes from the repository root. |
+| Tooling (T1, T5) | `scripts/dev/bootstrap-linux.sh` creates `.venv-dev` (no root) with `-r requirements.txt pytest`: cmake/ninja pinned in `requirements.txt`; pytest currently unpinned. Offline use needs the `requirements.txt` wheels plus pip and pytest wheels in `STRATA_WHEEL_DIR`; the pip-bootstrap step does not yet honor `STRATA_WHEEL_DIR`. `pytest.ini` collects `tools/test_*.py` only, with the exclusions listed above. | Bootstrap is idempotent; `pytest -q` passes from the repository root. |
 | CMake hygiene (T3, T4) | Top-level `STRATA_BUILD_SECURE_FRONTEND` defaults `OFF` (opt-in). `SECURE_FRONTEND_WERROR` (default `ON`, follows `STRATA_WERROR` from the root). One `secure_frontend_set_warnings()` helper replaces the per-target flag blocks; dead `if(MSVC)`-inside-`if(UNIX)` blocks removed. | Configure with each setting. |
 | llvm-mingw (T2, P5) | `scripts/dev/bootstrap-llvm-mingw.sh` (llvm-mingw `20261006`, sha256 pinned), toolchain file, `windows-llvm-mingw-cross` preset. `win32_prelude.hpp` (`NOMINMAX`, `WIN32_LEAN_AND_MEAN`); paths converted with `path::wstring()`. Two further Windows fixes found by the cross build: unused POSIX helpers in `engine_process.cpp` guarded; `token_reader.cpp` uses `std::next(it) == end()` (libc++ `path::iterator` is an input iterator). | Cross build with `-Werror`; `wine strata-secure-server.exe --help` exits 0. |
 | Early close (S1) | `install_process_defaults()` ignores `SIGPIPE` in all three mains; `send()` uses `MSG_NOSIGNAL` (`SO_NOSIGPIPE` where that is the only option). | `socket_server_survives_client_early_close` |
@@ -252,7 +254,9 @@ foreground commands: `acquire` (the product name may become `strata pull`) and
 the explicit `strata update` in the owner's north star. Each must use a
 user-visible, digest-pinned HTTPS manifest and cannot be triggered by an API
 request, model content, plugin, or automatic updater. See the threat model for
-the full rules.
+the full rules. `threat-model.md` currently lists `acquire` as the sole
+networked operation; it must be amended under review, together with the
+product-experience spec, before `strata update` is designed.
 
 ## Ordered implementation backlog
 
@@ -369,9 +373,8 @@ The Python GLM tokenizer module also runs under `pytest -q` above
 (`tools/test_glm_tokenizer.py`, with the pinned `regex` from the venv). The two
 skips are hardware/platform skips in upstream tests
 (`tools/test_dll_closure.py`: HIP zip absent; `tools/test_setup_oldcpu.py`:
-Windows only). Run it
-again in the release Python environment before accepting a GLM tokenizer
-release.
+Windows only). Run `tools/test_glm_tokenizer.py` again in the release Python
+environment before accepting a GLM tokenizer release.
 
 ### Known small gaps
 
@@ -389,6 +392,7 @@ sub-project named.
   SP2.
 - The fallback descriptor sweep's 65536 cap is undocumented. SP2.
 - The `current_executable()` test helper does not check `readlink`'s result.
+  SP2.
 - No negative test for an invalid `relative_artifact_path` in
   `build_engine_arguments`. SP1 (canonical paths).
 - S4 (oversize `413`) may flake natively on Windows, where an RST discards
@@ -399,10 +403,15 @@ sub-project named.
 - A small general backoff on any transient accept failure (not only resource
   exhaustion) is worth considering. SP3.
 - `bootstrap-llvm-mingw.sh` keeps a corrupt archive after a digest mismatch;
-  delete it by hand before re-running.
+  delete it by hand before re-running. Tooling / SP1.
+- Pin pytest in the bootstrap and make the pip bootstrap honor
+  `STRATA_WHEEL_DIR`. Tooling; scheduled for the SP0 final fix wave.
+- `docs/security/threat-model.md` lists `acquire` as the sole future networked
+  operation; it must be amended under review before `strata update` is
+  designed. Product-experience spec / SP4.
 - The comment in `secure_frontend/CMakeLists.txt` above the UNIX-only
   `token_reader_tests` still says "MSVC/Windows runtime coverage"; the plan for
-  that coverage is now the MSYS2 job.
+  that coverage is now the MSYS2 job. SP1.
 
 ## Collaboration and change rules
 
