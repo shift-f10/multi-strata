@@ -1,6 +1,6 @@
 # Upstream as a submodule — repository layout
 
-Date: 2026-10-13. Status: **DRAFT for owner review — not yet approved**.
+Date: 2026-10-13. Status: **APPROVED by rflores 2026-10-13 21:05 UTC** (single root LICENSE with both notices; upstream tests run explicitly after pointer bumps only; no second submodule until SP6).
 Parent effort: Secure Strata full release path, see `docs/AGENT_HANDOFF.md`.
 Supersedes, once approved, the "Upstream tracking" mechanics in
 `2026-10-13-product-experience-and-upstream-tracking-design.md` §9 (allowlist,
