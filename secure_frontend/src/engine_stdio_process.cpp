@@ -232,7 +232,9 @@ EngineReadResult EngineStdioProcess::read_line(const std::chrono::milliseconds t
     // A 1 ms pause that returns at once when the child has exited.  Output the
     // child wrote before exiting is already in the pipe, so one more empty peek
     // after the exit was observed means nothing further can arrive.
-    if (WaitForSingleObject(static_cast<HANDLE>(process_handle_), 1) == WAIT_OBJECT_0) {
+    const DWORD waited = WaitForSingleObject(static_cast<HANDLE>(process_handle_), 1);
+    if (waited == WAIT_FAILED) return {EngineReadKind::failure, {}, "engine process wait failed"};
+    if (waited == WAIT_OBJECT_0) {
       if (child_exit_seen) return {EngineReadKind::closed, {}, {}};
       child_exit_seen = true;
     }
@@ -241,14 +243,17 @@ EngineReadResult EngineStdioProcess::read_line(const std::chrono::milliseconds t
   if (stdout_read_ < 0) {
     return {EngineReadKind::closed, {}, {}};
   }
-  // The first poll waits up to `timeout`; later polls only drain bytes that are
-  // already available (timeout 0), as the former recursive form did.
-  auto bounded = std::clamp<std::int64_t>(timeout.count(), 0, 0x7fffffff);
+  // One deadline for the whole call: every poll waits only for the remaining
+  // budget, so a record split across several writes is still read whole as
+  // long as its last byte arrives before the deadline.
+  const auto deadline = std::chrono::steady_clock::now() + std::max(timeout, std::chrono::milliseconds::zero());
   std::array<char, 1024> bytes{};
   for (;;) {
+    const auto remaining = std::chrono::ceil<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+    const auto bounded = std::clamp<std::int64_t>(remaining.count(), 0, 0x7fffffff);
     pollfd pollfd{stdout_read_, POLLIN | POLLHUP, 0};
     const int status = poll(&pollfd, 1, static_cast<int>(bounded));
-    bounded = 0;
+    if (status < 0 && errno == EINTR) continue;
     if (status == 0) {
       return {EngineReadKind::timeout, {}, {}};
     }

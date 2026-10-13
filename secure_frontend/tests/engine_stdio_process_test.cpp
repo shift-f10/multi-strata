@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #if defined(_WIN32)
@@ -62,17 +63,54 @@ std::string open_descriptors() {
 }
 #endif
 
+#if defined(_WIN32)
+// --spawn-grandchild: launch this executable again as a 30 s sleeper.  The
+// fake engine runs inside the frontend's kill-on-close Job, so the grandchild
+// joins the Job too and must die when the Job is terminated (P4).
+DWORD spawn_sleeper_grandchild() {
+  const std::wstring self = current_executable().wstring();
+  std::wstring line = L"\"" + self + L"\" --fake-sleeper";
+  STARTUPINFOW startup{};
+  startup.cb = sizeof(startup);
+  PROCESS_INFORMATION info{};
+  if (!CreateProcessW(self.c_str(), line.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup, &info)) return 0;
+  CloseHandle(info.hThread);
+  CloseHandle(info.hProcess);
+  return info.dwProcessId;
+}
+#endif
+
 int fake_engine() {
   bool spew = false;
+  bool split_ready = false;
+  bool spawn_grandchild = false;
   for (int index = 1; index < g_argc; ++index) {
     if (std::string(g_argv[index]) == "--ignore-term") (void)std::signal(SIGTERM, SIG_IGN);
     if (std::string(g_argv[index]) == "--spew") spew = true;
+    if (std::string(g_argv[index]) == "--split-ready") split_ready = true;
+    if (std::string(g_argv[index]) == "--spawn-grandchild") spawn_grandchild = true;
   }
   // A real engine may emit human diagnostics on stderr before protocol READY.
   // Those bytes must never enter the strict stdout protocol stream.
   std::cerr << "diagnostic: private engine startup\n" << std::flush;
-  std::cout << "READY 4096 stop\n" << std::flush;
+  if (split_ready) {
+    // --split-ready: one READY record split across two writes 100 ms apart.
+    std::cout << "REA" << std::flush;
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::cout << "DY 4096 stop\n" << std::flush;
+  } else {
+    std::cout << "READY 4096 stop\n" << std::flush;
+  }
   std::string line;
+#if defined(_WIN32)
+  if (spawn_grandchild) {
+    std::cout << "GRANDCHILD " << spawn_sleeper_grandchild() << '\n' << std::flush;
+    while (std::getline(std::cin, line)) {}
+    return 0;
+  }
+#else
+  (void)spawn_grandchild;
+#endif
   if (spew) {
     // --spew: one record larger than kMaxReadLineBytes with no newline, then
     // stay alive (blocked on stdin) so the reader sees size, not end-of-stream.
@@ -146,6 +184,43 @@ void read_line_rejects_oversize_on_all_platforms(const std::filesystem::path& se
   (void)transport.terminate(std::chrono::milliseconds(250));
 }
 
+void read_line_waits_for_a_record_split_across_writes(const std::filesystem::path& self) {
+  secure_frontend::EngineStdioProcess transport;
+  expect(!transport.start({.executable = self, .arguments = {"--fake-engine", "--split-ready"}, .environment = {}}).has_value(),
+         "fake engine must start");
+  const auto ready = transport.read_line(std::chrono::seconds(2));
+  expect(ready.kind == secure_frontend::EngineReadKind::line && ready.line == "READY 4096 stop",
+         "a record split across writes must be read whole within the budget, not time out early");
+  (void)transport.terminate(std::chrono::milliseconds(250));
+}
+
+#if defined(_WIN32)
+void job_object_terminates_grandchild(const std::filesystem::path& self) {
+  secure_frontend::EngineStdioProcess transport;
+  expect(!transport.start({.executable = self, .arguments = {"--fake-engine", "--spawn-grandchild"}, .environment = {}})
+              .has_value(),
+         "fake engine must start");
+  const auto ready = transport.read_line(std::chrono::seconds(5));
+  expect(ready.kind == secure_frontend::EngineReadKind::line && ready.line == "READY 4096 stop", "READY must arrive");
+  const auto report = transport.read_line(std::chrono::seconds(5));
+  expect(report.kind == secure_frontend::EngineReadKind::line && report.line.rfind("GRANDCHILD ", 0) == 0,
+         "the fake must report its grandchild");
+  const unsigned long pid = std::stoul(report.line.substr(11));
+  expect(pid != 0, "the grandchild must have started");
+  (void)transport.terminate(std::chrono::milliseconds(250));
+  HANDLE grandchild = OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE, FALSE, static_cast<DWORD>(pid));
+  bool gone = false;
+  if (grandchild == nullptr) {
+    gone = GetLastError() == ERROR_INVALID_PARAMETER;
+  } else {
+    gone = WaitForSingleObject(grandchild, 2000) == WAIT_OBJECT_0;
+    if (!gone) (void)TerminateProcess(grandchild, 1);  // do not leak a 30 s sleeper past a failed test
+    CloseHandle(grandchild);
+  }
+  expect(gone, "the grandchild must die with the Job (P4)");
+}
+#endif
+
 #if !defined(_WIN32)
 void child_inherits_only_stdio_descriptors(const std::filesystem::path& self) {
   // Open two extra descriptors in the parent without CLOEXEC; a correct launcher must not leak them.
@@ -216,12 +291,20 @@ int main(const int argc, char* argv[]) {
   g_argv = argv;
   for (int index = 1; index < argc; ++index) {
     if (std::string(argv[index]) == "--fake-engine") return fake_engine();
+    if (std::string(argv[index]) == "--fake-sleeper") {
+      std::this_thread::sleep_for(std::chrono::seconds(30));
+      return 0;
+    }
   }
   try {
     const auto self = current_executable();
     test_round_trip(self);
     test_invalid_record();
     read_line_rejects_oversize_on_all_platforms(self);
+    read_line_waits_for_a_record_split_across_writes(self);
+#if defined(_WIN32)
+    job_object_terminates_grandchild(self);
+#endif
 #if !defined(_WIN32)
     child_inherits_only_stdio_descriptors(self);
     child_receives_exact_argv_and_env(self);
