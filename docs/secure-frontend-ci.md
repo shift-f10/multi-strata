@@ -24,6 +24,17 @@ Use `linux-clang` or `windows-msvc` in place of `linux-gcc` for the other
 toolchains. The Windows preset is intended for a Visual Studio developer
 environment (including the GitHub Actions Windows runner).
 
+## Building locally (Linux)
+
+    scripts/dev/bootstrap-linux.sh          # once; creates .venv-dev with pinned cmake/ninja/pytest
+    export PATH=$PWD/.venv-dev/bin:$PATH
+    cd secure_frontend
+    cmake --preset linux-gcc && cmake --build --preset linux-gcc && ctest --preset linux-gcc
+
+The venv needs no root. For an offline machine, pre-download the wheels from
+`requirements.txt` into a directory and run the script with
+`STRATA_WHEEL_DIR=/path/to/wheels`.
+
 The `Secure frontend portability` workflow runs this exact matrix. It checks
 out the repository but downloads no build dependencies; the CMake project is
 dependency-free and the workflow installs no packages. Do not change it to
