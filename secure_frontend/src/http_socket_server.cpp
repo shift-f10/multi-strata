@@ -307,21 +307,23 @@ bool HttpSocketServer::serve_one(std::string* error) {
   if (!state_) { if (error != nullptr) *error = "listener is not initialized"; return false; }
   const NativeSocket client = accept(state_->socket, nullptr, nullptr);
   if (client == kInvalidSocket) {
-    // Only a non-transient error means the listening socket itself is gone;
-    // interrupts, aborted handshakes and descriptor exhaustion pass.
+    // Inverted on purpose: only errors that mean the listening socket itself
+    // is broken stop serving. Anything a peer or the network can cause (resets,
+    // pending protocol errors, resource pressure) is transient, so no client
+    // behaviour can ever shut the listener down.
 #ifdef _WIN32
     const int code = WSAGetLastError();
-    const bool transient = code == WSAEINTR || code == WSAECONNABORTED || code == WSAEWOULDBLOCK || code == WSAEMFILE;
-    const bool out_of_descriptors = code == WSAEMFILE;
+    const bool fatal = code == WSAENOTSOCK || code == WSAEINVAL || code == WSANOTINITIALISED;
+    const bool exhausted = code == WSAEMFILE || code == WSAENOBUFS;
 #else
     const int code = errno;
-    const bool transient = code == EINTR || code == ECONNABORTED || code == EAGAIN || code == EWOULDBLOCK ||
-                           code == EMFILE || code == ENFILE;
-    const bool out_of_descriptors = code == EMFILE || code == ENFILE;
+    const bool fatal = code == EBADF || code == ENOTSOCK || code == EINVAL;
+    const bool exhausted = code == EMFILE || code == ENFILE || code == ENOBUFS || code == ENOMEM;
 #endif
-    // Prevents a hot spin in the serve loops under descriptor exhaustion.
-    if (out_of_descriptors) std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    if (!transient) state_->listener_failed = true;
+    const bool transient = !fatal;
+    // Prevents a hot spin in the serve loops under resource exhaustion.
+    if (exhausted) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    if (fatal) state_->listener_failed = true;
     if (error != nullptr) *error = transient ? "accept interrupted" : "accept failed";
     return false;
   }

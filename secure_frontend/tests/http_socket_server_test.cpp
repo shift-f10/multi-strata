@@ -255,6 +255,7 @@ void socket_server_ipv6_bind_is_v6only() {
   expect(f.round_trip().rfind("HTTP/1.1 200 OK", 0) == 0, "IPv6 loopback must serve with bracketed Host");
   // An IPv4 connect to the same port must be refused (no dual-stack mapping).
   NativeSocket v4 = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (v4 == kBad) { expect(false, "could not create the IPv4 probe socket"); return; }
   sockaddr_in a{}; a.sin_family = AF_INET; a.sin_port = htons(f.server->port()); inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
   const int rc = connect(v4, reinterpret_cast<const sockaddr*>(&a), sizeof(a));
   close_socket(v4);
@@ -275,6 +276,28 @@ void socket_server_response_is_complete() {
   const std::size_t declared = std::stoul(response.substr(cl + 16, response.find("\r\n", cl) - cl - 16));
   expect(response.size() - header_end - 4 == declared, "body length must equal Content-Length");
 }
+
+// A peer that connects and resets before the server accepts must never be
+// treated as a listener failure; the next client must still be served.
+void socket_server_survives_reset_before_accept() {
+  Fixture f;
+  if (!f.server) { expect(false, "bind failed: " + f.error); return; }
+  // The kernel completes the handshake into the backlog, so no worker is
+  // needed: connect, force an RST on close, and only then call serve_one.
+  const NativeSocket client = f.connect_client();
+  if (client == kBad) { expect(false, "client should connect"); return; }
+  linger hard_reset{};
+  hard_reset.l_onoff = 1;
+  hard_reset.l_linger = 0;
+  expect(setsockopt(client, SOL_SOCKET, SO_LINGER, reinterpret_cast<const char*>(&hard_reset), sizeof(hard_reset)) == 0,
+         "SO_LINGER {1,0} should be accepted");
+  close_socket(client);
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));  // let the RST land before accept
+  const bool served = f.server->serve_one(&f.error);
+  expect(!served, "a reset client is a client error, not a served request");
+  expect(!f.server->listener_failed(), "a peer reset must not mark the listener failed: " + f.error);
+  expect(f.round_trip().rfind("HTTP/1.1 200 OK", 0) == 0, "listener must serve the next client after a peer reset");
+}
 }  // namespace
 
 int main() {
@@ -287,5 +310,6 @@ int main() {
   socket_server_accept_waits_without_timeout();
   socket_server_ipv6_bind_is_v6only();
   socket_server_response_is_complete();
+  socket_server_survives_reset_before_accept();
   return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
