@@ -51,6 +51,16 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }
+    },
+    {
+      "name": "windows-msys2-clang",
+      "displayName": "Windows x86_64 (MSYS2 CLANG64)",
+      "inherits": "secure-frontend-base",
+      "generator": "Ninja",
+      "environment": {
+        "CC": "clang",
+        "CXX": "clang++"
+      }
     }
   ],
   "buildPresets": [
@@ -70,6 +80,10 @@
     {
       "name": "windows-llvm-mingw-cross",
       "configurePreset": "windows-llvm-mingw-cross"
+    },
+    {
+      "name": "windows-msys2-clang",
+      "configurePreset": "windows-msys2-clang"
     }
   ],
   "testPresets": [
@@ -98,6 +112,16 @@
     {
       "name": "windows-llvm-mingw-cross",
       "configurePreset": "windows-llvm-mingw-cross",
+      "output": {
+        "outputOnFailure": true
+      },
+      "environment": {
+        "WINEPREFIX": "${sourceDir}/out/wineprefix"
+      }
+    },
+    {
+      "name": "windows-msys2-clang",
+      "configurePreset": "windows-msys2-clang",
       "output": {
         "outputOnFailure": true
       }

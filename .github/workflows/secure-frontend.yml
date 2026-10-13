@@ -1,48 +1,102 @@
-name: Secure frontend portability
+name: secure-frontend
 
+# Blocking: linux-gcc, linux-clang, windows-llvm-mingw-cross, windows-msys2-clang,
+# top-level-integration. Non-blocking: windows-msvc (informational).
+# Nothing here downloads models or enables a GPU backend; the only network
+# fetches are the actions themselves, pinned pip wheels from requirements.txt,
+# MSYS2 packages, and the pinned, sha256-checked llvm-mingw tarball.
 on:
   push:
-    paths:
-      - 'secure_frontend/**'
-      - '.github/workflows/secure-frontend.yml'
+    paths: ["secure_frontend/**", "CMakeLists.txt", "scripts/dev/**", "requirements.txt", "pytest.ini", ".github/workflows/secure-frontend.yml"]
   pull_request:
-    paths:
-      - 'secure_frontend/**'
-      - '.github/workflows/secure-frontend.yml'
+    paths: ["secure_frontend/**", "CMakeLists.txt", "scripts/dev/**", "requirements.txt", "pytest.ini", ".github/workflows/secure-frontend.yml"]
   workflow_dispatch:
 
-# The workflow only configures secure_frontend as an independent CMake project.
-# It must not configure the top-level inference engine, fetch dependencies, or
-# enable any GPU backend.
 permissions:
   contents: read
 
 jobs:
-  build-and-test:
-    name: ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
+  linux:
+    name: ${{ matrix.preset }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: Linux GCC
-            os: ubuntu-latest
-            preset: linux-gcc
-          - name: Linux Clang
-            os: ubuntu-latest
-            preset: linux-clang
-          - name: Windows MSVC
-            os: windows-latest
-            preset: windows-msvc
-    defaults:
-      run:
-        shell: bash
-        working-directory: secure_frontend
+        preset: [linux-gcc, linux-clang]
     steps:
       - uses: actions/checkout@v4
-      - name: Configure
-        run: cmake --preset "${{ matrix.preset }}"
-      - name: Build
-        run: cmake --build --preset "${{ matrix.preset }}" --parallel
-      - name: Test
-        run: ctest --preset "${{ matrix.preset }}"
+      - run: scripts/dev/bootstrap-linux.sh
+      - run: echo "$GITHUB_WORKSPACE/.venv-dev/bin" >> "$GITHUB_PATH"
+      - name: pytest (repo root)
+        if: matrix.preset == 'linux-gcc'
+        run: .venv-dev/bin/pytest -q
+      - run: cmake --preset ${{ matrix.preset }}
+        working-directory: secure_frontend
+      - run: cmake --build --preset ${{ matrix.preset }} --parallel
+        working-directory: secure_frontend
+      - run: ctest --preset ${{ matrix.preset }}
+        working-directory: secure_frontend
+
+  windows-cross:
+    name: windows-llvm-mingw-cross (compile+link on Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/dev/bootstrap-linux.sh && scripts/dev/bootstrap-llvm-mingw.sh
+      - run: echo "$GITHUB_WORKSPACE/.venv-dev/bin" >> "$GITHUB_PATH"
+      - run: cmake --preset windows-llvm-mingw-cross
+        working-directory: secure_frontend
+      - run: cmake --build --preset windows-llvm-mingw-cross --parallel
+        working-directory: secure_frontend
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64-llvm-mingw
+          path: secure_frontend/out/build/windows-llvm-mingw-cross/*.exe
+
+  windows-msys2:
+    name: windows-msys2-clang (runtime tests on Windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: false
+          install: mingw-w64-clang-x86_64-clang mingw-w64-clang-x86_64-cmake mingw-w64-clang-x86_64-ninja
+      - run: cmake --preset windows-msys2-clang
+        working-directory: secure_frontend
+      - run: cmake --build --preset windows-msys2-clang --parallel
+        working-directory: secure_frontend
+      - run: ctest --preset windows-msys2-clang
+        working-directory: secure_frontend
+
+  windows-msvc:
+    name: windows-msvc (informational, non-blocking)
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake --preset windows-msvc
+        working-directory: secure_frontend
+      - run: cmake --build --preset windows-msvc --parallel
+        working-directory: secure_frontend
+      - run: ctest --preset windows-msvc
+        working-directory: secure_frontend
+
+  top-level-integration:
+    name: root CMake with STRATA_BUILD_SECURE_FRONTEND=ON
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/dev/bootstrap-linux.sh
+      - run: echo "$GITHUB_WORKSPACE/.venv-dev/bin" >> "$GITHUB_PATH"
+      - run: cmake -S . -B out/root -G Ninja -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_ENABLE_HIP=OFF -DSTRATA_BUILD_SECURE_FRONTEND=ON -DSTRATA_BUILD_SECURE_FRONTEND_TESTS=ON
+      - run: cmake --build out/root --target strata-secure-server secure_frontend_config_tests --parallel
+      # The root CMakeLists.txt calls enable_testing() only for its conversation
+      # tests, so out/root has no CTestTestfile and `ctest --test-dir out/root`
+      # finds nothing and still exits 0. Point at the subproject's test dir and
+      # make "no tests" a failure so this step cannot pass vacuously.
+      - run: ctest --test-dir out/root/secure_frontend -R secure_frontend_config_tests --no-tests=error --output-on-failure
