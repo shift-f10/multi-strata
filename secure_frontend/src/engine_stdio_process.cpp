@@ -18,6 +18,8 @@
 #include <pthread.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#include "posix_child_launch.hpp"
 #endif
 
 namespace secure_frontend {
@@ -44,8 +46,6 @@ std::optional<ProcessError> validate(const EngineCommand& command) {
 
 #if !defined(_WIN32)
 void close_fd(int& fd) noexcept { if (fd >= 0) { (void)close(fd); fd = -1; } }
-
-bool set_cloexec(const int fd) { return fcntl(fd, F_SETFD, FD_CLOEXEC) == 0; }
 
 bool write_without_sigpipe(const int fd, const char* data, const std::size_t count, ssize_t& written) {
   sigset_t block{};
@@ -130,22 +130,16 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
   CloseHandle(info.hThread); if (!AssignProcessToJobObject(job, info.hProcess)) { TerminateProcess(info.hProcess, 1); CloseHandle(info.hProcess); CloseHandle(parent_stdin); CloseHandle(parent_stdout); CloseHandle(job); return ProcessError{ProcessErrorCode::platform_failure, "AssignProcessToJobObject failed"}; }
   process_handle_ = info.hProcess; job_handle_ = job; stdin_write_ = parent_stdin; stdout_read_ = parent_stdout; return std::nullopt;
 #else
+  // Everything the child needs is built before fork(); the child body is async-signal-safe.
+  posix_launch::PreparedExec prepared;
+  posix_launch::prepare(prepared, command, /*insert_serve=*/true);
+  // O_CLOEXEC on every pipe end: nothing created here can leak into this or any
+  // other child.  The child's ends reach fds 0/1 through dup2, which clears it.
   int input[2]{-1, -1}; int output[2]{-1, -1}; int errors[2]{-1, -1};
-  if (pipe(input) != 0 || pipe(output) != 0 || pipe(errors) != 0 || !set_cloexec(errors[1])) { for (int* pipe_fd : {input, output, errors}) { close_fd(pipe_fd[0]); close_fd(pipe_fd[1]); } return ProcessError{ProcessErrorCode::platform_failure, "pipe setup failed"}; }
+  if (pipe2(input, O_CLOEXEC) != 0 || pipe2(output, O_CLOEXEC) != 0 || pipe2(errors, O_CLOEXEC) != 0) { for (int* pipe_fd : {input, output, errors}) { close_fd(pipe_fd[0]); close_fd(pipe_fd[1]); } return ProcessError{ProcessErrorCode::platform_failure, "pipe setup failed"}; }
   const pid_t child = fork();
   if (child < 0) { for (int* pipe_fd : {input, output, errors}) { close_fd(pipe_fd[0]); close_fd(pipe_fd[1]); } return ProcessError{ProcessErrorCode::spawn_failed, "fork failed"}; }
-  if (child == 0) {
-    close_fd(input[1]); close_fd(output[0]); close_fd(errors[0]);
-    int null_stderr = open("/dev/null", O_WRONLY | O_CLOEXEC);
-    if (setpgid(0, 0) != 0 || null_stderr < 0 || dup2(input[0], STDIN_FILENO) < 0 || dup2(output[1], STDOUT_FILENO) < 0 || dup2(null_stderr, STDERR_FILENO) < 0) { const int e = errno; (void)!write(errors[1], &e, sizeof(e)); _exit(127); }
-    close_fd(null_stderr);
-    close_fd(input[0]); close_fd(output[1]);
-    std::vector<std::string> args; args.reserve(command.arguments.size() + 2); args.emplace_back(command.executable.string()); args.emplace_back("--serve"); args.insert(args.end(), command.arguments.begin(), command.arguments.end());
-    std::vector<char*> argv; argv.reserve(args.size() + 1); for (auto& arg : args) argv.push_back(arg.data()); argv.push_back(nullptr);
-    std::vector<std::string> env; env.reserve(command.environment.size()); for (const auto& [key, value] : command.environment) env.push_back(key + "=" + value);
-    std::vector<char*> envp; envp.reserve(env.size() + 1); for (auto& entry : env) envp.push_back(entry.data()); envp.push_back(nullptr);
-    execve(command.executable.c_str(), argv.data(), envp.data()); const int e = errno; (void)!write(errors[1], &e, sizeof(e)); _exit(127);
-  }
+  if (child == 0) posix_launch::exec_child(prepared, input[0], output[1], /*null_stderr=*/true, errors[1]);
   close_fd(input[0]); close_fd(output[1]); close_fd(errors[1]); int child_errno = 0; const ssize_t count = read(errors[0], &child_errno, sizeof(child_errno)); close_fd(errors[0]);
   if (count > 0) { close_fd(input[1]); close_fd(output[0]); int ignored = 0; (void)waitpid(child, &ignored, 0); return ProcessError{ProcessErrorCode::spawn_failed, std::string("execve failed: ") + std::strerror(child_errno)}; }
   process_id_ = child; stdin_write_ = input[1]; stdout_read_ = output[0]; return std::nullopt;
@@ -232,7 +226,17 @@ bool EngineStdioProcess::terminate(const std::chrono::milliseconds grace) {
   if (kill(-process_id_, SIGKILL) != 0 && errno != ESRCH) {
     return false;
   }
-  return true;
+  // Reap the killed child so no zombie outlives terminate (running() calls
+  // waitpid(WNOHANG) and clears process_id_ once the child is collected).
+  for (int step = 0; step < 50; ++step) {
+    if (!running()) {
+      close_fd(stdin_write_);
+      close_fd(stdout_read_);
+      return true;
+    }
+    usleep(10000);
+  }
+  return false;
 #endif
 }
 

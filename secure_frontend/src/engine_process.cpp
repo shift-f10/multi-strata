@@ -15,6 +15,8 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#include "posix_child_launch.hpp"
 #endif
 
 namespace secure_frontend {
@@ -193,44 +195,19 @@ std::optional<ProcessError> EngineProcess::start(const EngineCommand& command) {
   job_handle_ = job;
   return std::nullopt;
 #else
+  // Everything the child needs is built before fork(); the child body is async-signal-safe.
+  posix_launch::PreparedExec prepared;
+  posix_launch::prepare(prepared, command, /*insert_serve=*/false);
   int error_pipe[2];
-  if (pipe(error_pipe) != 0) return ProcessError{ProcessErrorCode::platform_failure, "pipe failed"};
-  if (fcntl(error_pipe[1], F_SETFD, FD_CLOEXEC) != 0) {
-    close(error_pipe[0]);
-    close(error_pipe[1]);
-    return ProcessError{ProcessErrorCode::platform_failure, "fcntl failed"};
-  }
+  if (pipe2(error_pipe, O_CLOEXEC) != 0) return ProcessError{ProcessErrorCode::platform_failure, "pipe failed"};
   const pid_t child = fork();
   if (child < 0) {
     close(error_pipe[0]); close(error_pipe[1]);
     return ProcessError{ProcessErrorCode::spawn_failed, "fork failed"};
   }
   if (child == 0) {
-    close(error_pipe[0]);
-    if (setpgid(0, 0) != 0) {
-      const int saved_errno = errno;
-      (void)!write(error_pipe[1], &saved_errno, sizeof(saved_errno));
-      _exit(127);
-    }
-    std::vector<std::string> owned_arguments;
-    owned_arguments.reserve(command.arguments.size() + 1);
-    owned_arguments.push_back(command.executable.string());
-    owned_arguments.insert(owned_arguments.end(), command.arguments.begin(), command.arguments.end());
-    std::vector<char*> argv;
-    argv.reserve(owned_arguments.size() + 1);
-    for (auto& argument : owned_arguments) argv.push_back(argument.data());
-    argv.push_back(nullptr);
-    std::vector<std::string> owned_environment;
-    owned_environment.reserve(command.environment.size());
-    for (const auto& [name, value] : command.environment) owned_environment.push_back(name + "=" + value);
-    std::vector<char*> envp;
-    envp.reserve(owned_environment.size() + 1);
-    for (auto& entry : owned_environment) envp.push_back(entry.data());
-    envp.push_back(nullptr);
-    execve(command.executable.c_str(), argv.data(), envp.data());
-    const int saved_errno = errno;
-    (void)!write(error_pipe[1], &saved_errno, sizeof(saved_errno));
-    _exit(127);
+    // Inherited stdio is kept; every other descriptor is closed before execve.
+    posix_launch::exec_child(prepared, -1, -1, /*null_stderr=*/false, error_pipe[1]);
   }
   close(error_pipe[1]);
   int child_errno = 0;

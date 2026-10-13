@@ -33,6 +33,11 @@ class EngineStdioProcess final : public EngineLineTransport {
   [[nodiscard]] bool write_line(std::string_view line, std::string& error) override;
   [[nodiscard]] EngineReadResult read_line(std::chrono::milliseconds timeout) override;
 
+#if !defined(_WIN32)
+  // Test seam: the POSIX child pid, so tests can inspect /proc/<pid> after terminate.
+  [[nodiscard]] int pid_for_tests() const noexcept { return process_id_; }
+#endif
+
  private:
 #if defined(_WIN32)
   void* process_handle_{nullptr};
