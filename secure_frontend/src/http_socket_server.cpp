@@ -11,6 +11,7 @@
 #include <limits>
 #include <optional>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <variant>
 
@@ -311,11 +312,15 @@ bool HttpSocketServer::serve_one(std::string* error) {
 #ifdef _WIN32
     const int code = WSAGetLastError();
     const bool transient = code == WSAEINTR || code == WSAECONNABORTED || code == WSAEWOULDBLOCK || code == WSAEMFILE;
+    const bool out_of_descriptors = code == WSAEMFILE;
 #else
     const int code = errno;
     const bool transient = code == EINTR || code == ECONNABORTED || code == EAGAIN || code == EWOULDBLOCK ||
                            code == EMFILE || code == ENFILE;
+    const bool out_of_descriptors = code == EMFILE || code == ENFILE;
 #endif
+    // Prevents a hot spin in the serve loops under descriptor exhaustion.
+    if (out_of_descriptors) std::this_thread::sleep_for(std::chrono::milliseconds(50));
     if (!transient) state_->listener_failed = true;
     if (error != nullptr) *error = transient ? "accept interrupted" : "accept failed";
     return false;

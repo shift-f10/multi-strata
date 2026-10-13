@@ -45,14 +45,21 @@ struct Fixture final {
   std::optional<secure_frontend::HttpSocketServer> server;
   std::string error;
   std::string host{"127.0.0.1"};
+  // Address clients connect to and name in Host. Equals host unless the
+  // listener binds a wildcard, which clients cannot connect to by name.
+  std::string client_host{"127.0.0.1"};
 
-  explicit Fixture(secure_frontend::HttpSocketServerLimits limits = {}, std::string bind_host = "127.0.0.1")
-      : host(std::move(bind_host)) {
+  explicit Fixture(secure_frontend::HttpSocketServerLimits limits = {}, std::string bind_host = "127.0.0.1",
+                   std::string connect_host = {})
+      : host(std::move(bind_host)), client_host(connect_host.empty() ? host : std::move(connect_host)) {
+    const bool wildcard = host == "::" || host == "0.0.0.0";
     for (std::uint16_t port = 20000; port < 20100 && !server.has_value(); ++port) {
-      const bool v6 = host.find(':') != std::string::npos;
-      const std::string authority = (v6 ? "[" + host + "]" : host) + ":" + std::to_string(port);
-      secure_frontend::Config config{host, port, true, true, false, false};
-      secure_frontend::HttpPolicy policy{{authority}, {"http://" + authority}, {}, false};
+      const std::string authority = authority_for(host, port);
+      const std::string client_authority = authority_for(client_host, port);
+      // has_api_key, is_loopback, allow_remote, allow_wildcard_bind
+      secure_frontend::Config config{host, port, true, !wildcard, wildcard, wildcard};
+      secure_frontend::HttpPolicy policy{{authority, client_authority},
+                                         {"http://" + authority, "http://" + client_authority}, {}, false};
       server = secure_frontend::HttpSocketServer::bind(
           config, std::move(policy),
           [](std::string_view token) { return secure_frontend::constant_time_token_equals(token, "test-token"); },
@@ -68,10 +75,11 @@ struct Fixture final {
           &error, limits);
     }
   }
-  std::string authority() const {
-    const bool v6 = host.find(':') != std::string::npos;
-    return (v6 ? "[" + host + "]" : host) + ":" + std::to_string(server->port());
+  static std::string authority_for(const std::string& h, std::uint16_t port) {
+    const bool v6 = h.find(':') != std::string::npos;
+    return (v6 ? "[" + h + "]" : h) + ":" + std::to_string(port);
   }
+  std::string authority() const { return authority_for(client_host, server->port()); }
   std::string request_for(const std::string& target) const {
     return "GET " + target + " HTTP/1.1\r\nHost: " + authority() + "\r\nAuthorization: Bearer test-token\r\n\r\n";
   }
@@ -79,7 +87,7 @@ struct Fixture final {
   // Opens a client socket, optionally shrinking its receive buffer first
   // (SO_RCVBUF must be set before connect() for the window to take effect).
   NativeSocket connect_client(int receive_buffer_bytes = 0) const {
-    const bool v6 = host.find(':') != std::string::npos;
+    const bool v6 = client_host.find(':') != std::string::npos;
     NativeSocket client = socket(v6 ? AF_INET6 : AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (client == kBad) return kBad;
     if (receive_buffer_bytes > 0) {
@@ -92,11 +100,11 @@ struct Fixture final {
     int rc = -1;
     if (v6) {
       sockaddr_in6 a{}; a.sin6_family = AF_INET6; a.sin6_port = htons(server->port());
-      inet_pton(AF_INET6, host.c_str(), &a.sin6_addr);
+      inet_pton(AF_INET6, client_host.c_str(), &a.sin6_addr);
       rc = connect(client, reinterpret_cast<const sockaddr*>(&a), sizeof(a));
     } else {
       sockaddr_in a{}; a.sin_family = AF_INET; a.sin_port = htons(server->port());
-      inet_pton(AF_INET, host.c_str(), &a.sin_addr);
+      inet_pton(AF_INET, client_host.c_str(), &a.sin_addr);
       rc = connect(client, reinterpret_cast<const sockaddr*>(&a), sizeof(a));
     }
     if (rc != 0) { close_socket(client); return kBad; }
@@ -214,7 +222,7 @@ void socket_server_rejects_oversize_request_over_tcp() {
   close_socket(client);
   worker.join();
   expect(!served, "oversize request is a client error");
-  expect(response.rfind("HTTP/1.1 4", 0) == 0, "oversize request must get a 4xx, got: " + response.substr(0, 20));
+  expect(response.rfind("HTTP/1.1 413", 0) == 0, "oversize request must get a 413, got: " + response.substr(0, 20));
   expect(f.round_trip().rfind("HTTP/1.1 200 OK", 0) == 0, "listener must serve the next client after an oversize request");
 }
 
@@ -238,10 +246,12 @@ void socket_server_accept_waits_without_timeout() {
   worker.join();
 }
 
-// S6: '::1' must be v6-only and must serve with a bracketed Host.
+// S6: an IPv6 listener must be v6-only and must serve with a bracketed Host.
+// Binds the wildcard '::' because only a wildcard IPv6 socket can receive
+// IPv4-mapped traffic; a '::1' bind would refuse IPv4 even without V6ONLY.
 void socket_server_ipv6_bind_is_v6only() {
-  Fixture f({}, "::1");
-  if (!f.server) { std::cerr << "SKIP ipv6: " << f.error << '\n'; return; }
+  Fixture f({}, "::", "::1");
+  if (!f.server) { std::cerr << "SKIP ipv6-wildcard: " << f.error << '\n'; return; }
   expect(f.round_trip().rfind("HTTP/1.1 200 OK", 0) == 0, "IPv6 loopback must serve with bracketed Host");
   // An IPv4 connect to the same port must be refused (no dual-stack mapping).
   NativeSocket v4 = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
