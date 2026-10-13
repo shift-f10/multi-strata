@@ -65,6 +65,7 @@ Recorded touches:
 | `CMakeLists.txt` (lines 1660–1668 at the SP0 branch head) | Secure baseline added the integration hunk: `STRATA_BUILD_SECURE_FRONTEND`, `STRATA_BUILD_SECURE_FRONTEND_TESTS`, `add_subdirectory(secure_frontend)` (9 lines at head). SP0 changed the option default `ON` → `OFF` and added the one-line opt-in comment. | `7de35b0c`, `556e031a` |
 | `.gitignore` | Appended six lines: a comment plus `/.venv-dev/`, `/.toolchains/`, `/secure_frontend/out/`, `/secure_frontend/build/`. | `f5f19f77` |
 | `pytest.ini` | New root file added by SP0 (implementer addition, not an upstream edit; keep on upstream merges; owner approval of its placement pending). Collects `tools/test_*.py` only; ignores and deselects recorded with reasons in the file. | `f5f19f77`, `7e3bc409` |
+| `conftest.py` | New root file (implementer addition; keep on upstream merges). Sets `collect_ignore` for `tools/test_conversation_cache_isolation.py` and `tools/test_shards.py` only when numpy is not importable, so the owner's pre-push hook passes with a system pytest; the full set runs in `.venv-dev`. | this commit |
 | `tools/strata_tokenizer.py` | **Outside the allowlist; pre-dates it.** The secure baseline added the `glm4` / `chatglm-bpe` pre-tokenizer aliases (35 lines changed; see the GLM-5.3 section above). Expect merge conflicts here; a later sub-project should move this into our own directory or upstream it. | `7de35b0c` |
 
 The upstream Python service (`serve/`), installer (`setup.py`) and engine

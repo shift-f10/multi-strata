@@ -72,6 +72,7 @@ without asking the owner.
    `pytest.ini` it collects `tools/` only and passes in about 20.6 s on the dev host.
    `pytest serve` is the explicit run of the upstream service suite (about
    4.5 minutes) after an upstream merge.
+   `conftest.py` skips numpy-dependent upstream tests when the interpreter running pytest lacks numpy, so the pre-push hook passes with a system pytest; the full set runs in `.venv-dev`.
 9. **CI status: the workflow is rewritten but has not run yet**; it waits for
    the owner's first push. Windows runtime behavior is unverified until
    `windows-msys2-clang` is green; the wine results below are a smoke test only.

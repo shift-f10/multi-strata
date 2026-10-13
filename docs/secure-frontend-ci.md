@@ -68,6 +68,7 @@ takes about 20.6 s on the dev host; the owner's pre-push hook runs it. `pytest.i
 `tools/test_setup_choices.py` vision tests that fail against the current
 upstream `setup.py`. After merging an upstream Strata update, also run
 `pytest serve` explicitly (about 4.5 minutes; the upstream service suite).
+`conftest.py` skips numpy-dependent upstream tests when the interpreter running pytest lacks numpy, so the pre-push hook passes with a system pytest; the full set runs in `.venv-dev`.
 
 ## Workflow
 
