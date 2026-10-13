@@ -261,7 +261,9 @@ int run(const Options& options) {
   const std::string authority = host_header(*config);
   secure_frontend::HttpPolicy policy{.allowed_hosts = {authority}, .same_origin_origins = {"http://" + authority},
                                      .cors_allowed_origins = {}, .cors_enabled = false};
-  const secure_frontend::ApiRouter router([&engine] { return engine.running(); }, [models] { return models; });
+  const secure_frontend::ApiRouter router(
+      [&engine, &chat] { return engine.running() && chat.health() != secure_frontend::EngineHealth::failed; },
+      [models] { return models; });
   auto server = secure_frontend::HttpSocketServer::bind(
       *config, std::move(policy), [verifier](const std::string_view supplied) { return verifier->matches(supplied); },
       [&router, &chat, &engine, &tokenizer, &options](const std::string_view method, const std::string_view target,

@@ -122,4 +122,11 @@ ChatExecutionOutcome ChatExecutionService::execute(const ChatCompletionRequest& 
   return ChatExecutionResult{*text, generated_ids.size()};
 }
 
+EngineHealth ChatExecutionService::health() const noexcept {
+  if (protocol_.closed()) return EngineHealth::failed;
+  if (!received_ready_) return EngineHealth::starting;
+  if (protocol_.generating()) return EngineHealth::generating;
+  return EngineHealth::ready;
+}
+
 }  // namespace secure_frontend

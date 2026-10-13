@@ -51,6 +51,11 @@ struct ChatExecutionResult final {
 
 using ChatExecutionOutcome = std::variant<ChatExecutionResult, ChatExecutionError>;
 
+// Engine protocol state for health reporting. Carries no engine or prompt data.
+// starting: READY not yet received; ready: protocol idle; generating: a
+// request is in flight; failed: the protocol is closed or failed.
+enum class EngineHealth { starting, ready, generating, failed };
+
 // Stateful adapter for one private Strata --serve connection. It accepts a
 // schema-validated request, uses the startup-selected fixed prompt renderer
 // and offline tokenizer, and decodes only ordinary generated token IDs. It does not load
@@ -67,6 +72,8 @@ class ChatExecutionService final {
 
   [[nodiscard]] ChatExecutionOutcome execute(const ChatCompletionRequest& request,
                                               const TokenizerPack& tokenizer);
+
+  [[nodiscard]] EngineHealth health() const noexcept;
 
  private:
   EngineProtocolClient& protocol_;

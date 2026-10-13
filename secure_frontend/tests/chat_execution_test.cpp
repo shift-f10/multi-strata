@@ -247,6 +247,34 @@ void chat_rejects_nonfinite_done_and_stays_ready() {
   expect(std::holds_alternative<secure_frontend::ChatExecutionResult>(second), "the engine is usable after a nonfinite request");
 }
 
+void health_reflects_protocol_state() {
+  const std::string prompt = "<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n";
+  const auto tokenizer = tokenizer_for(prompt + "O");
+  const auto o = token_id_for(tokenizer, "O");
+  FakeTransport transport;
+  transport.reads = {line("READY 512 stop"), line("T " + std::to_string(o)), line("DONE 1 1 1.0 1.0 length")};
+  secure_frontend::EngineProtocolClient protocol(transport);
+  secure_frontend::ChatExecutionService service(protocol);
+  expect(service.health() == secure_frontend::EngineHealth::starting, "before READY the engine is starting");
+  (void)service.execute(valid_request(1U), tokenizer);
+  expect(service.health() == secure_frontend::EngineHealth::ready, "after a completed request the engine is ready");
+}
+
+// Review Focus 4: the engine closing stdout mid-generation is a failure, not text.
+void health_is_failed_after_engine_closed_mid_generation() {
+  const std::string prompt = "<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n";
+  const auto tokenizer = tokenizer_for(prompt + "O");
+  const auto o = token_id_for(tokenizer, "O");
+  FakeTransport transport;
+  transport.reads = {line("READY 512 stop"), line("T " + std::to_string(o)),
+                     {secure_frontend::EngineReadKind::closed, {}, {}}};
+  secure_frontend::EngineProtocolClient protocol(transport);
+  secure_frontend::ChatExecutionService service(protocol);
+  const auto result = service.execute(valid_request(2U), tokenizer);
+  expect(std::holds_alternative<secure_frontend::ChatExecutionError>(result), "a closed engine must not yield partial text");
+  expect(service.health() == secure_frontend::EngineHealth::failed, "health must report failed after the engine closed");
+}
+
 }  // namespace
 
 int main() {
@@ -257,5 +285,7 @@ int main() {
   chat_recovers_after_generation_timeout();
   chat_marks_engine_failed_when_drain_fails();
   chat_rejects_nonfinite_done_and_stays_ready();
+  health_reflects_protocol_state();
+  health_is_failed_after_engine_closed_mid_generation();
   return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
