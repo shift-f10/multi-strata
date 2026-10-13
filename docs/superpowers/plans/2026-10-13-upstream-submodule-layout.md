@@ -185,7 +185,8 @@ project(secure_strata LANGUAGES CXX)
 # Upstream forces CMAKE_BUILD_TYPE=Release into the cache when it is empty,
 # which would leak to the whole build; choose the default here first.
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
-  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type")
+  # FORCE: project() already made an empty cache entry (Task 2 review fix)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
 # Upstream calls enable_testing() only in its own directories; the root ctest
