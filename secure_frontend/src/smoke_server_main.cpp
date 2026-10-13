@@ -3,6 +3,7 @@
 #include "secure_frontend/http_request_handler.hpp"
 #include "secure_frontend/http_socket_server.hpp"
 #include "secure_frontend/model_inventory.hpp"
+#include "secure_frontend/process_defaults.hpp"
 #include "secure_frontend/secret_source.hpp"
 #include "secure_frontend/token_reader.hpp"
 
@@ -228,6 +229,7 @@ int run(const Options& options) {
 }  // namespace
 
 int main(int argc, char* argv[]) {
+  secure_frontend::install_process_defaults();
   Options options;
   bool help = false;
   std::string error;

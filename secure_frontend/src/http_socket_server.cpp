@@ -122,7 +122,11 @@ bool send_all(const NativeSocket socket, const std::string_view bytes) {
     const int result = send(socket, bytes.data() + sent,
                             static_cast<int>(std::min(remaining, static_cast<std::size_t>(INT_MAX))), 0);
 #else
+#if defined(MSG_NOSIGNAL)
+    const ssize_t result = send(socket, bytes.data() + sent, remaining, MSG_NOSIGNAL);
+#else
     const ssize_t result = send(socket, bytes.data() + sent, remaining, 0);
+#endif
 #endif
     if (result <= 0) return false;
     sent += static_cast<std::size_t>(result);
@@ -240,6 +244,9 @@ bool HttpSocketServer::serve_one(std::string* error) {
   if (!state_) { if (error != nullptr) *error = "listener is not initialized"; return false; }
   const NativeSocket client = accept(state_->socket, nullptr, nullptr);
   if (client == kInvalidSocket) { if (error != nullptr) *error = "accept failed"; return false; }
+#if defined(SO_NOSIGPIPE)
+  { const int one = 1; (void)setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one)); }
+#endif
   struct ClientCloser final { NativeSocket value; ~ClientCloser() { close_socket(value); } } closer{client};
   if (!set_timeout(client)) { if (error != nullptr) *error = "client timeout setup failed"; return false; }
   std::string request;

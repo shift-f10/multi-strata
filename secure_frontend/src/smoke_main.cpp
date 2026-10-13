@@ -3,6 +3,7 @@
 #include "secure_frontend/http_request_handler.hpp"
 #include "secure_frontend/http_socket_server.hpp"
 #include "secure_frontend/model_inventory.hpp"
+#include "secure_frontend/process_defaults.hpp"
 #include "secure_frontend/secret_source.hpp"
 #include "secure_frontend/token_reader.hpp"
 
@@ -41,6 +42,7 @@ void usage() { std::cerr << "usage: secure-frontend-smoke --api-key-env NAME --m
 }  // namespace
 
 int main(int argc, char** argv) {
+  secure_frontend::install_process_defaults();
   const auto options = parse(argc, argv);
   if (!options.has_value()) { usage(); return EXIT_FAILURE; }
   const auto source_result = secure_frontend::make_environment_secret_source(options->key_env);

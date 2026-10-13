@@ -65,6 +65,7 @@ add_library(secure_frontend_engine_stdio_process
 
 add_library(secure_frontend_http_socket_server
     src/http_socket_server.cpp
+    src/process_defaults.cpp
 )
 
 add_library(secure_frontend_model_inventory
