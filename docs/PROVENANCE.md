@@ -24,6 +24,11 @@ baseline.  Any future adaptation must record the source, license, and exact
 revision of copied material, and must preserve Windows and Linux compatibility
 requirements.
 
+License: the GitHub API (`gh api repos/robertkarl/UnbiasedStrata/license`,
+queried 2026-10-13, default branch) returns SPDX id `MIT`, name `MIT License`.
+No code was taken from this repository, so its license governs nothing in
+this tree.
+
 ## GLM-5.3 compatibility reference
 
 [lighttransport/Strata][lighttransport] branch `glm53f`, resolved at commit
@@ -39,6 +44,46 @@ UTF-8 round trips. This is portable Python code, but its runtime test still
 requires the repository-pinned `regex` dependency. The GLM prompt template
 and native engine remain separately reviewed work; the tokenizer port does not
 make a model executable or claim complete frontend tokenizer parity.
+
+License: the GitHub API (`gh api repos/lighttransport/Strata/license`,
+queried 2026-10-13, default branch) returns SPDX id `MIT`, name `MIT License`.
+The `LICENSE` file on branch `glm53f` (via the contents API, same date) carries
+the copyright line "Copyright (c) 2026 Niko1221 and the Strata contributors".
+
+## ggml / llama.cpp (bundled with upstream)
+
+[ggml-org/llama.cpp][llamacpp] / ggml comes with the upstream baseline and is
+unchanged by us (`third_party/ggml` is byte-identical to `v0.1.43`). It is
+present in two forms:
+
+- `third_party/ggml` — vendored headers; `third_party/ggml/VERSION.txt`
+  records commit `3cf03257f219afbe7334045ff7c6a06ac68c627d`.
+- The llama.cpp checkout fetched by upstream's root `CMakeLists.txt`
+  (`FetchContent_Declare(strata_llamacpp ...)`, lines 1255–1258) when
+  `STRATA_NATIVE_EXPERTS=ON` and `STRATA_GGML_DIR` is unset, pinned to
+  `GIT_TAG 3cf03257f219afbe7334045ff7c6a06ac68c627d`.
+
+License: MIT, "Copyright (c) 2023-2026 The ggml authors"
+([`third_party/ggml/LICENSE`](../third_party/ggml/LICENSE), retained).
+Our CI (`.github/workflows/secure-frontend.yml`) configures with
+`-DSTRATA_NATIVE_EXPERTS=OFF`, so the llama.cpp checkout is never fetched
+there.
+
+## llvm-mingw (build tool only)
+
+[mstorsjo/llvm-mingw][llvmmingw] release `20261006` is the open-source
+Windows cross toolchain fetched by `scripts/dev/bootstrap-llvm-mingw.sh`,
+verified against sha256
+`5f9c6ed95b2d4bdb2869a488c5fd5857fbdabcf288a0aa3eb1da43f6a08d8ab4`. It is a
+build tool only; nothing from it is in this tree (it unpacks under the
+git-ignored `/.toolchains/`).
+
+License: the GitHub API (`gh api repos/mstorsjo/llvm-mingw/license`, queried
+2026-10-13, default branch) returns SPDX id `NOASSERTION`, name `Other`. The
+`LICENSE` file it returns states that the llvm-mingw scripts and wrappers are
+licensed under the ISC license and that this covers only components provided
+by llvm-mingw directly (the bundled LLVM, mingw-w64 and other components keep
+their own licenses).
 
 ## Upstream-owned files touched by this repository
 
@@ -76,3 +121,5 @@ The upstream Python service (`serve/`), installer (`setup.py`) and engine
 [strata]: https://github.com/Niko1221/Strata/tree/v0.1.43
 [unbiased]: https://github.com/robertkarl/UnbiasedStrata/tree/46c46ecfc11d2315512f21f7549b0a7792ccd2ae
 [lighttransport]: https://github.com/lighttransport/Strata/tree/glm53f
+[llamacpp]: https://github.com/ggml-org/llama.cpp/tree/3cf03257f219afbe7334045ff7c6a06ac68c627d
+[llvmmingw]: https://github.com/mstorsjo/llvm-mingw/releases/tag/20261006
