@@ -331,7 +331,7 @@ void socket_server_responds_after_client_half_close() {
 // Diagnostic (Windows only): how many bytes a blocking sender can push into a
 // loopback peer that never reads before a 500 ms send timeout, for a given
 // client SO_RCVBUF and server SO_SNDBUF (-1 = leave the default).
-void probe_loopback_absorption(const int client_rcvbuf, const int server_sndbuf) {
+void probe_loopback_absorption(const int client_rcvbuf, const int server_sndbuf, const bool one_call = false) {
   WSADATA data{};
   if (WSAStartup(MAKEWORD(2, 2), &data) != 0) return;
   SOCKET listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -356,17 +356,17 @@ void probe_loopback_absorption(const int client_rcvbuf, const int server_sndbuf)
   (void)getsockopt(server, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<char*>(&effective_snd), &olen);
   const DWORD timeout_ms = 500;
   (void)setsockopt(server, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
-  const std::string chunk(64U * 1024U, 'x');
+  const std::string chunk(one_call ? 32U * 1024U * 1024U : 64U * 1024U, 'x');
   std::size_t total = 0;
   int last_error = 0;
   const auto start = std::chrono::steady_clock::now();
-  while (total < 512U * 1024U * 1024U) {
+  while (total < (one_call ? chunk.size() : 512U * 1024U * 1024U)) {
     const int n = send(server, chunk.data(), static_cast<int>(chunk.size()), 0);
     if (n <= 0) { last_error = WSAGetLastError(); break; }
     total += static_cast<std::size_t>(n);
   }
   const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
-  std::cerr << "PROBE client_rcvbuf=" << client_rcvbuf << " (eff " << effective_rcv << ") server_sndbuf=" << server_sndbuf
+  std::cerr << "PROBE one_call=" << one_call << " client_rcvbuf=" << client_rcvbuf << " (eff " << effective_rcv << ") server_sndbuf=" << server_sndbuf
             << " (eff " << effective_snd << ") absorbed=" << total << " ms=" << ms << " err=" << last_error << '\n';
   closesocket(server); closesocket(client); closesocket(listener);
   WSACleanup();
@@ -383,6 +383,8 @@ int main() {
   probe_loopback_absorption(-1, 0);
   probe_loopback_absorption(1, 0);
   probe_loopback_absorption(1, 4096);
+  probe_loopback_absorption(1, -1, true);
+  probe_loopback_absorption(-1, -1, true);
 #endif
   serves_a_loopback_request_without_outbound_connections();
   socket_server_survives_client_early_close();

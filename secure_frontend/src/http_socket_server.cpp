@@ -174,6 +174,13 @@ const char* reason_phrase(const int status) {
   }
 }
 
+// At most this many bytes per send() call. Winsock accepts one large blocking
+// send() whole (the 32 MiB S2 body "completed" in ~130 ms into a peer that
+// never read, measured on the windows-msys2-clang runner), leaving the kernel
+// holding the unsent data after close; bounded calls stall at the socket
+// buffer exactly as on POSIX, so SO_SNDTIMEO and send_deadline apply.
+constexpr std::size_t kMaxSendChunk = 64U * 1024U;
+
 // Sends every byte or gives up at send_deadline. Each send() gets only the
 // time left, so a peer that stops reading cannot hold the listener.
 bool send_all(const NativeSocket socket, const std::string_view bytes, const Clock::time_point send_deadline) {
@@ -181,7 +188,7 @@ bool send_all(const NativeSocket socket, const std::string_view bytes, const Clo
   while (sent < bytes.size()) {
     const std::chrono::milliseconds budget = remaining_until(send_deadline);
     if (budget.count() <= 0 || !set_socket_timeouts(socket, budget)) return false;
-    const std::size_t remaining = bytes.size() - sent;
+    const std::size_t remaining = std::min(bytes.size() - sent, kMaxSendChunk);
 #ifdef _WIN32
     const int result = send(socket, bytes.data() + sent,
                             static_cast<int>(std::min(remaining, static_cast<std::size_t>(INT_MAX))), 0);
