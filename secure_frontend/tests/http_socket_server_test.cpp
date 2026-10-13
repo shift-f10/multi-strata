@@ -1,5 +1,6 @@
 #include "secure_frontend/http_socket_server.hpp"
 #include "secure_frontend/process_defaults.hpp"
+#include "support/test_support.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -329,17 +330,18 @@ void socket_server_responds_after_client_half_close() {
 }
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
   secure_frontend::install_process_defaults();
-  serves_a_loopback_request_without_outbound_connections();
-  socket_server_survives_client_early_close();
-  socket_server_rejects_slow_request_past_deadline();
-  socket_server_send_times_out_on_stalled_reader();
-  socket_server_rejects_oversize_request_over_tcp();
-  socket_server_accept_waits_without_timeout();
-  socket_server_ipv6_bind_is_v6only();
-  socket_server_response_is_complete();
-  socket_server_survives_reset_before_accept();
-  socket_server_responds_after_client_half_close();
-  return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+  return secure_frontend_test::run_cases(argc, argv, {
+      {"serves_a_loopback_request_without_outbound_connections", serves_a_loopback_request_without_outbound_connections},
+      {"socket_server_survives_client_early_close", socket_server_survives_client_early_close},
+      {"socket_server_rejects_slow_request_past_deadline", socket_server_rejects_slow_request_past_deadline},
+      {"socket_server_send_times_out_on_stalled_reader", socket_server_send_times_out_on_stalled_reader},
+      {"socket_server_rejects_oversize_request_over_tcp", socket_server_rejects_oversize_request_over_tcp},
+      {"socket_server_accept_waits_without_timeout", socket_server_accept_waits_without_timeout},
+      {"socket_server_ipv6_bind_is_v6only", socket_server_ipv6_bind_is_v6only},
+      {"socket_server_response_is_complete", socket_server_response_is_complete},
+      {"socket_server_survives_reset_before_accept", socket_server_survives_reset_before_accept},
+      {"socket_server_responds_after_client_half_close", socket_server_responds_after_client_half_close},
+  }, failures);
 }

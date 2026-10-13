@@ -1,5 +1,6 @@
 #include "secure_frontend/engine_protocol_client.hpp"
 #include "secure_frontend/engine_stdio_process.hpp"
+#include "support/test_support.hpp"
 
 #include <chrono>
 #include <csignal>
@@ -295,24 +296,18 @@ int main(const int argc, char* argv[]) {
       return 0;
     }
   }
-  std::cerr << "engine_stdio_process_tests: start\n";
-  try {
-    const auto self = current_executable();
-    test_round_trip(self);
-    test_invalid_record();
-    read_line_rejects_oversize_on_all_platforms(self);
-    read_line_waits_for_a_record_split_across_writes(self);
+  static const int no_counted_failures = 0;
+  return secure_frontend_test::run_cases(argc, argv, {
+      {"test_round_trip", [] { test_round_trip(current_executable()); }},
+      {"test_invalid_record", [] { test_invalid_record(); }},
+      {"read_line_rejects_oversize_on_all_platforms", [] { read_line_rejects_oversize_on_all_platforms(current_executable()); }},
+      {"read_line_waits_for_a_record_split_across_writes", [] { read_line_waits_for_a_record_split_across_writes(current_executable()); }},
 #if defined(_WIN32)
-    job_object_terminates_grandchild(self);
+      {"job_object_terminates_grandchild", [] { job_object_terminates_grandchild(current_executable()); }},
+#else
+      {"child_inherits_only_stdio_descriptors", [] { child_inherits_only_stdio_descriptors(current_executable()); }},
+      {"child_receives_exact_argv_and_env", [] { child_receives_exact_argv_and_env(current_executable()); }},
+      {"terminate_reaps_killed_child", [] { terminate_reaps_killed_child(current_executable()); }},
 #endif
-#if !defined(_WIN32)
-    child_inherits_only_stdio_descriptors(self);
-    child_receives_exact_argv_and_env(self);
-    terminate_reaps_killed_child(self);
-#endif
-  } catch (const std::exception& error) {
-    std::cerr << error.what() << '\n';
-    return EXIT_FAILURE;
-  }
-  return EXIT_SUCCESS;
+  }, no_counted_failures);
 }

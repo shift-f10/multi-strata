@@ -1,4 +1,5 @@
 #include "secure_frontend/engine_arguments.hpp"
+#include "support/test_support.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -89,11 +90,12 @@ void glm_profile_passes_arguments_through_without_native() {
 }
 }  // namespace
 
-int main() {
-  engine_receives_model_path_from_inventory();
-  engine_args_reject_owned_and_network_flags();
-  strata_profile_passes_pack_and_weight_flags_through();
-  rejects_invalid_relative_artifact_path();
-  glm_profile_passes_arguments_through_without_native();
-  return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+int main(int argc, char** argv) {
+  return secure_frontend_test::run_cases(argc, argv, {
+      {"engine_receives_model_path_from_inventory", engine_receives_model_path_from_inventory},
+      {"engine_args_reject_owned_and_network_flags", engine_args_reject_owned_and_network_flags},
+      {"strata_profile_passes_pack_and_weight_flags_through", strata_profile_passes_pack_and_weight_flags_through},
+      {"rejects_invalid_relative_artifact_path", rejects_invalid_relative_artifact_path},
+      {"glm_profile_passes_arguments_through_without_native", glm_profile_passes_arguments_through_without_native},
+  }, failures);
 }

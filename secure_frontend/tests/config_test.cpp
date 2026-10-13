@@ -1,4 +1,5 @@
 #include "secure_frontend/config.hpp"
+#include "support/test_support.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -125,14 +126,15 @@ void rejects_invalid_hosts_and_blank_remote_keys() {
 
 }  // namespace
 
-int main() {
-  defaults_to_loopback();
-  requires_key_for_loopback();
-  requires_explicit_opt_in_for_remote_host();
-  requires_key_after_remote_opt_in();
-  accepts_remote_host_with_opt_in_and_key();
-  requires_separate_opt_in_for_wildcard_host();
-  rejects_invalid_ports();
-  rejects_invalid_hosts_and_blank_remote_keys();
-  return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+int main(int argc, char** argv) {
+  return secure_frontend_test::run_cases(argc, argv, {
+      {"defaults_to_loopback", defaults_to_loopback},
+      {"requires_key_for_loopback", requires_key_for_loopback},
+      {"requires_explicit_opt_in_for_remote_host", requires_explicit_opt_in_for_remote_host},
+      {"requires_key_after_remote_opt_in", requires_key_after_remote_opt_in},
+      {"accepts_remote_host_with_opt_in_and_key", accepts_remote_host_with_opt_in_and_key},
+      {"requires_separate_opt_in_for_wildcard_host", requires_separate_opt_in_for_wildcard_host},
+      {"rejects_invalid_ports", rejects_invalid_ports},
+      {"rejects_invalid_hosts_and_blank_remote_keys", rejects_invalid_hosts_and_blank_remote_keys},
+  }, failures);
 }

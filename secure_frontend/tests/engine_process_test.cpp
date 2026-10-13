@@ -1,4 +1,5 @@
 #include "secure_frontend/engine_process.hpp"
+#include "support/test_support.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -117,18 +118,16 @@ void termination_cleans_up_a_process_group() {
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc >= 2 && std::string(argv[1]) == "--fake-engine") {
-    return run_fake_engine(argc, argv);
-  }
+  if (argc >= 2 && std::string(argv[1]) == "--fake-engine") return run_fake_engine(argc, argv);
   if (argc >= 2 && std::string(argv[1]) == "--fake-sleeper") {
     std::this_thread::sleep_for(std::chrono::seconds(30));
     return 0;
   }
-
-  starts_without_a_shell_and_uses_only_allowlisted_environment();
-  rejects_empty_executable();
-  rejects_malformed_allowlist_entry();
-  rejects_embedded_nul_in_exec_boundary();
-  termination_cleans_up_a_process_group();
-  return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+  return secure_frontend_test::run_cases(argc, argv, {
+      {"starts_without_a_shell_and_uses_only_allowlisted_environment", starts_without_a_shell_and_uses_only_allowlisted_environment},
+      {"rejects_empty_executable", rejects_empty_executable},
+      {"rejects_malformed_allowlist_entry", rejects_malformed_allowlist_entry},
+      {"rejects_embedded_nul_in_exec_boundary", rejects_embedded_nul_in_exec_boundary},
+      {"termination_cleans_up_a_process_group", termination_cleans_up_a_process_group},
+  }, failures);
 }

@@ -1,4 +1,5 @@
 #include "secure_frontend/http_policy.hpp"
+#include "support/test_support.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -88,11 +89,12 @@ void permits_only_configured_cors_origin_when_enabled() {
 
 }  // namespace
 
-int main() {
-  accepts_exact_host_without_browser_origin();
-  rejects_ambiguous_or_untrusted_host();
-  requires_an_exact_same_origin();
-  rejects_duplicate_or_malformed_origin();
-  permits_only_configured_cors_origin_when_enabled();
-  return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+int main(int argc, char** argv) {
+  return secure_frontend_test::run_cases(argc, argv, {
+      {"accepts_exact_host_without_browser_origin", accepts_exact_host_without_browser_origin},
+      {"rejects_ambiguous_or_untrusted_host", rejects_ambiguous_or_untrusted_host},
+      {"requires_an_exact_same_origin", requires_an_exact_same_origin},
+      {"rejects_duplicate_or_malformed_origin", rejects_duplicate_or_malformed_origin},
+      {"permits_only_configured_cors_origin_when_enabled", permits_only_configured_cors_origin_when_enabled},
+  }, failures);
 }

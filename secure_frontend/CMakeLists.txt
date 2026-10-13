@@ -30,6 +30,49 @@ function(secure_frontend_set_warnings target)
     endif()
 endfunction()
 
+# --- Test helpers (SP1 §3.10) -------------------------------------------------
+# Every test binary is a framework-free main() that takes `--case <name>`; each
+# case is its own CTest test named <binary>.<case>, so acceptance IDs appear in
+# `ctest -N`. Cases that need real Windows semantics (DACLs, DPAPI, junctions,
+# Job Objects) carry ${SECURE_FRONTEND_WINDOWS_RUNTIME}; the wine preset
+# excludes that label and the windows-msys2-clang CI job runs everything.
+set(SECURE_FRONTEND_TEST_TMP "${CMAKE_CURRENT_BINARY_DIR}/test-tmp")
+if(WIN32)
+    set(SECURE_FRONTEND_WINDOWS_RUNTIME windows-runtime)
+else()
+    set(SECURE_FRONTEND_WINDOWS_RUNTIME "")
+endif()
+
+function(secure_frontend_add_test_executable name source)
+    add_executable(${name} ${source})
+    target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+    target_link_libraries(${name} PRIVATE ${ARGN})
+    if(WIN32)
+        # test_support.hpp builds private-DACL scratch directories (ConvertSidToStringSidW,
+        # ConvertStringSecurityDescriptorToSecurityDescriptorW, OpenProcessToken).
+        target_link_libraries(${name} PRIVATE advapi32)
+    endif()
+    target_compile_features(${name} PRIVATE cxx_std_20)
+    secure_frontend_set_warnings(${name})
+endfunction()
+
+# secure_frontend_add_cases(<binary> <case>... [ARGS <arg>...] [LABELS <label>...] [TIMEOUT <seconds>])
+function(secure_frontend_add_cases binary)
+    cmake_parse_arguments(PARSE_ARGV 1 _sfac "" "TIMEOUT" "ARGS;LABELS")
+    file(MAKE_DIRECTORY "${SECURE_FRONTEND_TEST_TMP}")
+    foreach(_case IN LISTS _sfac_UNPARSED_ARGUMENTS)
+        set(_test "${binary}.${_case}")
+        add_test(NAME ${_test} COMMAND ${binary} --case ${_case} ${_sfac_ARGS})
+        set_tests_properties(${_test} PROPERTIES ENVIRONMENT "SECURE_FRONTEND_TEST_TMP=${SECURE_FRONTEND_TEST_TMP}")
+        if(_sfac_LABELS)
+            set_tests_properties(${_test} PROPERTIES LABELS "${_sfac_LABELS}")
+        endif()
+        if(_sfac_TIMEOUT)
+            set_tests_properties(${_test} PROPERTIES TIMEOUT ${_sfac_TIMEOUT})
+        endif()
+    endforeach()
+endfunction()
+
 add_library(secure_frontend_config
     src/config.cpp
     src/secret_source.cpp
@@ -272,131 +315,138 @@ endforeach()
 
 if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     enable_testing()
-    add_executable(secure_frontend_config_tests tests/config_test.cpp)
-    target_link_libraries(secure_frontend_config_tests PRIVATE secure_frontend_config)
-    target_compile_features(secure_frontend_config_tests PRIVATE cxx_std_20)
 
-    add_executable(secure_frontend_secret_source_tests tests/secret_source_test.cpp)
-    target_link_libraries(secure_frontend_secret_source_tests PRIVATE secure_frontend_config)
-    target_compile_features(secure_frontend_secret_source_tests PRIVATE cxx_std_20)
+    secure_frontend_add_test_executable(secure_frontend_config_tests tests/config_test.cpp secure_frontend_config)
+    secure_frontend_add_cases(secure_frontend_config_tests
+        defaults_to_loopback requires_key_for_loopback requires_explicit_opt_in_for_remote_host
+        requires_key_after_remote_opt_in accepts_remote_host_with_opt_in_and_key
+        requires_separate_opt_in_for_wildcard_host rejects_invalid_ports rejects_invalid_hosts_and_blank_remote_keys)
+
+    secure_frontend_add_test_executable(secure_frontend_secret_source_tests tests/secret_source_test.cpp secure_frontend_config)
+    secure_frontend_add_cases(secure_frontend_secret_source_tests
+        accepts_environment_variable_name_without_retaining_a_secret accepts_protected_file_path_metadata
+        rejects_unsafe_environment_variable_names rejects_blank_or_control_containing_file_paths
+        rejects_paths_that_escape_or_trigger_platform_special_handling)
 
     if(UNIX)
-        # Protected-file behavior is runtime-tested on Linux/POSIX only. The
-        # Windows implementation is fail-closed, but needs MSVC/Windows runtime
-        # coverage before a release claim.
-        add_executable(secure_frontend_token_reader_tests tests/token_reader_test.cpp)
-        target_link_libraries(secure_frontend_token_reader_tests PRIVATE secure_frontend_token_reader)
-        target_compile_features(secure_frontend_token_reader_tests PRIVATE cxx_std_20)
-        secure_frontend_set_warnings(secure_frontend_token_reader_tests)
+        # POSIX-only until SP1 Task 18 un-gates it for the windows-msys2-clang job.
+        secure_frontend_add_test_executable(secure_frontend_token_reader_tests tests/token_reader_test.cpp
+            secure_frontend_token_reader)
+        secure_frontend_add_cases(secure_frontend_token_reader_tests
+            reads_an_owner_only_regular_file_below_the_root reads_the_named_environment_variable
+            rejects_control_characters_in_resolved_tokens rejects_a_group_or_world_accessible_file
+            rejects_a_symlink_that_escapes_the_root rejects_a_non_regular_file)
     endif()
 
-    # Portable: Linux-only cases are behind #if !defined(_WIN32) in the test.
-    add_executable(secure_frontend_engine_stdio_process_tests tests/engine_stdio_process_test.cpp)
-    target_link_libraries(secure_frontend_engine_stdio_process_tests PRIVATE secure_frontend_engine_stdio_process)
-    target_compile_features(secure_frontend_engine_stdio_process_tests PRIVATE cxx_std_20)
-    secure_frontend_set_warnings(secure_frontend_engine_stdio_process_tests)
-
-    secure_frontend_set_warnings(secure_frontend_config_tests)
-    secure_frontend_set_warnings(secure_frontend_secret_source_tests)
-
-    add_test(NAME secure_frontend_config_tests COMMAND secure_frontend_config_tests)
-    add_test(NAME secure_frontend_secret_source_tests COMMAND secure_frontend_secret_source_tests)
-    if(UNIX)
-        add_test(NAME secure_frontend_token_reader_tests COMMAND secure_frontend_token_reader_tests)
+    secure_frontend_add_test_executable(secure_frontend_engine_stdio_process_tests tests/engine_stdio_process_test.cpp
+        secure_frontend_engine_stdio_process)
+    set(_stdio_cases test_round_trip test_invalid_record read_line_rejects_oversize_on_all_platforms
+        read_line_waits_for_a_record_split_across_writes)
+    if(WIN32)
+        list(APPEND _stdio_cases job_object_terminates_grandchild)
+    else()
+        list(APPEND _stdio_cases child_inherits_only_stdio_descriptors child_receives_exact_argv_and_env
+            terminate_reaps_killed_child)
     endif()
-    add_test(NAME secure_frontend_engine_stdio_process_tests COMMAND secure_frontend_engine_stdio_process_tests)
+    secure_frontend_add_cases(secure_frontend_engine_stdio_process_tests ${_stdio_cases} TIMEOUT 300)
 
-    add_executable(secure_frontend_http_policy_tests tests/http_policy_test.cpp)
-    target_link_libraries(secure_frontend_http_policy_tests PRIVATE secure_frontend_http_policy)
-    target_compile_features(secure_frontend_http_policy_tests PRIVATE cxx_std_20)
+    secure_frontend_add_test_executable(secure_frontend_http_policy_tests tests/http_policy_test.cpp secure_frontend_http_policy)
+    secure_frontend_add_cases(secure_frontend_http_policy_tests
+        accepts_exact_host_without_browser_origin rejects_ambiguous_or_untrusted_host requires_an_exact_same_origin
+        rejects_duplicate_or_malformed_origin permits_only_configured_cors_origin_when_enabled)
 
-    secure_frontend_set_warnings(secure_frontend_http_policy_tests)
+    secure_frontend_add_test_executable(secure_frontend_http_request_handler_tests tests/http_request_handler_test.cpp
+        secure_frontend_http_request_handler)
+    secure_frontend_add_cases(secure_frontend_http_request_handler_tests
+        accepts_authorized_request passes_the_bounded_raw_body_to_an_authorized_dispatcher
+        rejects_malformed_and_ambiguous_messages requires_one_well_formed_bearer_token
+        fails_closed_before_calling_validator_for_untrusted_origin emits_cors_only_for_policy_approved_origin
+        handles_policy_approved_preflight_without_exposing_an_endpoint constant_time_helper_matches_only_equal_tokens)
 
-    add_test(NAME secure_frontend_http_policy_tests COMMAND secure_frontend_http_policy_tests)
+    secure_frontend_add_test_executable(secure_frontend_http_socket_server_tests tests/http_socket_server_test.cpp
+        secure_frontend_http_socket_server)
+    secure_frontend_add_cases(secure_frontend_http_socket_server_tests
+        serves_a_loopback_request_without_outbound_connections socket_server_survives_client_early_close
+        socket_server_rejects_slow_request_past_deadline socket_server_send_times_out_on_stalled_reader
+        socket_server_rejects_oversize_request_over_tcp socket_server_accept_waits_without_timeout
+        socket_server_ipv6_bind_is_v6only socket_server_response_is_complete
+        socket_server_survives_reset_before_accept socket_server_responds_after_client_half_close
+        TIMEOUT 300)
 
-    add_executable(secure_frontend_http_request_handler_tests tests/http_request_handler_test.cpp)
-    target_link_libraries(secure_frontend_http_request_handler_tests PRIVATE secure_frontend_http_request_handler)
-    target_compile_features(secure_frontend_http_request_handler_tests PRIVATE cxx_std_20)
-    secure_frontend_set_warnings(secure_frontend_http_request_handler_tests)
-    add_test(NAME secure_frontend_http_request_handler_tests COMMAND secure_frontend_http_request_handler_tests)
+    secure_frontend_add_test_executable(secure_frontend_api_router_tests tests/api_router_test.cpp secure_frontend_api_router)
+    secure_frontend_add_cases(secure_frontend_api_router_tests
+        health_samples_status_before_state_once_each health_includes_engine_state_when_provided
+        health_is_503_with_engine_state_when_unavailable dispatches_exact_health_route
+        dispatches_models_with_json_escaping rejects_non_exact_routes
+        fails_closed_when_provider_throws_or_returns_invalid_model)
 
-    # Portable: the Windows listener's S-fixes run here too (POSIX-only cases,
-    # if any, sit behind #if !defined(_WIN32) in the test).
-    add_executable(secure_frontend_http_socket_server_tests tests/http_socket_server_test.cpp)
-    target_link_libraries(secure_frontend_http_socket_server_tests PRIVATE secure_frontend_http_socket_server)
-    target_compile_features(secure_frontend_http_socket_server_tests PRIVATE cxx_std_20)
-    secure_frontend_set_warnings(secure_frontend_http_socket_server_tests)
-    add_test(NAME secure_frontend_http_socket_server_tests COMMAND secure_frontend_http_socket_server_tests)
+    secure_frontend_add_test_executable(secure_frontend_engine_process_tests tests/engine_process_test.cpp
+        secure_frontend_engine_process)
+    secure_frontend_add_cases(secure_frontend_engine_process_tests
+        starts_without_a_shell_and_uses_only_allowlisted_environment rejects_empty_executable
+        rejects_malformed_allowlist_entry rejects_embedded_nul_in_exec_boundary termination_cleans_up_a_process_group)
 
-    add_executable(secure_frontend_api_router_tests tests/api_router_test.cpp)
-    target_link_libraries(secure_frontend_api_router_tests PRIVATE secure_frontend_api_router)
-    target_compile_features(secure_frontend_api_router_tests PRIVATE cxx_std_20)
-    secure_frontend_set_warnings(secure_frontend_api_router_tests)
-    add_test(NAME secure_frontend_api_router_tests COMMAND secure_frontend_api_router_tests)
+    secure_frontend_add_test_executable(secure_frontend_engine_protocol_client_tests tests/engine_protocol_client_test.cpp
+        secure_frontend_engine_protocol_client)
+    secure_frontend_add_cases(secure_frontend_engine_protocol_client_tests
+        runs_the_solo_protocol stop_and_quit_are_explicit refuses_stop_when_not_advertised
+        rejects_malformed_and_unexpected_engine_output bounds_and_engine_errors_fail_closed
+        prefill_progress_is_glm_only_and_strictly_bounded generation_total_deadline_is_enforced
+        gen_line_fits_max_prompt_tokens derived_line_cap_is_clamped_to_protocol_max)
 
-    add_executable(secure_frontend_engine_process_tests tests/engine_process_test.cpp)
-    target_link_libraries(secure_frontend_engine_process_tests PRIVATE secure_frontend_engine_process)
-    target_compile_features(secure_frontend_engine_process_tests PRIVATE cxx_std_20)
-    secure_frontend_set_warnings(secure_frontend_engine_process_tests)
-    add_test(NAME secure_frontend_engine_process_tests COMMAND secure_frontend_engine_process_tests)
+    secure_frontend_add_test_executable(secure_frontend_model_inventory_tests tests/model_inventory_test.cpp
+        secure_frontend_model_inventory)
+    secure_frontend_add_cases(secure_frontend_model_inventory_tests
+        validates_portable_model_ids validates_portable_artifact_paths inventories_only_local_gguf_artifacts
+        rejects_duplicate_ids_and_symlinks)
 
-    add_executable(secure_frontend_engine_protocol_client_tests tests/engine_protocol_client_test.cpp)
-    target_link_libraries(secure_frontend_engine_protocol_client_tests PRIVATE secure_frontend_engine_protocol_client)
-    target_compile_features(secure_frontend_engine_protocol_client_tests PRIVATE cxx_std_20)
-    secure_frontend_set_warnings(secure_frontend_engine_protocol_client_tests)
-    add_test(NAME secure_frontend_engine_protocol_client_tests COMMAND secure_frontend_engine_protocol_client_tests)
+    secure_frontend_add_test_executable(secure_frontend_engine_arguments_tests tests/engine_arguments_test.cpp
+        secure_frontend_engine_arguments)
+    secure_frontend_add_cases(secure_frontend_engine_arguments_tests
+        engine_receives_model_path_from_inventory engine_args_reject_owned_and_network_flags
+        strata_profile_passes_pack_and_weight_flags_through rejects_invalid_relative_artifact_path
+        glm_profile_passes_arguments_through_without_native)
 
-    add_executable(secure_frontend_model_inventory_tests tests/model_inventory_test.cpp)
-    target_link_libraries(secure_frontend_model_inventory_tests PRIVATE secure_frontend_model_inventory)
-    target_compile_features(secure_frontend_model_inventory_tests PRIVATE cxx_std_20)
-    secure_frontend_set_warnings(secure_frontend_model_inventory_tests)
-    add_test(NAME secure_frontend_model_inventory_tests COMMAND secure_frontend_model_inventory_tests)
+    secure_frontend_add_test_executable(secure_frontend_chat_schema_tests tests/chat_schema_test.cpp secure_frontend_chat_schema)
+    secure_frontend_add_cases(secure_frontend_chat_schema_tests
+        parses_minimal_text_request rejects_unsupported_and_unsafe_features rejects_duplicate_and_malformed_json
+        renders_escaped_minimal_response)
 
-    add_executable(secure_frontend_engine_arguments_tests tests/engine_arguments_test.cpp)
-    target_link_libraries(secure_frontend_engine_arguments_tests PRIVATE secure_frontend_engine_arguments)
-    target_compile_features(secure_frontend_engine_arguments_tests PRIVATE cxx_std_20)
-    secure_frontend_set_warnings(secure_frontend_engine_arguments_tests)
-    add_test(NAME secure_frontend_engine_arguments_tests COMMAND secure_frontend_engine_arguments_tests)
+    secure_frontend_add_test_executable(secure_frontend_tokenizer_pack_tests tests/tokenizer_pack_test.cpp
+        secure_frontend_tokenizer_pack)
+    set(_tokenizer_cases loads_validates_and_decodes_offline_pack rejects_ambiguous_or_incompatible_pack_assets
+        rejects_malformed_json_and_special_literals_for_decode encoding_fails_closed_for_special_invalid_and_missing_tokens)
+    if(NOT WIN32)
+        list(APPEND _tokenizer_cases rejects_symlinked_assets)
+    endif()
+    secure_frontend_add_cases(secure_frontend_tokenizer_pack_tests ${_tokenizer_cases})
 
-    add_executable(secure_frontend_chat_schema_tests tests/chat_schema_test.cpp)
-    target_link_libraries(secure_frontend_chat_schema_tests PRIVATE secure_frontend_chat_schema)
-    target_compile_features(secure_frontend_chat_schema_tests PRIVATE cxx_std_20)
-    secure_frontend_set_warnings(secure_frontend_chat_schema_tests)
-    add_test(NAME secure_frontend_chat_schema_tests COMMAND secure_frontend_chat_schema_tests)
+    secure_frontend_add_test_executable(secure_frontend_qwen_prompt_renderer_tests tests/qwen_prompt_renderer_test.cpp
+        secure_frontend_qwen_prompt_renderer)
+    secure_frontend_add_cases(secure_frontend_qwen_prompt_renderer_tests
+        renders_fixed_qwen_chatml_prompt accepts_systemless_conversation rejects_unsafe_or_unsupported_conversations)
 
-    add_executable(secure_frontend_tokenizer_pack_tests tests/tokenizer_pack_test.cpp)
-    target_link_libraries(secure_frontend_tokenizer_pack_tests PRIVATE secure_frontend_tokenizer_pack)
-    target_compile_features(secure_frontend_tokenizer_pack_tests PRIVATE cxx_std_20)
-    secure_frontend_set_warnings(secure_frontend_tokenizer_pack_tests)
-    add_test(NAME secure_frontend_tokenizer_pack_tests COMMAND secure_frontend_tokenizer_pack_tests)
+    secure_frontend_add_test_executable(secure_frontend_glm_profile_tests tests/glm_profile_test.cpp
+        secure_frontend_chat_generation_plan)
+    secure_frontend_add_cases(secure_frontend_glm_profile_tests
+        renders_exact_fixed_profile rejects_boundary_injection_and_invalid_order creates_plan_only_with_control_tokens)
 
-    add_executable(secure_frontend_qwen_prompt_renderer_tests tests/qwen_prompt_renderer_test.cpp)
-    target_link_libraries(secure_frontend_qwen_prompt_renderer_tests PRIVATE secure_frontend_qwen_prompt_renderer)
-    target_compile_features(secure_frontend_qwen_prompt_renderer_tests PRIVATE cxx_std_20)
-    secure_frontend_set_warnings(secure_frontend_qwen_prompt_renderer_tests)
-    add_test(NAME secure_frontend_qwen_prompt_renderer_tests COMMAND secure_frontend_qwen_prompt_renderer_tests)
+    secure_frontend_add_test_executable(secure_frontend_chat_generation_plan_tests tests/chat_generation_plan_test.cpp
+        secure_frontend_chat_generation_plan)
+    secure_frontend_add_cases(secure_frontend_chat_generation_plan_tests
+        composes_schema_prompt_and_tokenizer defaults_output_limit_and_rejects_unsafe_inputs
+        rejects_missing_or_non_control_framing_tokens does_not_parse_arbitrary_special_literals)
 
-    add_executable(secure_frontend_glm_profile_tests tests/glm_profile_test.cpp)
-    target_link_libraries(secure_frontend_glm_profile_tests PRIVATE secure_frontend_chat_generation_plan)
-    target_compile_features(secure_frontend_glm_profile_tests PRIVATE cxx_std_20)
-    secure_frontend_set_warnings(secure_frontend_glm_profile_tests)
-    add_test(NAME secure_frontend_glm_profile_tests COMMAND secure_frontend_glm_profile_tests)
+    secure_frontend_add_test_executable(secure_frontend_chat_execution_tests tests/chat_execution_test.cpp
+        secure_frontend_chat_execution)
+    secure_frontend_add_cases(secure_frontend_chat_execution_tests
+        executes_a_bounded_non_streaming_completion rejects_context_and_output_limits_before_generation
+        fails_closed_on_invalid_engine_output executes_glm53_only_when_explicitly_selected
+        chat_recovers_after_generation_timeout chat_marks_engine_failed_when_drain_fails
+        chat_rejects_nonfinite_done_and_stays_ready health_reflects_protocol_state
+        health_is_failed_after_engine_closed_mid_generation health_is_failed_when_engine_closes_before_ready
+        chat_applies_engine_context_rule_with_eight_token_margin)
 
-    add_executable(secure_frontend_chat_generation_plan_tests tests/chat_generation_plan_test.cpp)
-    target_link_libraries(secure_frontend_chat_generation_plan_tests PRIVATE secure_frontend_chat_generation_plan)
-    target_compile_features(secure_frontend_chat_generation_plan_tests PRIVATE cxx_std_20)
-    secure_frontend_set_warnings(secure_frontend_chat_generation_plan_tests)
-    add_test(NAME secure_frontend_chat_generation_plan_tests COMMAND secure_frontend_chat_generation_plan_tests)
-
-    add_executable(secure_frontend_chat_execution_tests tests/chat_execution_test.cpp)
-    target_link_libraries(secure_frontend_chat_execution_tests PRIVATE secure_frontend_chat_execution)
-    target_compile_features(secure_frontend_chat_execution_tests PRIVATE cxx_std_20)
-    secure_frontend_set_warnings(secure_frontend_chat_execution_tests)
-    add_test(NAME secure_frontend_chat_execution_tests COMMAND secure_frontend_chat_execution_tests)
-    # Socket and process tests wait on real timeouts (and run under wine for
-    # the cross preset): bound them so a hang fails the run instead of stalling CI.
-    set_tests_properties(secure_frontend_http_socket_server_tests secure_frontend_engine_stdio_process_tests
-        PROPERTIES TIMEOUT 300)
     add_test(NAME strata_secure_server_help COMMAND strata-secure-server --help)
     # The GLM runner takes positional arguments: glm53 without any --engine-arg is a usage error.
     add_test(NAME strata_secure_server_glm_requires_engine_arg

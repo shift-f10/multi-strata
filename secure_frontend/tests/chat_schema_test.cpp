@@ -1,4 +1,5 @@
 #include "secure_frontend/chat_schema.hpp"
+#include "support/test_support.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -62,10 +63,11 @@ void renders_escaped_minimal_response() {
 }
 }  // namespace
 
-int main() {
-  parses_minimal_text_request();
-  rejects_unsupported_and_unsafe_features();
-  rejects_duplicate_and_malformed_json();
-  renders_escaped_minimal_response();
-  return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+int main(int argc, char** argv) {
+  return secure_frontend_test::run_cases(argc, argv, {
+      {"parses_minimal_text_request", parses_minimal_text_request},
+      {"rejects_unsupported_and_unsafe_features", rejects_unsupported_and_unsafe_features},
+      {"rejects_duplicate_and_malformed_json", rejects_duplicate_and_malformed_json},
+      {"renders_escaped_minimal_response", renders_escaped_minimal_response},
+  }, failures);
 }

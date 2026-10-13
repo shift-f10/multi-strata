@@ -118,6 +118,11 @@
       "output": {
         "outputOnFailure": true
       },
+      "filter": {
+        "exclude": {
+          "label": "windows-runtime"
+        }
+      },
       "environment": {
         "WINEPREFIX": "${sourceDir}/out/wineprefix"
       }

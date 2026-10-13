@@ -1,4 +1,5 @@
 #include "secure_frontend/model_inventory.hpp"
+#include "support/test_support.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -25,14 +26,19 @@ bool has_error(const Result& result, const secure_frontend::ModelInventoryErrorC
 }
 
 std::filesystem::path unique_temp_directory() {
-  const auto path = std::filesystem::temp_directory_path() /
-                    ("secure-frontend-model-inventory-" + std::to_string(std::rand()));
-  std::filesystem::create_directories(path);
-  return path;
+  return secure_frontend_test::make_scratch_directory();
+}
+
+// Creates each missing directory one level at a time, owner-only (0700 /
+// protected DACL), below an existing scratch root.
+void make_private_directories(const std::filesystem::path& directory) {
+  if (directory.empty() || std::filesystem::exists(directory)) return;
+  make_private_directories(directory.parent_path());
+  secure_frontend_test::make_private_directory(directory);
 }
 
 void write_file(const std::filesystem::path& path, const std::string_view contents) {
-  std::filesystem::create_directories(path.parent_path());
+  make_private_directories(path.parent_path());
   std::ofstream stream(path, std::ios::binary);
   stream << contents;
 }
@@ -105,10 +111,11 @@ void rejects_duplicate_ids_and_symlinks() {
 
 }  // namespace
 
-int main() {
-  validates_portable_model_ids();
-  validates_portable_artifact_paths();
-  inventories_only_local_gguf_artifacts();
-  rejects_duplicate_ids_and_symlinks();
-  return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+int main(int argc, char** argv) {
+  return secure_frontend_test::run_cases(argc, argv, {
+      {"validates_portable_model_ids", validates_portable_model_ids},
+      {"validates_portable_artifact_paths", validates_portable_artifact_paths},
+      {"inventories_only_local_gguf_artifacts", inventories_only_local_gguf_artifacts},
+      {"rejects_duplicate_ids_and_symlinks", rejects_duplicate_ids_and_symlinks},
+  }, failures);
 }

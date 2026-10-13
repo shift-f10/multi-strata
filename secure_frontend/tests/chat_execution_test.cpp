@@ -1,4 +1,5 @@
 #include "secure_frontend/chat_execution.hpp"
+#include "support/test_support.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -313,17 +314,18 @@ void chat_applies_engine_context_rule_with_eight_token_margin() {
 
 }  // namespace
 
-int main() {
-  executes_a_bounded_non_streaming_completion();
-  rejects_context_and_output_limits_before_generation();
-  fails_closed_on_invalid_engine_output();
-  executes_glm53_only_when_explicitly_selected();
-  chat_recovers_after_generation_timeout();
-  chat_marks_engine_failed_when_drain_fails();
-  chat_rejects_nonfinite_done_and_stays_ready();
-  health_reflects_protocol_state();
-  health_is_failed_after_engine_closed_mid_generation();
-  health_is_failed_when_engine_closes_before_ready();
-  chat_applies_engine_context_rule_with_eight_token_margin();
-  return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+int main(int argc, char** argv) {
+  return secure_frontend_test::run_cases(argc, argv, {
+      {"executes_a_bounded_non_streaming_completion", executes_a_bounded_non_streaming_completion},
+      {"rejects_context_and_output_limits_before_generation", rejects_context_and_output_limits_before_generation},
+      {"fails_closed_on_invalid_engine_output", fails_closed_on_invalid_engine_output},
+      {"executes_glm53_only_when_explicitly_selected", executes_glm53_only_when_explicitly_selected},
+      {"chat_recovers_after_generation_timeout", chat_recovers_after_generation_timeout},
+      {"chat_marks_engine_failed_when_drain_fails", chat_marks_engine_failed_when_drain_fails},
+      {"chat_rejects_nonfinite_done_and_stays_ready", chat_rejects_nonfinite_done_and_stays_ready},
+      {"health_reflects_protocol_state", health_reflects_protocol_state},
+      {"health_is_failed_after_engine_closed_mid_generation", health_is_failed_after_engine_closed_mid_generation},
+      {"health_is_failed_when_engine_closes_before_ready", health_is_failed_when_engine_closes_before_ready},
+      {"chat_applies_engine_context_rule_with_eight_token_margin", chat_applies_engine_context_rule_with_eight_token_margin},
+  }, failures);
 }

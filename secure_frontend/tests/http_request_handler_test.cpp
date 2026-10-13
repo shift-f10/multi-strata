@@ -1,4 +1,5 @@
 #include "secure_frontend/http_request_handler.hpp"
+#include "support/test_support.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -144,14 +145,15 @@ void constant_time_helper_matches_only_equal_tokens() {
 
 }  // namespace
 
-int main() {
-  accepts_authorized_request();
-  passes_the_bounded_raw_body_to_an_authorized_dispatcher();
-  rejects_malformed_and_ambiguous_messages();
-  requires_one_well_formed_bearer_token();
-  fails_closed_before_calling_validator_for_untrusted_origin();
-  emits_cors_only_for_policy_approved_origin();
-  handles_policy_approved_preflight_without_exposing_an_endpoint();
-  constant_time_helper_matches_only_equal_tokens();
-  return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+int main(int argc, char** argv) {
+  return secure_frontend_test::run_cases(argc, argv, {
+      {"accepts_authorized_request", accepts_authorized_request},
+      {"passes_the_bounded_raw_body_to_an_authorized_dispatcher", passes_the_bounded_raw_body_to_an_authorized_dispatcher},
+      {"rejects_malformed_and_ambiguous_messages", rejects_malformed_and_ambiguous_messages},
+      {"requires_one_well_formed_bearer_token", requires_one_well_formed_bearer_token},
+      {"fails_closed_before_calling_validator_for_untrusted_origin", fails_closed_before_calling_validator_for_untrusted_origin},
+      {"emits_cors_only_for_policy_approved_origin", emits_cors_only_for_policy_approved_origin},
+      {"handles_policy_approved_preflight_without_exposing_an_endpoint", handles_policy_approved_preflight_without_exposing_an_endpoint},
+      {"constant_time_helper_matches_only_equal_tokens", constant_time_helper_matches_only_equal_tokens},
+  }, failures);
 }

@@ -1,4 +1,5 @@
 #include "secure_frontend/tokenizer_pack.hpp"
+#include "support/test_support.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -14,10 +15,7 @@ void expect(const bool condition, const std::string& message) {
 }
 
 std::filesystem::path temporary_pack() {
-  const auto path = std::filesystem::temp_directory_path() /
-                    ("secure-frontend-tokenizer-pack-" + std::to_string(std::rand()));
-  std::filesystem::create_directories(path);
-  return path;
+  return secure_frontend_test::make_scratch_directory();
 }
 void write(const std::filesystem::path& path, const std::string_view data) {
   std::ofstream output(path, std::ios::binary); output << data;
@@ -143,13 +141,14 @@ void rejects_symlinked_assets() {
 #endif
 }  // namespace
 
-int main() {
-  loads_validates_and_decodes_offline_pack();
-  rejects_ambiguous_or_incompatible_pack_assets();
-  rejects_malformed_json_and_special_literals_for_decode();
-  encoding_fails_closed_for_special_invalid_and_missing_tokens();
+int main(int argc, char** argv) {
+  return secure_frontend_test::run_cases(argc, argv, {
+      {"loads_validates_and_decodes_offline_pack", loads_validates_and_decodes_offline_pack},
+      {"rejects_ambiguous_or_incompatible_pack_assets", rejects_ambiguous_or_incompatible_pack_assets},
+      {"rejects_malformed_json_and_special_literals_for_decode", rejects_malformed_json_and_special_literals_for_decode},
+      {"encoding_fails_closed_for_special_invalid_and_missing_tokens", encoding_fails_closed_for_special_invalid_and_missing_tokens},
 #ifndef _WIN32
-  rejects_symlinked_assets();
+      {"rejects_symlinked_assets", rejects_symlinked_assets},
 #endif
-  return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+  }, failures);
 }

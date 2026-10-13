@@ -1,4 +1,5 @@
 #include "secure_frontend/chat_generation_plan.hpp"
+#include "support/test_support.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -163,10 +164,11 @@ void does_not_parse_arbitrary_special_literals() {
 
 }  // namespace
 
-int main() {
-  composes_schema_prompt_and_tokenizer();
-  defaults_output_limit_and_rejects_unsafe_inputs();
-  rejects_missing_or_non_control_framing_tokens();
-  does_not_parse_arbitrary_special_literals();
-  return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+int main(int argc, char** argv) {
+  return secure_frontend_test::run_cases(argc, argv, {
+      {"composes_schema_prompt_and_tokenizer", composes_schema_prompt_and_tokenizer},
+      {"defaults_output_limit_and_rejects_unsafe_inputs", defaults_output_limit_and_rejects_unsafe_inputs},
+      {"rejects_missing_or_non_control_framing_tokens", rejects_missing_or_non_control_framing_tokens},
+      {"does_not_parse_arbitrary_special_literals", does_not_parse_arbitrary_special_literals},
+  }, failures);
 }

@@ -1,4 +1,5 @@
 #include "secure_frontend/qwen_prompt_renderer.hpp"
+#include "support/test_support.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -63,9 +64,10 @@ void rejects_unsafe_or_unsupported_conversations() {
 }
 }  // namespace
 
-int main() {
-  renders_fixed_qwen_chatml_prompt();
-  accepts_systemless_conversation();
-  rejects_unsafe_or_unsupported_conversations();
-  return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+int main(int argc, char** argv) {
+  return secure_frontend_test::run_cases(argc, argv, {
+      {"renders_fixed_qwen_chatml_prompt", renders_fixed_qwen_chatml_prompt},
+      {"accepts_systemless_conversation", accepts_systemless_conversation},
+      {"rejects_unsafe_or_unsupported_conversations", rejects_unsafe_or_unsupported_conversations},
+  }, failures);
 }

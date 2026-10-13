@@ -1,4 +1,5 @@
 #include "secure_frontend/api_router.hpp"
+#include "support/test_support.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -116,13 +117,14 @@ void health_samples_status_before_state_once_each() {
 }
 }  // namespace
 
-int main() {
-  health_samples_status_before_state_once_each();
-  health_includes_engine_state_when_provided();
-  health_is_503_with_engine_state_when_unavailable();
-  dispatches_exact_health_route();
-  dispatches_models_with_json_escaping();
-  rejects_non_exact_routes();
-  fails_closed_when_provider_throws_or_returns_invalid_model();
-  return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+int main(int argc, char** argv) {
+  return secure_frontend_test::run_cases(argc, argv, {
+      {"health_samples_status_before_state_once_each", health_samples_status_before_state_once_each},
+      {"health_includes_engine_state_when_provided", health_includes_engine_state_when_provided},
+      {"health_is_503_with_engine_state_when_unavailable", health_is_503_with_engine_state_when_unavailable},
+      {"dispatches_exact_health_route", dispatches_exact_health_route},
+      {"dispatches_models_with_json_escaping", dispatches_models_with_json_escaping},
+      {"rejects_non_exact_routes", rejects_non_exact_routes},
+      {"fails_closed_when_provider_throws_or_returns_invalid_model", fails_closed_when_provider_throws_or_returns_invalid_model},
+  }, failures);
 }

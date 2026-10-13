@@ -1,4 +1,5 @@
 #include "secure_frontend/engine_protocol_client.hpp"
+#include "support/test_support.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -203,15 +204,16 @@ void derived_line_cap_is_clamped_to_protocol_max() {
          "a GEN line beyond kProtocolMaxLineBytes must be rejected cleanly before any write");
 }
 
-int main() {
-  runs_the_solo_protocol();
-  stop_and_quit_are_explicit();
-  refuses_stop_when_not_advertised();
-  rejects_malformed_and_unexpected_engine_output();
-  bounds_and_engine_errors_fail_closed();
-  prefill_progress_is_glm_only_and_strictly_bounded();
-  generation_total_deadline_is_enforced();
-  gen_line_fits_max_prompt_tokens();
-  derived_line_cap_is_clamped_to_protocol_max();
-  return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+int main(int argc, char** argv) {
+  return secure_frontend_test::run_cases(argc, argv, {
+      {"runs_the_solo_protocol", runs_the_solo_protocol},
+      {"stop_and_quit_are_explicit", stop_and_quit_are_explicit},
+      {"refuses_stop_when_not_advertised", refuses_stop_when_not_advertised},
+      {"rejects_malformed_and_unexpected_engine_output", rejects_malformed_and_unexpected_engine_output},
+      {"bounds_and_engine_errors_fail_closed", bounds_and_engine_errors_fail_closed},
+      {"prefill_progress_is_glm_only_and_strictly_bounded", prefill_progress_is_glm_only_and_strictly_bounded},
+      {"generation_total_deadline_is_enforced", generation_total_deadline_is_enforced},
+      {"gen_line_fits_max_prompt_tokens", gen_line_fits_max_prompt_tokens},
+      {"derived_line_cap_is_clamped_to_protocol_max", derived_line_cap_is_clamped_to_protocol_max},
+  }, failures);
 }

@@ -1,4 +1,5 @@
 #include "secure_frontend/secret_source.hpp"
+#include "support/test_support.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -82,11 +83,12 @@ void rejects_paths_that_escape_or_trigger_platform_special_handling() {
 
 }  // namespace
 
-int main() {
-  accepts_environment_variable_name_without_retaining_a_secret();
-  accepts_protected_file_path_metadata();
-  rejects_unsafe_environment_variable_names();
-  rejects_blank_or_control_containing_file_paths();
-  rejects_paths_that_escape_or_trigger_platform_special_handling();
-  return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+int main(int argc, char** argv) {
+  return secure_frontend_test::run_cases(argc, argv, {
+      {"accepts_environment_variable_name_without_retaining_a_secret", accepts_environment_variable_name_without_retaining_a_secret},
+      {"accepts_protected_file_path_metadata", accepts_protected_file_path_metadata},
+      {"rejects_unsafe_environment_variable_names", rejects_unsafe_environment_variable_names},
+      {"rejects_blank_or_control_containing_file_paths", rejects_blank_or_control_containing_file_paths},
+      {"rejects_paths_that_escape_or_trigger_platform_special_handling", rejects_paths_that_escape_or_trigger_platform_special_handling},
+  }, failures);
 }

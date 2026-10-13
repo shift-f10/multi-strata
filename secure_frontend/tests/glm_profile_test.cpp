@@ -1,5 +1,6 @@
 #include "secure_frontend/chat_generation_plan.hpp"
 #include "secure_frontend/glm_prompt_renderer.hpp"
+#include "support/test_support.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -103,9 +104,10 @@ void creates_plan_only_with_control_tokens() {
 
 }  // namespace
 
-int main() {
-  renders_exact_fixed_profile();
-  rejects_boundary_injection_and_invalid_order();
-  creates_plan_only_with_control_tokens();
-  return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+int main(int argc, char** argv) {
+  return secure_frontend_test::run_cases(argc, argv, {
+      {"renders_exact_fixed_profile", renders_exact_fixed_profile},
+      {"rejects_boundary_injection_and_invalid_order", rejects_boundary_injection_and_invalid_order},
+      {"creates_plan_only_with_control_tokens", creates_plan_only_with_control_tokens},
+  }, failures);
 }
