@@ -44,6 +44,11 @@ class HttpSocketServer final {
   // so callers can bound concurrency and apply their own lifecycle policy.
   [[nodiscard]] bool serve_one(std::string* error);
   [[nodiscard]] std::uint16_t port() const;
+  // True once accept() failed with a non-transient error: the listening
+  // socket is unusable and callers should stop serving. Client errors and
+  // transient accept errors (interrupts, aborted connections, descriptor
+  // exhaustion) never set it.
+  [[nodiscard]] bool listener_failed() const noexcept;
 
  private:
   struct State;

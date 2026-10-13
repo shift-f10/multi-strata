@@ -285,8 +285,12 @@ int run(const Options& options) {
   std::cout << "Secure server listening on http://" << authority << " (authenticated; Ctrl-C to stop)\n";
   std::cout.flush();
   for (;;) {
-    std::string ignored;
-    (void)server->serve_one(&ignored);
+    std::string error;
+    if (!server->serve_one(&error) && server->listener_failed()) {
+      std::cerr << "listener stopped: " << error << '\n';
+      return EXIT_FAILURE;
+    }
+    // Any other failure was one client's; keep serving.
   }
 }
 

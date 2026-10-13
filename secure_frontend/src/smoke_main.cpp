@@ -80,7 +80,11 @@ int main(int argc, char** argv) {
       }, &error);
   if (!server.has_value()) { std::cerr << "listener setup failed: " << error << '\n'; return EXIT_FAILURE; }
   std::cout << "secure frontend smoke server listening on http://" << host_header << " (local models only)\n";
-  while (server->serve_one(&error)) {}
-  std::cerr << "listener stopped: " << error << '\n';
-  return EXIT_FAILURE;
+  for (;;) {
+    if (!server->serve_one(&error) && server->listener_failed()) {
+      std::cerr << "listener stopped: " << error << '\n';
+      return EXIT_FAILURE;
+    }
+    // Any other failure was one client's; keep serving.
+  }
 }

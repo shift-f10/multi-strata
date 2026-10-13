@@ -137,6 +137,7 @@ const char* reason_phrase(const int status) {
     case 403: return "Forbidden";
     case 404: return "Not Found";
     case 408: return "Request Timeout";
+    case 413: return "Content Too Large";
     case 503: return "Service Unavailable";
     default: return "Internal Server Error";
   }
@@ -198,6 +199,7 @@ struct HttpSocketServer::State final {
   BearerTokenValidator validator;
   RequestDispatcher dispatcher;
   HttpSocketServerLimits limits;
+  bool listener_failed{false};
 #ifdef _WIN32
   bool winsock_started{false};
 #endif
@@ -260,10 +262,30 @@ std::optional<HttpSocketServer> HttpSocketServer::bind(const Config& listener_co
     return std::nullopt;
   }
   state->socket = socket(family, SOCK_STREAM, IPPROTO_TCP);
+  if (state->socket == kInvalidSocket) {
+    if (error != nullptr) *error = "listener socket setup failed";
+    return std::nullopt;
+  }
+  {
+    const int one = 1;
+    // Quick restarts must not fail on TIME_WAIT (POSIX); on Windows the
+    // equivalent protection is exclusive use so no other socket can hijack
+    // the port.
+#ifdef _WIN32
+    (void)setsockopt(state->socket, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&one), sizeof(one));
+#else
+    (void)setsockopt(state->socket, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+#endif
+    // An IPv6 listener serves IPv6 only; IPv4 needs its own explicit bind.
+    if (family == AF_INET6 &&
+        setsockopt(state->socket, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<const char*>(&one), sizeof(one)) != 0) {
+      if (error != nullptr) *error = "listener socket setup failed";
+      return std::nullopt;
+    }
+  }
   // No timeout on the listening socket: accept() blocks until a client
   // arrives. Per-client bounds are applied to each accepted socket.
-  if (state->socket == kInvalidSocket ||
-      ::bind(state->socket, reinterpret_cast<const sockaddr*>(&address), address_size) != 0 ||
+  if (::bind(state->socket, reinterpret_cast<const sockaddr*>(&address), address_size) != 0 ||
       listen(state->socket, 16) != 0) {
     if (error != nullptr) *error = "listener socket setup failed";
     return std::nullopt;
@@ -272,6 +294,9 @@ std::optional<HttpSocketServer> HttpSocketServer::bind(const Config& listener_co
   state->policy = std::move(policy);
   state->validator = std::move(validator);
   state->dispatcher = std::move(dispatcher);
+  // Same bounds as the socket timeout clamp, so now + request_deadline can
+  // never overflow the clock for extreme caller values.
+  limits.request_deadline = std::clamp(limits.request_deadline, std::chrono::milliseconds(1), std::chrono::milliseconds(3600000));
   state->limits = limits;
   return HttpSocketServer{std::move(state)};
 }
@@ -280,7 +305,21 @@ bool HttpSocketServer::serve_one(std::string* error) {
   if (error != nullptr) error->clear();
   if (!state_) { if (error != nullptr) *error = "listener is not initialized"; return false; }
   const NativeSocket client = accept(state_->socket, nullptr, nullptr);
-  if (client == kInvalidSocket) { if (error != nullptr) *error = "accept failed"; return false; }
+  if (client == kInvalidSocket) {
+    // Only a non-transient error means the listening socket itself is gone;
+    // interrupts, aborted handshakes and descriptor exhaustion pass.
+#ifdef _WIN32
+    const int code = WSAGetLastError();
+    const bool transient = code == WSAEINTR || code == WSAECONNABORTED || code == WSAEWOULDBLOCK || code == WSAEMFILE;
+#else
+    const int code = errno;
+    const bool transient = code == EINTR || code == ECONNABORTED || code == EAGAIN || code == EWOULDBLOCK ||
+                           code == EMFILE || code == ENFILE;
+#endif
+    if (!transient) state_->listener_failed = true;
+    if (error != nullptr) *error = transient ? "accept interrupted" : "accept failed";
+    return false;
+  }
 #if defined(SO_NOSIGPIPE)
   { const int one = 1; (void)setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one)); }
 #endif
@@ -330,12 +369,14 @@ bool HttpSocketServer::serve_one(std::string* error) {
       return true;
     }
   }
-  const HttpResponse bad{.status = 400, .headers = {{"Content-Type", "text/plain; charset=utf-8"}}, .body = "Bad Request\n"};
-  static_cast<void>(send_all(client, serialize_response(bad), send_deadline()));
+  const HttpResponse too_large{.status = 413, .headers = {{"Content-Type", "text/plain; charset=utf-8"}},
+                               .body = "Content Too Large\n"};
+  static_cast<void>(send_all(client, serialize_response(too_large), send_deadline()));
   if (error != nullptr) *error = "request exceeded listener bounds";
   return false;
 }
 
 std::uint16_t HttpSocketServer::port() const { return state_ ? state_->port : 0U; }
+bool HttpSocketServer::listener_failed() const noexcept { return state_ && state_->listener_failed; }
 
 }  // namespace secure_frontend

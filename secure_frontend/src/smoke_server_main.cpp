@@ -218,11 +218,11 @@ int run(const Options& options) {
   std::cout.flush();
   for (;;) {
     std::string error;
-    if (!server->serve_one(&error)) {
-      // Client failures are intentionally opaque; the listener remains alive.
-      // A later process-supervisor layer can define an explicit restart policy.
-      continue;
+    if (!server->serve_one(&error) && server->listener_failed()) {
+      std::cerr << "listener stopped: " << error << '\n';
+      return EXIT_FAILURE;
     }
+    // Client failures are intentionally opaque; the listener remains alive.
   }
 }
 
