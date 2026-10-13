@@ -62,8 +62,9 @@ void usage(std::ostream& output) {
             "  --tokenizer-pack PATH     Local directory with vocab.json, merges.txt, token_type.json\n"
             "  --engine PATH             Local Strata engine executable\n"
             "  --engine-arg ARG          Optional literal engine argument; repeat as needed.\n"
-            "                            --native, --pack, --serve, --batch, --slots and\n"
-            "                            --vision are rejected\n"
+            "                            --serve is always rejected; with the qwen profile\n"
+            "                            --native, --pack, --batch, --slots and --vision\n"
+            "                            are rejected too\n"
             "  --token-env NAME          Read bearer token from one environment variable\n"
             "  --token-file RELATIVE     Read token from owner-only file below --secret-root\n"
             "  --secret-root PATH        Required with --token-file\n"
@@ -74,13 +75,14 @@ void usage(std::ostream& output) {
             "and non-streaming text-only POST /v1/chat/completions. Streaming, tools, "
             "downloads, remote URLs, telemetry, and MCP are disabled.\n"
             "\n"
-            "The engine loads exactly the model named by --model-id: this server supplies "
-            "--native <model> from the local inventory, so the model path is never passed "
-            "with --engine-arg.\n"
+            "With the qwen (Strata) profile the engine loads exactly the model named by "
+            "--model-id: this server supplies --native <model> from the local inventory, so "
+            "the model path is never passed with --engine-arg.\n"
             "\n"
             "The glm53 profile requires a separately built LightTransport-compatible "
             "strata-glm-decode engine. Supply its required positional engine arguments "
-            "unchanged using repeated --engine-arg; this server adds --serve and --native <model>.\n";
+            "unchanged using repeated --engine-arg; for glm53 this server adds only --serve "
+            "(--native is Strata-only) and --model-id is checked against the inventory.\n";
 }
 
 bool next_value(const int argc, char* argv[], int* index, std::string* output, std::string* error) {
@@ -251,7 +253,11 @@ int run(const Options& options) {
     return model.id == *options.model_id;
   });
   if (selected == manifests->end()) { std::cerr << "Selected model is not present in --models-root.\n"; return EXIT_FAILURE; }
-  auto engine_arguments_result = secure_frontend::build_engine_arguments(*selected, *options.models_root, options.engine_arguments);
+  const auto arguments_profile = options.profile == secure_frontend::NativeChatProfile::glm53
+      ? secure_frontend::EngineArgumentsProfile::lighttransport_glm53
+      : secure_frontend::EngineArgumentsProfile::strata_0143;
+  auto engine_arguments_result = secure_frontend::build_engine_arguments(arguments_profile, *selected, *options.models_root,
+                                                                         options.engine_arguments);
   auto* engine_arguments = std::get_if<std::vector<std::string>>(&engine_arguments_result);
   if (engine_arguments == nullptr) { std::cerr << "Engine arguments rejected.\n"; return EXIT_FAILURE; }
   std::vector<secure_frontend::ApiModel> models;

@@ -14,7 +14,8 @@ std::string_view flag_name(const std::string_view argument) {
 }
 }  // namespace
 
-EngineArgumentsResult build_engine_arguments(const ModelManifest& selected, const std::filesystem::path& models_root,
+EngineArgumentsResult build_engine_arguments(const EngineArgumentsProfile profile, const ModelManifest& selected,
+                                             const std::filesystem::path& models_root,
                                              const std::vector<std::string>& user_arguments) {
   std::vector<std::string> arguments;
   arguments.reserve(user_arguments.size() + 2);
@@ -23,6 +24,14 @@ EngineArgumentsResult build_engine_arguments(const ModelManifest& selected, cons
       return EngineArgumentsError{EngineArgumentsErrorCode::invalid_value, "engine argument contains NUL"};
     }
     const auto name = flag_name(argument);
+    if (profile == EngineArgumentsProfile::lighttransport_glm53) {
+      // GLM CLI is not characterized: pass through unchanged; only the launcher-owned --serve is refused.
+      if (name == "--serve") {
+        return EngineArgumentsError{EngineArgumentsErrorCode::owned_flag, "engine argument is owned by the frontend"};
+      }
+      arguments.push_back(argument);
+      continue;
+    }
     for (const auto owned : kOwnedFlags) {
       if (name == owned) {
         return EngineArgumentsError{EngineArgumentsErrorCode::owned_flag, "engine argument is owned by the frontend"};
@@ -36,6 +45,7 @@ EngineArgumentsResult build_engine_arguments(const ModelManifest& selected, cons
     }
     arguments.push_back(argument);
   }
+  if (profile == EngineArgumentsProfile::lighttransport_glm53) return arguments;
   const auto path = validate_local_artifact_path(selected.relative_artifact_path);
   if (!std::holds_alternative<std::string>(path)) {
     return EngineArgumentsError{EngineArgumentsErrorCode::invalid_value, "selected model has an invalid artifact path"};

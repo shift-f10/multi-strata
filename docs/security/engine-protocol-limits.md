@@ -11,6 +11,7 @@ Facts the frontend relies on; verified against the engine source on 2026-10-13.
 | STOP | Honored only after the GEN has been picked up; always followed by `DONE ... cancel` | Frontend sends STOP only after a generation has started; drains to DONE |
 | `nonfinite` | `DONE ... nonfinite`; next request restarts from token 0 | 503 for that request; protocol stays idle |
 | Model path | `--native <shard1.gguf>` or `--pack DIR`; no positional args | Frontend owns `--native` (engine_arguments, next task) |
+| GLM-5.3 profile | Engine CLI not characterized | Frontend passes arguments through unchanged (NUL/--serve rejected) and does not supply the model path; model-id linkage is Strata-only until SP5/SP6 |
 | Network | None in the engine; no host/port/bind/http flags | Deny-list covers only frontend-owned flags |
 | Unsupported modes | `--batch` (BT/BDONE), `--vision` (GENI) | Rejected in `--engine-arg` until the frontend implements their protocol |
 | Windows stdin writes | Engine reads stdin with blocking `getline` | Windows stdin writes: pipe buffer ≥ kMaxWriteLineBytes + 4096 so one GEN record never blocks; overlapped writes are SP2 work |
