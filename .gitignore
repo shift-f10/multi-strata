@@ -67,3 +67,6 @@ build-vision-cuda12.bat
 /.toolchains/
 /secure_frontend/out/
 /secure_frontend/build/
+
+# parallel sub-project worktrees (superpowers finishing skill cleans these)
+/.worktrees/
