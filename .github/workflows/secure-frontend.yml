@@ -129,6 +129,16 @@ jobs:
           submodules: true
       - run: scripts/dev/bootstrap-linux.sh
       - run: echo "$GITHUB_WORKSPACE/.venv-dev/bin" >> "$GITHUB_PATH"
+      # Our root's own defaults, with no -D flags: the three seeds must be OFF,
+      # the build type Release, and the configure must fetch nothing.
+      - name: root defaults (configure only, no -D flags)
+        run: |
+          cmake -S . -B out/root-defaults -G Ninja
+          grep -q '^STRATA_NATIVE_EXPERTS:BOOL=OFF' out/root-defaults/CMakeCache.txt
+          grep -q '^STRATA_ENABLE_CUDA:BOOL=OFF' out/root-defaults/CMakeCache.txt
+          grep -q '^STRATA_ENABLE_HIP:BOOL=OFF' out/root-defaults/CMakeCache.txt
+          grep -q '^CMAKE_BUILD_TYPE:STRING=Release' out/root-defaults/CMakeCache.txt
+          test ! -e out/root-defaults/_deps
       - run: cmake -S . -B out/root -G Ninja -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_ENABLE_HIP=OFF -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_BUILD_SECURE_FRONTEND_TESTS=ON
       - run: cmake --build out/root --target strata-secure-server secure_frontend_config_tests strata-plan --parallel
       # --no-tests=error stops a vacuous pass if the frontend tests stop registering.

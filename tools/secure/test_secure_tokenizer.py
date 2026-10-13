@@ -59,3 +59,23 @@ def test_cli_keeps_the_qwen_pattern_for_a_qwen35_pack(tmp_path):
     assert main(["--gguf", str(write_tiny_gguf(tmp_path / "qwen.gguf", "qwen35")), "--out", str(out_dir)]) == 0
     assert shipped(out_dir)["pre_pattern"] == QWEN35_PATTERN
     assert "QWEN35" in shipped(out_dir)["pre_pattern_source"]
+
+
+def test_extract_refuses_when_upstream_no_longer_writes_tokenizer_json(tmp_path, monkeypatch):
+    """If upstream's extract() stops writing <out>/tokenizer/tokenizer.json, the wrapper must not invent one."""
+    import pytest
+    import secure_tokenizer
+
+    def moved_extract(gguf_path, out_dir):
+        elsewhere = Path(out_dir) / "tok"
+        elsewhere.mkdir(parents=True, exist_ok=True)
+        (elsewhere / "tokenizer.json").write_text("{}", encoding="utf-8")
+        return {"pre": "glm4", "vocab_size": 0, "n_merges": 0}
+
+    monkeypatch.setattr(secure_tokenizer._upstream, "extract", moved_extract)
+    out_dir = tmp_path / "pack"
+    expected = out_dir / "tokenizer" / "tokenizer.json"
+    with pytest.raises(RuntimeError, match="upstream layout changed; re-verify the wrapper") as excinfo:
+        extract(write_tiny_gguf(tmp_path / "glm.gguf", "glm4"), out_dir)
+    assert str(expected) in str(excinfo.value)
+    assert not expected.exists()

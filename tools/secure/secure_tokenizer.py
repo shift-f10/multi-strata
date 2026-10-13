@@ -20,7 +20,8 @@ docs/AGENT_HANDOFF.md "Update upstream"):
   * `strata_tokenizer.Tokenizer.__init__` positional argument order
     `(tokens, merges, token_types, pre, special_ids)` and its `self.pre` attribute;
   * `strata_tokenizer.extract(gguf_path, out_dir)` returning the config dict (with `pre`, `vocab_size`,
-    `n_merges`) and writing it to `<out_dir>/tokenizer/tokenizer.json`, the file rewritten here;
+    `n_merges`) and writing it to `<out_dir>/tokenizer/tokenizer.json`, the file rewritten here (extract()
+    raises if that file is missing rather than creating it);
   * the module-level `QWEN35_PATTERN` and `bytes_to_unicode`.
 """
 from __future__ import annotations
@@ -84,6 +85,9 @@ def extract(gguf_path, out_dir) -> dict:
     cfg = _upstream.extract(gguf_path, out_dir)
     cfg["pre_pattern"], cfg["pre_pattern_source"] = pre_tokenizer_pattern(cfg["pre"])
     path = pathlib.Path(out_dir) / "tokenizer" / "tokenizer.json"
+    if not path.is_file():
+        raise RuntimeError("upstream extract() did not write %s: upstream layout changed; re-verify the wrapper "
+                           "(tools/secure/secure_tokenizer.py, see its module docstring)" % path)
     path.write_text(json.dumps(cfg, ensure_ascii=False, indent=1), encoding="utf-8")
     return cfg
 
