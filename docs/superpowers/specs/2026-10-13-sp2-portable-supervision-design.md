@@ -21,7 +21,7 @@ into supervision a release can rely on:
 4. Every `PROC-01`..`PROC-06`, `EXT-01`, `EXT-02` row in
    `tests/security/README.md` has CTest tests named by acceptance ID.
 
-SP2 changes no engine code (`src/`). The `run`/`ps`/`stop` CLI builds on this
+SP2 changes no engine code (`upstream/src/`). The `run`/`ps`/`stop` CLI builds on this
 supervisor but is not part of SP2.
 
 ## 2. Constraints
@@ -125,11 +125,11 @@ The supervisor kills the whole generation (group/Job SIGKILL, §3.7) and counts
 a failure when:
 
 1. a line matches one of upstream's `FATAL_PREFIXES` exactly as a prefix
-   (`serve/server.py:587-588`, research §4) — `"ERR verify: timed out at layer "`,
+   (`upstream/serve/server.py:587-588`, research §4) — `"ERR verify: timed out at layer "`,
    `"ERR verify batch: timed out at layer "`, `"ERR verify: an earlier window
    never finished"`, `"ERR verify batch: an earlier window never finished"`.
    The engine lives on but is unusable; a trailing `DONE` is not accepted
-   (`_pump`, `server.py:775-791`). Other `ERR` lines keep SP0 behavior;
+   (`_pump`, `upstream/serve/server.py:775-791`). Other `ERR` lines keep SP0 behavior;
 2. READY does not arrive within `ready_timeout`;
 3. an E1/E2 drain fails (SP0 marks `failed`; SP2 adds kill and restart);
 4. a stdin write misses its deadline (§3.10).
@@ -384,7 +384,7 @@ CTest names.
 
 ## 5. Out of scope
 
-Engine changes (`src/`: protocol nonce, `PR_SET_DUMPABLE`); GPU verification
+Engine changes (`upstream/src/`: protocol nonce, `PR_SET_DUMPABLE`); GPU verification
 of the allowlist (offline box, rflores); Landlock, seccomp, restricted tokens,
 write confinement beyond cwd/temp; a circuit-reset route; `run`/`ps`/`stop`
 and service units (product-experience spec); config parsing (SP1);
@@ -401,7 +401,7 @@ and silence checks beyond SP0's generation deadline; overlapped stdout.
   C5 → C6 → N1+N2+N3 → N4 → N5 → N6+R1+K2 → A1, A2 → R2+R3 → G1, G2, G3, G4
   → X1+X2 → K4+K6. W tasks are cross-built and wine-smoked locally and count
   as done only when the MSYS2 job is green.
-- Stop for rflores before any `src/` change, any second-user test outside CI,
+- Stop for rflores before any `upstream/src/` change, any second-user test outside CI,
   any GPU run, or any `/health` change beyond adding `recovery`.
 
 ## 7. Review Focus

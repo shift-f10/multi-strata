@@ -12,6 +12,16 @@ numeric runs at three digits.  This module imports upstream's tokenizer and adds
 The GLM regex was transcribed from lighttransport/Strata `glm53f` @ 4894c996 `tools/strata_tokenizer.py`
 (see docs/PROVENANCE.md).  Upstream's module inserts its own directory into sys.path for gguf_reader, so it
 is imported here as a top-level module from upstream/tools.
+
+Coupling to upstream internals (not a public API; re-verify on every upstream pointer bump, see
+docs/AGENT_HANDOFF.md "Update upstream"):
+
+  * `strata_tokenizer.Tokenizer._re` - the compiled pre-tokenizer regex this subclass replaces;
+  * `strata_tokenizer.Tokenizer.__init__` positional argument order
+    `(tokens, merges, token_types, pre, special_ids)` and its `self.pre` attribute;
+  * `strata_tokenizer.extract(gguf_path, out_dir)` returning the config dict (with `pre`, `vocab_size`,
+    `n_merges`) and writing it to `<out_dir>/tokenizer/tokenizer.json`, the file rewritten here;
+  * the module-level `QWEN35_PATTERN` and `bytes_to_unicode`.
 """
 from __future__ import annotations
 

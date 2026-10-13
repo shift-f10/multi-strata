@@ -37,8 +37,7 @@ Carried from SP0 (§2 there) and the owner decisions in the handoff:
   smoke only. Kernel 5.15 (so `openat2` exists here; the fallback is still
   tested). glibc 2.35 (`getrandom`, `explicit_bzero` available).
 - No third-party dependencies in the frontend; keep it that way. No
-  `src/` (engine) change; if one is needed, stop and report.
-- Upstream-owned files are touched only from the `PROVENANCE.md` allowlist.
+  `upstream/src/` (engine) change; if one is needed, stop and report.
 - Binding rules: `threat-model.md:47-52` (CSPRNG token, constant-time compare,
   dev mode only loopback-only with warning, finite limits) and `:93-108`
   (schema-validated config, unknown keys are errors, no coercion, canonical
@@ -373,7 +372,7 @@ UX (product-experience spec); `x-api-key`, multiple keys, per-app tokens
 `WEB-*`, `EXT-*` (SP3); `PROC-*`, handle passing to the engine, eager READY,
 restart/backoff, process timings as config (SP2); `acquire` and SHA-256 (SP4);
 logging implementation (roots only); Windows Error Reporting policy and
-installers (SP7); any `src/` change.
+installers (SP7); any `upstream/src/` change.
 
 ## 8. Execution model
 
@@ -390,7 +389,7 @@ installers (SP7); any `src/` change.
   cross-compiled on the dev host and marked "pending MSYS2" in the handoff
   until the owner's push runs CI.
 - The orchestrator reruns `ctest` itself before accepting a task. Before any
-  task touches `src/`, an upstream-owned file outside the allowlist, or
+  task touches anything under `upstream/` (the submodule) or our root `CMakeLists.txt`, or
   installs anything outside `.venv-dev/` and `.toolchains/`, work stops and
   the owner decides.
 

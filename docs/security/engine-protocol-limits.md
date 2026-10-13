@@ -1,4 +1,4 @@
-# Engine protocol limits (Strata v0.1.43, `src/program/generate.cpp`)
+# Engine protocol limits (Strata v0.1.43, `upstream/src/program/generate.cpp`)
 
 Facts the frontend relies on; verified against the engine source on 2026-10-13.
 

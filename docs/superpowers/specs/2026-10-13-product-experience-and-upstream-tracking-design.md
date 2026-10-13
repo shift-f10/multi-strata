@@ -311,6 +311,15 @@ it does not download or install anything.
 
 ## 9. Upstream tracking
 
+> **Superseded (2026-10-13)** by
+> [`2026-10-13-upstream-submodule-layout-design.md`](2026-10-13-upstream-submodule-layout-design.md):
+> upstream is the pinned, unmodified submodule `upstream/`. The approved-edit
+> list, `scripts/dev/upstream-delta.sh`, the `upstream-delta` CI job, the merge
+> runbook, the ledger and the tokenizer exception below no longer apply; an
+> upstream update is a submodule bump plus the gates (`docs/AGENT_HANDOFF.md`,
+> "Update upstream"). The GLM-engine and SP5-parity bullets still hold, with
+> `src/` read as `upstream/src/`.
+
 Rules (owner decision 6): our code in our directories; upstream files touched
 only from the PROVENANCE allowlist (root `CMakeLists.txt` integration hunk,
 `.gitignore` appends, `requirements.txt` if needed); upstream `serve/`,
@@ -378,7 +387,7 @@ Mechanics:
 | SP5 | Typed pass-through table, profiles and parity behind the same CLI (NVIDIA host) |
 | SP6 | `engines/glm/` tracking `glm53f`; GLM manifest entries |
 | SP7 | Linux tarball/.deb and Windows per-user installer; `service enable/disable/status`; `uninstall`; full `doctor`; release manifest + signing; SBOM; offline GPU validation kit |
-| Tooling (any SP, recommend SP1) | `scripts/dev/upstream-delta.sh` + CI job; tokenizer exception move |
+| Tooling (any SP, recommend SP1) | Done by the upstream-submodule layout: no delta script needed; tokenizer aliases moved to `tools/secure/secure_tokenizer.py` |
 
 ## 12. Open questions for the owner
 

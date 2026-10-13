@@ -10,7 +10,8 @@
 
 namespace secure_frontend {
 
-// The offline tokenizer assets extracted by tools/strata_tokenizer.py.  This
+// The offline tokenizer assets extracted by upstream/tools/strata_tokenizer.py
+// (through our wrapper tools/secure/secure_tokenizer.py for GLM packs).  This
 // type intentionally owns all input: loading a pack never keeps a file handle,
 // invokes a subprocess, or contacts a network service.
 struct TokenizerPack final {

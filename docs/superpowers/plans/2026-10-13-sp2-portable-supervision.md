@@ -26,7 +26,7 @@
 - **Elevation in tests (no override flag):** on Windows the harness (Task 3) always starts `strata-secure-server` with a LUA-restricted copy of its own token (`CreateRestrictedToken(LUA_TOKEN)` + `CreateProcessAsUserW`), grants that token's user full control on every directory the tests create (objects an elevated admin creates are owned by Administrators, which the LUA token holds deny-only), and asserts the server's token is non-elevated. If the LUA token still reports elevation it falls back to `SaferComputeTokenFromLevel(SAFER_LEVELID_NORMALUSER)`; if that is still elevated the harness fails with a fixed message and the executor STOPS and asks rflores. There is NO runtime `--allow-elevated-for-tests` (or similar) flag anywhere in SP2.
 - **Owner-acknowledged deviations (recorded, not hidden):** (1) G1 asserts a *relative* identity rule — the engine is never MORE elevated and never at a HIGHER integrity level than the frontend (Windows), and has the frontend's uid/gid (POSIX) — instead of the spec's absolute "not elevated", because the CI runners and any elevated developer shell run the test binary itself elevated (Task 25). (2) G3 (an engine that requires elevation is `spawn_failed`, never `runas`) is UNVERIFIED in CI (the runners are elevated, so error 740 cannot occur) and under wine (no UAC). Its code ships and its case stays in `secure_frontend_engine_child_tests` for manual runs, but it is not registered with CTest and is not a skipped test; the handoff records it as a validation-kit item for the owner's offline Windows box (Task 25).
 - **No third-party dependencies** in `secure_frontend/`; standard library and OS APIs only. New system libraries allowed on Windows: `shell32`, `advapi32`, `bcrypt`, `ntdll` (via `GetProcAddress` only), `ws2_32`.
-- **Off limits:** no change under the repository-root `src/`, `include/`, `serve/`, `setup.py`, or the root `CMakeLists.txt` (`secure_frontend/src` and `secure_frontend/include` are the frontend and are in scope). Stop and report to rflores before any such change, before any second-user test outside CI, before any GPU run, and before any `/health` change beyond adding `recovery`.
+- **Off limits:** no change under `upstream/` (the submodule) or our root `CMakeLists.txt` (`secure_frontend/src` and `secure_frontend/include` are the frontend and are in scope). Stop and report to rflores before any such change, before any second-user test outside CI, before any GPU run, and before any `/health` change beyond adding `recovery`.
 - **No `rm -rf`, no `sudo`, nothing installed** outside `.venv-dev/` and `.toolchains/`. (The only `sudo` in SP2 is `sudo -n -u nobody` inside the GitHub Linux runner for R2, Task 24.)
 - **SP1-bound values:** until Task 29 every value SP1 makes typed configuration is a named constant in exactly one header, `secure_frontend/include/secure_frontend/supervision_defaults.hpp` (Task 6a); Task 29 folds it into SP1's `config_defaults.hpp`. The SP2 options (`--state-dir`, `--engine-lib-dir`, `--gpu`, `--allow-new-privileges`) become SP1 schema keys and `kFlags` rows (`roots.state`, `engine.lib_dirs`, `engine.gpu`, `engine.allow_new_privileges`; Task 29).
 - **Warnings are errors:** every new target gets `secure_frontend_set_warnings` — test binaries through `secure_frontend_add_test_executable`, and explicitly the test-support library and `strata-supervision-fake-engine`.
@@ -672,7 +672,7 @@ Expected: FAIL — `supervision_fake_engine_main.cpp` does not exist (`Cannot fi
 
 namespace {
 
-// The engine's fatal verification lines (upstream serve/server.py FATAL_PREFIXES).
+// The engine's fatal verification lines (upstream/serve/server.py FATAL_PREFIXES).
 constexpr std::string_view kFatalPrefixes[] = {
     "ERR verify: timed out at layer ",
     "ERR verify batch: timed out at layer ",
@@ -4968,7 +4968,7 @@ Claude-Session: https://claude.ai/code/session_01XJi4XE2uAmBQoccdFoTPQw"
 - Modify: `docs/AGENT_HANDOFF.md` (V5 row)
 
 **Interfaces:**
-- Produces: `EngineProtocolErrorCode::fatal_engine_line` (appended after `response_limit`), `kEngineFatalPrefixes` (`std::array<std::string_view, 4>`, exactly upstream `serve/server.py:587-588`), `is_engine_fatal_line(std::string_view)`; `kill_reason_for` → `KillReason::fatal_line`.
+- Produces: `EngineProtocolErrorCode::fatal_engine_line` (appended after `response_limit`), `kEngineFatalPrefixes` (`std::array<std::string_view, 4>`, exactly `upstream/serve/server.py:587-588`), `is_engine_fatal_line(std::string_view)`; `kill_reason_for` → `KillReason::fatal_line`.
 
 - [ ] **Step 1: Write the failing test** (append to the `SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES` line and SP1's `run_cases` list; `support/test_tokenizer.hpp` and `<variant>` are included since Task 7):
 
@@ -5021,9 +5021,9 @@ void proc04_fatal_prefix_kills_engine() {
 `engine_protocol_client.hpp`: add `#include <array>`; append `fatal_engine_line,` after `response_limit,` in `EngineProtocolErrorCode`; after the enum:
 
 ```cpp
-// The engine's fatal verification lines (upstream serve/server.py:587-588
+// The engine's fatal verification lines (upstream/serve/server.py:587-588
 // FATAL_PREFIXES), matched as prefixes. The engine lives on but is unusable;
-// a trailing DONE is never accepted (upstream _pump, server.py:775-791).
+// a trailing DONE is never accepted (upstream _pump, upstream/serve/server.py:775-791).
 inline constexpr std::array<std::string_view, 4> kEngineFatalPrefixes{
     "ERR verify: timed out at layer ",
     "ERR verify batch: timed out at layer ",
@@ -8937,7 +8937,7 @@ Expected: `100% tests passed, 0 tests failed out of <Task 27 total>` with exactl
 Run: `cmake --preset windows-llvm-mingw-cross && cmake --build --preset windows-llvm-mingw-cross 2>&1 | tail -2 && ls out/build/windows-llvm-mingw-cross/*.exe | wc -l && ctest --preset windows-llvm-mingw-cross 2>&1 | tail -3`
 Expected: builds with `-Werror`; the SP1-merged `.exe` count + 7; `100% tests passed, 0 tests failed out of <Task 27 wine total>`.
 Run: `pgrep -f strata-supervision-fake-engine || echo none` → `none` (no test left a fake behind).
-Run (repo root): `.venv-dev/bin/pytest -q | tail -2` — unchanged pass count (nothing under `serve/` or `tools/` changed).
+Run (repo root): `.venv-dev/bin/pytest -q | tail -2` — unchanged pass count (`tools/secure` only).
 Run: `git status --short` — only this task's files.
 
 - [ ] **Step 7: Commit**

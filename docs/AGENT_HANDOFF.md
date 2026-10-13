@@ -49,42 +49,40 @@ without asking the owner.
    product-experience spec is written between SP0 and SP1.
 5. **Launch, install and configuration must be user-friendly and secure.** This
    lands in SP1 and SP7.
-6. **Upstream-trackability.** Our code lives only in our own directories.
-   Upstream-owned files are touched only from an allowlist (the root
-   `CMakeLists.txt` frontend hunk, `.gitignore`, `requirements.txt` if ever
-   needed). The allowlist is defined in
-   [`PROVENANCE.md`](PROVENANCE.md), which records each touch (including one
-   pre-allowlist baseline edit to `tools/strata_tokenizer.py`). The upstream Python
-   service stays in-tree, untouched (quarantined at package time). Merge
-   runbook: `git fetch upstream && git merge upstream/main`, then run every gate
-   below. An upstream-delta script plus a CI gate for it are still to be added.
-   The SP6 engine is never woven into `src/`.
-7. **pytest exclusions to keep visible** (all in `pytest.ini`, each with its
-   reason):
-   - deselected, upstream drift against `setup.py` (fail with
-     `FileNotFoundError` on the mocked `build/strata`):
-     `tools/test_setup_choices.py::HipVision::test_the_cpu_encoder_is_built_once`,
-     `tools/test_setup_choices.py::HipVision::test_without_images_nothing_changes`,
-     `tools/test_setup_choices.py::CudaVision::test_the_encoder_is_built_native`;
-   - ignored: `tools/test_iq_pack.py` (needs llama.cpp's `gguf` module) and
-     `tools/test_setup_engine_hash.py` (reaches GitHub; tests must be hermetic).
+6. **Upstream-trackability.** Upstream Strata is the git submodule `upstream/`
+   (`https://github.com/Niko1221/Strata.git`), pinned by its gitlink at
+   `7695859aa13afb248bdb4d36f9b2e95707db079d` (tag `v0.1.43`) and never
+   edited, inside or outside the submodule. The repository root holds only our
+   code; our additions to upstream behavior are wrappers that import upstream
+   (`tools/secure/secure_tokenizer.py`). The upstream Python service stays in
+   the submodule, untouched, and is quarantined at package time
+   (`scripts/secure_distribution_check.py` rejects any `upstream` path). An
+   upstream update is "Update upstream" below: bump the pointer, run the gates.
+   The SP6 engine is never woven into `upstream/src/`.
+7. **Routine pytest runs our tests only.** `pytest.ini` collects
+   `tools/secure/` with no ignores or deselects. Upstream's own suites
+   (`pytest upstream/tools` with its recorded exclusions, `pytest
+   upstream/serve`) run explicitly after each submodule bump; the exact
+   commands are in "Update upstream" below.
 8. **Pre-push hook.** The owner's pre-push hook runs `pytest -q`. With
-   `pytest.ini` it collects `tools/` only and passes in about 20.6 s on the dev host.
-   `pytest serve` is the explicit run of the upstream service suite (about
-   4.5 minutes) after an upstream merge.
-   `conftest.py` skips numpy-dependent upstream tests when the interpreter running pytest lacks numpy, so the pre-push hook passes with a system pytest; the full set runs in `.venv-dev`.
+   `pytest.ini` it collects `tools/secure/` only (12 tests). `conftest.py`
+   stops the run with "run `git submodule update --init`" when `upstream/` is
+   not checked out.
 9. **CI status: all blocking jobs green on Windows and Linux** (run
    `38458255140`, branch `ci/windows-runtime-fixes`, 2026-10-13). The first
    real run (`38456682352`) failed three tests on `windows-msys2-clang`; the
    fixes are listed under "Verification performed". The wine results below
-   remain a smoke test only.
+   remain a smoke test only. After the submodule layout: run `38478775552`
+   (branch `layout/upstream-submodule` @ `4aa742c9`), all blocking jobs green.
 
 ## Current baseline
 
-- Upstream baseline: `Niko1221/Strata` tag `v0.1.43`, checked-out commit
-  `7695859aa13afb248bdb4d36f9b2e95707db079d`.
-- Git remotes: `upstream` points at `https://github.com/Niko1221/Strata.git`;
-  `origin` is the owner's repository. Only the owner pushes.
+- Upstream baseline: the `upstream` submodule gitlink, `Niko1221/Strata` tag
+  `v0.1.43`, commit `7695859aa13afb248bdb4d36f9b2e95707db079d`
+  (`git submodule status`).
+- Git remotes: `origin` is the owner's repository. Only the owner pushes. The
+  older `upstream` remote of this repository is no longer used for tracking;
+  the submodule has its own `origin`.
 - Secure baseline commit on `main`: `7de35b0c` (the native `secure_frontend`
   as handed off before SP0), followed by the SP0 spec and plan (`4884e9a8`,
   `4dce6f79`). SP0 is the branch `sp0-foundation-hardening` on top of `4dce6f79`.
@@ -100,20 +98,80 @@ without asking the owner.
   quantization, vision option, context option, GPU backend, and multi-GPU
   configuration. Do not silently reduce that scope to one model or NVIDIA.
 
+## Repository layout
+
+Upstream Strata is the git submodule `upstream/`; the repository root holds
+only our code. Deleting `upstream/` leaves exactly our code.
+
+| Ours, at the root | Pristine, under `upstream/` (submodule @ `7695859a`, tag `v0.1.43`) |
+| --- | --- |
+| `CMakeLists.txt` (builds `secure_frontend/` and, by default, the engine from `upstream/`) | `upstream/CMakeLists.txt`, `upstream/src/`, `upstream/include/`, `upstream/cmake/`, `upstream/third_party/`, `upstream/sycl/` |
+| `secure_frontend/` (own `CMakePresets.json`; builds without `upstream/`) | `upstream/serve/`, `upstream/setup.py`, `upstream/setup.sh`, `upstream/requirements.txt`, `upstream/chat.py`, the launchers |
+| `tools/secure/` (GLM tokenizer wrapper and our pytest suite) | `upstream/tools/` (incl. `strata_tokenizer.py`, `test_setup_*.py`) |
+| `scripts/`, `tests/security/`, `docs/` (this file, `PROVENANCE.md`, `secure-frontend-ci.md`, `security/`, `superpowers/`) | `upstream/docs/`, `upstream/tests/`, `upstream/bench/`, `upstream/data/`, `upstream/ref/` |
+| `.github/workflows/secure-frontend.yml`, `.gitignore`, `.gitattributes`, `.gitmodules`, `pytest.ini`, `conftest.py`, `LICENSE`, `README.md` | `upstream/.github/`, `upstream/LICENSE`, `upstream/README*.md`, `upstream/AGENTS.md`, `upstream/SECURITY.md`, `upstream/Dockerfile` |
+
+Getting the code: `git clone --recurse-submodules`, or `git submodule update
+--init` after a plain clone. Inside a `.worktrees/<name>` worktree run `git
+submodule update --init` once as well. The presets need no submodule;
+`pytest -q` and the root build do, and both say so when it is missing.
+
+Root build (GPU backends off, nothing fetched): `cmake -S . -B out/root -G
+Ninja && cmake --build out/root && ctest --test-dir out/root`.
+`-DSECURE_STRATA_BUILD_ENGINE=OFF` builds the frontend alone. Details:
+[`secure-frontend-ci.md`](secure-frontend-ci.md), "Root build".
+
+### Update upstream
+
+1. `git -C upstream fetch --tags origin`, then `git -C upstream checkout
+   --detach <tag>`, then `git add upstream`.
+2. Update `PROVENANCE.md` "Baseline" and "Current baseline" above to the new
+   commit and tag.
+3. Gates: `pytest -q`; `ctest --preset linux-gcc`; the
+   `windows-llvm-mingw-cross` build and wine `ctest`; the root build and root
+   `ctest`.
+4. Upstream's own suites in `out/venv-upstream` (exact commands in
+   [`secure-frontend-ci.md`](secure-frontend-ci.md), "Updating upstream"):
+   `pytest upstream/tools` with `--ignore` of `test_iq_pack.py` (needs
+   llama.cpp's `gguf` module) and `test_setup_engine_hash.py` (reaches GitHub),
+   and `--deselect` of the three recorded `test_setup_choices.py` drift cases;
+   then `pytest upstream/serve`.
+5. Re-check the SP5 pass-through table against the new engine's flags and
+   protocol, and the upstream internals `tools/secure/secure_tokenizer.py`
+   relies on (listed in its module docstring).
+6. `git submodule status` shows no `+`/`-`/`U`; `git -C upstream status
+   --short` is empty. One commit: `upstream: bump to <tag>`.
+
 ## What has changed
+
+### Submodule layout (branch `layout/upstream-submodule`)
+
+Spec: [`superpowers/specs/2026-10-13-upstream-submodule-layout-design.md`](superpowers/specs/2026-10-13-upstream-submodule-layout-design.md);
+plan: [`superpowers/plans/2026-10-13-upstream-submodule-layout.md`](superpowers/plans/2026-10-13-upstream-submodule-layout.md).
+
+| Item | What changed | Check |
+| --- | --- | --- |
+| U2 | `upstream/` = submodule `https://github.com/Niko1221/Strata.git` at `7695859a` (`v0.1.43`), tree byte-identical to the tag | `git submodule status` |
+| U3 | Our root `CMakeLists.txt`: frontend first, then `upstream/` unmodified; Release default, `include(CTest)`, `SECURE_FRONTEND_WERROR=ON`, CUDA/HIP/native experts seeded `OFF`, `SECURE_STRATA_BUILD_ENGINE` | root build 94 steps / 0 warnings, `ctest` 20/20, no `_deps`; `-D` overrides; empty `upstream/` message |
+| U4, U5 | `tools/secure/secure_tokenizer.py` wraps upstream's tokenizer (GLM aliases, `extract()` ships the declared pattern); tests in `tools/secure/`; `pytest.ini` `testpaths = tools/secure`; `conftest.py` names `git submodule update --init` | `pytest -q` 12 passed |
+| U1, U6, U7 | 2 971 upstream files removed from our tree; ours-only `.gitignore`, `.gitattributes`, `README.md`, `LICENSE` | `git ls-files` shows only our paths plus the `upstream` gitlink |
+| U8 | `bootstrap-linux.sh` reads only `scripts/dev/requirements-dev.txt` (now pins cmake 4.4.3, ninja 1.13.2, regex 2026.9.10) | fresh venv bootstraps; `pytest -q` passes without numpy |
+| U9 | `secure_distribution_check.py` rejects any `upstream` path component and quarantined names at any depth | `tools/secure/test_secure_distribution_check.py` (6 tests) |
+| U10 | CI: submodule checkout in `linux` and `top-level-integration`; the latter configures our root; collection and submodule-status steps | run `38478775552` (`4aa742c9`): all five blocking jobs green; `windows-msvc` informational red (known) |
+| U11–U14 | `PROVENANCE.md` baseline = gitlink, no ledger; this file, `secure-frontend-ci.md`, security docs, product spec §9, SP1/SP2 path patches; "Update upstream" runbook; offline bundle in `secure-frontend-ci.md` | doc greps in the plan, Task 6 |
 
 ### Secure baseline (commit `7de35b0c` on `main`)
 
 | Area | Files | Status |
 | --- | --- | --- |
-| Provenance | `docs/PROVENANCE.md` | Complete baseline/attribution record. SP0 added the upstream-touch allowlist and the record of every touch to an upstream-owned file. |
+| Provenance | `docs/PROVENANCE.md` | Complete baseline/attribution record. Since the submodule layout the baseline is the `upstream` gitlink and there are no upstream edits. |
 | Security/privacy contract | `docs/security/threat-model.md`, `tests/security/README.md`, `docs/security/privacy-migration.md`, `docs/security/deployment.md` | Complete specification, legacy-network inventory, platform deployment prerequisites, and package-readiness procedure; most acceptance tests are not implemented yet. |
 | Secure package gate | `scripts/secure_distribution_check.py` | Checks a selected staging directory (never this source tree) for quarantined Python installer/service/MCP/update artifacts and symlinks; `--release` additionally requires a privacy declaration manifest and SBOM. |
 | Native frontend foundation | `secure_frontend/` | C++20 configuration, secret/token-reader, HTTP policy/request-handler/socket adapter, API router, local model inventory, and process-supervision libraries with unit tests. |
 | Runnable smoke executables | `secure-frontend-smoke`, `strata-secure-smoke-server` | Authenticated local `/health` and `/v1/models`; no engine inference. |
 | Native serial chat executable | `strata-secure-server` | Starts one supervised local `--serve` engine child and offers authenticated text-only, non-streaming Qwen or explicitly selected GLM-5.3 `/v1/chat/completions` plus health/models. It is intentionally not a claim of universal upstream model/template/vision compatibility. |
-| GLM tokenizer tooling | `tools/strata_tokenizer.py`, `tools/test_glm_tokenizer.py` | Offline support for the `glm4` and `chatglm-bpe` byte-BPE pre-tokenizer aliases, preserving GLM's 1–3-digit segmentation, with emitted pack metadata. `secure_frontend` does not yet consume tokenizer-pack metadata, so native GLM execution still needs matching-pack validation. |
-| Top-level integration | `CMakeLists.txt` | Builds `secure_frontend` through `STRATA_BUILD_SECURE_FRONTEND=ON` (default `OFF` since SP0). |
+| GLM tokenizer tooling | `tools/secure/secure_tokenizer.py` (wraps `upstream/tools/strata_tokenizer.py`), `tools/secure/test_glm_tokenizer.py` | Offline support for the `glm4` and `chatglm-bpe` byte-BPE pre-tokenizer aliases, preserving GLM's 1–3-digit segmentation, with emitted pack metadata. `secure_frontend` does not yet consume tokenizer-pack metadata, so native GLM execution still needs matching-pack validation. |
+| Top-level integration | `CMakeLists.txt` (ours since the submodule layout) | Builds `secure_frontend/` and the engine from `upstream/`; `SECURE_STRATA_BUILD_ENGINE=OFF` builds the frontend alone. Before the layout it was an opt-in hunk in upstream's root file. |
 
 ### SP0 deliverables (branch `sp0-foundation-hardening` on `4dce6f79`, including the docs commits and the final fix wave)
 
@@ -122,7 +180,7 @@ says why it has none.
 
 | Item | What changed | Regression test / check |
 | --- | --- | --- |
-| Tooling (T1, T5) | `scripts/dev/bootstrap-linux.sh` creates `.venv-dev` (no root) with `-r requirements.txt -r scripts/dev/requirements-dev.txt`: cmake/ninja pinned in `requirements.txt`; pytest 9.1.1 and its dependencies pinned in `scripts/dev/requirements-dev.txt`. Offline (`STRATA_WHEEL_DIR` set) needs every wheel both files name **plus** a pip wheel, which the pip-bootstrap step now takes from `STRATA_WHEEL_DIR` too; nothing is fetched from the network then. `pytest.ini` collects `tools/test_*.py` only, with the exclusions listed above. | Bootstrap is idempotent (re-run on the existing venv: exit 0); a fresh scratch checkout bootstraps with network (exit 0) and offline from a wheel directory with the network blocked (exit 0); `pytest -q` passes from the repository root. |
+| Tooling (T1, T5) | `scripts/dev/bootstrap-linux.sh` creates `.venv-dev` (no root) with `-r scripts/dev/requirements-dev.txt` (since the submodule layout the only file it reads: cmake 4.4.3, ninja 1.13.2, regex, pytest 9.1.1 and its dependencies). Offline (`STRATA_WHEEL_DIR` set) needs every wheel that file names **plus** a pip wheel, which the pip-bootstrap step now takes from `STRATA_WHEEL_DIR` too; nothing is fetched from the network then. `pytest.ini` collects `tools/secure/` only (submodule layout). | Bootstrap is idempotent (re-run on the existing venv: exit 0); a fresh scratch checkout bootstraps with network (exit 0) and offline from a wheel directory with the network blocked (exit 0); `pytest -q` passes from the repository root. |
 | CMake hygiene (T3, T4) | Top-level `STRATA_BUILD_SECURE_FRONTEND` defaults `OFF` (opt-in). `SECURE_FRONTEND_WERROR` (default `ON`, follows `STRATA_WERROR` from the root). One `secure_frontend_set_warnings()` helper replaces the per-target flag blocks; dead `if(MSVC)`-inside-`if(UNIX)` blocks removed. | Configure with each setting. |
 | llvm-mingw (T2, P5) | `scripts/dev/bootstrap-llvm-mingw.sh` (llvm-mingw `20261006`, sha256 pinned), toolchain file, `windows-llvm-mingw-cross` preset. `win32_prelude.hpp` (`NOMINMAX`, `WIN32_LEAN_AND_MEAN`); paths converted with `path::wstring()`. Two further Windows fixes found by the cross build: unused POSIX helpers in `engine_process.cpp` guarded; `token_reader.cpp` uses `std::next(it) == end()` (libc++ `path::iterator` is an input iterator). | Cross build with `-Werror`; `wine strata-secure-server.exe --help` exits 0. |
 | Early close (S1) | `install_process_defaults()` ignores `SIGPIPE` in all three mains; `send()` uses `MSG_NOSIGNAL` (`SO_NOSIGPIPE` where that is the only option). | `socket_server_survives_client_early_close` |
@@ -131,7 +189,7 @@ says why it has none.
 | Generation deadline and recovery (E1, E2) | Total generation deadline; on timeout the client sends `STOP` and drains to `DONE` within `ChatExecutionLimits::stop_drain_timeout` (5 s), returning to idle (`idle()`), or marks the engine failed (`abandon()`). The request gets the `generation_timed_out` error; a `nonfinite` result is a `503` for that request only and the engine stays ready. | `generation_total_deadline_is_enforced`, `chat_recovers_after_generation_timeout`, `chat_marks_engine_failed_when_drain_fails`, `chat_rejects_nonfinite_done_and_stays_ready` |
 | Health (E3) | `EngineHealth` / `health()`; `ApiRouter` takes an optional `EngineStateProvider` and `/health` returns `{"status":"ok"|"unavailable","engine":"<state>"}` with the state one of four fixed literals (anything else fails closed). `starting` → `200` with `engine=starting` (READY is consumed on the first request; eager READY is SP2), `ready`/`generating` → `200`, `failed` or a stopped child → `503`. The server samples the child and protocol state once per request and derives both fields from that snapshot. No secrets or paths. | `health_reflects_protocol_state`, `health_is_failed_after_engine_closed_mid_generation`, `health_is_failed_when_engine_closes_before_ready`, `health_includes_engine_state_when_provided`, `health_is_503_with_engine_state_when_unavailable`, `health_samples_status_before_state_once_each` |
 | Protocol limits (E4, D4) | Limits derived from `READY`: `max_line_bytes = 0` means `min(32 + 11 × ctx, 16 MiB kProtocolMaxLineBytes)` for the outbound `GEN` line; inbound records capped at `kMaxReadLineBytes = 8192`; `kMaxWriteLineBytes = kProtocolMaxLineBytes`. The engine's `+8` context rule is applied before `GEN` (`400`). Facts in `docs/security/engine-protocol-limits.md`. | `gen_line_fits_max_prompt_tokens`, `chat_applies_engine_context_rule_with_eight_token_margin`, 100 KB `GEN` write in `engine_stdio_process_tests`, 16 MiB clamp case in `engine_protocol_client_tests` |
-| POSIX launch (P1–P3) | `src/posix_child_launch.hpp`: argv/env built before `fork`, `pipe2(O_CLOEXEC)`, descriptor sweep (`close_range`, bounded fallback), reap after `SIGKILL`. | `child_inherits_only_stdio_descriptors`, `child_receives_exact_argv_and_env`, `terminate_reaps_killed_child` (asserts pid `-1` and `ECHILD`) |
+| POSIX launch (P1–P3) | `secure_frontend/src/posix_child_launch.hpp`: argv/env built before `fork`, `pipe2(O_CLOEXEC)`, descriptor sweep (`close_range`, bounded fallback), reap after `SIGKILL`. | `child_inherits_only_stdio_descriptors`, `child_receives_exact_argv_and_env`, `terminate_reaps_killed_child` (asserts pid `-1` and `ECHILD`) |
 | Windows launch (P4, P6, P7) | `CREATE_SUSPENDED` → Job Object → `ResumeThread`. Iterative bounded `read_line` shared with POSIX through `take_pending_line()`. Stdin pipe created with `CreateNamedPipeW`, buffer **requested** at `kMaxWriteLineBytes + 4096` (advisory per Win32; overlapped writes deferred to SP2). `engine_stdio_process_tests` is now portable. `read_line` keeps one deadline across chunks (POSIX polls with the remaining budget) and treats `WAIT_FAILED` as a failure on Windows. | `read_line_rejects_oversize_on_all_platforms`, `read_line_waits_for_a_record_split_across_writes` (both pass under wine); P4: `job_object_terminates_grandchild` (Windows only: the fake engine spawns a 30 s sleeper grandchild, which must be gone after `terminate()`; passes under wine, authoritative only in the MSYS2 job). |
 | Engine arguments (M1, M2) | `secure_frontend_engine_arguments` library, profile-aware (`EngineArgumentsProfile`). Strata profile: the frontend supplies shard 1 by appending `--native <models_root/artifact>` (last) from the inventory entry for `--model-id` and rejects `--native`, `--serve`, `--batch`, `--slots`, `--vision` in `--flag` and `--flag=value` forms; the expert pack (`--pack`, loaded unconditionally, default cwd-relative `pack/full`) and other weight sources (`--ple-gguf`, `--embd-gguf`, `--native-head-gguf`, `--native-dense-gguf`, `--mtp`) pass through and are operator-supplied until SP1/SP5 model the whole launch. An invalid manifest artifact path (`../x.gguf`, `/abs.gguf`) is `invalid_value`. GLM-5.3 profile: arguments pass through (only NUL and `--serve` rejected), no model path is supplied; `strata-secure-server --profile glm53` requires at least one `--engine-arg`. | `engine_receives_model_path_from_inventory`, `engine_args_reject_owned_and_network_flags`, `strata_profile_passes_pack_and_weight_flags_through`, `rejects_invalid_relative_artifact_path`, `glm_profile_passes_arguments_through_without_native`, ctest `strata_secure_server_glm_requires_engine_arg` |
 | CI (T6) | `.github/workflows/secure-frontend.yml`: blocking `linux-gcc` (+ `pytest -q`), `linux-clang`, `windows-llvm-mingw-cross`, `windows-msys2-clang`, `top-level-integration` (root CMake, `STRATA_NATIVE_EXPERTS=OFF`, no llama.cpp clone); non-blocking `windows-msvc`. Green on run `38458255140` (all blocking jobs; `windows-msys2-clang` 19/19). `windows-msys2-clang` links with `-static` (preset) so a child launched with the allowlisted environment, which has no `PATH`, needs no runtime DLL. See [`secure-frontend-ci.md`](secure-frontend-ci.md). |
@@ -340,11 +398,13 @@ owns it (see the decisions above).
    GPU validation kit for the Linux and Windows test boxes.
 5. Stage only the native deliverables, then run
    `python3 scripts/secure_distribution_check.py --package-dir STAGE --release`.
-   The repository source tree intentionally fails this gate because it retains
-   quarantined upstream files for provenance; do not weaken the gate to make a
-   source archive pass. **SP7.**
+   A source checkout fails this gate by design: it rejects any path under an
+   `upstream` directory (the submodule) and the quarantined names at any depth;
+   do not weaken the gate to make a source archive pass. **SP7.**
 
 ## Verification performed
+
+### SP0 (before the submodule layout)
 
 Run on the dev host (Linux x86_64, no GPU) on 2026-10-13, after the SP0 final fix
 wave (`--pack` pass-through, `/health` engine state, portable socket tests). Always put the venv first:
@@ -371,8 +431,9 @@ What this does **not** show:
   job.
 - Nothing has been run on a GPU or against a real Strata engine; every engine
   test uses the fake engine.
-- `pytest serve` (the upstream service suite) was not run for SP0; nothing in
-  `serve/` changed.
+- `pytest upstream/serve` (the upstream service suite; `pytest serve` before
+  the submodule layout) was not run for SP0; nothing in `upstream/serve/`
+  changed.
 
 #### GitHub Actions (`secure-frontend` workflow, `shift-f10/multi-strata`)
 
@@ -397,12 +458,14 @@ Fixes on `ci/windows-runtime-fixes`:
    `send_all` now caps each `send()` at 64 KiB on every platform, and the
    unchanged S2 test passes on Windows. Not gated.
 
-The Python GLM tokenizer module also runs under `pytest -q` above
-(`tools/test_glm_tokenizer.py`, with the pinned `regex` from the venv). The two
-skips are hardware/platform skips in upstream tests
-(`tools/test_dll_closure.py`: HIP zip absent; `tools/test_setup_oldcpu.py`:
-Windows only). Run `tools/test_glm_tokenizer.py` again in the release Python
-environment before accepting a GLM tokenizer release.
+The Python GLM tokenizer tests also ran under `pytest -q` above (then
+`tools/test_glm_tokenizer.py`; now `tools/secure/test_glm_tokenizer.py`, with
+the pinned `regex` from the venv). The two skips were hardware/platform skips
+in upstream tests (`upstream/tools/test_dll_closure.py`: HIP zip absent;
+`upstream/tools/test_setup_oldcpu.py`: Windows only). Run
+`tools/secure/test_glm_tokenizer.py` and `tools/secure/test_secure_tokenizer.py`
+again in the release Python environment before accepting a GLM tokenizer
+release.
 
 ### Known small gaps
 
@@ -450,22 +513,32 @@ sub-project named.
 - The comment in `secure_frontend/CMakeLists.txt` above the UNIX-only
   `token_reader_tests` still says "MSVC/Windows runtime coverage"; the plan for
   that coverage is now the MSYS2 job. SP1.
+- Submodule layout: CI does not yet test our root's defaults without `-D`
+  flags (`top-level-integration` passes the OFF flags explicitly; a
+  configure-only check is planned).
+- Submodule layout: `scripts/secure_distribution_check.py` does not split
+  backslash separators on Linux, so a staged name such as `upstream\setup.py`
+  is one path component there.
+- Submodule layout: `tools/secure/secure_tokenizer.py` couples to upstream
+  internals (`Tokenizer._re`, the `__init__` argument order, the `extract()`
+  output path `tokenizer/tokenizer.json`); re-verify it on every upstream
+  pointer bump ("Update upstream").
 
 ## Collaboration and change rules
 
 - Keep security changes small and add a regression test before the fix.
-- Do not modify upstream engine/model code while developing the frontend unless
-  a compatibility defect proves it necessary; record every such change in
-  `docs/PROVENANCE.md`. Upstream-owned files outside the allowlist in the owner
-  decisions are not touched at all.
+- Never edit anything under `upstream/`. A compatibility need is met by a
+  wrapper in our tree or by an upstream pull request; record it in
+  `docs/PROVENANCE.md`. `git -C upstream status --short` stays empty.
 - Do not copy UnbiasedStrata code without recording source, revision, license,
   rationale, and Windows/Linux test coverage.
 - Do not enable MCP, tools, plugins, arbitrary command execution, telemetry,
   update checks, or automatic downloads. Those require a new threat-model
   review and an explicit user decision.
-- Gates before every hand-off and after every upstream merge: `pytest -q`;
-  `ctest --preset linux-gcc`; the `windows-llvm-mingw-cross` build; after an
-  upstream merge also `pytest serve`.
+- Gates before every hand-off and after every submodule bump: `pytest -q`;
+  `ctest --preset linux-gcc`; the `windows-llvm-mingw-cross` build; the root
+  build and root `ctest`; after a bump also `pytest upstream/tools` and
+  `pytest upstream/serve` ("Update upstream").
 - Commit locally; the owner pushes.
 - Before handing off, update this document's **What has changed** and
   **Verification performed** sections, then report `git status --short`.

@@ -23,9 +23,10 @@ python3 scripts/secure_distribution_check.py --package-dir /absolute/path/to/sta
 python3 scripts/secure_distribution_check.py --package-dir /absolute/path/to/stage --release
 ```
 
-The normal mode rejects legacy service and installer/update artifacts,
-including `serve/`, `sycl/serve/`, `setup.py`, `START-HERE.bat`, update
-scripts, `requirements.txt`, MCP artifacts, and Python source. It also rejects
+The normal mode rejects legacy service and installer/update artifacts at any
+depth of the staging tree: a `serve` or `sycl/serve` directory, `setup.py`,
+`START-HERE.bat`, update scripts, `requirements.txt`, MCP artifacts, Python
+source, and anything under an `upstream` directory. It also rejects
 symlinks in a staging tree so a reviewer cannot be shown files from outside the
 candidate package.
 
