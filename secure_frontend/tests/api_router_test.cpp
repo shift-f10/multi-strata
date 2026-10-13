@@ -72,10 +72,41 @@ void fails_closed_when_provider_throws_or_returns_invalid_model() {
   const auto invalid = invalid_router.dispatch("GET", "/v1/models");
   expect(invalid.status == 503, "invalid model metadata must not be emitted");
 }
+void health_includes_engine_state_when_provided() {
+  const secure_frontend::ApiRouter with_state(
+      [] { return true; }, [] { return std::vector<secure_frontend::ApiModel>{}; },
+      []() -> std::string_view { return "ready"; });
+  const auto response = with_state.dispatch("GET", "/health");
+  expect(response.status == 200, "healthy provider with engine state must be 200");
+  expect(response.body == "{\"status\":\"ok\",\"engine\":\"ready\"}\n", "health must carry \"engine\":\"ready\"");
+  const secure_frontend::ApiRouter generating(
+      [] { return true; }, [] { return std::vector<secure_frontend::ApiModel>{}; },
+      []() -> std::string_view { return "generating"; });
+  expect(generating.dispatch("GET", "/health").body == "{\"status\":\"ok\",\"engine\":\"generating\"}\n",
+         "generating is reported as healthy");
+}
+
+void health_is_503_with_engine_state_when_unavailable() {
+  const secure_frontend::ApiRouter starting(
+      [] { return false; }, [] { return std::vector<secure_frontend::ApiModel>{}; },
+      []() -> std::string_view { return "starting"; });
+  const auto response = starting.dispatch("GET", "/health");
+  expect(response.status == 503, "unavailable provider with engine state must be 503");
+  expect(response.body == "{\"status\":\"unavailable\",\"engine\":\"starting\"}\n",
+         "503 body carries only status and the engine literal");
+  const secure_frontend::ApiRouter bogus(
+      [] { return true; }, [] { return std::vector<secure_frontend::ApiModel>{}; },
+      []() -> std::string_view { return "/secret/path\"x"; });
+  const auto rejected = bogus.dispatch("GET", "/health");
+  expect(rejected.status == 503, "an engine state outside the fixed literals fails closed");
+  expect(rejected.body == "{\"status\":\"unavailable\"}\n", "an unknown engine state is never echoed");
+}
 
 }  // namespace
 
 int main() {
+  health_includes_engine_state_when_provided();
+  health_is_503_with_engine_state_when_unavailable();
   dispatches_exact_health_route();
   dispatches_models_with_json_escaping();
   rejects_non_exact_routes();

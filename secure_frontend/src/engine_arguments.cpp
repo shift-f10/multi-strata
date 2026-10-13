@@ -5,7 +5,9 @@
 
 namespace secure_frontend {
 namespace {
-constexpr std::array<std::string_view, 3> kOwnedFlags{"--native", "--pack", "--serve"};
+// --pack (the expert directory) and the other weight sources (--ple-gguf, --embd-gguf, --native-head-gguf,
+// --native-dense-gguf, --mtp) are operator-supplied and pass through; only shard 1 (--native) is frontend-owned.
+constexpr std::array<std::string_view, 2> kOwnedFlags{"--native", "--serve"};
 constexpr std::array<std::string_view, 3> kUnsupportedModes{"--batch", "--slots", "--vision"};
 
 std::string_view flag_name(const std::string_view argument) {

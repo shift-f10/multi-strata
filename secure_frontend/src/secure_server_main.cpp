@@ -61,10 +61,11 @@ void usage(std::ostream& output) {
             "  --model-id ID             Local model ID selected for this engine process\n"
             "  --tokenizer-pack PATH     Local directory with vocab.json, merges.txt, token_type.json\n"
             "  --engine PATH             Local Strata engine executable\n"
-            "  --engine-arg ARG          Optional literal engine argument; repeat as needed.\n"
-            "                            --serve is always rejected; with the qwen profile\n"
-            "                            --native, --pack, --batch, --slots and --vision\n"
-            "                            are rejected too\n"
+            "  --engine-arg ARG          Literal engine argument; repeat as needed. Optional\n"
+            "                            for qwen; glm53 requires at least one (its runner\n"
+            "                            takes positional arguments). --serve is always\n"
+            "                            rejected; with the qwen profile --native, --batch,\n"
+            "                            --slots and --vision are rejected too\n"
             "  --token-env NAME          Read bearer token from one environment variable\n"
             "  --token-file RELATIVE     Read token from owner-only file below --secret-root\n"
             "  --secret-root PATH        Required with --token-file\n"
@@ -75,9 +76,12 @@ void usage(std::ostream& output) {
             "and non-streaming text-only POST /v1/chat/completions. Streaming, tools, "
             "downloads, remote URLs, telemetry, and MCP are disabled.\n"
             "\n"
-            "With the qwen (Strata) profile the engine loads exactly the model named by "
-            "--model-id: this server supplies --native <model> from the local inventory, so "
-            "the model path is never passed with --engine-arg.\n"
+            "With the qwen (Strata) profile the frontend supplies shard 1 via --native from "
+            "--model-id (the local inventory), so --native is never passed with --engine-arg; "
+            "the expert pack (--pack) and other weight sources (--ple-gguf, --embd-gguf, "
+            "--native-head-gguf, --native-dense-gguf, --mtp) are operator-supplied with "
+            "--engine-arg until SP1/SP5 model the whole launch. The engine loads --pack "
+            "unconditionally (default: cwd-relative pack/full), so a real run must pass it.\n"
             "\n"
             "The glm53 profile requires a separately built LightTransport-compatible "
             "strata-glm-decode engine. Supply its required positional engine arguments "
@@ -194,6 +198,10 @@ bool parse_options(const int argc, char* argv[], Options* options, bool* help, s
     *error = "--token-file and --secret-root must be supplied together";
     return false;
   }
+  if (options->profile == secure_frontend::NativeChatProfile::glm53 && options->engine_arguments.empty()) {
+    *error = "--profile glm53 requires at least one --engine-arg";
+    return false;
+  }
   if (!std::holds_alternative<std::string>(secure_frontend::validate_model_id(*options->model_id))) {
     *error = "--model-id is not portable or valid";
     return false;
@@ -277,8 +285,23 @@ int run(const Options& options) {
   secure_frontend::HttpPolicy policy{.allowed_hosts = {authority}, .same_origin_origins = {"http://" + authority},
                                      .cors_allowed_origins = {}, .cors_enabled = false};
   const secure_frontend::ApiRouter router(
-      [&engine, &chat] { return engine.running() && chat.health() != secure_frontend::EngineHealth::failed; },
-      [models] { return models; });
+      // Healthy = ready or generating; starting (still loading) and failed are 503.
+      [&engine, &chat] {
+        const auto h = chat.health();
+        return engine.running() && h != secure_frontend::EngineHealth::failed &&
+               h != secure_frontend::EngineHealth::starting;
+      },
+      [models] { return models; },
+      [&engine, &chat]() -> std::string_view {
+        if (!engine.running()) return "failed";
+        switch (chat.health()) {
+          case secure_frontend::EngineHealth::starting: return "starting";
+          case secure_frontend::EngineHealth::ready: return "ready";
+          case secure_frontend::EngineHealth::generating: return "generating";
+          case secure_frontend::EngineHealth::failed: return "failed";
+        }
+        return "failed";
+      });
   auto server = secure_frontend::HttpSocketServer::bind(
       *config, std::move(policy), [verifier](const std::string_view supplied) { return verifier->matches(supplied); },
       [&router, &chat, &engine, &tokenizer, &options](const std::string_view method, const std::string_view target,

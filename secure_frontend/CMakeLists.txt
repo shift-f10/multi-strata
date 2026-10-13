@@ -394,4 +394,10 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_set_warnings(secure_frontend_chat_execution_tests)
     add_test(NAME secure_frontend_chat_execution_tests COMMAND secure_frontend_chat_execution_tests)
     add_test(NAME strata_secure_server_help COMMAND strata-secure-server --help)
+    # The GLM runner takes positional arguments: glm53 without any --engine-arg is a usage error.
+    add_test(NAME strata_secure_server_glm_requires_engine_arg
+        COMMAND strata-secure-server --profile glm53 --models-root models --tokenizer-pack tok
+                --engine engine --model-id glm-local --token-env STRATA_UNUSED_TOKEN)
+    set_tests_properties(strata_secure_server_glm_requires_engine_arg PROPERTIES
+        PASS_REGULAR_EXPRESSION "glm53 requires at least one --engine-arg")
 endif()

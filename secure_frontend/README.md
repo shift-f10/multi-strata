@@ -59,7 +59,9 @@ compiles in the llvm-mingw cross build, but it has no runtime test yet:
 - The engine protocol has a total generation deadline, recovers from a timed-out
   generation with `STOP` and a bounded drain (or marks the engine failed),
   sizes the outbound `GEN` cap from the engine's `READY` context, and reports
-  its state through `/health` (`503` once the engine has failed). The engine
+  its state through `/health` as `{"status":"ok"|"unavailable","engine":"<state>"}`:
+  `ready` and `generating` are `200`; `starting` (still loading) and `failed`
+  (or a stopped child) are `503`. The engine
   facts these limits rely on are in
   [`docs/security/engine-protocol-limits.md`](../docs/security/engine-protocol-limits.md).
 
@@ -171,11 +173,16 @@ downloads, and a request whose `model` is not the one model selected at startup.
 
 The model directory must already contain the selected `.gguf`; the tokenizer
 pack must already contain `vocab.json`, `merges.txt`, and `token_type.json`.
-The server adds `--serve` and, for this default profile, `--native <model>`
-built from the local inventory entry named by `--model-id`; never pass the
-model path yourself. Give any other engine switch and value as its own
-`--engine-arg`. `--native`, `--pack`, `--serve`, `--batch`, `--slots` and
-`--vision` are rejected there, in both `--flag value` and `--flag=value` forms.
+The server adds `--serve` and, for this default profile, supplies shard 1 via
+`--native <model>` built from the local inventory entry named by `--model-id`
+(appended last); never pass `--native` yourself. The expert pack (`--pack DIR`)
+and the other weight sources (`--ple-gguf`, `--embd-gguf`, `--native-head-gguf`,
+`--native-dense-gguf`, `--mtp`) are operator-supplied with `--engine-arg` until
+SP1/SP5 model the whole launch. The engine loads `--pack` unconditionally and
+its default is the cwd-relative `pack/full`, so a real run must pass it. Give
+every engine switch and value as its own `--engine-arg`. `--native`, `--serve`,
+`--batch`, `--slots` and `--vision` are rejected there, in both `--flag value`
+and `--flag=value` forms.
 The engine child receives an empty environment allowlist, so encode all
 required engine options explicitly.
 
@@ -186,6 +193,7 @@ export STRATA_API_TOKEN='replace-with-a-long-random-token'
   --model-id local-model-name \
   --tokenizer-pack /absolute/path/to/tokenizer-pack \
   --engine /absolute/path/to/strata-engine \
+  --engine-arg --pack --engine-arg /absolute/path/to/pack \
   --token-env STRATA_API_TOKEN
 ```
 

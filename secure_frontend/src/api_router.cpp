@@ -21,6 +21,22 @@ HttpResponse unavailable() {
   return json_response(503, "{\"error\":\"Service Unavailable\"}\n");
 }
 
+bool is_engine_state_literal(std::string_view state) {
+  return state == "starting" || state == "ready" || state == "generating" || state == "failed";
+}
+
+HttpResponse health_response(bool healthy, const EngineStateProvider& engine_state) {
+  if (!engine_state) {
+    return healthy ? json_response(200, "{\"status\":\"ok\"}\n") : json_response(503, "{\"status\":\"unavailable\"}\n");
+  }
+  const std::string_view state = engine_state();
+  if (!is_engine_state_literal(state)) return json_response(503, "{\"status\":\"unavailable\"}\n");
+  std::string body{healthy ? "{\"status\":\"ok\",\"engine\":\"" : "{\"status\":\"unavailable\",\"engine\":\""};
+  body.append(state);
+  body.append("\"}\n");
+  return json_response(healthy ? 200 : 503, std::move(body));
+}
+
 bool is_valid_model_field(std::string_view value) {
   if (value.empty() || value.size() > kMaximumModelFields) return false;
   for (const unsigned char character : value) {
@@ -73,15 +89,16 @@ HttpResponse model_list_response(const std::vector<ApiModel>& models) {
 
 }  // namespace
 
-ApiRouter::ApiRouter(HealthStatusProvider health_status, ModelListProvider model_list)
-    : health_status_(std::move(health_status)), model_list_(std::move(model_list)) {}
+ApiRouter::ApiRouter(HealthStatusProvider health_status, ModelListProvider model_list, EngineStateProvider engine_state)
+    : health_status_(std::move(health_status)),
+      model_list_(std::move(model_list)),
+      engine_state_(std::move(engine_state)) {}
 
 HttpResponse ApiRouter::dispatch(std::string_view method, std::string_view target) const {
   if (method != "GET") return not_found();
   try {
     if (target == "/health") {
-      if (!health_status_ || !health_status_()) return json_response(503, "{\"status\":\"unavailable\"}\n");
-      return json_response(200, "{\"status\":\"ok\"}\n");
+      return health_response(health_status_ && health_status_(), engine_state_);
     }
     if (target == "/v1/models") {
       if (!model_list_) return unavailable();

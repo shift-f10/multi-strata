@@ -27,9 +27,12 @@ using EngineArgumentsResult = std::variant<std::vector<std::string>, EngineArgum
 // strata_0143: the user's pass-through arguments, validated, followed by
 // `--native <models_root/relative_artifact_path>` for the selected manifest.
 // Rejects any user argument that names a flag the frontend owns (--native,
-// --pack, --serve) or a mode whose protocol the frontend does not speak
-// (--batch, --slots, --vision), in both `--flag value` and `--flag=value`
-// spellings.
+// --serve) or a mode whose protocol the frontend does not speak (--batch,
+// --slots, --vision), in both `--flag value` and `--flag=value` spellings.
+// `--pack DIR` (the expert directory, loaded unconditionally by the engine,
+// default cwd-relative `pack/full`) and every other weight flag (--ple-gguf,
+// --embd-gguf, --native-head-gguf, --native-dense-gguf, --mtp) pass through:
+// they are operator-supplied until SP1/SP5 model the whole launch.
 //
 // lighttransport_glm53: the GLM runner's CLI is not characterized, so the
 // user's arguments pass through unchanged and no model path is supplied; only
