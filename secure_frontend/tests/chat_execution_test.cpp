@@ -1,10 +1,12 @@
 #include "secure_frontend/chat_execution.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <deque>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -57,6 +59,7 @@ class FakeTransport final : public secure_frontend::EngineLineTransport {
  public:
   std::deque<secure_frontend::EngineReadResult> reads;
   std::vector<std::string> writes;
+  std::chrono::milliseconds delay_per_read{0};
 
   bool write_line(const std::string_view line, std::string&) override {
     writes.emplace_back(line);
@@ -64,6 +67,7 @@ class FakeTransport final : public secure_frontend::EngineLineTransport {
   }
 
   secure_frontend::EngineReadResult read_line(std::chrono::milliseconds) override {
+    if (delay_per_read.count() > 0) std::this_thread::sleep_for(delay_per_read);
     if (reads.empty()) return {secure_frontend::EngineReadKind::timeout, {}, {}};
     auto result = std::move(reads.front());
     reads.pop_front();
@@ -185,6 +189,64 @@ void executes_glm53_only_when_explicitly_selected() {
          "the explicit GLM profile must use the same bounded private engine protocol");
 }
 
+// E2: after a timeout the service sends STOP, drains to DONE, and serves the next request.
+void chat_recovers_after_generation_timeout() {
+  const std::string prompt = "<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n";
+  const auto tokenizer = tokenizer_for(prompt + "OK");
+  const auto o = token_id_for(tokenizer, "O");
+  FakeTransport transport;
+  transport.reads = {line("READY 512 stop")};
+  for (int i = 0; i < 10; ++i) transport.reads.push_back(line("T " + std::to_string(o)));
+  transport.reads.push_back(line("DONE 10 1 1.0 1.0 cancel"));   // the drain after STOP
+  transport.reads.push_back(line("T " + std::to_string(o)));      // the next request
+  transport.reads.push_back(line("DONE 1 1 1.0 1.0 length"));
+  transport.delay_per_read = std::chrono::milliseconds(60);
+  secure_frontend::EngineProtocolClient protocol(transport);
+  secure_frontend::ChatExecutionService service(protocol, {.generation_timeout = std::chrono::milliseconds(200), .stop_drain_timeout = std::chrono::seconds(2)});
+  const auto first = service.execute(valid_request(10U), tokenizer);
+  const auto* first_error = std::get_if<secure_frontend::ChatExecutionError>(&first);
+  expect(first_error != nullptr && first_error->code == secure_frontend::ChatExecutionErrorCode::generation_timed_out, "a slow generation must time out");
+  expect(std::count(transport.writes.begin(), transport.writes.end(), "STOP") == 1, "exactly one STOP must be sent after the timeout");
+  expect(protocol.idle(), "the protocol must be idle again after the drain");
+  transport.delay_per_read = std::chrono::milliseconds(0);
+  const auto second = service.execute(valid_request(1U), tokenizer);
+  expect(std::holds_alternative<secure_frontend::ChatExecutionResult>(second), "the next request must succeed after recovery");
+}
+
+void chat_marks_engine_failed_when_drain_fails() {
+  const std::string prompt = "<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n";
+  const auto tokenizer = tokenizer_for(prompt + "O");
+  const auto o = token_id_for(tokenizer, "O");
+  FakeTransport transport;
+  transport.reads = {line("READY 512 stop")};
+  for (int i = 0; i < 10; ++i) transport.reads.push_back(line("T " + std::to_string(o)));
+  // No DONE ever arrives: the drain must give up.
+  transport.delay_per_read = std::chrono::milliseconds(60);
+  secure_frontend::EngineProtocolClient protocol(transport);
+  secure_frontend::ChatExecutionService service(protocol, {.generation_timeout = std::chrono::milliseconds(150), .stop_drain_timeout = std::chrono::milliseconds(300)});
+  const auto result = service.execute(valid_request(10U), tokenizer);
+  const auto* error = std::get_if<secure_frontend::ChatExecutionError>(&result);
+  expect(error != nullptr && error->code == secure_frontend::ChatExecutionErrorCode::engine_protocol_failed, "a failed drain is a protocol failure");
+  expect(protocol.closed(), "a failed drain must close the protocol so health reports it");
+}
+
+// Review Focus 3: DONE ... nonfinite is a 503 for this request only.
+void chat_rejects_nonfinite_done_and_stays_ready() {
+  const std::string prompt = "<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n";
+  const auto tokenizer = tokenizer_for(prompt + "O");
+  const auto o = token_id_for(tokenizer, "O");
+  FakeTransport transport;
+  transport.reads = {line("READY 512 stop"), line("DONE 0 1 1.0 1.0 nonfinite"), line("T " + std::to_string(o)), line("DONE 1 1 1.0 1.0 length")};
+  secure_frontend::EngineProtocolClient protocol(transport);
+  secure_frontend::ChatExecutionService service(protocol);
+  const auto first = service.execute(valid_request(1U), tokenizer);
+  const auto* error = std::get_if<secure_frontend::ChatExecutionError>(&first);
+  expect(error != nullptr && error->code == secure_frontend::ChatExecutionErrorCode::engine_protocol_failed, "nonfinite must not produce text");
+  expect(protocol.idle(), "nonfinite does not kill the engine; the protocol stays idle");
+  const auto second = service.execute(valid_request(1U), tokenizer);
+  expect(std::holds_alternative<secure_frontend::ChatExecutionResult>(second), "the engine is usable after a nonfinite request");
+}
+
 }  // namespace
 
 int main() {
@@ -192,5 +254,8 @@ int main() {
   rejects_context_and_output_limits_before_generation();
   fails_closed_on_invalid_engine_output();
   executes_glm53_only_when_explicitly_selected();
+  chat_recovers_after_generation_timeout();
+  chat_marks_engine_failed_when_drain_fails();
+  chat_rejects_nonfinite_done_and_stays_ready();
   return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

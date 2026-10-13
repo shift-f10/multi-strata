@@ -90,15 +90,23 @@ class EngineProtocolClient final {
                                                                  EngineReady& ready);
   [[nodiscard]] std::optional<EngineProtocolError> begin_generation(
       std::uint32_t max_new_tokens, const std::vector<std::uint32_t>& prompt_token_ids);
-  // Reads until DONE. A timeout leaves a generation active so the caller may
+  // Reads until DONE. `timeout` is the TOTAL budget for this call, not a
+  // per-line allowance. A timeout leaves a generation active so the caller may
   // issue STOP and continue draining; all malformed/terminal failures close it.
+  // A DONE whose finish field is `nonfinite` returns engine_error but leaves
+  // the client idle: the engine is alive and resets on the next GEN.
   [[nodiscard]] std::optional<EngineProtocolError> read_generation(
       std::chrono::milliseconds timeout, EngineGeneration& generation);
   [[nodiscard]] std::optional<EngineProtocolError> stop();
   [[nodiscard]] std::optional<EngineProtocolError> quit();
+  // Marks the protocol failed without writing anything, e.g. when the engine
+  // ignored STOP and cannot be trusted with further commands.
+  void abandon() noexcept;
 
   [[nodiscard]] bool ready() const noexcept;
   [[nodiscard]] bool generating() const noexcept;
+  // True only when the engine is between generations and accepts GEN.
+  [[nodiscard]] bool idle() const noexcept;
   [[nodiscard]] bool closed() const noexcept;
 
  private:

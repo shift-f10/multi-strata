@@ -26,6 +26,8 @@ struct ChatExecutionLimits final {
   std::size_t maximum_output_tokens{4096U};
   std::chrono::milliseconds ready_timeout{std::chrono::seconds(30)};
   std::chrono::milliseconds generation_timeout{std::chrono::seconds(120)};
+  // Total budget for draining to DONE after STOP once generation_timeout expires.
+  std::chrono::milliseconds stop_drain_timeout{std::chrono::seconds(5)};
 };
 
 enum class ChatExecutionErrorCode {
@@ -34,6 +36,7 @@ enum class ChatExecutionErrorCode {
   context_limit_exceeded,
   engine_protocol_failed,
   output_decode_failed,
+  generation_timed_out,
 };
 
 struct ChatExecutionError final {

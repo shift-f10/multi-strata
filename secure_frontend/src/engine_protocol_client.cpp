@@ -1,5 +1,6 @@
 #include "secure_frontend/engine_protocol_client.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <limits>
 
@@ -160,8 +161,14 @@ std::optional<EngineProtocolError> EngineProtocolClient::read_generation(const s
                                                                           EngineGeneration& generation) {
   if (state_ != State::generating) return EngineProtocolError{EngineProtocolErrorCode::invalid_state, "no generation is active"};
   generation = active_generation_;
+  const auto deadline = std::chrono::steady_clock::now() + std::max(timeout, std::chrono::milliseconds(0));
   while (true) {
-    const auto response = transport_.read_line(timeout);
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
+      return EngineProtocolError{EngineProtocolErrorCode::timeout, "engine generation read timed out"};
+    }
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+    const auto response = transport_.read_line(remaining);
     if (response.kind == EngineReadKind::timeout) {
       return EngineProtocolError{EngineProtocolErrorCode::timeout, "engine generation read timed out"};
     }
@@ -206,6 +213,14 @@ std::optional<EngineProtocolError> EngineProtocolClient::read_generation(const s
       active_generation_.done_line = response.line;
       generation = active_generation_;
       state_ = State::idle;
+      // Full record: DONE <generated> <prompt> <prompt_ms> <decode_ms> <finish> ...
+      // A nonfinite finish means the engine's NaN guard tripped: no usable
+      // output, but the engine is alive and resets on the next GEN, so this
+      // fails the request without failing the protocol.
+      const auto done_fields = fields(response.line);
+      if (done_fields.size() >= 6U && done_fields[5] == "nonfinite") {
+        return EngineProtocolError{EngineProtocolErrorCode::engine_error, "engine reported a non-finite result"};
+      }
       return std::nullopt;
     }
     if (response.line.rfind("ERR", 0) == 0 && (response.line.size() == 3 || response.line[3] == ' ')) {
@@ -232,8 +247,11 @@ std::optional<EngineProtocolError> EngineProtocolClient::quit() {
   return std::nullopt;
 }
 
+void EngineProtocolClient::abandon() noexcept { state_ = State::failed; }
+
 bool EngineProtocolClient::ready() const noexcept { return state_ == State::idle || state_ == State::generating; }
 bool EngineProtocolClient::generating() const noexcept { return state_ == State::generating; }
+bool EngineProtocolClient::idle() const noexcept { return state_ == State::idle; }
 bool EngineProtocolClient::closed() const noexcept { return state_ == State::closed || state_ == State::failed; }
 
 }  // namespace secure_frontend

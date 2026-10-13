@@ -23,6 +23,7 @@ ChatExecutionOutcome ChatExecutionService::execute(const ChatCompletionRequest& 
   if (limits_.maximum_prompt_tokens == 0U || limits_.maximum_output_tokens == 0U ||
       limits_.maximum_output_tokens > std::numeric_limits<std::uint32_t>::max() ||
       limits_.ready_timeout.count() < 0 || limits_.generation_timeout.count() < 0 ||
+      limits_.stop_drain_timeout.count() < 0 ||
       protocol_.closed()) {
     return error(ChatExecutionErrorCode::invalid_request,
                  "native chat execution limits or engine state are invalid");
@@ -80,9 +81,27 @@ ChatExecutionOutcome ChatExecutionService::execute(const ChatCompletionRequest& 
   }
 
   EngineGeneration generation{};
-  if (protocol_.read_generation(limits_.generation_timeout, generation).has_value()) {
-    return error(ChatExecutionErrorCode::engine_protocol_failed,
-                 "local engine generation failed");
+  if (const auto generation_error = protocol_.read_generation(limits_.generation_timeout, generation);
+      generation_error.has_value()) {
+    if (generation_error->code != EngineProtocolErrorCode::timeout) {
+      return error(ChatExecutionErrorCode::engine_protocol_failed,
+                   "local engine generation failed");
+    }
+    // The generation is still active. Stop it and drain to DONE so the
+    // engine is idle for the next request instead of wedged forever.
+    if (protocol_.stop().has_value()) {
+      protocol_.abandon();
+      return error(ChatExecutionErrorCode::engine_protocol_failed, "engine could not be stopped");
+    }
+    EngineGeneration drained{};
+    if (const auto drain_error = protocol_.read_generation(limits_.stop_drain_timeout, drained);
+        drain_error.has_value()) {
+      // Terminal failures already closed the protocol. A second timeout
+      // means the engine ignores STOP; it must not receive further commands.
+      if (drain_error->code == EngineProtocolErrorCode::timeout) protocol_.abandon();
+      return error(ChatExecutionErrorCode::engine_protocol_failed, "engine did not drain after STOP");
+    }
+    return error(ChatExecutionErrorCode::generation_timed_out, "generation exceeded the time limit");
   }
   if (generation.token_ids.size() > plan->max_tokens) {
     return error(ChatExecutionErrorCode::engine_protocol_failed,

@@ -5,6 +5,7 @@
 #include <deque>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -25,11 +26,13 @@ class FakeTransport final : public EngineLineTransport {
   std::deque<EngineReadResult> reads;
   std::vector<std::string> writes;
   bool reject_writes{false};
+  std::chrono::milliseconds delay_per_read{0};
   bool write_line(const std::string_view line, std::string& error) override {
     if (reject_writes) { error = "fake write failure"; return false; }
     writes.emplace_back(line); return true;
   }
   EngineReadResult read_line(std::chrono::milliseconds) override {
+    if (delay_per_read.count() > 0) std::this_thread::sleep_for(delay_per_read);
     if (reads.empty()) return {EngineReadKind::timeout, {}, {}};
     auto result = std::move(reads.front()); reads.pop_front(); return result;
   }
@@ -152,6 +155,26 @@ void prefill_progress_is_glm_only_and_strictly_bounded() {
          "malformed GLM progress must fail closed");
 }
 
+// E1: the timeout is a total budget, not a per-line allowance.
+void generation_total_deadline_is_enforced() {
+  FakeTransport transport;
+  transport.reads = {line("READY 64 stop")};
+  for (int i = 0; i < 20; ++i) transport.reads.push_back(line("T 1"));
+  transport.reads.push_back(line("DONE 20 1 1.0 1.0 length"));
+  transport.delay_per_read = std::chrono::milliseconds(100);
+  EngineProtocolClient client(transport);
+  secure_frontend::EngineReady ready{};
+  (void)client.await_ready(std::chrono::seconds(1), ready);
+  (void)client.begin_generation(20, {1});
+  secure_frontend::EngineGeneration generation;
+  const auto start = std::chrono::steady_clock::now();
+  const auto error = client.read_generation(std::chrono::milliseconds(350), generation);
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  expect(error.has_value() && error->code == EngineProtocolErrorCode::timeout, "20 lines at 100 ms each must exceed a 350 ms total budget");
+  expect(elapsed < std::chrono::milliseconds(900), "the client must stop reading at the total deadline");
+  expect(client.generating() && !client.idle(), "a timeout leaves the generation active for STOP/drain");
+}
+
 }  // namespace
 
 int main() {
@@ -161,5 +184,6 @@ int main() {
   rejects_malformed_and_unexpected_engine_output();
   bounds_and_engine_errors_fail_closed();
   prefill_progress_is_glm_only_and_strictly_bounded();
+  generation_total_deadline_is_enforced();
   return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
