@@ -393,6 +393,10 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     target_compile_features(secure_frontend_chat_execution_tests PRIVATE cxx_std_20)
     secure_frontend_set_warnings(secure_frontend_chat_execution_tests)
     add_test(NAME secure_frontend_chat_execution_tests COMMAND secure_frontend_chat_execution_tests)
+    # Socket and process tests wait on real timeouts (and run under wine for
+    # the cross preset): bound them so a hang fails the run instead of stalling CI.
+    set_tests_properties(secure_frontend_http_socket_server_tests secure_frontend_engine_stdio_process_tests
+        PROPERTIES TIMEOUT 300)
     add_test(NAME strata_secure_server_help COMMAND strata-secure-server --help)
     # The GLM runner takes positional arguments: glm53 without any --engine-arg is a usage error.
     add_test(NAME strata_secure_server_glm_requires_engine_arg

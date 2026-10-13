@@ -112,24 +112,24 @@ without asking the owner.
 | GLM tokenizer tooling | `tools/strata_tokenizer.py`, `tools/test_glm_tokenizer.py` | Offline support for the `glm4` and `chatglm-bpe` byte-BPE pre-tokenizer aliases, preserving GLM's 1–3-digit segmentation, with emitted pack metadata. `secure_frontend` does not yet consume tokenizer-pack metadata, so native GLM execution still needs matching-pack validation. |
 | Top-level integration | `CMakeLists.txt` | Builds `secure_frontend` through `STRATA_BUILD_SECURE_FRONTEND=ON` (default `OFF` since SP0). |
 
-### SP0 deliverables (branch `sp0-foundation-hardening`, 19 commits on `4dce6f79` including the docs commit)
+### SP0 deliverables (branch `sp0-foundation-hardening` on `4dce6f79`, including the docs commits and the final fix wave)
 
 Item IDs are from §4 of the SP0 spec. Each row names its regression test, or
 says why it has none.
 
 | Item | What changed | Regression test / check |
 | --- | --- | --- |
-| Tooling (T1, T5) | `scripts/dev/bootstrap-linux.sh` creates `.venv-dev` (no root) with `-r requirements.txt pytest`: cmake/ninja pinned in `requirements.txt`; pytest currently unpinned. Offline use needs the `requirements.txt` wheels plus pip and pytest wheels in `STRATA_WHEEL_DIR`; the pip-bootstrap step does not yet honor `STRATA_WHEEL_DIR`. `pytest.ini` collects `tools/test_*.py` only, with the exclusions listed above. | Bootstrap is idempotent; `pytest -q` passes from the repository root. |
+| Tooling (T1, T5) | `scripts/dev/bootstrap-linux.sh` creates `.venv-dev` (no root) with `-r requirements.txt -r scripts/dev/requirements-dev.txt`: cmake/ninja pinned in `requirements.txt`; pytest 9.1.1 and its dependencies pinned in `scripts/dev/requirements-dev.txt`. Offline (`STRATA_WHEEL_DIR` set) needs every wheel both files name **plus** a pip wheel, which the pip-bootstrap step now takes from `STRATA_WHEEL_DIR` too; nothing is fetched from the network then. `pytest.ini` collects `tools/test_*.py` only, with the exclusions listed above. | Bootstrap is idempotent (re-run on the existing venv: exit 0); a fresh scratch checkout bootstraps with network (exit 0) and offline from a wheel directory with the network blocked (exit 0); `pytest -q` passes from the repository root. |
 | CMake hygiene (T3, T4) | Top-level `STRATA_BUILD_SECURE_FRONTEND` defaults `OFF` (opt-in). `SECURE_FRONTEND_WERROR` (default `ON`, follows `STRATA_WERROR` from the root). One `secure_frontend_set_warnings()` helper replaces the per-target flag blocks; dead `if(MSVC)`-inside-`if(UNIX)` blocks removed. | Configure with each setting. |
 | llvm-mingw (T2, P5) | `scripts/dev/bootstrap-llvm-mingw.sh` (llvm-mingw `20261006`, sha256 pinned), toolchain file, `windows-llvm-mingw-cross` preset. `win32_prelude.hpp` (`NOMINMAX`, `WIN32_LEAN_AND_MEAN`); paths converted with `path::wstring()`. Two further Windows fixes found by the cross build: unused POSIX helpers in `engine_process.cpp` guarded; `token_reader.cpp` uses `std::next(it) == end()` (libc++ `path::iterator` is an input iterator). | Cross build with `-Werror`; `wine strata-secure-server.exe --help` exits 0. |
 | Early close (S1) | `install_process_defaults()` ignores `SIGPIPE` in all three mains; `send()` uses `MSG_NOSIGNAL` (`SO_NOSIGPIPE` where that is the only option). | `socket_server_survives_client_early_close` |
 | Request deadline, send timeout (S2, S3) | `HttpSocketServerLimits{request_deadline = 30 s, max_request_bytes = 64 KiB}`, a defaulted `bind()` parameter until SP1's typed configuration. Total monotonic deadline for header and body; send timeout. | `socket_server_rejects_slow_request_past_deadline`, `socket_server_send_times_out_on_stalled_reader` |
-| Listener robustness (S4–S7) | Oversize request answered `413`; accept blocks without a timeout (smoke server no longer exits after 5 s idle); `IPV6_V6ONLY` on IPv6 binds; `SO_REUSEADDR` (`SO_EXCLUSIVEADDRUSE` on Windows); complete responses. `listener_failed()` is set only for a broken listener (`EBADF`/`ENOTSOCK`/`EINVAL` and the Winsock equivalents); peer and network errors are transient; 50 ms backoff on descriptor/buffer exhaustion. The mains stop only on listener failure. | `socket_server_rejects_oversize_request_over_tcp`, `socket_server_accept_waits_without_timeout`, `socket_server_ipv6_bind_is_v6only` (binds `::`), `socket_server_response_is_complete`, `socket_server_survives_reset_before_accept` |
+| Listener robustness (S4–S7) | Oversize request answered `413`; accept blocks without a timeout (smoke server no longer exits after 5 s idle); `IPV6_V6ONLY` on IPv6 binds; `SO_REUSEADDR` (`SO_EXCLUSIVEADDRUSE` on Windows); complete responses. `listener_failed()` is set only for a broken listener (`EBADF`/`ENOTSOCK`/`EINVAL` and the Winsock equivalents); peer and network errors are transient; 50 ms backoff on descriptor/buffer exhaustion. The mains stop only on listener failure. | `socket_server_rejects_oversize_request_over_tcp`, `socket_server_accept_waits_without_timeout`, `socket_server_ipv6_bind_is_v6only` (binds `::`), `socket_server_response_is_complete`, `socket_server_survives_reset_before_accept`, `socket_server_responds_after_client_half_close`. After the last response byte (normal, `408`, `413`) the server half-closes its send side and drains the peer for at most 100 ms / 256 KiB before closing, so a Windows client reads the `413` rather than an RST. The socket tests are portable (run under wine and in the MSYS2 job). |
 | Generation deadline and recovery (E1, E2) | Total generation deadline; on timeout the client sends `STOP` and drains to `DONE` within `ChatExecutionLimits::stop_drain_timeout` (5 s), returning to idle (`idle()`), or marks the engine failed (`abandon()`). The request gets the `generation_timed_out` error; a `nonfinite` result is a `503` for that request only and the engine stays ready. | `generation_total_deadline_is_enforced`, `chat_recovers_after_generation_timeout`, `chat_marks_engine_failed_when_drain_fails`, `chat_rejects_nonfinite_done_and_stays_ready` |
 | Health (E3) | `EngineHealth` / `health()`; `ApiRouter` takes an optional `EngineStateProvider` and `/health` returns `{"status":"ok"|"unavailable","engine":"<state>"}` with the state one of four fixed literals (anything else fails closed). `ready`/`generating` → `200`; `starting` (a readiness probe must not route to a loading engine), `failed`, or a stopped child → `503`. No secrets or paths. | `health_reflects_protocol_state`, `health_is_failed_after_engine_closed_mid_generation`, `health_is_failed_when_engine_closes_before_ready`, `health_includes_engine_state_when_provided`, `health_is_503_with_engine_state_when_unavailable` |
 | Protocol limits (E4, D4) | Limits derived from `READY`: `max_line_bytes = 0` means `min(32 + 11 × ctx, 16 MiB kProtocolMaxLineBytes)` for the outbound `GEN` line; inbound records capped at `kMaxReadLineBytes = 8192`; `kMaxWriteLineBytes = kProtocolMaxLineBytes`. The engine's `+8` context rule is applied before `GEN` (`400`). Facts in `docs/security/engine-protocol-limits.md`. | `gen_line_fits_max_prompt_tokens`, `chat_applies_engine_context_rule_with_eight_token_margin`, 100 KB `GEN` write in `engine_stdio_process_tests`, 16 MiB clamp case in `engine_protocol_client_tests` |
 | POSIX launch (P1–P3) | `src/posix_child_launch.hpp`: argv/env built before `fork`, `pipe2(O_CLOEXEC)`, descriptor sweep (`close_range`, bounded fallback), reap after `SIGKILL`. | `child_inherits_only_stdio_descriptors`, `child_receives_exact_argv_and_env`, `terminate_reaps_killed_child` (asserts pid `-1` and `ECHILD`) |
-| Windows launch (P4, P6, P7) | `CREATE_SUSPENDED` → Job Object → `ResumeThread`. Iterative bounded `read_line` shared with POSIX through `take_pending_line()`. Stdin pipe created with `CreateNamedPipeW`, buffer **requested** at `kMaxWriteLineBytes + 4096` (advisory per Win32; overlapped writes deferred to SP2). `engine_stdio_process_tests` is now portable. | `read_line_rejects_oversize_on_all_platforms` (passes under wine). P4 has no runtime assertion; see Known small gaps. |
+| Windows launch (P4, P6, P7) | `CREATE_SUSPENDED` → Job Object → `ResumeThread`. Iterative bounded `read_line` shared with POSIX through `take_pending_line()`. Stdin pipe created with `CreateNamedPipeW`, buffer **requested** at `kMaxWriteLineBytes + 4096` (advisory per Win32; overlapped writes deferred to SP2). `engine_stdio_process_tests` is now portable. `read_line` keeps one deadline across chunks (POSIX polls with the remaining budget) and treats `WAIT_FAILED` as a failure on Windows. | `read_line_rejects_oversize_on_all_platforms`, `read_line_waits_for_a_record_split_across_writes` (both pass under wine); P4: `job_object_terminates_grandchild` (Windows only: the fake engine spawns a 30 s sleeper grandchild, which must be gone after `terminate()`; passes under wine, authoritative only in the MSYS2 job). |
 | Engine arguments (M1, M2) | `secure_frontend_engine_arguments` library, profile-aware (`EngineArgumentsProfile`). Strata profile: the frontend supplies shard 1 by appending `--native <models_root/artifact>` (last) from the inventory entry for `--model-id` and rejects `--native`, `--serve`, `--batch`, `--slots`, `--vision` in `--flag` and `--flag=value` forms; the expert pack (`--pack`, loaded unconditionally, default cwd-relative `pack/full`) and other weight sources (`--ple-gguf`, `--embd-gguf`, `--native-head-gguf`, `--native-dense-gguf`, `--mtp`) pass through and are operator-supplied until SP1/SP5 model the whole launch. An invalid manifest artifact path (`../x.gguf`, `/abs.gguf`) is `invalid_value`. GLM-5.3 profile: arguments pass through (only NUL and `--serve` rejected), no model path is supplied; `strata-secure-server --profile glm53` requires at least one `--engine-arg`. | `engine_receives_model_path_from_inventory`, `engine_args_reject_owned_and_network_flags`, `strata_profile_passes_pack_and_weight_flags_through`, `rejects_invalid_relative_artifact_path`, `glm_profile_passes_arguments_through_without_native`, ctest `strata_secure_server_glm_requires_engine_arg` |
 | CI (T6) | `.github/workflows/secure-frontend.yml`: blocking `linux-gcc` (+ `pytest -q`), `linux-clang`, `windows-llvm-mingw-cross`, `windows-msys2-clang`, `top-level-integration` (root CMake, `STRATA_NATIVE_EXPERTS=OFF`, no llama.cpp clone); non-blocking `windows-msvc`. | **Not run yet**; first run on the owner's push. See [`secure-frontend-ci.md`](secure-frontend-ci.md). |
 | Docs (D1–D4) | `secure_frontend/README.md` build section and current behavior; `token_reader.hpp` comment describes the Windows checks that run, unreachable `protected_file_unsupported_on_platform` removed; this handoff; `secure-frontend-ci.md`; `engine-protocol-limits.md`. | Builds and tests re-run after the header change (below). |
@@ -199,9 +199,9 @@ The implemented primitives and their current runtime connections are:
 - `HttpSocketServer` binds only a revalidated numeric configured address
   (`::` as IPv6-only), reads one request under a 30 s total deadline and a
   64 KiB cap (`413` above it), sends with a timeout, and survives clients that
-  close or reset early. It runs on this Linux host (9 cases in
-  `secure_frontend_http_socket_server_tests`); it is a UNIX-only test target,
-  so the Windows listener has no runtime test yet.
+  close or reset early, and half-closes plus briefly drains before closing.
+  `secure_frontend_http_socket_server_tests` (10 cases) runs on this Linux host
+  and under wine; it is portable, so the MSYS2 job runs it on Windows.
 - `ApiRouter` implements authenticated `GET /health` and `GET /v1/models` over
   immutable injected providers; in `strata-secure-server` `/health` returns
   `{"status":"ok"|"unavailable","engine":"starting|ready|generating|failed"}`
@@ -342,18 +342,18 @@ owns it (see the decisions above).
 
 ## Verification performed
 
-Run on the dev host (Linux x86_64, no GPU) on 2026-10-13, at the SP0 docs
-commit, after the `token_reader.hpp` change. Always put the venv first:
+Run on the dev host (Linux x86_64, no GPU) on 2026-10-13, after the SP0 final fix
+wave (`--pack` pass-through, `/health` engine state, portable socket tests). Always put the venv first:
 `export PATH=/opt/projects/ai/.venv-dev/bin:$PATH`.
 
 | Command (from the repository root unless noted) | Result |
 | --- | --- |
-| `scripts/dev/bootstrap-linux.sh` | `bootstrap-linux: ready` (idempotent; cmake 4.4.3, ninja 1.13.2) |
+| `scripts/dev/bootstrap-linux.sh` | `bootstrap-linux: ready` (idempotent on the existing venv; also exit 0 in a fresh scratch checkout with network, and offline from a `STRATA_WHEEL_DIR` holding pip + all pinned wheels with the network blocked; cmake 4.4.3, ninja 1.13.2, pytest 9.1.1) |
 | `.venv-dev/bin/pytest -q` | `620 passed, 2 skipped, 3 deselected, 214 subtests passed in 20.60s` |
-| in `secure_frontend/`: `cmake --preset linux-gcc && cmake --build --preset linux-gcc && ctest --preset linux-gcc` | `100% tests passed out of 19` (the socket-server binary runs 9 cases, binding loopback and `::` on this host) |
+| in `secure_frontend/`: `cmake --preset linux-gcc && cmake --build --preset linux-gcc && ctest --preset linux-gcc` | `100% tests passed out of 20` (the socket-server binary runs 10 cases, binding loopback and `::` on this host; `strata_secure_server_glm_requires_engine_arg` is new) |
 | `scripts/dev/bootstrap-llvm-mingw.sh` | llvm-mingw `20261006` (clang 23.1.3) present, sha256 checked when fetched |
-| in `secure_frontend/`: `cmake --preset windows-llvm-mingw-cross && cmake --build --preset windows-llvm-mingw-cross` | Builds with `-Werror`; 19 `.exe` files (3 executables, 16 test binaries) |
-| in `secure_frontend/`: `ctest --preset windows-llvm-mingw-cross` (wine 6.0.3, `WINEPREFIX=secure_frontend/out/wineprefix`) | `100% tests passed out of 17`: config, secret_source, engine_stdio_process (round trip, invalid record, `read_line_rejects_oversize_on_all_platforms`), http_policy, http_request_handler, api_router, engine_process, engine_protocol_client, model_inventory, engine_arguments, chat_schema, tokenizer_pack, qwen_prompt_renderer, glm_profile, chat_generation_plan, chat_execution, strata_secure_server_help |
+| in `secure_frontend/`: `cmake --preset windows-llvm-mingw-cross && cmake --build --preset windows-llvm-mingw-cross` | Builds with `-Werror`; 20 `.exe` files (3 executables, 17 test binaries) |
+| in `secure_frontend/`: `ctest --preset windows-llvm-mingw-cross` (wine 6.0.3, `WINEPREFIX=secure_frontend/out/wineprefix`) | `100% tests passed out of 19`: config, secret_source, engine_stdio_process (round trip, invalid record, `read_line_rejects_oversize_on_all_platforms`, `read_line_waits_for_a_record_split_across_writes`, `job_object_terminates_grandchild`), http_policy, http_request_handler, http_socket_server (all 10 cases; S3 1.6 s, S2 1.0 s), api_router, engine_process, engine_protocol_client, model_inventory, engine_arguments, chat_schema, tokenizer_pack, qwen_prompt_renderer, glm_profile, chat_generation_plan, chat_execution, strata_secure_server_help, strata_secure_server_glm_requires_engine_arg. wine is not authoritative for the Job Object grandchild case or native Winsock RST behavior. |
 | `wine out/build/windows-llvm-mingw-cross/strata-secure-server.exe --help` | exit 0 |
 
 What this does **not** show:
@@ -363,10 +363,10 @@ What this does **not** show:
   `linux-clang` was not built here (no clang on this host), nor were
   `windows-msys2-clang` or `windows-msvc` (they need Windows).
 - wine is a smoke test. It does not implement Job Objects or protected-file
-  DACLs faithfully. `secure_frontend_token_reader_tests` and
-  `secure_frontend_http_socket_server_tests` are UNIX-only targets, so the
-  Windows token reader and Windows listener have no runtime test anywhere yet,
-  including the MSYS2 job.
+  DACLs faithfully. `secure_frontend_token_reader_tests` is the only UNIX-only
+  target, so the Windows token reader has no runtime test anywhere yet,
+  including the MSYS2 job. The Windows listener and the P4 grandchild test
+  pass under wine but are verified only once the MSYS2 job is green.
 - Nothing has been run on a GPU or against a real Strata engine; every engine
   test uses the fake engine.
 - `pytest serve` (the upstream service suite) was not run for SP0; nothing in
@@ -384,11 +384,8 @@ environment before accepting a GLM tokenizer release.
 Deferred from the SP0 task reviews; none blocks SP0, each is worth a look in the
 sub-project named.
 
-- No runtime assertion for P4 (a grandchild must die with the Job); the spec
-  asked for one in the MSYS2 job. SP2.
 - `await_ready` and `read_generation` duplicate their deadline loops and treat
   `timeout == 0` differently. SP2.
-- Windows `read_line` spins if `WaitForSingleObject` returns `WAIT_FAILED`. SP2.
 - The default DACL of the Windows stdin named pipe is used; make it owner-only.
   SP2.
 - `terminate` may now return `false`; the header does not state that contract.
@@ -396,19 +393,24 @@ sub-project named.
 - The fallback descriptor sweep's 65536 cap is undocumented. SP2.
 - The `current_executable()` test helper does not check `readlink`'s result.
   SP2.
-- No negative test for an invalid `relative_artifact_path` in
-  `build_engine_arguments`. SP1 (canonical paths).
-- S4 (oversize `413`) may flake natively on Windows, where an RST discards
-  queued data; today the socket tests are UNIX-only. SP3.
+- S4 (oversize `413`) relies on the new half-close + 100 ms drain to beat an
+  RST on Windows; first confirmed only by the MSYS2 job. SP3 if it flakes.
 - `send_all` returns `false` on `EINTR` instead of retrying. SP3.
 - The S6 skip condition is broad, and its port range 20000–20099 could collide
   with an unrelated IPv4 listener. SP3.
+- **SP1 (first task):** `is_wildcard_host` matches only the literal strings
+  `0.0.0.0` and `::`; alternate IPv6 spellings of the unspecified address
+  (`::0`, `0::0`, `0:0:0:0:0:0:0:0`, `::0.0.0.0`) parse as wildcard binds but
+  pass with `--allow-remote` alone, bypassing the dedicated
+  `--allow-wildcard-bind` opt-in (NET-03). Loopback detection has the mirror
+  issue in the safe direction (`0:0:0:0:0:0:0:1`, `::ffff:127.0.0.1` treated as
+  non-loopback). Fix by classifying from the parsed address bytes
+  (`IN6_IS_ADDR_UNSPECIFIED` / `LOOPBACK` / `V4MAPPED`). Low exposure today:
+  still requires `--allow-remote` and a token.
 - A small general backoff on any transient accept failure (not only resource
   exhaustion) is worth considering. SP3.
 - `bootstrap-llvm-mingw.sh` keeps a corrupt archive after a digest mismatch;
   delete it by hand before re-running. Tooling / SP1.
-- Pin pytest in the bootstrap and make the pip bootstrap honor
-  `STRATA_WHEEL_DIR`. Tooling; scheduled for the SP0 final fix wave.
 - `docs/security/threat-model.md` lists `acquire` as the sole future networked
   operation; it must be amended under review before `strata update` is
   designed. Product-experience spec / SP4.

@@ -22,16 +22,17 @@ frontend.
 
 ## Building locally (Linux)
 
-    scripts/dev/bootstrap-linux.sh          # once; creates .venv-dev (cmake/ninja pinned in requirements.txt; pytest currently unpinned)
+    scripts/dev/bootstrap-linux.sh          # once; creates .venv-dev (cmake/ninja pinned in requirements.txt; pytest pinned in scripts/dev/requirements-dev.txt)
     export PATH=$PWD/.venv-dev/bin:$PATH
     cd secure_frontend
     cmake --preset linux-gcc && cmake --build --preset linux-gcc && ctest --preset linux-gcc
 
-The venv needs no root. The script installs `-r requirements.txt pytest`:
-cmake 4.4.3 and ninja 1.13.2 are pinned in `requirements.txt`; pytest is
-currently unpinned. Offline use needs the `requirements.txt` wheels **plus** pip and pytest
-(with its dependencies) wheels in `STRATA_WHEEL_DIR`; the pip-bootstrap step on a
-fresh venv does not yet honor `STRATA_WHEEL_DIR` (it runs `pip download pip`).
+The venv needs no root. The script installs `-r requirements.txt -r
+scripts/dev/requirements-dev.txt`: cmake 4.4.3 and ninja 1.13.2 are pinned in
+`requirements.txt`; pytest 9.1.1 and its dependencies are pinned in
+`scripts/dev/requirements-dev.txt`. Offline use (`STRATA_WHEEL_DIR` set) needs
+every wheel those files name **plus** a pip wheel (`pip-*.whl`); on a fresh venv
+the pip bootstrap takes pip from `STRATA_WHEEL_DIR` too, so nothing is fetched.
 
 Windows cross build from the same Linux host:
 
@@ -46,12 +47,17 @@ wine on Linux. wine does not implement Job Objects or protected-file DACLs
 faithfully; Windows runtime behavior is validated only by the `windows-msys2-clang`
 CI job on a real Windows runner. The `windows-msvc` job is informational.
 
-The cross build produces 19 `.exe` files (three executables, sixteen test
-binaries) and `ctest` registers 17 entries on Windows against 19 on Linux:
-`secure_frontend_token_reader_tests` and `secure_frontend_http_socket_server_tests`
-are UNIX-only targets. The Windows protected-file reader, the Windows socket
-listener, and the Job Object launch path therefore have no runtime test even in
-the `windows-msys2-clang` job yet.
+The cross build produces 20 `.exe` files (three executables, seventeen test
+binaries) and `ctest` registers 19 entries on Windows against 20 on Linux:
+`secure_frontend_token_reader_tests` is the only UNIX-only target, so the Windows
+protected-file reader has no runtime test even in the `windows-msys2-clang` job
+yet. `secure_frontend_http_socket_server_tests` is portable and runs the Windows
+listener in that job. `engine_process_tests` and `engine_stdio_process_tests`
+start and terminate through the Job on MSYS2; the grandchild assertion
+(`job_object_terminates_grandchild`) runs only there (it also passes under wine,
+which is not authoritative for Job Objects). `secure_frontend_http_socket_server_tests`
+and `secure_frontend_engine_stdio_process_tests` carry a 300 s ctest `TIMEOUT`, and
+every CI job has `timeout-minutes: 60`.
 
 ## Python tests
 
@@ -76,8 +82,8 @@ upstream `setup.py`. After merging an upstream Strata update, also run
 | `top-level-integration` | ubuntu-latest; root CMake with `STRATA_BUILD_SECURE_FRONTEND=ON`, `STRATA_NATIVE_EXPERTS=OFF`, CUDA/HIP off (no llama.cpp clone) | yes |
 
 Network fetches are limited to the GitHub actions, the pip wheels for
-`requirements.txt` (cmake/ninja pinned) plus an unpinned pytest and, on a fresh
-venv, pip itself, MSYS2 packages through `msys2/setup-msys2`, and the pinned,
+`requirements.txt` (cmake/ninja pinned) and `scripts/dev/requirements-dev.txt`
+(pytest and its dependencies pinned) and, on a fresh venv, pip itself, MSYS2 packages through `msys2/setup-msys2`, and the pinned,
 sha256-checked llvm-mingw tarball. No model is downloaded and no GPU backend is
 enabled. Do not change the frontend jobs to configure the repository root: that
 would exercise the upstream engine rather than the isolated,

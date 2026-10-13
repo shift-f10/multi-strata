@@ -69,10 +69,11 @@ compiles in the llvm-mingw cross build, but it has no runtime test yet:
 
 No packages are fetched during CMake configuration or testing. On Linux, create
 the tool environment once (no root needed). It installs `-r requirements.txt
-pytest` into `.venv-dev`: cmake/ninja are pinned in `requirements.txt`; pytest is
-currently unpinned. Offline use needs the `requirements.txt` wheels **plus** pip and pytest
-(with its dependencies) wheels in `STRATA_WHEEL_DIR`; the pip-bootstrap step on a
-fresh venv does not yet honor `STRATA_WHEEL_DIR` (it runs `pip download pip`).
+-r scripts/dev/requirements-dev.txt` into `.venv-dev`: cmake/ninja are pinned in
+`requirements.txt`; pytest and its dependencies are pinned in
+`scripts/dev/requirements-dev.txt`. Offline use (`STRATA_WHEEL_DIR` set) needs
+every wheel those two files name **plus** a pip wheel (`pip-*.whl`): on a fresh
+venv the pip bootstrap takes pip from `STRATA_WHEEL_DIR` as well.
 
 ```sh
 scripts/dev/bootstrap-linux.sh                # from the repository root
@@ -103,11 +104,13 @@ wine on Linux. wine does not implement Job Objects or protected-file DACLs
 faithfully; Windows runtime behavior is validated only by the `windows-msys2-clang`
 CI job on a real Windows runner. The `windows-msvc` job is informational.
 
-On Windows (wine or CI) `ctest` runs 17 entries. `secure_frontend_token_reader_tests`
-and `secure_frontend_http_socket_server_tests` are built only on UNIX, so the
-Windows protected-file reader and the Windows socket listener have no runtime
-test yet, and the Job Object launch path (`CREATE_SUSPENDED`, assign, resume) has
-no runtime assertion either.
+On Windows (wine or CI) `ctest` runs 19 entries. Only
+`secure_frontend_token_reader_tests` is built on UNIX alone, so the Windows
+protected-file reader has no runtime test yet; the socket-server tests run on
+Windows too. `engine_process_tests` and `engine_stdio_process_tests` start and
+terminate through the Job on MSYS2; the grandchild assertion
+(`job_object_terminates_grandchild`) runs only there (wine passes it but is not
+authoritative for Job Objects).
 
 ## Runnable smoke server
 

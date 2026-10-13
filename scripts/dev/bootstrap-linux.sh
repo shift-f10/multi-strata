@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Creates the project-local developer environment for the secure frontend on
-# Linux without root: a venv holding the pinned cmake/ninja/pytest wheels from
-# requirements.txt. Idempotent. Works offline when the wheels are already in
-# the pip cache or in $STRATA_WHEEL_DIR.
+# Linux without root: a venv holding cmake/ninja pinned in requirements.txt and
+# pytest (with its dependencies) pinned in scripts/dev/requirements-dev.txt.
+# Idempotent. Offline: set STRATA_WHEEL_DIR to a directory holding every wheel
+# both files name PLUS a pip wheel (pip-*.whl) for the venv's pip bootstrap;
+# nothing is fetched from the network when it is set.
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 venv="$repo/.venv-dev"
@@ -18,7 +20,13 @@ if [[ ! -x "$venv/bin/pip" ]]; then
     if [[ -d "$venv/.pip-bootstrap" ]]; then
       find "$venv/.pip-bootstrap" -mindepth 1 -delete
     fi
-    "$python" -m pip download --no-deps -q -d "$venv/.pip-bootstrap" pip
+    if [[ -n "${STRATA_WHEEL_DIR:-}" ]]; then
+      # Offline: take pip from the wheel directory, never the network.
+      "$python" -m pip download --no-deps -q --no-index --find-links "$STRATA_WHEEL_DIR" \
+        -d "$venv/.pip-bootstrap" pip
+    else
+      "$python" -m pip download --no-deps -q -d "$venv/.pip-bootstrap" pip
+    fi
     # Expand the wheel name on its own; a glob with a suffix inside the wheel
     # (pip-*.whl/pip) never matches because the wheel is a file.
     wheels=("$venv/.pip-bootstrap"/pip-*.whl)
@@ -29,7 +37,7 @@ if [[ ! -x "$venv/bin/pip" ]]; then
     exit 1
   fi
 fi
-pip_args=(-q -r "$repo/requirements.txt" pytest)
+pip_args=(-q -r "$repo/requirements.txt" -r "$repo/scripts/dev/requirements-dev.txt")
 if [[ -n "${STRATA_WHEEL_DIR:-}" ]]; then
   pip_args=(--no-index --find-links "$STRATA_WHEEL_DIR" "${pip_args[@]}")
 fi

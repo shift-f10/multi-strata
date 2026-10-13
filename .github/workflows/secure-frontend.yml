@@ -3,8 +3,9 @@ name: secure-frontend
 # Blocking: linux-gcc, linux-clang, windows-llvm-mingw-cross, windows-msys2-clang,
 # top-level-integration. Non-blocking: windows-msvc (informational).
 # Network fetches, exactly: the GitHub actions used below; the pip wheels pinned
-# in requirements.txt (scripts/dev/bootstrap-linux.sh, plus a pip wheel when the
-# venv has no pip); MSYS2 packages via msys2/setup-msys2; and the pinned,
+# in requirements.txt (cmake/ninja) and scripts/dev/requirements-dev.txt (pytest
+# and its dependencies) via scripts/dev/bootstrap-linux.sh, plus a pip wheel
+# when the venv has no pip; MSYS2 packages via msys2/setup-msys2; and the pinned,
 # sha256-checked llvm-mingw tarball (scripts/dev/bootstrap-llvm-mingw.sh).
 # No models are downloaded and no GPU backend is enabled. The root configure
 # runs with STRATA_NATIVE_EXPERTS=OFF, so no llama.cpp clone (FetchContent) occurs.
@@ -22,6 +23,7 @@ jobs:
   linux:
     name: ${{ matrix.preset }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -43,6 +45,7 @@ jobs:
   windows-cross:
     name: windows-llvm-mingw-cross (compile+link on Linux)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - run: scripts/dev/bootstrap-linux.sh && scripts/dev/bootstrap-llvm-mingw.sh
@@ -60,6 +63,7 @@ jobs:
   windows-msys2:
     name: windows-msys2-clang (runtime tests on Windows)
     runs-on: windows-latest
+    timeout-minutes: 60
     defaults:
       run:
         shell: msys2 {0}
@@ -80,6 +84,7 @@ jobs:
   windows-msvc:
     name: windows-msvc (informational, non-blocking)
     runs-on: windows-latest
+    timeout-minutes: 60
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -93,6 +98,7 @@ jobs:
   top-level-integration:
     name: root CMake with STRATA_BUILD_SECURE_FRONTEND=ON
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - run: scripts/dev/bootstrap-linux.sh
