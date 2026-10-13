@@ -317,8 +317,10 @@ it does not download or install anything.
 > list, `scripts/dev/upstream-delta.sh`, the `upstream-delta` CI job, the merge
 > runbook, the ledger and the tokenizer exception below no longer apply; an
 > upstream update is a submodule bump plus the gates (`docs/AGENT_HANDOFF.md`,
-> "Update upstream"). The GLM-engine and SP5-parity bullets still hold, with
-> `src/` read as `upstream/src/`.
+> "Update upstream"). The "Remotes" mechanics bullet is superseded too: the
+> `upstream` git remote may still exist in a dev clone, but tracking is by the
+> submodule pointer, never by merging that remote. The GLM-engine and
+> SP5-parity bullets still hold, with `src/` read as `upstream/src/`.
 
 Rules (owner decision 6): our code in our directories; upstream files touched
 only from the PROVENANCE allowlist (root `CMakeLists.txt` integration hunk,

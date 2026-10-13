@@ -38,19 +38,25 @@ wrapper `tools/secure/secure_tokenizer.py`; and the root `pytest.ini` and
 
 An upstream update moves the gitlink; it is never a merge into our tree.
 
-1. `git -C upstream fetch --tags origin && git -C upstream checkout --detach <new tag>`
-2. `git add upstream`
-3. Gates: `pytest -q`; `ctest --preset linux-gcc` (in `secure_frontend/`); the
-   `windows-llvm-mingw-cross` build; the root build and root `ctest`; then, in
-   a separate venv, `pytest upstream/tools` (with its recorded exclusions) and
-   `pytest upstream/serve`. Exact commands:
-   [`secure-frontend-ci.md`](secure-frontend-ci.md), "Updating upstream".
-4. Update this section's "Baseline" (commit, tag object, tag) and
-   [`AGENT_HANDOFF.md`](AGENT_HANDOFF.md) "Current baseline".
-5. One commit: `upstream: bump to <new tag>`.
+This is the canonical order; the runbooks in
+[`AGENT_HANDOFF.md`](AGENT_HANDOFF.md) ("Update upstream") and
+[`secure-frontend-ci.md`](secure-frontend-ci.md) ("Updating upstream") follow it.
 
-`tools/secure/secure_tokenizer.py` couples to upstream internals (see its
-module docstring); re-verify it on every bump.
+1. `git -C upstream fetch --tags origin && git -C upstream checkout --detach <new tag>`
+2. Gates: `pytest -q`; `ctest --preset linux-gcc` (in `secure_frontend/`); the
+   `windows-llvm-mingw-cross` build; the root configure, build and `ctest`;
+   then, in a separate venv, `pytest upstream/tools` (with its recorded
+   exclusions) and `pytest upstream/serve` (exact commands in
+   `secure-frontend-ci.md`). Re-check the SP5 pass-through table against the
+   new engine's flags and protocol, and the upstream internals
+   `tools/secure/secure_tokenizer.py` couples to (listed in its module
+   docstring).
+3. `git -C upstream status --porcelain` is empty and `git submodule status`
+   shows no `-`/`U` (`+` is expected until the pointer is staged).
+4. Update "Baseline" above (commit, tag object, tag) and
+   [`AGENT_HANDOFF.md`](AGENT_HANDOFF.md) "Current baseline".
+5. `git add upstream docs/PROVENANCE.md docs/AGENT_HANDOFF.md`; one commit:
+   `upstream: bump to <new tag>`.
 
 ## Security reference
 

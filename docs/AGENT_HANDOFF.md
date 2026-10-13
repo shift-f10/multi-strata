@@ -123,24 +123,28 @@ Ninja && cmake --build out/root && ctest --test-dir out/root`.
 
 ### Update upstream
 
+The order matches [`PROVENANCE.md`](PROVENANCE.md), "Updating the baseline"
+(the source of truth).
+
 1. `git -C upstream fetch --tags origin`, then `git -C upstream checkout
-   --detach <tag>`, then `git add upstream`.
-2. Update `PROVENANCE.md` "Baseline" and "Current baseline" above to the new
+   --detach <tag>`.
+2. Gates: `pytest -q`; `ctest --preset linux-gcc`; the
+   `windows-llvm-mingw-cross` build and wine `ctest`; the root configure,
+   build and `ctest`. Then upstream's own suites in `out/venv-upstream` (exact
+   commands in [`secure-frontend-ci.md`](secure-frontend-ci.md), "Updating
+   upstream"): `pytest upstream/tools` with `--ignore` of `test_iq_pack.py`
+   (needs llama.cpp's `gguf` module) and `test_setup_engine_hash.py` (reaches
+   GitHub), and `--deselect` of the three recorded `test_setup_choices.py`
+   drift cases; then `pytest upstream/serve`. Re-check the SP5 pass-through
+   table against the new engine's flags and protocol, and the upstream
+   internals `tools/secure/secure_tokenizer.py` relies on (listed in its module
+   docstring).
+3. `git -C upstream status --porcelain` is empty and `git submodule status`
+   is clean (no `-`/`U`; `+` is expected until the pointer is staged).
+4. Update `PROVENANCE.md` "Baseline" and "Current baseline" above to the new
    commit and tag.
-3. Gates: `pytest -q`; `ctest --preset linux-gcc`; the
-   `windows-llvm-mingw-cross` build and wine `ctest`; the root build and root
-   `ctest`.
-4. Upstream's own suites in `out/venv-upstream` (exact commands in
-   [`secure-frontend-ci.md`](secure-frontend-ci.md), "Updating upstream"):
-   `pytest upstream/tools` with `--ignore` of `test_iq_pack.py` (needs
-   llama.cpp's `gguf` module) and `test_setup_engine_hash.py` (reaches GitHub),
-   and `--deselect` of the three recorded `test_setup_choices.py` drift cases;
-   then `pytest upstream/serve`.
-5. Re-check the SP5 pass-through table against the new engine's flags and
-   protocol, and the upstream internals `tools/secure/secure_tokenizer.py`
-   relies on (listed in its module docstring).
-6. `git submodule status` shows no `+`/`-`/`U`; `git -C upstream status
-   --short` is empty. One commit: `upstream: bump to <tag>`.
+5. `git add upstream docs/PROVENANCE.md docs/AGENT_HANDOFF.md`; one commit:
+   `upstream: bump to <tag>`.
 
 ## What has changed
 
@@ -390,7 +394,9 @@ owns it (see the decisions above).
    owner's NVIDIA host.**
 2. Add CMake presets and CI for Windows and Linux. **Done (SP0)**: `linux-gcc`,
    `linux-clang`, `windows-llvm-mingw-cross`, `windows-msys2-clang`, and
-   informational `windows-msvc`. **CI has not run yet.**
+   informational `windows-msvc`. **CI runs and is green**: all blocking jobs
+   on run `38458255140` and, after the submodule layout, on run `38478775552`
+   (see owner decision 9); `windows-msvc` stays informational.
 3. Generate an SBOM and release manifest listing exact engine/dependency
    revisions and enabled network-capable components. **SP7.**
 4. Run the full security/privacy matrix, dependency scan, and an independent
@@ -514,11 +520,13 @@ sub-project named.
   `token_reader_tests` still says "MSVC/Windows runtime coverage"; the plan for
   that coverage is now the MSYS2 job. SP1.
 - Submodule layout: CI does not yet test our root's defaults without `-D`
-  flags (`top-level-integration` passes the OFF flags explicitly; a
-  configure-only check is planned).
+  flags (`top-level-integration` passes the OFF flags explicitly). Scheduled
+  for the layout plan's final fix wave (CI step: configure our root with no
+  `-D` flags and assert the three OFF seeds plus no `_deps`).
 - Submodule layout: `scripts/secure_distribution_check.py` does not split
-  backslash separators on Linux, so a staged name such as `upstream\setup.py`
-  is one path component there.
+  backslash separators on Linux, so a staged name such as
+  `upstream\requirements.txt` is one path component there and passes (a
+  `.py` name would still be caught by the Python-source rule).
 - Submodule layout: `tools/secure/secure_tokenizer.py` couples to upstream
   internals (`Tokenizer._re`, the `__init__` argument order, the `extract()`
   output path `tokenizer/tokenizer.json`); re-verify it on every upstream

@@ -98,14 +98,15 @@ Upstream's own suites run only after a submodule bump ("Updating upstream").
 
 ## Updating upstream
 
-1. `git -C upstream fetch --tags origin`
-2. `git -C upstream checkout --detach <tag>`
-3. `git add upstream` and update `docs/PROVENANCE.md` "Baseline" and
-   `docs/AGENT_HANDOFF.md` "Current baseline" to the new commit and tag.
-4. Run the gates: `pytest -q`; `ctest --preset linux-gcc`; the
-   `windows-llvm-mingw-cross` build (and wine `ctest`); the root build and root
-   `ctest` above.
-5. Run upstream's own suites in a separate venv (upstream's pins win there):
+The order matches `docs/PROVENANCE.md`, "Updating the baseline" (the source
+of truth).
+
+1. `git -C upstream fetch --tags origin`, then
+   `git -C upstream checkout --detach <tag>`.
+2. Run the gates: `pytest -q`; `ctest --preset linux-gcc`; the
+   `windows-llvm-mingw-cross` build (and wine `ctest`); the root configure,
+   build and `ctest` above.
+3. Run upstream's own suites in a separate venv (upstream's pins win there):
 
        python3 -m venv out/venv-upstream
        out/venv-upstream/bin/pip install -q -r scripts/dev/requirements-dev.txt
@@ -121,13 +122,17 @@ Upstream's own suites run only after a submodule bump ("Updating upstream").
    The two ignores need llama.cpp's `gguf` module and GitHub respectively; the
    three deselects are recorded upstream drift against its `setup.py`. Drop an
    exclusion once the new tag no longer needs it.
-6. Re-check the SP5 pass-through table against the new engine's flags and
+4. Re-check the SP5 pass-through table against the new engine's flags and
    protocol, and the upstream internals `tools/secure/secure_tokenizer.py`
    relies on (listed in its module docstring: `Tokenizer._re`, the
    `__init__` argument order, the `extract()` output path
    `tokenizer/tokenizer.json`).
-7. `git submodule status` shows no `+`/`-`/`U`; `git -C upstream status
-   --short` is empty. One commit: `upstream: bump to <tag>`.
+5. `git -C upstream status --porcelain` is empty and `git submodule status`
+   shows no `-`/`U` (`+` is expected until the pointer is staged).
+6. Update `docs/PROVENANCE.md` "Baseline" and `docs/AGENT_HANDOFF.md` "Current
+   baseline" to the new commit and tag.
+7. `git add upstream docs/PROVENANCE.md docs/AGENT_HANDOFF.md`; one commit:
+   `upstream: bump to <tag>`.
 
 ## Offline checkout
 
@@ -179,9 +184,8 @@ security-sensitive portable frontend.
 
 Path filters: the workflow runs on changes to `secure_frontend/**`,
 `CMakeLists.txt`, `scripts/**`, `pytest.ini`, `conftest.py`, `tools/**`,
-`upstream` (the gitlink), `.gitmodules` and the workflow file. The layout spec
-(U10) lists `upstream` in place of `tools/**`; the workflow keeps `tools/**` as
-well, a superset, because our own `tools/secure/` tests live there.
+`upstream` (the gitlink), `.gitmodules` and the workflow file. `tools/**` is
+kept because our own `tools/secure/` tests live there (layout spec U10).
 
 Status (2026-10-13): all blocking jobs green on run `38458255140` (branch
 `ci/windows-runtime-fixes`), before the submodule layout, and on run
