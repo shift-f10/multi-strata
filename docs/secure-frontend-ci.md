@@ -31,6 +31,11 @@ this frontend.
 The presets need no submodule. `pytest -q` and the root build do; both stop
 with "run `git submodule update --init`" when `upstream/` is empty.
 
+After a `git pull` that moves the gitlink, run `git submodule update --init`
+again (or set `git config submodule.recurse true` once). A `+` at the start of
+the `git submodule status` line means the `upstream/` checkout is behind the
+recorded gitlink.
+
 ## Building locally (Linux)
 
     scripts/dev/bootstrap-linux.sh          # once; creates .venv-dev from scripts/dev/requirements-dev.txt
@@ -92,47 +97,72 @@ warnings, `ctest` 20/20 (the frontend's tests; upstream registers none at
 
 `pytest -q` from the repository root runs only `tools/secure/` (see
 `pytest.ini`): the GLM tokenizer wrapper tests and the secure distribution
-check tests, 12 in all; the owner's pre-push hook runs it. `conftest.py` stops
+check tests, 13 in all; the owner's pre-push hook runs it. `conftest.py` stops
 the run with "run `git submodule update --init`" when `upstream/` is empty.
 Upstream's own suites run only after a submodule bump ("Updating upstream").
 
 ## Updating upstream
 
-The order matches `docs/PROVENANCE.md`, "Updating the baseline" (the source
-of truth).
+The order and the exact commands are in `docs/PROVENANCE.md`, "Updating the
+baseline" (the single source of truth); in short:
 
 1. `git -C upstream fetch --tags origin`, then
    `git -C upstream checkout --detach <tag>`.
-2. Run the gates: `pytest -q`; `ctest --preset linux-gcc`; the
-   `windows-llvm-mingw-cross` build (and wine `ctest`); the root configure,
-   build and `ctest` above.
-3. Run upstream's own suites in a separate venv (upstream's pins win there):
+2. Run the gates, each with its working directory:
 
-       python3 -m venv out/venv-upstream
-       out/venv-upstream/bin/pip install -q -r scripts/dev/requirements-dev.txt
-       out/venv-upstream/bin/pip install -q -r upstream/requirements.txt
-       out/venv-upstream/bin/pytest -q upstream/tools \
-         --ignore=upstream/tools/test_iq_pack.py \
-         --ignore=upstream/tools/test_setup_engine_hash.py \
-         --deselect=upstream/tools/test_setup_choices.py::HipVision::test_the_cpu_encoder_is_built_once \
-         --deselect=upstream/tools/test_setup_choices.py::HipVision::test_without_images_nothing_changes \
-         --deselect=upstream/tools/test_setup_choices.py::CudaVision::test_the_encoder_is_built_native
-       out/venv-upstream/bin/pytest -q upstream/serve   # about 4.5 minutes
+       pytest -q                                   # repo root
+       cd secure_frontend && cmake --preset linux-gcc && cmake --build --preset linux-gcc \
+         && ctest --preset linux-gcc && cd ..      # in secure_frontend/
+       # in secure_frontend/: the windows-llvm-mingw-cross build (and wine ctest), above
+       cmake -S . -B out/root -G Ninja && cmake --build out/root \
+         && ctest --test-dir out/root && test ! -e out/root/_deps   # repo root, fresh dir
 
-   The two ignores need llama.cpp's `gguf` module and GitHub respectively; the
-   three deselects are recorded upstream drift against its `setup.py`. Drop an
-   exclusion once the new tag no longer needs it.
-4. Re-check the SP5 pass-through table against the new engine's flags and
-   protocol, and the upstream internals `tools/secure/secure_tokenizer.py`
-   relies on (listed in its module docstring: `Tokenizer._re`, the
-   `__init__` argument order, the `extract()` output path
-   `tokenizer/tokenizer.json`).
-5. `git -C upstream status --porcelain` is empty and `git submodule status`
+   Then upstream's own suites in a separate venv (upstream's pins win there).
+   `python3 -m venv` may lack `ensurepip`, so create it without pip and fill
+   it with the dev venv's pip (repo root):
+
+       python3 -m venv --without-pip out/venv-upstream
+       .venv-dev/bin/pip --python out/venv-upstream/bin/python install \
+         -r scripts/dev/requirements-dev.txt -r upstream/requirements.txt
+
+   and run them **from `upstream/`** (four `tools/` tests resolve `tools/...`
+   against the working directory; our root `pytest.ini` stays the rootdir, so
+   the `--deselect` ids keep the `upstream/tools/` prefix):
+
+       cd upstream && ../out/venv-upstream/bin/pytest -q tools \
+         --ignore=tools/test_iq_pack.py \
+         --ignore=tools/test_setup_engine_hash.py \
+         --deselect upstream/tools/test_setup_choices.py::HipVision::test_the_cpu_encoder_is_built_once \
+         --deselect upstream/tools/test_setup_choices.py::HipVision::test_without_images_nothing_changes \
+         --deselect upstream/tools/test_setup_choices.py::CudaVision::test_the_encoder_is_built_native \
+         && ../out/venv-upstream/bin/pytest -q serve   # about 4.5 minutes
+
+   At `v0.1.43`: `616 passed, 2 skipped, 3 deselected` and `695 passed, 11
+   skipped`. The two ignores need llama.cpp's `gguf` module and GitHub
+   respectively; the three deselects are recorded upstream drift against its
+   `setup.py`. Drop an exclusion once the new tag no longer needs it.
+
+   Re-audit upstream's top-level CMake assumptions (layout spec §3 table):
+   new `FetchContent`, option defaults, a `tests/CMakeLists.txt` that would
+   flip `STRATA_BUILD_TESTS`. Re-check the SP5 pass-through table against the
+   new engine's flags and protocol, and the upstream internals
+   `tools/secure/secure_tokenizer.py` relies on (listed in its module
+   docstring: `Tokenizer._re`, the `__init__` argument order, the `extract()`
+   output path `tokenizer/tokenizer.json`, which `extract()` now refuses to
+   create if upstream did not write it).
+3. `git -C upstream status --porcelain` is empty and `git submodule status`
    shows no `-`/`U` (`+` is expected until the pointer is staged).
-6. Update `docs/PROVENANCE.md` "Baseline" and `docs/AGENT_HANDOFF.md` "Current
-   baseline" to the new commit and tag.
-7. `git add upstream docs/PROVENANCE.md docs/AGENT_HANDOFF.md`; one commit:
-   `upstream: bump to <tag>`.
+4. Update `docs/PROVENANCE.md` "Baseline", then run
+   `git grep -n '<old tag>\|<old short sha>' -- ':!docs/superpowers' ':!upstream'`
+   and update every hit. Known pin sites: `README.md` (revision column and
+   the pinned `blob/<tag>/…` links), the workflow header comment,
+   `docs/AGENT_HANDOFF.md` (owner decision 6, the layout table header,
+   "Current baseline"), this file (the "Root build" note and the
+   offline-bundle commands below), `docs/PROVENANCE.md` (the `[strata]`
+   reference and pinned license links) and the `docs/security/` pages that
+   name the version.
+5. `git add upstream docs/PROVENANCE.md` plus every file touched in step 4;
+   one commit: `upstream: bump to <tag>`.
 
 ## Offline checkout
 
@@ -163,7 +193,7 @@ The bundle holds tag `v0.1.43` (tag object
 | `windows-cross` (`windows-llvm-mingw-cross`) | ubuntu-latest; uploads the `.exe` files | no | yes |
 | `windows-msys2` (`windows-msys2-clang`) | windows-latest, MSYS2 CLANG64; runs `ctest` | no | yes |
 | `windows-msvc` | windows-latest | no | no |
-| `top-level-integration` | ubuntu-latest; configures **our** root with CUDA/HIP/native experts off, builds `strata-secure-server`, `secure_frontend_config_tests`, `strata-plan`, runs `ctest -R secure_frontend_config_tests`, checks no `out/root/_deps` | yes | yes |
+| `top-level-integration` | ubuntu-latest; first configures **our** root with no `-D` flags (`out/root-defaults`, configure only) and asserts `STRATA_NATIVE_EXPERTS`/`STRATA_ENABLE_CUDA`/`STRATA_ENABLE_HIP` `OFF`, `CMAKE_BUILD_TYPE=Release` and no `_deps`; then configures it with CUDA/HIP/native experts off, builds `strata-secure-server`, `secure_frontend_config_tests`, `strata-plan`, runs `ctest -R secure_frontend_config_tests`, checks no `out/root/_deps` | yes | yes |
 
 The jobs that check out the submodule end with the step "upstream submodule
 pinned and unmodified": `git submodule status` must show no `+`/`-`/`U` prefix

@@ -57,7 +57,7 @@ A scratch root (`CMakeLists.txt` of §4.3, a copy of `secure_frontend/`,
   `windows-llvm-mingw-cross` builds 20 `.exe` with `-Werror`; wine 19/19.
 - `pytest -q` with `testpaths = tools/secure` and the §4.4 wrapper: 4 passed
   (spike: GLM tests only; with the U4 extract and U9 tests the routine count
-  is 12);
+  is 12, 13 after the final fix wave's `extract()` guard test);
   the submodule tree stayed clean (`git status` empty).
 
 Verdict: upstream's root `CMakeLists.txt` works as a subdirectory without
@@ -166,8 +166,11 @@ module anyway).
   `NOTICE` file (MIT does not need one).
 - `README.md`: the current attribution header (credits table and "What is
   different here") with links rewritten to `upstream/...`, then a short pointer
-  "Upstream Strata's README: [`upstream/README.md`](upstream/README.md)". The
-  six translated READMEs leave with upstream.
+  "Upstream Strata's README: `upstream/README.md`". The six translated READMEs
+  leave with upstream. (Final fix wave: GitHub does not serve paths inside a
+  submodule from the parent repository, so links into `upstream/` became
+  pinned absolute URLs such as
+  `https://github.com/Niko1221/Strata/blob/v0.1.43/README.md`.)
 
 ## 5. Target tree
 
@@ -198,7 +201,7 @@ One item per commit; each lands with its verification.
 | U1 | Remove upstream files from our tree: `git rm -r` of `.dockerignore AGENTS.md BENCH.bat Dockerfile README.de.md README.es.md README.fr.md README.ja.md README.pt-BR.md README.zh-CN.md SECURITY.md SETUP.bat START-HERE.bat UPDATE.bat bench.sh bench chat.py cmake data docker-entrypoint.sh include ref requirements.txt serve setup.py setup.sh src sycl third_party update.sh .github/FUNDING.yml .github/ISSUE_TEMPLATE .github/pull_request_template.md`, every `tools/*` except our `test_glm_tokenizer.py` (moved in U4), `tests/{core,cuda,data,hip,platform,prefill,program}`, and the 35 upstream `docs/*.md` plus `docs/{benchmarks,media,monitoring,paper}`. Root `CMakeLists.txt`, `.gitignore`, `.gitattributes`, `LICENSE`, `README.md` are rewritten in U3/U6/U7, not deleted. U1 and U2 are one commit (the tree is never without upstream). | `git diff --name-status 7695859a HEAD` after U1–U2 lists only our paths plus the `upstream` gitlink. |
 | U2 | `git submodule add https://github.com/Niko1221/Strata.git upstream`; `git -C upstream checkout 7695859a`; commit gitlink + `.gitmodules`. | `git submodule status` → ` 7695859aa13afb248bdb4d36f9b2e95707db079d upstream (v0.1.43)`; `git -C upstream status --short` empty. |
 | U3 | Our root `CMakeLists.txt` (§4.3). The upstream root hunk (`STRATA_BUILD_SECURE_FRONTEND*`) is gone with upstream's file. | Root configure+build with GPU off: `strata-plan`, `strata-gguf`, `strata-dequant`, `strata-secure-server` built; root `ctest` 20/20; `-DSECURE_STRATA_BUILD_ENGINE=OFF` configures with `upstream/` empty. |
-| U4 | `tools/secure/secure_tokenizer.py` + `tools/secure/test_glm_tokenizer.py` (§4.4). Upstream `tools/strata_tokenizer.py` is back to pristine (it is in the submodule). | `pytest -q` → 12 passed (4 GLM + 2 extract + 6 U9 distribution-check); `git -C upstream status --short` empty after the run. |
+| U4 | `tools/secure/secure_tokenizer.py` + `tools/secure/test_glm_tokenizer.py` (§4.4). Upstream `tools/strata_tokenizer.py` is back to pristine (it is in the submodule). | `pytest -q` → 12 passed (4 GLM + 2 extract + 6 U9 distribution-check; 13 after the final fix wave, which adds the `extract()` missing-file guard test); `git -C upstream status --short` empty after the run. |
 | U5 | `pytest.ini`: `testpaths = tools/secure`, `python_files = test_*.py`, all `--ignore`/`--deselect` lines dropped (they named upstream tests). `conftest.py`: numpy `collect_ignore` dropped; replaced by a check that fails collection with "run `git submodule update --init`" when `upstream/tools/strata_tokenizer.py` is absent. | `pytest -q` from the root passes; with `upstream/` deinitialized, the message is shown. |
 | U6 | `.gitignore` ours: `/.venv-dev/`, `/.toolchains/`, `/.worktrees/`, `/secure_frontend/out/`, `/secure_frontend/build/`, `/out/`, `__pycache__/`, `.pytest_cache/`. `.gitattributes` ours: `*.sh text eol=lf`. | `git status --short` clean after a full build, ctest, pytest and the cross build. |
 | U7 | `README.md` and `LICENSE` per §4.5. | Every link in the README header resolves in the tree (`upstream/...` paths included). |

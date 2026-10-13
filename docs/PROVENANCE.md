@@ -20,7 +20,9 @@ different behavior we wrap upstream from our own tree
 none. `git -C upstream status --porcelain` is empty.
 
 Everything under `upstream/` is under upstream's license
-([`upstream/LICENSE`](../upstream/LICENSE)). The root [`LICENSE`](../LICENSE)
+([`LICENSE` at `v0.1.43`](https://github.com/Niko1221/Strata/blob/v0.1.43/LICENSE);
+offline: `upstream/LICENSE` in a checkout with the submodule initialized). The
+root [`LICENSE`](../LICENSE)
 is the MIT text with the retained "Copyright (c) 2026 Niko1221 and the Strata
 contributors" line, our line, and a pointer to `upstream/LICENSE`.
 
@@ -38,25 +40,79 @@ wrapper `tools/secure/secure_tokenizer.py`; and the root `pytest.ini` and
 
 An upstream update moves the gitlink; it is never a merge into our tree.
 
-This is the canonical order; the runbooks in
+This is the canonical order (the single source of truth); the runbooks in
 [`AGENT_HANDOFF.md`](AGENT_HANDOFF.md) ("Update upstream") and
 [`secure-frontend-ci.md`](secure-frontend-ci.md) ("Updating upstream") follow it.
+`<old tag>` / `<old short sha>` are the current pin (today `v0.1.43` /
+`7695859a`), `<new tag>` the target.
 
 1. `git -C upstream fetch --tags origin && git -C upstream checkout --detach <new tag>`
-2. Gates: `pytest -q`; `ctest --preset linux-gcc` (in `secure_frontend/`); the
-   `windows-llvm-mingw-cross` build; the root configure, build and `ctest`;
-   then, in a separate venv, `pytest upstream/tools` (with its recorded
-   exclusions) and `pytest upstream/serve` (exact commands in
-   `secure-frontend-ci.md`). Re-check the SP5 pass-through table against the
-   new engine's flags and protocol, and the upstream internals
-   `tools/secure/secure_tokenizer.py` couples to (listed in its module
-   docstring).
+2. Gates, each with its working directory:
+   - `pytest -q` (repo root): our `tools/secure/` tests.
+   - `ctest --preset linux-gcc` (in `secure_frontend/`, after
+     `cmake --preset linux-gcc && cmake --build --preset linux-gcc`), and the
+     `windows-llvm-mingw-cross` build (in `secure_frontend/`).
+   - Root configure, build and `ctest` (repo root), from a fresh build
+     directory, then confirm nothing was fetched:
+
+         cmake -S . -B out/root -G Ninja && cmake --build out/root && ctest --test-dir out/root
+         test ! -e out/root/_deps
+
+   - Upstream's own suites in a separate venv (upstream's pins win there).
+     `python3 -m venv` may lack `ensurepip`, so create the venv without pip
+     and install into it with the dev venv's pip (repo root):
+
+         python3 -m venv --without-pip out/venv-upstream
+         .venv-dev/bin/pip --python out/venv-upstream/bin/python install \
+           -r scripts/dev/requirements-dev.txt -r upstream/requirements.txt
+
+     Then run them **from `upstream/`** (four `tools/` tests resolve
+     `tools/...` against the working directory). Our root `pytest.ini` stays
+     the rootdir, so `--deselect` ids keep the `upstream/tools/` prefix:
+
+         cd upstream && ../out/venv-upstream/bin/pytest -q tools \
+           --ignore=tools/test_iq_pack.py --ignore=tools/test_setup_engine_hash.py \
+           --deselect upstream/tools/test_setup_choices.py::HipVision::test_the_cpu_encoder_is_built_once \
+           --deselect upstream/tools/test_setup_choices.py::HipVision::test_without_images_nothing_changes \
+           --deselect upstream/tools/test_setup_choices.py::CudaVision::test_the_encoder_is_built_native \
+           && ../out/venv-upstream/bin/pytest -q serve
+
+     At `v0.1.43`: `616 passed, 2 skipped, 3 deselected` and `695 passed,
+     11 skipped`. The two ignores need llama.cpp's `gguf` module and GitHub
+     respectively; the three deselects are recorded upstream drift against its
+     `setup.py`. Drop an exclusion once the new tag no longer needs it.
+   - Re-audit upstream's top-level CMake assumptions (the table in
+     [layout spec §3](superpowers/specs/2026-10-13-upstream-submodule-layout-design.md)):
+     new `FetchContent`, changed option defaults, a `tests/CMakeLists.txt`
+     that would flip `STRATA_BUILD_TESTS` on (and fetch Catch2).
+   - Re-check the SP5 pass-through table against the new engine's flags and
+     protocol, and the upstream internals `tools/secure/secure_tokenizer.py`
+     couples to (listed in its module docstring).
 3. `git -C upstream status --porcelain` is empty and `git submodule status`
    shows no `-`/`U` (`+` is expected until the pointer is staged).
-4. Update "Baseline" above (commit, tag object, tag) and
-   [`AGENT_HANDOFF.md`](AGENT_HANDOFF.md) "Current baseline".
-5. `git add upstream docs/PROVENANCE.md docs/AGENT_HANDOFF.md`; one commit:
+4. Update "Baseline" above (commit, tag object, tag), then find every other
+   pin site and update each hit:
+
+       git grep -n '<old tag>\|<old short sha>' -- ':!docs/superpowers' ':!upstream'
+
+   Known pin sites: `README.md` (the revision column and the pinned
+   `blob/<tag>/...` links), the header comment of
+   `.github/workflows/secure-frontend.yml`, [`AGENT_HANDOFF.md`](AGENT_HANDOFF.md)
+   (owner decision 6, the "Repository layout" table header, "Current
+   baseline"), [`secure-frontend-ci.md`](secure-frontend-ci.md) (the "Root
+   build" note on `STRATA_BUILD_TESTS` and the offline-bundle commands), this
+   file (the `[strata]` reference, the pinned `blob/<tag>/...` license links,
+   and the ggml commit and `upstream/CMakeLists.txt` line numbers below), and
+   the `docs/security/` pages that name the baseline version.
+5. `git add upstream docs/PROVENANCE.md` plus every file touched in step 4
+   (at least `README.md`, `.github/workflows/secure-frontend.yml`,
+   `docs/AGENT_HANDOFF.md`, `docs/secure-frontend-ci.md`); one commit:
    `upstream: bump to <new tag>`.
+
+After a `git pull` that moves the gitlink, run `git submodule update --init`
+(or set `git config submodule.recurse true` once). A `+` in front of the line
+`git submodule status` prints means the checked-out `upstream/` is behind (or
+otherwise differs from) the recorded gitlink.
 
 ## Security reference
 
@@ -113,7 +169,8 @@ forms:
   `GIT_TAG 3cf03257f219afbe7334045ff7c6a06ac68c627d`.
 
 License: MIT, "Copyright (c) 2023-2026 The ggml authors"
-([`upstream/third_party/ggml/LICENSE`](../upstream/third_party/ggml/LICENSE)).
+([`third_party/ggml/LICENSE` at `v0.1.43`](https://github.com/Niko1221/Strata/blob/v0.1.43/third_party/ggml/LICENSE);
+offline: `upstream/third_party/ggml/LICENSE`).
 Our root `CMakeLists.txt` seeds `STRATA_NATIVE_EXPERTS=OFF` and our CI
 (`.github/workflows/secure-frontend.yml`) configures with
 `-DSTRATA_NATIVE_EXPERTS=OFF`, so the llama.cpp checkout is never fetched by

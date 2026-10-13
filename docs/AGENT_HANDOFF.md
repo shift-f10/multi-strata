@@ -65,7 +65,7 @@ without asking the owner.
    upstream/serve`) run explicitly after each submodule bump; the exact
    commands are in "Update upstream" below.
 8. **Pre-push hook.** The owner's pre-push hook runs `pytest -q`. With
-   `pytest.ini` it collects `tools/secure/` only (12 tests). `conftest.py`
+   `pytest.ini` it collects `tools/secure/` only (13 tests). `conftest.py`
    stops the run with "run `git submodule update --init`" when `upstream/` is
    not checked out.
 9. **CI status: all blocking jobs green on Windows and Linux** (run
@@ -113,7 +113,10 @@ only our code. Deleting `upstream/` leaves exactly our code.
 
 Getting the code: `git clone --recurse-submodules`, or `git submodule update
 --init` after a plain clone. Inside a `.worktrees/<name>` worktree run `git
-submodule update --init` once as well. The presets need no submodule;
+submodule update --init` once as well. After a `git pull` that moves the
+gitlink, run `git submodule update --init` again (or set `git config
+submodule.recurse true` once); `git submodule status` showing a `+` prefix
+means the `upstream/` checkout is behind the recorded gitlink. The presets need no submodule;
 `pytest -q` and the root build do, and both say so when it is missing.
 
 Root build (GPU backends off, nothing fetched): `cmake -S . -B out/root -G
@@ -124,27 +127,44 @@ Ninja && cmake --build out/root && ctest --test-dir out/root`.
 ### Update upstream
 
 The order matches [`PROVENANCE.md`](PROVENANCE.md), "Updating the baseline"
-(the source of truth).
+(the single source of truth; the exact commands are there).
 
 1. `git -C upstream fetch --tags origin`, then `git -C upstream checkout
    --detach <tag>`.
-2. Gates: `pytest -q`; `ctest --preset linux-gcc`; the
-   `windows-llvm-mingw-cross` build and wine `ctest`; the root configure,
-   build and `ctest`. Then upstream's own suites in `out/venv-upstream` (exact
-   commands in [`secure-frontend-ci.md`](secure-frontend-ci.md), "Updating
-   upstream"): `pytest upstream/tools` with `--ignore` of `test_iq_pack.py`
-   (needs llama.cpp's `gguf` module) and `test_setup_engine_hash.py` (reaches
-   GitHub), and `--deselect` of the three recorded `test_setup_choices.py`
-   drift cases; then `pytest upstream/serve`. Re-check the SP5 pass-through
-   table against the new engine's flags and protocol, and the upstream
-   internals `tools/secure/secure_tokenizer.py` relies on (listed in its module
+2. Gates, each with its working directory: `pytest -q` (repo root);
+   `ctest --preset linux-gcc` (in `secure_frontend/`) and the
+   `windows-llvm-mingw-cross` build and wine `ctest` (in `secure_frontend/`);
+   the root configure, build and `ctest` from a fresh build directory (repo
+   root), plus `test ! -e out/root/_deps`. Then upstream's own suites in a
+   separate venv created with `python3 -m venv --without-pip
+   out/venv-upstream` and filled with `.venv-dev/bin/pip --python
+   out/venv-upstream/bin/python install -r scripts/dev/requirements-dev.txt -r
+   upstream/requirements.txt`, run **from `upstream/`**: `cd upstream &&
+   ../out/venv-upstream/bin/pytest -q tools
+   --ignore=tools/test_iq_pack.py --ignore=tools/test_setup_engine_hash.py`
+   with `--deselect upstream/tools/test_setup_choices.py::…` for the three
+   recorded drift cases (the ids keep the `upstream/tools/` prefix because our
+   root `pytest.ini` stays the rootdir), `&& ../out/venv-upstream/bin/pytest -q
+   serve`. At `v0.1.43`: 616 passed / 2 skipped / 3 deselected, and 695
+   passed. Re-audit upstream's top-level CMake assumptions (layout spec §3
+   table): new `FetchContent`, option defaults, a `tests/CMakeLists.txt` that
+   would flip `STRATA_BUILD_TESTS`. Re-check the SP5 pass-through table
+   against the new engine's flags and protocol, and the upstream internals
+   `tools/secure/secure_tokenizer.py` relies on (listed in its module
    docstring).
 3. `git -C upstream status --porcelain` is empty and `git submodule status`
    is clean (no `-`/`U`; `+` is expected until the pointer is staged).
-4. Update `PROVENANCE.md` "Baseline" and "Current baseline" above to the new
-   commit and tag.
-5. `git add upstream docs/PROVENANCE.md docs/AGENT_HANDOFF.md`; one commit:
-   `upstream: bump to <tag>`.
+4. Update `PROVENANCE.md` "Baseline", then run `git grep -n '<old tag>\|<old
+   short sha>' -- ':!docs/superpowers' ':!upstream'` and update every hit.
+   Known pin sites: `README.md` (revision column and the pinned
+   `github.com/Niko1221/Strata/blob/<tag>/…` links),
+   `.github/workflows/secure-frontend.yml` (header comment), this file (owner
+   decision 6, the "Repository layout" table header, "Current baseline"),
+   `secure-frontend-ci.md` (the "Root build" note and the offline-bundle
+   commands), `PROVENANCE.md` (the `[strata]` reference and the pinned
+   license links), and the `docs/security/` pages that name the version.
+5. `git add upstream docs/PROVENANCE.md` plus every file touched in step 4;
+   one commit: `upstream: bump to <tag>`.
 
 ## What has changed
 
@@ -157,11 +177,11 @@ plan: [`superpowers/plans/2026-10-13-upstream-submodule-layout.md`](superpowers/
 | --- | --- | --- |
 | U2 | `upstream/` = submodule `https://github.com/Niko1221/Strata.git` at `7695859a` (`v0.1.43`), tree byte-identical to the tag | `git submodule status` |
 | U3 | Our root `CMakeLists.txt`: frontend first, then `upstream/` unmodified; Release default, `include(CTest)`, `SECURE_FRONTEND_WERROR=ON`, CUDA/HIP/native experts seeded `OFF`, `SECURE_STRATA_BUILD_ENGINE` | root build 94 steps / 0 warnings, `ctest` 20/20, no `_deps`; `-D` overrides; empty `upstream/` message |
-| U4, U5 | `tools/secure/secure_tokenizer.py` wraps upstream's tokenizer (GLM aliases, `extract()` ships the declared pattern); tests in `tools/secure/`; `pytest.ini` `testpaths = tools/secure`; `conftest.py` names `git submodule update --init` | `pytest -q` 12 passed |
+| U4, U5 | `tools/secure/secure_tokenizer.py` wraps upstream's tokenizer (GLM aliases, `extract()` ships the declared pattern); tests in `tools/secure/`; `pytest.ini` `testpaths = tools/secure`; `conftest.py` names `git submodule update --init` | `pytest -q` 12 passed (13 since the final fix wave: `extract()` refuses when upstream did not write `tokenizer/tokenizer.json`) |
 | U1, U6, U7 | 2 971 upstream files removed from our tree; ours-only `.gitignore`, `.gitattributes`, `README.md`, `LICENSE` | `git ls-files` shows only our paths plus the `upstream` gitlink |
 | U8 | `bootstrap-linux.sh` reads only `scripts/dev/requirements-dev.txt` (now pins cmake 4.4.3, ninja 1.13.2, regex 2026.9.10) | fresh venv bootstraps; `pytest -q` passes without numpy |
 | U9 | `secure_distribution_check.py` rejects any `upstream` path component and quarantined names at any depth | `tools/secure/test_secure_distribution_check.py` (6 tests) |
-| U10 | CI: submodule checkout in `linux` and `top-level-integration`; the latter configures our root; collection and submodule-status steps | run `38478775552` (`4aa742c9`): all five blocking jobs green; `windows-msvc` informational red (known) |
+| U10 | CI: submodule checkout in `linux` and `top-level-integration`; the latter configures our root (first with no `-D` flags, asserting the OFF seeds, `Release` and no `_deps` — added in the final fix wave); collection and submodule-status steps | run `38478775552` (`4aa742c9`): all five blocking jobs green; `windows-msvc` informational red (known) |
 | U11–U14 | `PROVENANCE.md` baseline = gitlink, no ledger; this file, `secure-frontend-ci.md`, security docs, product spec §9, SP1/SP2 path patches; "Update upstream" runbook; offline bundle in `secure-frontend-ci.md` | doc greps in the plan, Task 6 |
 
 ### Secure baseline (commit `7de35b0c` on `main`)
@@ -185,7 +205,7 @@ says why it has none.
 | Item | What changed | Regression test / check |
 | --- | --- | --- |
 | Tooling (T1, T5) | `scripts/dev/bootstrap-linux.sh` creates `.venv-dev` (no root) with `-r scripts/dev/requirements-dev.txt` (since the submodule layout the only file it reads: cmake 4.4.3, ninja 1.13.2, regex, pytest 9.1.1 and its dependencies). Offline (`STRATA_WHEEL_DIR` set) needs every wheel that file names **plus** a pip wheel, which the pip-bootstrap step now takes from `STRATA_WHEEL_DIR` too; nothing is fetched from the network then. `pytest.ini` collects `tools/secure/` only (submodule layout). | Bootstrap is idempotent (re-run on the existing venv: exit 0); a fresh scratch checkout bootstraps with network (exit 0) and offline from a wheel directory with the network blocked (exit 0); `pytest -q` passes from the repository root. |
-| CMake hygiene (T3, T4) | Top-level `STRATA_BUILD_SECURE_FRONTEND` defaults `OFF` (opt-in). `SECURE_FRONTEND_WERROR` (default `ON`, follows `STRATA_WERROR` from the root). One `secure_frontend_set_warnings()` helper replaces the per-target flag blocks; dead `if(MSVC)`-inside-`if(UNIX)` blocks removed. | Configure with each setting. |
+| CMake hygiene (T3, T4) | (before the submodule layout) Top-level `STRATA_BUILD_SECURE_FRONTEND` defaults `OFF` (opt-in). `SECURE_FRONTEND_WERROR` (default `ON`, follows `STRATA_WERROR` from the root). One `secure_frontend_set_warnings()` helper replaces the per-target flag blocks; dead `if(MSVC)`-inside-`if(UNIX)` blocks removed. Under our own root (submodule layout) the frontend is added before `upstream/` and the root declares `SECURE_FRONTEND_WERROR=ON`, so the follow-`STRATA_WERROR` default is inert there (SP1 may simplify it). | Configure with each setting. |
 | llvm-mingw (T2, P5) | `scripts/dev/bootstrap-llvm-mingw.sh` (llvm-mingw `20261006`, sha256 pinned), toolchain file, `windows-llvm-mingw-cross` preset. `win32_prelude.hpp` (`NOMINMAX`, `WIN32_LEAN_AND_MEAN`); paths converted with `path::wstring()`. Two further Windows fixes found by the cross build: unused POSIX helpers in `engine_process.cpp` guarded; `token_reader.cpp` uses `std::next(it) == end()` (libc++ `path::iterator` is an input iterator). | Cross build with `-Werror`; `wine strata-secure-server.exe --help` exits 0. |
 | Early close (S1) | `install_process_defaults()` ignores `SIGPIPE` in all three mains; `send()` uses `MSG_NOSIGNAL` (`SO_NOSIGPIPE` where that is the only option). | `socket_server_survives_client_early_close` |
 | Request deadline, send timeout (S2, S3) | `HttpSocketServerLimits{request_deadline = 30 s, max_request_bytes = 64 KiB}`, a defaulted `bind()` parameter until SP1's typed configuration. Total monotonic deadline for header and body; send timeout, with each `send()` capped at 64 KiB (Winsock accepted one 32 MiB blocking `send()` whole, bypassing the deadline; found by the first MSYS2 run). | `socket_server_rejects_slow_request_past_deadline`, `socket_server_send_times_out_on_stalled_reader` |
@@ -418,19 +438,30 @@ Dev host (Linux x86_64, no GPU), `PATH` with `.venv-dev/bin` first.
 | --- | --- |
 | `git submodule status` | ` 7695859aa13afb248bdb4d36f9b2e95707db079d upstream (v0.1.43)`; `git -C upstream status --short` empty after every gate below |
 | `git ls-files \| sed 's#/.*##' \| sort -u` | `.gitattributes .github .gitignore .gitmodules CMakeLists.txt LICENSE README.md conftest.py docs pytest.ini scripts secure_frontend tests tools upstream` |
-| `pytest -q` | `12 passed` (`tools/secure/` only); a fresh venv from `bootstrap-linux.sh` (no numpy) passes too; with `upstream/` empty it exits 4 with "run `git submodule update --init`" |
+| `pytest -q` | `12 passed` in Task 7; `13 passed` after the final fix wave (new `extract()` guard test) (`tools/secure/` only); with `upstream/` empty it exits 4 with "run `git submodule update --init`". A fresh venv from `bootstrap-linux.sh` (no numpy) passes too (from Task 3 report, same date) |
 | in `secure_frontend/`: `ctest --preset linux-gcc` | `100% tests passed out of 20` (also from a fresh build directory: 78 steps, 0 warnings) |
 | in `secure_frontend/`: `windows-llvm-mingw-cross` build, then `ctest --preset windows-llvm-mingw-cross` (wine) | 20 `.exe` with `-Werror`; `100% tests passed out of 19` (also from a fresh build directory: 76 steps, 0 warnings) |
 | `cmake -S . -B out/root -G Ninja && cmake --build out/root && ctest --test-dir out/root` (from clean) | 94 steps, 0 warnings; `strata-plan`, `strata-gguf`, `strata-dequant`, `strata-secure-server` built; `100% tests passed out of 20`; no `out/root/_deps` |
-| root configure with `-DCMAKE_BUILD_TYPE=Debug -DSTRATA_WERROR=OFF` / `-DSTRATA_ENABLE_CUDA=ON` / empty `upstream/` / `-DSECURE_STRATA_BUILD_ENGINE=OFF` | `Debug` kept and `SECURE_FRONTEND_WERROR=ON`; fails at `CMAKE_CUDA_COMPILER` (override reached upstream); fails with "run `git submodule update --init`"; configures and builds the frontend |
-| fresh scratch clone (`git clone`, then `git submodule update --init --depth 1`) | plain clone: configure (exit 1) and pytest (exit 4) stop with the init instruction; after init: root build 94 steps, 0 warnings, ctest 20/20, no `_deps`, pytest 12 passed; `git rm -r upstream && ls -A` shows only our paths |
+| root configure with `-DCMAKE_BUILD_TYPE=Debug -DSTRATA_WERROR=OFF` / `-DSTRATA_ENABLE_CUDA=ON` / empty `upstream/` / `-DSECURE_STRATA_BUILD_ENGINE=OFF` (from Task 2 report, same date) | `Debug` kept and `SECURE_FRONTEND_WERROR=ON`; fails at `CMAKE_CUDA_COMPILER` (override reached upstream); fails with "run `git submodule update --init`"; configures and builds the frontend |
+| fresh scratch clone (`git clone`, then `git submodule update --init --depth 1`) | plain clone: configure (exit 1) and pytest (exit 4) stop with the init instruction; after init: root build 94 steps, 0 warnings, ctest 20/20, no `_deps`, pytest 12 passed; `git rm -r upstream && ls -A` shows only our paths. With `--depth 1` the tag is not fetched, so `git submodule status` there shows `(7695859)` instead of `(v0.1.43)` |
 | `pytest upstream/tools` (with the recorded `--ignore`/`--deselect`), separate venv from `scripts/dev/requirements-dev.txt` + `upstream/requirements.txt` | from the repository root: `4 failed, 612 passed, 2 skipped, 3 deselected, 214 subtests passed` — the four (`test_conversation_cache_disabled.py` and `test_conversation_cache_growth.py`, two each) run `tools/<script>.py` and import `tools.test_…` relative to the working directory; from `upstream/` (`pytest -q tools --ignore=tools/… --deselect=upstream/tools/…`, node ids stay relative to our root `pytest.ini`): `616 passed, 2 skipped, 3 deselected, 214 subtests passed` |
 | `pytest upstream/serve` (same venv, repository root) | `695 passed, 11 skipped, 5532 subtests passed`, exit 0 |
-| offline bundle (`git -C upstream bundle create … v0.1.43`, init a scratch clone from it) | bundle okay; `refs/tags/v0.1.43` → submodule checked out at `7695859a` with no network |
+| offline bundle (`git -C upstream bundle create … v0.1.43`, init a scratch clone from it) (from Task 6 report, same date) | bundle okay; `refs/tags/v0.1.43` → submodule checked out at `7695859a` with no network |
+
+Final fix wave (same date, after `45487311`):
+
+| Command | Result |
+| --- | --- |
+| `pytest -q` (repo root) | `13 passed` (new: `extract()` raises "upstream layout changed; re-verify the wrapper" when `tokenizer/tokenizer.json` is missing) |
+| in `secure_frontend/`: `ctest --preset linux-gcc` | `100% tests passed out of 20` |
+| `cmake -S . -B out/root-fixwave -G Ninja && cmake --build out/root-fixwave && ctest --test-dir out/root-fixwave` (fresh dir) | 94 steps, 0 warnings, `100% tests passed out of 20`, no `_deps` |
+| root defaults, no `-D` flags (`cmake -S . -B out/root-defaults-fixwave -G Ninja`, the CI step's greps) | `STRATA_NATIVE_EXPERTS:BOOL=OFF`, `STRATA_ENABLE_CUDA:BOOL=OFF`, `STRATA_ENABLE_HIP:BOOL=OFF`, `CMAKE_BUILD_TYPE:STRING=Release`, no `_deps` |
+| upstream suites, the exact `PROVENANCE.md` step-2 commands (`python3 -m venv --without-pip out/venv-upstream-fixwave`, dev pip `--python … install`, then from `upstream/`) | `tools`: `616 passed, 2 skipped, 3 deselected, 214 subtests passed`; `serve`: `695 passed, 11 skipped, 5532 subtests passed` (4 min 14 s); `git -C upstream status --porcelain` empty |
 
 Not shown here: `linux-clang`, `windows-msys2-clang`, `windows-msvc`. CI on
-GitHub: run `38478775552` on `4aa742c9` (U10 row above); no run yet on the
-verification commit.
+GitHub: run `38478775552` on `4aa742c9` (U10 row above); no CI run since
+`4aa742c9` (docs/comment-only commits until the final fix wave, which adds
+the root-defaults CI step and the `extract()` guard).
 
 ### SP0 (before the submodule layout)
 
@@ -541,10 +572,10 @@ sub-project named.
 - The comment in `secure_frontend/CMakeLists.txt` above the UNIX-only
   `token_reader_tests` still says "MSVC/Windows runtime coverage"; the plan for
   that coverage is now the MSYS2 job. SP1.
-- Submodule layout: CI does not yet test our root's defaults without `-D`
-  flags (`top-level-integration` passes the OFF flags explicitly). Scheduled
-  for the layout plan's final fix wave (CI step: configure our root with no
-  `-D` flags and assert the three OFF seeds plus no `_deps`).
+- Submodule layout: closed in the final fix wave. `top-level-integration`
+  now first configures our root with no `-D` flags (`out/root-defaults`) and
+  asserts `STRATA_NATIVE_EXPERTS`, `STRATA_ENABLE_CUDA`, `STRATA_ENABLE_HIP`
+  `OFF`, `CMAKE_BUILD_TYPE=Release` and no `_deps`; not yet run on GitHub.
 - Submodule layout: `scripts/secure_distribution_check.py` does not split
   backslash separators on Linux, so a staged name such as
   `upstream\requirements.txt` is one path component there and passes (a
@@ -552,7 +583,9 @@ sub-project named.
 - Submodule layout: `tools/secure/secure_tokenizer.py` couples to upstream
   internals (`Tokenizer._re`, the `__init__` argument order, the `extract()`
   output path `tokenizer/tokenizer.json`); re-verify it on every upstream
-  pointer bump ("Update upstream").
+  pointer bump ("Update upstream"). Since the final fix wave `extract()`
+  raises ("upstream layout changed; re-verify the wrapper") when upstream did
+  not write that file, instead of creating it.
 
 ## Collaboration and change rules
 

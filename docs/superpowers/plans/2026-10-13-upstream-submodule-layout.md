@@ -21,7 +21,7 @@
 - No GPU SDK and no network fetch in the default root build: our root seeds `STRATA_ENABLE_CUDA=OFF`, `STRATA_ENABLE_HIP=OFF`, `STRATA_NATIVE_EXPERTS=OFF` as cache defaults that `-D` overrides; `out/root/_deps` never exists.
 - Network use is limited to: cloning the submodule from GitHub (Task 1, Task 7 scratch clone and worktree init), and PyPI for the fresh-venv check in Task 3. No `acid`, no `az`, nothing outside this repository.
 - Baseline gate numbers (from `docs/AGENT_HANDOFF.md`): `ctest --preset linux-gcc` 20/20; `windows-llvm-mingw-cross` builds 20 `.exe` with `-Werror`; wine `ctest --preset windows-llvm-mingw-cross` 19/19; full root build from clean 94 Ninja steps, 0 warnings, root `ctest` 20/20.
-- Routine `pytest -q` after Task 3: `testpaths = tools/secure`, **12 passed** (4 GLM + 2 extract + 6 distribution-check).
+- Routine `pytest -q` after Task 3: `testpaths = tools/secure`, **12 passed** (4 GLM + 2 extract + 6 distribution-check); **13** after the final fix wave (+1 `extract()` missing-file guard test). Later "12 passed" expectations in this plan are the per-task values before that wave.
 - Deletions: only the paths this plan names (build/probe directories under `out/`, the `git rm` list in Task 4, the two worktree symlinks in Task 7). Never `rm -rf` the repository, `upstream/`, `.venv-dev/`, `.toolchains/` or `.worktrees/`.
 - Commits: local only, one per task, with
   `git -C "$R" -c user.name=shift-f10 -c user.email=testdaflow.tv@gmail.com commit -m "<subject>" -m "<body>" -m "$TRAILER"` where

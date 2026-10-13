@@ -1,17 +1,17 @@
 # Secure Strata (multi-strata)
 
-This repository (`shift-f10/multi-strata`) builds a security- and privacy-first frontend around [Niko1221/Strata](https://github.com/Niko1221/Strata/tree/v0.1.43) and is a mixture of the sources below. Upstream Strata is not copied into this tree: it is the git submodule [`upstream/`](upstream/), pinned at `v0.1.43` and never modified. The repository root holds only our code.
+This repository (`shift-f10/multi-strata`) builds a security- and privacy-first frontend around [Niko1221/Strata](https://github.com/Niko1221/Strata/tree/v0.1.43) and is a mixture of the sources below. Upstream Strata is not copied into this tree: it is the git submodule `upstream/` ([`v0.1.43` on GitHub](https://github.com/Niko1221/Strata/tree/v0.1.43)), pinned at `v0.1.43` and never modified. The repository root holds only our code.
 
-Get the code with the submodule: `git clone --recurse-submodules https://github.com/shift-f10/multi-strata.git`, or run `git submodule update --init` after a plain clone.
+Get the code with the submodule: `git clone --recurse-submodules https://github.com/shift-f10/multi-strata.git`, or run `git submodule update --init` after a plain clone. After a `git pull` that moves the submodule pointer, run `git submodule update --init` again (or set `git config submodule.recurse true` once); a `+` at the start of the `git submodule status` line means `upstream/` is behind the recorded gitlink.
 
 ## Sources and credits
 
 | Source | What we took from it | Revision | License |
 | --- | --- | --- | --- |
-| [Niko1221/Strata](https://github.com/Niko1221/Strata/tree/v0.1.43) | The engine, Python server, installer and docs, used unmodified from the git submodule `upstream/`. This project started as a fork of it. | tag `v0.1.43`, commit `7695859aa13afb248bdb4d36f9b2e95707db079d` (the `upstream` gitlink) | MIT, Copyright (c) 2026 Niko1221 and the Strata contributors ([`upstream/LICENSE`](upstream/LICENSE); the line is retained in our [`LICENSE`](LICENSE)) |
+| [Niko1221/Strata](https://github.com/Niko1221/Strata/tree/v0.1.43) | The engine, Python server, installer and docs, used unmodified from the git submodule `upstream/`. This project started as a fork of it. | tag `v0.1.43`, commit `7695859aa13afb248bdb4d36f9b2e95707db079d` (the `upstream` gitlink) | MIT, Copyright (c) 2026 Niko1221 and the Strata contributors ([`LICENSE` at `v0.1.43`](https://github.com/Niko1221/Strata/blob/v0.1.43/LICENSE), `upstream/LICENSE` offline; the line is retained in our [`LICENSE`](LICENSE)) |
 | [robertkarl/UnbiasedStrata](https://github.com/robertkarl/UnbiasedStrata/tree/46c46ecfc11d2315512f21f7549b0a7792ccd2ae) | Security-design ideas only (smaller, offline-verifiable runtime; reduced service attack surface). No code copied. | commit `46c46ecfc11d2315512f21f7549b0a7792ccd2ae` | MIT (per the GitHub license API, 2026-10-13; see [`docs/PROVENANCE.md`](docs/PROVENANCE.md)); no code taken, so it governs nothing here |
 | [lighttransport/Strata](https://github.com/lighttransport/Strata/tree/glm53f) | GLM-5.3 compatibility reference: the native GLM-5.3 serving profile and `glm4` / `chatglm-bpe` tokenizer handling were implemented against its observable contracts (the tokenizer regex was transcribed from its `tools/strata_tokenizer.py` into our wrapper [`tools/secure/secure_tokenizer.py`](tools/secure/secure_tokenizer.py)). Its engine and kernels are not ported yet. | branch `glm53f`, commit `4894c9967f5754a2052d7b05f10a01b6071bb6e4` | MIT, Copyright (c) 2026 Niko1221 and the Strata contributors (per the GitHub API, 2026-10-13; see [`docs/PROVENANCE.md`](docs/PROVENANCE.md)) |
-| [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) / ggml | Comes with upstream Strata, unchanged by us: `upstream/third_party/ggml` and the pinned llama.cpp checkout its build fetches (only with `STRATA_NATIVE_EXPERTS=ON`). | commit `3cf03257f219afbe7334045ff7c6a06ac68c627d` | MIT ([`upstream/third_party/ggml/LICENSE`](upstream/third_party/ggml/LICENSE)) |
+| [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) / ggml | Comes with upstream Strata, unchanged by us: `upstream/third_party/ggml` and the pinned llama.cpp checkout its build fetches (only with `STRATA_NATIVE_EXPERTS=ON`). | commit `3cf03257f219afbe7334045ff7c6a06ac68c627d` | MIT ([`third_party/ggml/LICENSE` at `v0.1.43`](https://github.com/Niko1221/Strata/blob/v0.1.43/third_party/ggml/LICENSE), `upstream/third_party/ggml/LICENSE` offline) |
 | [mstorsjo/llvm-mingw](https://github.com/mstorsjo/llvm-mingw) | Build tool only: the open-source Windows cross toolchain, fetched by `scripts/dev/bootstrap-llvm-mingw.sh` with a pinned sha256. Nothing from it is in this tree. | release `20261006` | GitHub API reports `NOASSERTION` (Other); its `LICENSE` puts the llvm-mingw scripts under ISC, bundled components keep their own licenses (see [`docs/PROVENANCE.md`](docs/PROVENANCE.md)) |
 
 ## What is different here
@@ -30,4 +30,4 @@ Nothing here is released. The full attribution record is [`docs/PROVENANCE.md`](
 
 ---
 
-Upstream Strata's README: [`upstream/README.md`](upstream/README.md).
+Upstream Strata's README: [`README.md` at `v0.1.43`](https://github.com/Niko1221/Strata/blob/v0.1.43/README.md) (offline: `upstream/README.md`).
