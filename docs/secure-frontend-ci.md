@@ -90,5 +90,10 @@ enabled. Do not change the frontend jobs to configure the repository root: that
 would exercise the upstream engine rather than the isolated,
 security-sensitive portable frontend.
 
-Status (2026-10-13): the workflow has been rewritten but has **not run yet**; it
-first runs when the owner pushes the `sp0-foundation-hardening` branch.
+Status (2026-10-13): all blocking jobs green on run `38458255140` (branch
+`ci/windows-runtime-fixes`), after the first real run (`38456682352`) found three
+Windows-only failures; see `AGENT_HANDOFF.md` "Verification performed". The
+`windows-msys2-clang` preset links with `-static`, so a child started with the
+allowlisted environment (no `PATH`) needs no MSYS2 runtime DLL. `windows-msvc`
+currently fails at configure (the image ships Visual Studio 2026, the preset
+names 2022); it is non-blocking.

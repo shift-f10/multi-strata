@@ -111,7 +111,10 @@ protected-file reader has no runtime test yet; the socket-server tests run on
 Windows too. `engine_process_tests` and `engine_stdio_process_tests` start and
 terminate through the Job on MSYS2; the grandchild assertion
 (`job_object_terminates_grandchild`) runs only there (wine passes it but is not
-authoritative for Job Objects).
+authoritative for Job Objects). Both Windows presets link with `-static`: the
+engine launchers give the child only the allowlisted environment, with no
+`PATH`, so a dynamically linked MSYS2 binary could not find its runtime DLLs
+when it is started as an engine.
 
 ## Runnable smoke server
 
