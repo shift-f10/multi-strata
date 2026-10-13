@@ -83,6 +83,36 @@ bool last_call_timed_out() {
 #endif
 }
 
+// After the last response byte: half-close our send side and briefly drain
+// what the peer still sends, so close() does not discard unread request bytes
+// with an RST that (on Windows especially) can destroy the response before the
+// client reads it -- e.g. S4's 413. Bounded by kDrainBudget and kDrainBytes.
+constexpr std::chrono::milliseconds kDrainBudget{100};
+constexpr std::size_t kDrainBytes = 256U * 1024U;
+
+void finish_response(const NativeSocket socket) {
+#ifdef _WIN32
+  if (shutdown(socket, SD_SEND) != 0) return;
+#else
+  if (shutdown(socket, SHUT_WR) != 0) return;
+#endif
+  const Clock::time_point drain_deadline = Clock::now() + kDrainBudget;
+  std::array<char, 4096> sink{};
+  std::size_t drained = 0;
+  while (drained < kDrainBytes) {
+    const std::chrono::milliseconds budget = remaining_until(drain_deadline);
+    if (budget.count() <= 0 || !set_socket_timeouts(socket, budget)) return;
+#ifdef _WIN32
+    const int received = recv(socket, sink.data(), static_cast<int>(sink.size()), 0);
+#else
+    const ssize_t received = recv(socket, sink.data(), sink.size(), 0);
+#endif
+    if (received < 0 && last_call_timed_out()) continue;  // the deadline check above decides
+    if (received <= 0) return;                             // peer closed (0) or reset (-1)
+    drained += static_cast<std::size_t>(received);
+  }
+}
+
 bool ascii_case_equal(const std::string_view left, const std::string_view right) {
   if (left.size() != right.size()) return false;
   for (std::size_t index = 0; index < left.size(); ++index) {
@@ -345,7 +375,7 @@ bool HttpSocketServer::serve_one(std::string* error) {
     if (remaining.count() <= 0) {
       const HttpResponse timed_out{.status = 408, .headers = {{"Content-Type", "text/plain; charset=utf-8"}},
                                    .body = "Request Timeout\n"};
-      static_cast<void>(send_all(client, serialize_response(timed_out), Clock::now() + kMinimumSendBudget));
+      if (send_all(client, serialize_response(timed_out), Clock::now() + kMinimumSendBudget)) finish_response(client);
       if (error != nullptr) *error = "request deadline exceeded";
       return false;
     }
@@ -373,12 +403,13 @@ bool HttpSocketServer::serve_one(std::string* error) {
       const std::string response = serialize_response(
           handle_http_request(request, state_->policy, state_->validator, state_->dispatcher));
       if (!send_all(client, response, send_deadline())) { if (error != nullptr) *error = "response send failed"; return false; }
+      finish_response(client);
       return true;
     }
   }
   const HttpResponse too_large{.status = 413, .headers = {{"Content-Type", "text/plain; charset=utf-8"}},
                                .body = "Content Too Large\n"};
-  static_cast<void>(send_all(client, serialize_response(too_large), send_deadline()));
+  if (send_all(client, serialize_response(too_large), send_deadline())) finish_response(client);
   if (error != nullptr) *error = "request exceeded listener bounds";
   return false;
 }

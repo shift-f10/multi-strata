@@ -320,13 +320,13 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_set_warnings(secure_frontend_http_request_handler_tests)
     add_test(NAME secure_frontend_http_request_handler_tests COMMAND secure_frontend_http_request_handler_tests)
 
-    if(UNIX)
-        add_executable(secure_frontend_http_socket_server_tests tests/http_socket_server_test.cpp)
-        target_link_libraries(secure_frontend_http_socket_server_tests PRIVATE secure_frontend_http_socket_server)
-        target_compile_features(secure_frontend_http_socket_server_tests PRIVATE cxx_std_20)
-        secure_frontend_set_warnings(secure_frontend_http_socket_server_tests)
-        add_test(NAME secure_frontend_http_socket_server_tests COMMAND secure_frontend_http_socket_server_tests)
-    endif()
+    # Portable: the Windows listener's S-fixes run here too (POSIX-only cases,
+    # if any, sit behind #if !defined(_WIN32) in the test).
+    add_executable(secure_frontend_http_socket_server_tests tests/http_socket_server_test.cpp)
+    target_link_libraries(secure_frontend_http_socket_server_tests PRIVATE secure_frontend_http_socket_server)
+    target_compile_features(secure_frontend_http_socket_server_tests PRIVATE cxx_std_20)
+    secure_frontend_set_warnings(secure_frontend_http_socket_server_tests)
+    add_test(NAME secure_frontend_http_socket_server_tests COMMAND secure_frontend_http_socket_server_tests)
 
     add_executable(secure_frontend_api_router_tests tests/api_router_test.cpp)
     target_link_libraries(secure_frontend_api_router_tests PRIVATE secure_frontend_api_router)

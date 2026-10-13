@@ -33,12 +33,14 @@ constexpr NativeSocket kBad = INVALID_SOCKET;
 void close_socket(NativeSocket s) { closesocket(s); }
 int send_bytes(NativeSocket s, const std::string& b) { return send(s, b.data(), static_cast<int>(b.size()), 0); }
 int recv_bytes(NativeSocket s, char* out, int n) { return recv(s, out, n, 0); }
+int shutdown_send(NativeSocket s) { return shutdown(s, SD_SEND); }
 #else
 using NativeSocket = int;
 constexpr NativeSocket kBad = -1;
 void close_socket(NativeSocket s) { close(s); }
 int send_bytes(NativeSocket s, const std::string& b) { return static_cast<int>(send(s, b.data(), b.size(), MSG_NOSIGNAL)); }
 int recv_bytes(NativeSocket s, char* out, int n) { return static_cast<int>(recv(s, out, static_cast<std::size_t>(n), 0)); }
+int shutdown_send(NativeSocket s) { return shutdown(s, SHUT_WR); }
 #endif
 
 struct Fixture final {
@@ -167,18 +169,26 @@ void socket_server_rejects_slow_request_past_deadline() {
   Fixture f({.request_deadline = std::chrono::milliseconds(1000)});
   if (!f.server) { expect(false, "bind failed: " + f.error); return; }
   bool served = true;
+  std::atomic<bool> returned{false};
   const auto start = std::chrono::steady_clock::now();
-  std::thread worker([&] { served = f.server->serve_one(&f.error); });
+  auto returned_at = start;
+  // Time the listener itself: when serve_one returns, not when the dripping
+  // client next notices the closed connection (that depends on the close path).
+  std::thread worker([&] {
+    served = f.server->serve_one(&f.error);
+    returned_at = std::chrono::steady_clock::now();
+    returned = true;
+  });
   const NativeSocket client = f.connect_client();
   if (client == kBad) { f.unblock_accept(); worker.join(); expect(false, "client should connect"); return; }
   const std::string request = f.health_request();
-  for (std::size_t i = 0; i < request.size() - 1; ++i) {  // never send the final byte
+  for (std::size_t i = 0; i < request.size() - 1 && !returned; ++i) {  // never send the final byte
     if (send_bytes(client, request.substr(i, 1)) <= 0) break;
     std::this_thread::sleep_for(std::chrono::milliseconds(400));
     if (std::chrono::steady_clock::now() - start > std::chrono::seconds(4)) break;
   }
   worker.join();
-  const auto elapsed = std::chrono::steady_clock::now() - start;
+  const auto elapsed = returned_at - start;
   close_socket(client);
   std::cerr << "S3 elapsed ms: " << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() << '\n';
   expect(!served, "a dripping client must be rejected, not served");
@@ -298,6 +308,25 @@ void socket_server_survives_reset_before_accept() {
   expect(!f.server->listener_failed(), "a peer reset must not mark the listener failed: " + f.error);
   expect(f.round_trip().rfind("HTTP/1.1 200 OK", 0) == 0, "listener must serve the next client after a peer reset");
 }
+// A client that sends the whole request and then half-closes its send side
+// (shutdown SHUT_WR / SD_SEND) must still receive the full response to EOF.
+void socket_server_responds_after_client_half_close() {
+  Fixture f;
+  if (!f.server) { expect(false, "bind failed: " + f.error); return; }
+  bool served = false;
+  std::thread worker([&] { served = f.server->serve_one(&f.error); });
+  const NativeSocket client = f.connect_client();
+  if (client == kBad) { f.unblock_accept(); worker.join(); expect(false, "client should connect"); return; }
+  (void)send_bytes(client, f.health_request());
+  expect(shutdown_send(client) == 0, "client half-close should succeed");
+  std::string response; char chunk[512];
+  for (;;) { const int n = recv_bytes(client, chunk, sizeof(chunk)); if (n <= 0) break; response.append(chunk, static_cast<std::size_t>(n)); }
+  close_socket(client);
+  worker.join();
+  expect(served, "a half-closed client with a complete request is served: " + f.error);
+  expect(response.rfind("HTTP/1.1 200 OK", 0) == 0, "half-closed client must read a 200, got: " + response.substr(0, 20));
+  expect(response.find("{\"status\":\"ok\"}") != std::string::npos, "half-closed client must read the whole body");
+}
 }  // namespace
 
 int main() {
@@ -311,5 +340,6 @@ int main() {
   socket_server_ipv6_bind_is_v6only();
   socket_server_response_is_complete();
   socket_server_survives_reset_before_accept();
+  socket_server_responds_after_client_half_close();
   return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
