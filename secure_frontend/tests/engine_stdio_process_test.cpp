@@ -144,10 +144,11 @@ void test_round_trip(const std::filesystem::path& self) {
                                          .arguments = {"--fake-engine"},
                                          .environment = {}};
   const auto start_error = transport.start(command);
-  expect(!start_error.has_value(), "fake engine must start");
+  expect(!start_error.has_value(), "fake engine must start: " + (start_error.has_value() ? start_error->message : std::string{}));
   secure_frontend::EngineProtocolClient client(transport);
   secure_frontend::EngineReady ready{};
-  expect(!client.await_ready(std::chrono::seconds(2), ready).has_value(), "READY must parse");
+  const auto ready_error = client.await_ready(std::chrono::seconds(2), ready);
+  expect(!ready_error.has_value(), "READY must parse: " + (ready_error.has_value() ? ready_error->message : std::string{}));
   expect(ready.max_context_tokens == 4096 && ready.supports_stop, "READY capabilities must survive transport");
   // E4: the GEN line for a full context is far beyond 8 KiB; the write cap must allow it.
   // Raw write while the client is idle, then consume the fake's two reply lines so
@@ -294,6 +295,7 @@ int main(const int argc, char* argv[]) {
       return 0;
     }
   }
+  std::cerr << "engine_stdio_process_tests: start\n";
   try {
     const auto self = current_executable();
     test_round_trip(self);

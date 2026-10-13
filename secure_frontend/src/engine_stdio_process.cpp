@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -77,6 +78,8 @@ std::wstring quote(const std::wstring_view arg) {
   for (const wchar_t ch : arg) { if (ch == L'\\') ++slashes; else if (ch == L'\"') { result.append(slashes * 2 + 1, L'\\'); result += ch; slashes = 0; } else { result.append(slashes, L'\\'); result += ch; slashes = 0; } }
   result.append(slashes * 2, L'\\'); result += L'\"'; return result;
 }
+// Fixed text plus the numeric Win32 error code: no paths, names or secrets.
+std::string with_last_error(const char* what) { return std::string(what) + " (Win32 error " + std::to_string(GetLastError()) + ")"; }
 void close_handle(void*& handle) noexcept { if (handle != nullptr) { CloseHandle(static_cast<HANDLE>(handle)); handle = nullptr; } }
 #endif
 
@@ -115,11 +118,11 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
     child_stdin = CreateFileW(pipe_name.c_str(), GENERIC_READ, 0, &attrs, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (child_stdin == INVALID_HANDLE_VALUE) child_stdin = nullptr;
   }
-  if (parent_stdin == nullptr || child_stdin == nullptr || !CreatePipe(&parent_stdout, &child_stdout, &attrs, 0) || !SetHandleInformation(parent_stdout, HANDLE_FLAG_INHERIT, 0)) { if (child_stdin) CloseHandle(child_stdin); if (parent_stdin) CloseHandle(parent_stdin); if (child_stdout) CloseHandle(child_stdout); if (parent_stdout) CloseHandle(parent_stdout); return ProcessError{ProcessErrorCode::platform_failure, "stdio pipe setup failed"}; }
+  if (parent_stdin == nullptr || child_stdin == nullptr || !CreatePipe(&parent_stdout, &child_stdout, &attrs, 0) || !SetHandleInformation(parent_stdout, HANDLE_FLAG_INHERIT, 0)) { if (child_stdin) CloseHandle(child_stdin); if (parent_stdin) CloseHandle(parent_stdin); if (child_stdout) CloseHandle(child_stdout); if (parent_stdout) CloseHandle(parent_stdout); return ProcessError{ProcessErrorCode::platform_failure, with_last_error("stdio pipe setup failed")}; }
   child_stderr = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &attrs, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (child_stderr == INVALID_HANDLE_VALUE) { CloseHandle(child_stdin); CloseHandle(parent_stdin); CloseHandle(child_stdout); CloseHandle(parent_stdout); return ProcessError{ProcessErrorCode::platform_failure, "stderr sink setup failed"}; }
+  if (child_stderr == INVALID_HANDLE_VALUE) { CloseHandle(child_stdin); CloseHandle(parent_stdin); CloseHandle(child_stdout); CloseHandle(parent_stdout); return ProcessError{ProcessErrorCode::platform_failure, with_last_error("stderr sink setup failed")}; }
   HANDLE job = CreateJobObjectW(nullptr, nullptr); JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{}; limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-  if (!job || !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) { CloseHandle(child_stdin); CloseHandle(parent_stdin); CloseHandle(child_stdout); CloseHandle(parent_stdout); CloseHandle(child_stderr); if (job) CloseHandle(job); return ProcessError{ProcessErrorCode::platform_failure, "CreateJobObjectW failed"}; }
+  if (!job || !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) { CloseHandle(child_stdin); CloseHandle(parent_stdin); CloseHandle(child_stdout); CloseHandle(parent_stdout); CloseHandle(child_stderr); if (job) CloseHandle(job); return ProcessError{ProcessErrorCode::platform_failure, with_last_error("CreateJobObjectW failed")}; }
   SIZE_T attribute_list_size = 0;
   (void)InitializeProcThreadAttributeList(nullptr, 1, 0, &attribute_list_size);
   std::vector<std::byte> attribute_list_storage(attribute_list_size);
@@ -130,7 +133,7 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
                                  inherited_handles, sizeof(inherited_handles), nullptr, nullptr)) {
     CloseHandle(child_stdin); CloseHandle(parent_stdin); CloseHandle(child_stdout); CloseHandle(parent_stdout); CloseHandle(child_stderr);
     CloseHandle(job);
-    return ProcessError{ProcessErrorCode::platform_failure, "process handle-list setup failed"};
+    return ProcessError{ProcessErrorCode::platform_failure, with_last_error("process handle-list setup failed")};
   }
   STARTUPINFOEXW startup{};
   startup.StartupInfo.cb = sizeof(startup);
@@ -147,9 +150,9 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
                                       environment.data(), nullptr, &startup.StartupInfo, &info);
   DeleteProcThreadAttributeList(attribute_list);
   CloseHandle(child_stdin); CloseHandle(child_stdout); CloseHandle(child_stderr);
-  if (!created) { CloseHandle(parent_stdin); CloseHandle(parent_stdout); CloseHandle(job); return ProcessError{ProcessErrorCode::spawn_failed, "CreateProcessW failed"}; }
-  if (!AssignProcessToJobObject(job, info.hProcess)) { TerminateProcess(info.hProcess, 1); /* still suspended: it never ran */ CloseHandle(info.hThread); CloseHandle(info.hProcess); CloseHandle(parent_stdin); CloseHandle(parent_stdout); CloseHandle(job); return ProcessError{ProcessErrorCode::platform_failure, "AssignProcessToJobObject failed"}; }
-  if (ResumeThread(info.hThread) == static_cast<DWORD>(-1)) { TerminateJobObject(job, 1); CloseHandle(info.hThread); CloseHandle(info.hProcess); CloseHandle(parent_stdin); CloseHandle(parent_stdout); CloseHandle(job); return ProcessError{ProcessErrorCode::platform_failure, "ResumeThread failed"}; }
+  if (!created) { CloseHandle(parent_stdin); CloseHandle(parent_stdout); CloseHandle(job); return ProcessError{ProcessErrorCode::spawn_failed, with_last_error("CreateProcessW failed")}; }
+  if (!AssignProcessToJobObject(job, info.hProcess)) { TerminateProcess(info.hProcess, 1); /* still suspended: it never ran */ CloseHandle(info.hThread); CloseHandle(info.hProcess); CloseHandle(parent_stdin); CloseHandle(parent_stdout); CloseHandle(job); return ProcessError{ProcessErrorCode::platform_failure, with_last_error("AssignProcessToJobObject failed")}; }
+  if (ResumeThread(info.hThread) == static_cast<DWORD>(-1)) { TerminateJobObject(job, 1); CloseHandle(info.hThread); CloseHandle(info.hProcess); CloseHandle(parent_stdin); CloseHandle(parent_stdout); CloseHandle(job); return ProcessError{ProcessErrorCode::platform_failure, with_last_error("ResumeThread failed")}; }
   CloseHandle(info.hThread);
   process_handle_ = info.hProcess; job_handle_ = job; stdin_write_ = parent_stdin; stdout_read_ = parent_stdout; return std::nullopt;
 #else

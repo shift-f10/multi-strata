@@ -327,10 +327,63 @@ void socket_server_responds_after_client_half_close() {
   expect(response.rfind("HTTP/1.1 200 OK", 0) == 0, "half-closed client must read a 200, got: " + response.substr(0, 20));
   expect(response.find("{\"status\":\"ok\"}") != std::string::npos, "half-closed client must read the whole body");
 }
+#ifdef _WIN32
+// Diagnostic (Windows only): how many bytes a blocking sender can push into a
+// loopback peer that never reads before a 500 ms send timeout, for a given
+// client SO_RCVBUF and server SO_SNDBUF (-1 = leave the default).
+void probe_loopback_absorption(const int client_rcvbuf, const int server_sndbuf) {
+  WSADATA data{};
+  if (WSAStartup(MAKEWORD(2, 2), &data) != 0) return;
+  SOCKET listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  sockaddr_in a{}; a.sin_family = AF_INET; a.sin_port = 0; inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
+  int alen = sizeof(a);
+  if (listener == INVALID_SOCKET || bind(listener, reinterpret_cast<const sockaddr*>(&a), sizeof(a)) != 0 ||
+      listen(listener, 1) != 0 || getsockname(listener, reinterpret_cast<sockaddr*>(&a), &alen) != 0) {
+    std::cerr << "PROBE setup failed " << WSAGetLastError() << '\n';
+    closesocket(listener); WSACleanup(); return;
+  }
+  SOCKET client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (client_rcvbuf >= 0) (void)setsockopt(client, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&client_rcvbuf), sizeof(client_rcvbuf));
+  if (connect(client, reinterpret_cast<const sockaddr*>(&a), sizeof(a)) != 0) {
+    std::cerr << "PROBE connect failed " << WSAGetLastError() << '\n';
+    closesocket(client); closesocket(listener); WSACleanup(); return;
+  }
+  SOCKET server = accept(listener, nullptr, nullptr);
+  if (server_sndbuf >= 0) (void)setsockopt(server, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<const char*>(&server_sndbuf), sizeof(server_sndbuf));
+  int effective_rcv = -1, effective_snd = -1, olen = sizeof(int);
+  (void)getsockopt(client, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<char*>(&effective_rcv), &olen);
+  olen = sizeof(int);
+  (void)getsockopt(server, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<char*>(&effective_snd), &olen);
+  const DWORD timeout_ms = 500;
+  (void)setsockopt(server, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
+  const std::string chunk(64U * 1024U, 'x');
+  std::size_t total = 0;
+  int last_error = 0;
+  const auto start = std::chrono::steady_clock::now();
+  while (total < 512U * 1024U * 1024U) {
+    const int n = send(server, chunk.data(), static_cast<int>(chunk.size()), 0);
+    if (n <= 0) { last_error = WSAGetLastError(); break; }
+    total += static_cast<std::size_t>(n);
+  }
+  const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+  std::cerr << "PROBE client_rcvbuf=" << client_rcvbuf << " (eff " << effective_rcv << ") server_sndbuf=" << server_sndbuf
+            << " (eff " << effective_snd << ") absorbed=" << total << " ms=" << ms << " err=" << last_error << '\n';
+  closesocket(server); closesocket(client); closesocket(listener);
+  WSACleanup();
+}
+#endif
 }  // namespace
 
 int main() {
   secure_frontend::install_process_defaults();
+#ifdef _WIN32
+  probe_loopback_absorption(-1, -1);
+  probe_loopback_absorption(1, -1);
+  probe_loopback_absorption(0, -1);
+  probe_loopback_absorption(-1, 0);
+  probe_loopback_absorption(1, 0);
+  probe_loopback_absorption(1, 4096);
+#endif
   serves_a_loopback_request_without_outbound_connections();
   socket_server_survives_client_early_close();
   socket_server_rejects_slow_request_past_deadline();

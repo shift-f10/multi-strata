@@ -38,10 +38,17 @@ std::filesystem::path current_executable() {
 }
 
 int run_fake_engine(const int argc, char** argv) {
+  const char* const allowed = std::getenv("STRATA_ALLOWED_TEST");
+  // Diagnostic on the inherited stderr (visible under ctest --output-on-failure):
+  // shape only, never values.
+  std::cerr << "fake-engine: argc=" << argc
+            << " argv2_literal=" << (argc >= 3 && std::string(argv[2]) == "literal; exit 73")
+            << " allowed=" << (allowed != nullptr) << " HOME=" << (std::getenv("HOME") != nullptr)
+            << " PATH=" << (std::getenv("PATH") != nullptr) << " SystemRoot=" << (std::getenv("SystemRoot") != nullptr)
+            << '\n';
   if (argc != 3 || std::string(argv[2]) != "literal; exit 73") {
     return 41;
   }
-  const char* const allowed = std::getenv("STRATA_ALLOWED_TEST");
   return allowed != nullptr && std::string(allowed) == "present" && std::getenv("HOME") == nullptr ? 0 : 42;
 }
 
@@ -55,6 +62,10 @@ void starts_without_a_shell_and_uses_only_allowlisted_environment() {
   const auto error = process.start(command);
   expect(!error.has_value(), "a valid fake engine should start");
   const auto result = process.wait_for(std::chrono::seconds(2));
+  if (!(result.has_value() && *result == 0)) {
+    std::cerr << "fake engine exit: " << (result.has_value() ? std::to_string(static_cast<unsigned>(*result)) : "none")
+              << " (hex 0x" << std::hex << (result.has_value() ? static_cast<unsigned>(*result) : 0U) << std::dec << ")\n";
+  }
   expect(result.has_value() && *result == 0,
          "arguments must reach the child literally, without a shell, and environment must be allowlisted");
 }
