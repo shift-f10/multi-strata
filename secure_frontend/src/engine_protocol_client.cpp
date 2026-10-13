@@ -137,10 +137,12 @@ std::optional<EngineProtocolError> EngineProtocolClient::await_ready(const std::
     }
     ready = EngineReady{context, can_stop};
     // The engine reads stdin lines without bound, so the frontend caps its own
-    // GEN line: a full-context prompt of 10-digit ids plus separators and header.
+    // GEN line: a full-context prompt of 10-digit ids plus separators and header,
+    // clamped to the transport's hard write cap so a huge advertised context
+    // yields a clean invalid_argument instead of a write the transport refuses.
     effective_max_line_bytes_ = limits_.max_line_bytes != 0U
         ? limits_.max_line_bytes
-        : 32U + 11U * static_cast<std::size_t>(context);
+        : std::min<std::size_t>(32U + 11U * static_cast<std::size_t>(context), kProtocolMaxLineBytes);
     supports_stop_ = can_stop;
     state_ = State::idle;
     return std::nullopt;

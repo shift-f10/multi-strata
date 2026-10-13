@@ -13,6 +13,10 @@ namespace secure_frontend {
 // The process layer deliberately does not expose stdin/stdout handles.  This
 // narrow interface permits a pipe-backed implementation later while keeping
 // protocol parsing independently testable and refusing ambiguous I/O results.
+// Hard ceiling on any outbound protocol line (the GEN record), shared by the
+// protocol client's READY-derived cap and the stdio transport's write cap.
+inline constexpr std::size_t kProtocolMaxLineBytes = 16U * 1024U * 1024U;
+
 enum class EngineReadKind { line, timeout, closed, failure };
 
 struct EngineReadResult final {
@@ -50,7 +54,8 @@ struct EngineProtocolError final {
 };
 
 struct EngineProtocolLimits final {
-  // 0 means "derive from READY": 32 + 11 * max_context_tokens (10 digits + separator per id).
+  // 0 means "derive from READY": min(32 + 11 * max_context_tokens, kProtocolMaxLineBytes)
+  // (10 digits + separator per id).
   // A non-zero value is a fixed cap for both outbound commands and inbound records.
   // With 0, inbound records are capped at kDefaultInboundLineBytes (engine records are short).
   std::size_t max_line_bytes{0};

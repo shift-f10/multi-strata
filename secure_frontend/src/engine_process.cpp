@@ -179,18 +179,28 @@ std::optional<ProcessError> EngineProcess::start(const EngineCommand& command) {
   STARTUPINFOW startup{};
   startup.cb = sizeof(startup);
   PROCESS_INFORMATION info{};
+  // Start suspended so the child is inside the Job before it runs a single
+  // instruction: no early descendant can escape the kill-on-close Job (PROC-05).
   if (!CreateProcessW(command.executable.c_str(), command_line.data(), nullptr, nullptr, FALSE,
-                      CREATE_UNICODE_ENVIRONMENT, environment.data(), nullptr, &startup, &info)) {
+                      CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED, environment.data(), nullptr, &startup, &info)) {
     CloseHandle(job);
     return ProcessError{ProcessErrorCode::spawn_failed, "CreateProcessW failed"};
   }
-  CloseHandle(info.hThread);
   if (!AssignProcessToJobObject(job, info.hProcess)) {
-    TerminateProcess(info.hProcess, 1);
+    TerminateProcess(info.hProcess, 1);  // still suspended: it never ran
+    CloseHandle(info.hThread);
     CloseHandle(info.hProcess);
     CloseHandle(job);
     return ProcessError{ProcessErrorCode::platform_failure, "AssignProcessToJobObject failed"};
   }
+  if (ResumeThread(info.hThread) == static_cast<DWORD>(-1)) {
+    TerminateJobObject(job, 1);
+    CloseHandle(info.hThread);
+    CloseHandle(info.hProcess);
+    CloseHandle(job);
+    return ProcessError{ProcessErrorCode::platform_failure, "ResumeThread failed"};
+  }
+  CloseHandle(info.hThread);
   process_handle_ = info.hProcess;
   job_handle_ = job;
   return std::nullopt;

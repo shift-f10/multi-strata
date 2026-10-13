@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -96,7 +97,25 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
   for (const auto& [name, value] : command.environment) { auto n = to_wide(name); auto v = to_wide(value); if (!n || !v) return ProcessError{ProcessErrorCode::invalid_command, "engine environment is not valid UTF-8"}; environment += *n + L"=" + *v; environment.push_back(L'\0'); }
   environment.push_back(L'\0');
   SECURITY_ATTRIBUTES attrs{sizeof(attrs), nullptr, TRUE}; HANDLE child_stdin = nullptr, child_stdout = nullptr, child_stderr = nullptr, parent_stdin = nullptr, parent_stdout = nullptr;
-  if (!CreatePipe(&child_stdin, &parent_stdin, &attrs, 0) || !SetHandleInformation(parent_stdin, HANDLE_FLAG_INHERIT, 0) || !CreatePipe(&parent_stdout, &child_stdout, &attrs, 0) || !SetHandleInformation(parent_stdout, HANDLE_FLAG_INHERIT, 0)) { if (child_stdin) CloseHandle(child_stdin); if (parent_stdin) CloseHandle(parent_stdin); if (child_stdout) CloseHandle(child_stdout); if (parent_stdout) CloseHandle(parent_stdout); return ProcessError{ProcessErrorCode::platform_failure, "stdio pipe setup failed"}; }
+  // Bounded stdin writes by the documented pipe-buffer contract (P7): the
+  // parent's outbound buffer holds kMaxWriteLineBytes + 4096 bytes, so one GEN
+  // record (at most kMaxWriteLineBytes plus LF) never blocks the synchronous
+  // WriteFile.  Overlapped writes with a deadline are SP2 work.  The pipe has a
+  // single instance created with FILE_FLAG_FIRST_PIPE_INSTANCE and rejects
+  // remote clients: a squatter on the name, or one that connects first, makes
+  // setup fail closed before anything is written.  The parent end is not
+  // inheritable; only the child's read end (opened with `attrs`) is.
+  static std::atomic<unsigned long> pipe_counter{0};
+  const std::wstring pipe_name = L"\\\\.\\pipe\\secure_frontend-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(pipe_counter.fetch_add(1));
+  parent_stdin = CreateNamedPipeW(pipe_name.c_str(), PIPE_ACCESS_OUTBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                                  PIPE_TYPE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 1,
+                                  static_cast<DWORD>(kMaxWriteLineBytes + 4096U), 0, 0, nullptr);
+  if (parent_stdin == INVALID_HANDLE_VALUE) parent_stdin = nullptr;
+  if (parent_stdin != nullptr) {
+    child_stdin = CreateFileW(pipe_name.c_str(), GENERIC_READ, 0, &attrs, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (child_stdin == INVALID_HANDLE_VALUE) child_stdin = nullptr;
+  }
+  if (parent_stdin == nullptr || child_stdin == nullptr || !CreatePipe(&parent_stdout, &child_stdout, &attrs, 0) || !SetHandleInformation(parent_stdout, HANDLE_FLAG_INHERIT, 0)) { if (child_stdin) CloseHandle(child_stdin); if (parent_stdin) CloseHandle(parent_stdin); if (child_stdout) CloseHandle(child_stdout); if (parent_stdout) CloseHandle(parent_stdout); return ProcessError{ProcessErrorCode::platform_failure, "stdio pipe setup failed"}; }
   child_stderr = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &attrs, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (child_stderr == INVALID_HANDLE_VALUE) { CloseHandle(child_stdin); CloseHandle(parent_stdin); CloseHandle(child_stdout); CloseHandle(parent_stdout); return ProcessError{ProcessErrorCode::platform_failure, "stderr sink setup failed"}; }
   HANDLE job = CreateJobObjectW(nullptr, nullptr); JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{}; limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -121,13 +140,17 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
   startup.StartupInfo.hStdError = child_stderr;
   startup.lpAttributeList = attribute_list;
   PROCESS_INFORMATION info{};
+  // Start suspended so the child is inside the Job before it runs a single
+  // instruction: no early descendant can escape the kill-on-close Job (PROC-05).
   const BOOL created = CreateProcessW(executable.c_str(), line.data(), nullptr, nullptr, TRUE,
-                                      CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
+                                      CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED,
                                       environment.data(), nullptr, &startup.StartupInfo, &info);
   DeleteProcThreadAttributeList(attribute_list);
   CloseHandle(child_stdin); CloseHandle(child_stdout); CloseHandle(child_stderr);
   if (!created) { CloseHandle(parent_stdin); CloseHandle(parent_stdout); CloseHandle(job); return ProcessError{ProcessErrorCode::spawn_failed, "CreateProcessW failed"}; }
-  CloseHandle(info.hThread); if (!AssignProcessToJobObject(job, info.hProcess)) { TerminateProcess(info.hProcess, 1); CloseHandle(info.hProcess); CloseHandle(parent_stdin); CloseHandle(parent_stdout); CloseHandle(job); return ProcessError{ProcessErrorCode::platform_failure, "AssignProcessToJobObject failed"}; }
+  if (!AssignProcessToJobObject(job, info.hProcess)) { TerminateProcess(info.hProcess, 1); /* still suspended: it never ran */ CloseHandle(info.hThread); CloseHandle(info.hProcess); CloseHandle(parent_stdin); CloseHandle(parent_stdout); CloseHandle(job); return ProcessError{ProcessErrorCode::platform_failure, "AssignProcessToJobObject failed"}; }
+  if (ResumeThread(info.hThread) == static_cast<DWORD>(-1)) { TerminateJobObject(job, 1); CloseHandle(info.hThread); CloseHandle(info.hProcess); CloseHandle(parent_stdin); CloseHandle(parent_stdout); CloseHandle(job); return ProcessError{ProcessErrorCode::platform_failure, "ResumeThread failed"}; }
+  CloseHandle(info.hThread);
   process_handle_ = info.hProcess; job_handle_ = job; stdin_write_ = parent_stdin; stdout_read_ = parent_stdout; return std::nullopt;
 #else
   // Everything the child needs is built before fork(); the child body is async-signal-safe.
@@ -167,42 +190,84 @@ bool EngineStdioProcess::write_line(const std::string_view line, std::string& er
   if (line.empty() || line.size() > kMaxWriteLineBytes || line.find('\n') != std::string_view::npos || line.find('\r') != std::string_view::npos || contains_nul(line)) { error = "protocol line is invalid"; return false; }
   std::string record(line); record.push_back('\n');
 #if defined(_WIN32)
+  // Synchronous by contract: the stdin pipe buffer (see start) holds one whole record.
   if (!stdin_write_) { error = "engine stdin is closed"; return false; } DWORD written = 0; if (!WriteFile(static_cast<HANDLE>(stdin_write_), record.data(), static_cast<DWORD>(record.size()), &written, nullptr) || written != record.size()) { error = "engine stdin write failed"; return false; } return true;
 #else
   if (stdin_write_ < 0) { error = "engine stdin is closed"; return false; } std::size_t offset = 0; while (offset < record.size()) { pollfd pollfd{stdin_write_, POLLOUT, 0}; if (poll(&pollfd, 1, 1000) <= 0) { error = "engine stdin is not writable"; return false; } ssize_t count = -1; if (!write_without_sigpipe(stdin_write_, record.data() + offset, record.size() - offset, count) || count <= 0) { error = "engine stdin write failed"; return false; } offset += static_cast<std::size_t>(count); } return true;
 #endif
 }
 
+std::optional<EngineReadResult> EngineStdioProcess::take_pending_line() {
+  const auto newline = pending_stdout_.find('\n');
+  if (newline == std::string::npos) return std::nullopt;
+  std::string line = pending_stdout_.substr(0, newline);
+  pending_stdout_.erase(0, newline + 1);
+  if (!line.empty() && line.back() == '\r') line.pop_back();
+  if (line.size() > kMaxReadLineBytes || line.find('\0') != std::string::npos) return EngineReadResult{EngineReadKind::failure, {}, "engine emitted an invalid line"};
+  return EngineReadResult{EngineReadKind::line, std::move(line), {}};
+}
+
 EngineReadResult EngineStdioProcess::read_line(const std::chrono::milliseconds timeout) {
-  const auto newline = pending_stdout_.find('\n'); if (newline != std::string::npos) { std::string line = pending_stdout_.substr(0, newline); pending_stdout_.erase(0, newline + 1); if (!line.empty() && line.back() == '\r') line.pop_back(); if (line.size() > kMaxReadLineBytes || line.find('\0') != std::string::npos) return {EngineReadKind::failure, {}, "engine emitted an invalid line"}; return {EngineReadKind::line, std::move(line), {}}; }
+  if (auto pending = take_pending_line(); pending.has_value()) return std::move(*pending);
 #if defined(_WIN32)
-  if (!stdout_read_) return {EngineReadKind::closed, {}, {}}; const DWORD deadline = timeout.count() <= 0 ? 0U : static_cast<DWORD>(std::min<std::int64_t>(timeout.count(), 0x7fffffff)); const ULONGLONG end = GetTickCount64() + deadline; std::array<char, 1024> bytes{}; for (;;) { DWORD available = 0; if (!PeekNamedPipe(static_cast<HANDLE>(stdout_read_), nullptr, 0, nullptr, &available, nullptr)) return {EngineReadKind::closed, {}, {}}; if (available != 0) { DWORD read = 0; if (!ReadFile(static_cast<HANDLE>(stdout_read_), bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr) || read == 0) return {EngineReadKind::closed, {}, {}}; pending_stdout_.append(bytes.data(), read); return read_line(std::chrono::milliseconds(0)); } if (GetTickCount64() >= end) return {EngineReadKind::timeout, {}, {}}; Sleep(1); }
+  // Iterative and bounded exactly like POSIX: an oversized line is a failure,
+  // the deadline is a timeout, and a dead child with an empty pipe is closed.
+  if (!stdout_read_) return {EngineReadKind::closed, {}, {}};
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  std::array<char, 1024> bytes{};
+  bool child_exit_seen = false;
+  for (;;) {
+    DWORD available = 0;
+    if (!PeekNamedPipe(static_cast<HANDLE>(stdout_read_), nullptr, 0, nullptr, &available, nullptr)) return {EngineReadKind::closed, {}, {}};
+    if (available != 0) {
+      DWORD read = 0;
+      const DWORD wanted = std::min<DWORD>(available, static_cast<DWORD>(bytes.size()));
+      if (!ReadFile(static_cast<HANDLE>(stdout_read_), bytes.data(), wanted, &read, nullptr) || read == 0) return {EngineReadKind::closed, {}, {}};
+      pending_stdout_.append(bytes.data(), read);
+      if (pending_stdout_.size() > kMaxReadLineBytes && pending_stdout_.find('\n') == std::string::npos) return {EngineReadKind::failure, {}, "engine emitted an oversized line"};
+      if (auto pending = take_pending_line(); pending.has_value()) return std::move(*pending);
+      continue;
+    }
+    if (std::chrono::steady_clock::now() >= deadline) return {EngineReadKind::timeout, {}, {}};
+    // A 1 ms pause that returns at once when the child has exited.  Output the
+    // child wrote before exiting is already in the pipe, so one more empty peek
+    // after the exit was observed means nothing further can arrive.
+    if (WaitForSingleObject(static_cast<HANDLE>(process_handle_), 1) == WAIT_OBJECT_0) {
+      if (child_exit_seen) return {EngineReadKind::closed, {}, {}};
+      child_exit_seen = true;
+    }
+  }
 #else
   if (stdout_read_ < 0) {
     return {EngineReadKind::closed, {}, {}};
   }
-  pollfd pollfd{stdout_read_, POLLIN | POLLHUP, 0};
-  const auto bounded = std::clamp<std::int64_t>(timeout.count(), 0, 0x7fffffff);
-  const int status = poll(&pollfd, 1, static_cast<int>(bounded));
-  if (status == 0) {
-    return {EngineReadKind::timeout, {}, {}};
-  }
-  if (status < 0) {
-    return {EngineReadKind::failure, {}, "engine stdout poll failed"};
-  }
+  // The first poll waits up to `timeout`; later polls only drain bytes that are
+  // already available (timeout 0), as the former recursive form did.
+  auto bounded = std::clamp<std::int64_t>(timeout.count(), 0, 0x7fffffff);
   std::array<char, 1024> bytes{};
-  const ssize_t count = read(stdout_read_, bytes.data(), bytes.size());
-  if (count == 0) {
-    return {EngineReadKind::closed, {}, {}};
+  for (;;) {
+    pollfd pollfd{stdout_read_, POLLIN | POLLHUP, 0};
+    const int status = poll(&pollfd, 1, static_cast<int>(bounded));
+    bounded = 0;
+    if (status == 0) {
+      return {EngineReadKind::timeout, {}, {}};
+    }
+    if (status < 0) {
+      return {EngineReadKind::failure, {}, "engine stdout poll failed"};
+    }
+    const ssize_t count = read(stdout_read_, bytes.data(), bytes.size());
+    if (count == 0) {
+      return {EngineReadKind::closed, {}, {}};
+    }
+    if (count < 0) {
+      return {EngineReadKind::failure, {}, "engine stdout read failed"};
+    }
+    pending_stdout_.append(bytes.data(), static_cast<std::size_t>(count));
+    if (pending_stdout_.size() > kMaxReadLineBytes && pending_stdout_.find('\n') == std::string::npos) {
+      return {EngineReadKind::failure, {}, "engine emitted an oversized line"};
+    }
+    if (auto pending = take_pending_line(); pending.has_value()) return std::move(*pending);
   }
-  if (count < 0) {
-    return {EngineReadKind::failure, {}, "engine stdout read failed"};
-  }
-  pending_stdout_.append(bytes.data(), static_cast<std::size_t>(count));
-  if (pending_stdout_.size() > kMaxReadLineBytes && pending_stdout_.find('\n') == std::string::npos) {
-    return {EngineReadKind::failure, {}, "engine emitted an oversized line"};
-  }
-  return read_line(std::chrono::milliseconds(0));
 #endif
 }
 

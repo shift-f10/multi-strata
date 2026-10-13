@@ -16,7 +16,7 @@ namespace secure_frontend {
 class EngineStdioProcess final : public EngineLineTransport {
  public:
   static constexpr std::size_t kMaxReadLineBytes = 8192;              // engine → frontend records are short
-  static constexpr std::size_t kMaxWriteLineBytes = 16U * 1024U * 1024U;  // GEN line; bounded above by the protocol client
+  static constexpr std::size_t kMaxWriteLineBytes = kProtocolMaxLineBytes;  // GEN line; one constant shared with the protocol client
 
   EngineStdioProcess() = default;
   ~EngineStdioProcess() override;
@@ -51,6 +51,9 @@ class EngineStdioProcess final : public EngineLineTransport {
 #endif
   std::string pending_stdout_;
 
+  // Removes and validates one complete line from pending_stdout_, or returns
+  // nullopt when no newline has arrived yet.
+  [[nodiscard]] std::optional<EngineReadResult> take_pending_line();
   void cleanup() noexcept;
 };
 

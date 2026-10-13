@@ -189,6 +189,20 @@ void gen_line_fits_max_prompt_tokens() {
   expect(transport.writes.size() == 1U && transport.writes.front().size() > 40000U, "the GEN line must actually carry every id");
 }
 
+// The READY-derived outbound cap is clamped to the shared 16 MiB protocol cap, so a
+// huge advertised context cannot let begin_generation build a line the transport refuses.
+void derived_line_cap_is_clamped_to_protocol_max() {
+  FakeTransport transport;
+  transport.reads = {line("READY 4294967295 stop")};
+  EngineProtocolClient client(transport, {.max_line_bytes = 0, .max_prompt_tokens = 4U * 1024U * 1024U});
+  secure_frontend::EngineReady ready{};
+  (void)client.await_ready(std::chrono::seconds(1), ready);
+  const std::vector<std::uint32_t> prompt(2U * 1024U * 1024U, 4294967295U);  // ~22 MiB GEN line
+  const auto error = client.begin_generation(1, prompt);
+  expect(error.has_value() && error->code == EngineProtocolErrorCode::invalid_argument && transport.writes.empty(),
+         "a GEN line beyond kProtocolMaxLineBytes must be rejected cleanly before any write");
+}
+
 int main() {
   runs_the_solo_protocol();
   stop_and_quit_are_explicit();
@@ -198,5 +212,6 @@ int main() {
   prefill_progress_is_glm_only_and_strictly_bounded();
   generation_total_deadline_is_enforced();
   gen_line_fits_max_prompt_tokens();
+  derived_line_cap_is_clamped_to_protocol_max();
   return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

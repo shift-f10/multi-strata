@@ -12,11 +12,17 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
-#include <thread>
+#include <vector>
 
+#if defined(_WIN32)
+#include "secure_frontend/win32_prelude.hpp"
+#else
+#include <cerrno>
 #include <fcntl.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 namespace {
 
@@ -27,34 +33,59 @@ void expect(const bool condition, const std::string& message) {
   if (!condition) throw std::runtime_error(message);
 }
 
-// Lists this process's open descriptors, dropping the directory iterator's own
-// handle (its /proc/self/fd/<n> link points into /proc/<pid>/fd).
+std::filesystem::path current_executable() {
+#if defined(_WIN32)
+  std::vector<wchar_t> buffer(32768);
+  const auto length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+  return std::filesystem::path(std::wstring(buffer.data(), length));
+#else
+  std::vector<char> buffer(4096);
+  const auto length = readlink("/proc/self/exe", buffer.data(), buffer.size());
+  return std::filesystem::path(std::string(buffer.data(), static_cast<std::size_t>(length)));
+#endif
+}
+
+#if !defined(_WIN32)
+// Lists this process's open descriptors, dropping exactly the directory
+// iterator's own handle (its link target is /proc/<pid>/fd).
 std::string open_descriptors() {
+  const std::string iterator_target = "/proc/" + std::to_string(getpid()) + "/fd";
   std::string fds;
   for (const auto& entry : std::filesystem::directory_iterator("/proc/self/fd")) {
     std::error_code ignored;
     const auto target = std::filesystem::read_symlink(entry.path(), ignored).string();
-    if (target.rfind("/proc/", 0) == 0) continue;
+    if (target == iterator_target) continue;
     if (!fds.empty()) fds += ',';
     fds += entry.path().filename().string();
   }
   return fds;
 }
+#endif
 
 int fake_engine() {
+  bool spew = false;
   for (int index = 1; index < g_argc; ++index) {
     if (std::string(g_argv[index]) == "--ignore-term") (void)std::signal(SIGTERM, SIG_IGN);
+    if (std::string(g_argv[index]) == "--spew") spew = true;
   }
   // A real engine may emit human diagnostics on stderr before protocol READY.
   // Those bytes must never enter the strict stdout protocol stream.
   std::cerr << "diagnostic: private engine startup\n" << std::flush;
   std::cout << "READY 4096 stop\n" << std::flush;
   std::string line;
+  if (spew) {
+    // --spew: one record larger than kMaxReadLineBytes with no newline, then
+    // stay alive (blocked on stdin) so the reader sees size, not end-of-stream.
+    std::cout << std::string(9000, 'x') << std::flush;
+    while (std::getline(std::cin, line)) {}
+    return 0;
+  }
   while (std::getline(std::cin, line)) {
     if (line.rfind("GEN ", 0) == 0) {
       std::cout << "T 7\nDONE stop\n" << std::flush;
     } else if (line == "QUIT") {
       return 0;
+#if !defined(_WIN32)
     } else if (line == "DUMP") {
       // Protocol extension reused by SP2's PROC-* tests:
       //   FDS <comma-separated open fds>
@@ -63,6 +94,7 @@ int fake_engine() {
       std::cout << "ARGV";
       for (int i = 0; i < g_argc; ++i) std::cout << '\x1f' << g_argv[i];
       std::cout << '\n' << std::flush;
+#endif
     }
   }
   return 0;
@@ -104,6 +136,17 @@ void test_invalid_record() {
   expect(!transport.write_line("bad\nline", error), "multiline writes must be rejected");
 }
 
+void read_line_rejects_oversize_on_all_platforms(const std::filesystem::path& self) {
+  secure_frontend::EngineStdioProcess transport;
+  expect(!transport.start({.executable = self, .arguments = {"--fake-engine", "--spew"}, .environment = {}}).has_value(), "fake engine must start");
+  // --spew: after READY the fake writes 9000 'x' bytes with no newline.
+  (void)transport.read_line(std::chrono::seconds(2));  // READY
+  const auto result = transport.read_line(std::chrono::seconds(2));
+  expect(result.kind == secure_frontend::EngineReadKind::failure, "an oversized engine line must be a failure on every platform");
+  (void)transport.terminate(std::chrono::milliseconds(250));
+}
+
+#if !defined(_WIN32)
 void child_inherits_only_stdio_descriptors(const std::filesystem::path& self) {
   // Open two extra descriptors in the parent without CLOEXEC; a correct launcher must not leak them.
   const int leak_a = open("/dev/null", O_RDONLY);
@@ -152,15 +195,19 @@ void terminate_reaps_killed_child(const std::filesystem::path& self) {
          "fake engine must start");
   (void)transport.read_line(std::chrono::seconds(2));  // READY: SIGTERM is now ignored
   const pid_t pid = transport.pid_for_tests();
+  expect(pid > 0, "the fake engine must have a pid");
   expect(transport.terminate(std::chrono::milliseconds(200)), "terminate must succeed even when SIGTERM is ignored");
-  // SIGKILL delivery is asynchronous: give an unreaped child time to become a zombie
-  // so the check below cannot pass merely because the kill has not landed yet.
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  // The gate: terminate itself must have reaped the child -- no sleep, no race.
+  expect(transport.pid_for_tests() == -1, "terminate must clear the child pid once it is reaped");
+  errno = 0;
+  const pid_t waited = waitpid(pid, nullptr, WNOHANG);
+  expect(waited == -1 && errno == ECHILD, "the killed child must already be reaped by terminate");
   std::ifstream stat("/proc/" + std::to_string(pid) + "/stat");
   const std::string content((std::istreambuf_iterator<char>(stat)), std::istreambuf_iterator<char>());
   expect(content.empty() || content.find(") Z ") == std::string::npos,
          "no zombie may remain after terminate, saw: " + content.substr(0, 64));
 }
+#endif
 
 }  // namespace
 
@@ -171,11 +218,15 @@ int main(const int argc, char* argv[]) {
     if (std::string(argv[index]) == "--fake-engine") return fake_engine();
   }
   try {
-    test_round_trip("/proc/self/exe");
+    const auto self = current_executable();
+    test_round_trip(self);
     test_invalid_record();
-    child_inherits_only_stdio_descriptors("/proc/self/exe");
-    child_receives_exact_argv_and_env("/proc/self/exe");
-    terminate_reaps_killed_child("/proc/self/exe");
+    read_line_rejects_oversize_on_all_platforms(self);
+#if !defined(_WIN32)
+    child_inherits_only_stdio_descriptors(self);
+    child_receives_exact_argv_and_env(self);
+    terminate_reaps_killed_child(self);
+#endif
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';
     return EXIT_FAILURE;
