@@ -87,12 +87,12 @@ void health_includes_engine_state_when_provided() {
 }
 
 void health_is_503_with_engine_state_when_unavailable() {
-  const secure_frontend::ApiRouter starting(
+  const secure_frontend::ApiRouter failed(
       [] { return false; }, [] { return std::vector<secure_frontend::ApiModel>{}; },
-      []() -> std::string_view { return "starting"; });
-  const auto response = starting.dispatch("GET", "/health");
+      []() -> std::string_view { return "failed"; });
+  const auto response = failed.dispatch("GET", "/health");
   expect(response.status == 503, "unavailable provider with engine state must be 503");
-  expect(response.body == "{\"status\":\"unavailable\",\"engine\":\"starting\"}\n",
+  expect(response.body == "{\"status\":\"unavailable\",\"engine\":\"failed\"}\n",
          "503 body carries only status and the engine literal");
   const secure_frontend::ApiRouter bogus(
       [] { return true; }, [] { return std::vector<secure_frontend::ApiModel>{}; },
@@ -102,9 +102,22 @@ void health_is_503_with_engine_state_when_unavailable() {
   expect(rejected.body == "{\"status\":\"unavailable\"}\n", "an unknown engine state is never echoed");
 }
 
+void health_samples_status_before_state_once_each() {
+  std::string calls;
+  std::string_view snapshot{"failed"};
+  const secure_frontend::ApiRouter snapshotting(
+      [&] { calls += 'b'; snapshot = "starting"; return true; },
+      [] { return std::vector<secure_frontend::ApiModel>{}; },
+      [&]() -> std::string_view { calls += 's'; return snapshot; });
+  const auto response = snapshotting.dispatch("GET", "/health");
+  expect(calls == "bs", "health must call the bool provider once, then the state provider once; saw: " + calls);
+  expect(response.status == 200 && response.body == "{\"status\":\"ok\",\"engine\":\"starting\"}\n",
+         "a starting engine that is not failed is reported 200 with engine=starting");
+}
 }  // namespace
 
 int main() {
+  health_samples_status_before_state_once_each();
   health_includes_engine_state_when_provided();
   health_is_503_with_engine_state_when_unavailable();
   dispatches_exact_health_route();

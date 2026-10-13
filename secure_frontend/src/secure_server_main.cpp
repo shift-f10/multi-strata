@@ -284,24 +284,29 @@ int run(const Options& options) {
   const std::string authority = host_header(*config);
   secure_frontend::HttpPolicy policy{.allowed_hosts = {authority}, .same_origin_origins = {"http://" + authority},
                                      .cors_allowed_origins = {}, .cors_enabled = false};
+  // One snapshot of (child running, protocol state) per call.
+  const auto engine_state = [&engine, &chat]() -> std::string_view {
+    if (!engine.running()) return "failed";
+    switch (chat.health()) {
+      case secure_frontend::EngineHealth::starting: return "starting";
+      case secure_frontend::EngineHealth::ready: return "ready";
+      case secure_frontend::EngineHealth::generating: return "generating";
+      case secure_frontend::EngineHealth::failed: return "failed";
+    }
+    return "failed";
+  };
+  std::string_view health_snapshot{"failed"};
   const secure_frontend::ApiRouter router(
-      // Healthy = ready or generating; starting (still loading) and failed are 503.
-      [&engine, &chat] {
-        const auto h = chat.health();
-        return engine.running() && h != secure_frontend::EngineHealth::failed &&
-               h != secure_frontend::EngineHealth::starting;
-      },
+      // Healthy unless failed. starting stays 200: READY is consumed lazily on
+      // the first chat request (eager READY is SP2), so 503 there would
+      // deadlock a readiness probe. The bool is derived from the same single
+      // snapshot as the reported state.
+      // The router calls the bool provider first and the state provider
+      // second, once each per /health request (api_router.hpp), and the
+      // listener is serial: the state reported is the snapshot just taken.
+      [&engine_state, &health_snapshot] { health_snapshot = engine_state(); return health_snapshot != "failed"; },
       [models] { return models; },
-      [&engine, &chat]() -> std::string_view {
-        if (!engine.running()) return "failed";
-        switch (chat.health()) {
-          case secure_frontend::EngineHealth::starting: return "starting";
-          case secure_frontend::EngineHealth::ready: return "ready";
-          case secure_frontend::EngineHealth::generating: return "generating";
-          case secure_frontend::EngineHealth::failed: return "failed";
-        }
-        return "failed";
-      });
+      [&health_snapshot] { return health_snapshot; });
   auto server = secure_frontend::HttpSocketServer::bind(
       *config, std::move(policy), [verifier](const std::string_view supplied) { return verifier->matches(supplied); },
       [&router, &chat, &engine, &tokenizer, &options](const std::string_view method, const std::string_view target,

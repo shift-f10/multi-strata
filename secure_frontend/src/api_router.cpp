@@ -98,7 +98,8 @@ HttpResponse ApiRouter::dispatch(std::string_view method, std::string_view targe
   if (method != "GET") return not_found();
   try {
     if (target == "/health") {
-      return health_response(health_status_ && health_status_(), engine_state_);
+      const bool healthy = health_status_ && health_status_();  // first, by contract
+      return health_response(healthy, engine_state_);
     }
     if (target == "/v1/models") {
       if (!model_list_) return unavailable();

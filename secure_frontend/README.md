@@ -60,8 +60,9 @@ compiles in the llvm-mingw cross build, but it has no runtime test yet:
   generation with `STOP` and a bounded drain (or marks the engine failed),
   sizes the outbound `GEN` cap from the engine's `READY` context, and reports
   its state through `/health` as `{"status":"ok"|"unavailable","engine":"<state>"}`:
-  `ready` and `generating` are `200`; `starting` (still loading) and `failed`
-  (or a stopped child) are `503`. The engine
+  `starting` → `200` with `engine=starting` (READY is consumed on the first
+  request; eager READY is SP2), `ready`/`generating` → `200`, `failed` (or a
+  stopped child) → `503`. The engine
   facts these limits rely on are in
   [`docs/security/engine-protocol-limits.md`](../docs/security/engine-protocol-limits.md).
 

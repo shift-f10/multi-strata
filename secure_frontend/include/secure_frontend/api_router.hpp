@@ -33,7 +33,9 @@ class ApiRouter final {
  public:
   // /health returns {"status":"ok"|"unavailable"} and, when engine_state is
   // set, also "engine":"<state>". The status code is 200 only when
-  // health_status returns true.
+  // health_status returns true. Per /health request, health_status is called
+  // exactly once and before engine_state (also exactly once), so a caller can
+  // take one snapshot in the first and report it from the second.
   ApiRouter(HealthStatusProvider health_status, ModelListProvider model_list, EngineStateProvider engine_state = {});
 
   [[nodiscard]] HttpResponse dispatch(std::string_view method, std::string_view target) const;

@@ -207,16 +207,14 @@ void job_object_terminates_grandchild(const std::filesystem::path& self) {
          "the fake must report its grandchild");
   const unsigned long pid = std::stoul(report.line.substr(11));
   expect(pid != 0, "the grandchild must have started");
+  // Open the grandchild while it is certainly alive (it sleeps 30 s): the
+  // handle pins this process object, so no PID reuse can confuse the check,
+  // and nothing here ever acts on a bare PID.
+  HANDLE grandchild = OpenProcess(SYNCHRONIZE, FALSE, static_cast<DWORD>(pid));
+  expect(grandchild != nullptr, "the live grandchild must be openable before terminate");
   (void)transport.terminate(std::chrono::milliseconds(250));
-  HANDLE grandchild = OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE, FALSE, static_cast<DWORD>(pid));
-  bool gone = false;
-  if (grandchild == nullptr) {
-    gone = GetLastError() == ERROR_INVALID_PARAMETER;
-  } else {
-    gone = WaitForSingleObject(grandchild, 2000) == WAIT_OBJECT_0;
-    if (!gone) (void)TerminateProcess(grandchild, 1);  // do not leak a 30 s sleeper past a failed test
-    CloseHandle(grandchild);
-  }
+  const bool gone = WaitForSingleObject(grandchild, 2000) == WAIT_OBJECT_0;
+  CloseHandle(grandchild);
   expect(gone, "the grandchild must die with the Job (P4)");
 }
 #endif
