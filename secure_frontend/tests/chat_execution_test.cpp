@@ -272,7 +272,43 @@ void health_is_failed_after_engine_closed_mid_generation() {
   secure_frontend::ChatExecutionService service(protocol);
   const auto result = service.execute(valid_request(2U), tokenizer);
   expect(std::holds_alternative<secure_frontend::ChatExecutionError>(result), "a closed engine must not yield partial text");
+  const auto* failure = std::get_if<secure_frontend::ChatExecutionError>(&result);
+  expect(failure != nullptr && failure->code == secure_frontend::ChatExecutionErrorCode::engine_protocol_failed,
+         "a closed engine mid-generation must report engine_protocol_failed");
   expect(service.health() == secure_frontend::EngineHealth::failed, "health must report failed after the engine closed");
+}
+
+void health_is_failed_when_engine_closes_before_ready() {
+  const std::string prompt = "<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n";
+  const auto tokenizer = tokenizer_for(prompt);
+  FakeTransport transport;
+  transport.reads = {{secure_frontend::EngineReadKind::closed, {}, {}}};
+  secure_frontend::EngineProtocolClient protocol(transport);
+  secure_frontend::ChatExecutionService service(protocol);
+  const auto result = service.execute(valid_request(1U), tokenizer);
+  expect(std::holds_alternative<secure_frontend::ChatExecutionError>(result), "an engine that closes before READY must fail the request");
+  expect(service.health() == secure_frontend::EngineHealth::failed, "health must report failed when the engine closes before READY");
+}
+
+void chat_applies_engine_context_rule_with_eight_token_margin() {
+  const std::string prompt = "<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n";
+  const auto tokenizer = tokenizer_for(prompt);
+  // Count the prompt tokens by running one successful request first.
+  FakeTransport probe; probe.reads = {line("READY 4096 stop"), line("DONE 0 1 1.0 1.0 length")};
+  secure_frontend::EngineProtocolClient probe_protocol(probe);
+  secure_frontend::ChatExecutionService probe_service(probe_protocol);
+  (void)probe_service.execute(valid_request(1U), tokenizer);
+  const std::string& gen = probe.writes.front();
+  const std::size_t prompt_tokens = static_cast<std::size_t>(std::count(gen.begin(), gen.end(), ',')) + 1U;
+  // ctx = prompt + max_new + 7 -> exceeds by one; ctx = prompt + max_new + 8 -> fits.
+  for (const std::size_t margin : {7U, 8U}) {
+    FakeTransport t; t.reads = {line("READY " + std::to_string(prompt_tokens + 1U + margin) + " stop"), line("DONE 0 1 1.0 1.0 length")};
+    secure_frontend::EngineProtocolClient p(t);
+    secure_frontend::ChatExecutionService s(p);
+    const auto r = s.execute(valid_request(1U), tokenizer);
+    const bool rejected = std::holds_alternative<secure_frontend::ChatExecutionError>(r);
+    expect(rejected == (margin == 7U), "context rule must be prompt + max_new + 8 <= ctx (margin " + std::to_string(margin) + ")");
+  }
 }
 
 }  // namespace
@@ -287,5 +323,7 @@ int main() {
   chat_rejects_nonfinite_done_and_stays_ready();
   health_reflects_protocol_state();
   health_is_failed_after_engine_closed_mid_generation();
+  health_is_failed_when_engine_closes_before_ready();
+  chat_applies_engine_context_rule_with_eight_token_margin();
   return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

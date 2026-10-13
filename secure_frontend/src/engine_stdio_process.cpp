@@ -170,7 +170,7 @@ bool EngineStdioProcess::running() {
 }
 
 bool EngineStdioProcess::write_line(const std::string_view line, std::string& error) {
-  if (line.empty() || line.size() > kMaxLineBytes || line.find('\n') != std::string_view::npos || line.find('\r') != std::string_view::npos || contains_nul(line)) { error = "protocol line is invalid"; return false; }
+  if (line.empty() || line.size() > kMaxWriteLineBytes || line.find('\n') != std::string_view::npos || line.find('\r') != std::string_view::npos || contains_nul(line)) { error = "protocol line is invalid"; return false; }
   std::string record(line); record.push_back('\n');
 #if defined(_WIN32)
   if (!stdin_write_) { error = "engine stdin is closed"; return false; } DWORD written = 0; if (!WriteFile(static_cast<HANDLE>(stdin_write_), record.data(), static_cast<DWORD>(record.size()), &written, nullptr) || written != record.size()) { error = "engine stdin write failed"; return false; } return true;
@@ -180,7 +180,7 @@ bool EngineStdioProcess::write_line(const std::string_view line, std::string& er
 }
 
 EngineReadResult EngineStdioProcess::read_line(const std::chrono::milliseconds timeout) {
-  const auto newline = pending_stdout_.find('\n'); if (newline != std::string::npos) { std::string line = pending_stdout_.substr(0, newline); pending_stdout_.erase(0, newline + 1); if (!line.empty() && line.back() == '\r') line.pop_back(); if (line.size() > kMaxLineBytes || line.find('\0') != std::string::npos) return {EngineReadKind::failure, {}, "engine emitted an invalid line"}; return {EngineReadKind::line, std::move(line), {}}; }
+  const auto newline = pending_stdout_.find('\n'); if (newline != std::string::npos) { std::string line = pending_stdout_.substr(0, newline); pending_stdout_.erase(0, newline + 1); if (!line.empty() && line.back() == '\r') line.pop_back(); if (line.size() > kMaxReadLineBytes || line.find('\0') != std::string::npos) return {EngineReadKind::failure, {}, "engine emitted an invalid line"}; return {EngineReadKind::line, std::move(line), {}}; }
 #if defined(_WIN32)
   if (!stdout_read_) return {EngineReadKind::closed, {}, {}}; const DWORD deadline = timeout.count() <= 0 ? 0U : static_cast<DWORD>(std::min<std::int64_t>(timeout.count(), 0x7fffffff)); const ULONGLONG end = GetTickCount64() + deadline; std::array<char, 1024> bytes{}; for (;;) { DWORD available = 0; if (!PeekNamedPipe(static_cast<HANDLE>(stdout_read_), nullptr, 0, nullptr, &available, nullptr)) return {EngineReadKind::closed, {}, {}}; if (available != 0) { DWORD read = 0; if (!ReadFile(static_cast<HANDLE>(stdout_read_), bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr) || read == 0) return {EngineReadKind::closed, {}, {}}; pending_stdout_.append(bytes.data(), read); return read_line(std::chrono::milliseconds(0)); } if (GetTickCount64() >= end) return {EngineReadKind::timeout, {}, {}}; Sleep(1); }
 #else
@@ -205,7 +205,7 @@ EngineReadResult EngineStdioProcess::read_line(const std::chrono::milliseconds t
     return {EngineReadKind::failure, {}, "engine stdout read failed"};
   }
   pending_stdout_.append(bytes.data(), static_cast<std::size_t>(count));
-  if (pending_stdout_.size() > kMaxLineBytes && pending_stdout_.find('\n') == std::string::npos) {
+  if (pending_stdout_.size() > kMaxReadLineBytes && pending_stdout_.find('\n') == std::string::npos) {
     return {EngineReadKind::failure, {}, "engine emitted an oversized line"};
   }
   return read_line(std::chrono::milliseconds(0));

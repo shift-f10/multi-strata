@@ -15,7 +15,8 @@ namespace secure_frontend {
 // environment allowlist, and never invokes a shell.
 class EngineStdioProcess final : public EngineLineTransport {
  public:
-  static constexpr std::size_t kMaxLineBytes = 8192;
+  static constexpr std::size_t kMaxReadLineBytes = 8192;              // engine → frontend records are short
+  static constexpr std::size_t kMaxWriteLineBytes = 16U * 1024U * 1024U;  // GEN line; bounded above by the protocol client
 
   EngineStdioProcess() = default;
   ~EngineStdioProcess() override;

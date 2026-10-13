@@ -50,7 +50,10 @@ struct EngineProtocolError final {
 };
 
 struct EngineProtocolLimits final {
-  std::size_t max_line_bytes{8192};
+  // 0 means "derive from READY": 32 + 11 * max_context_tokens (10 digits + separator per id).
+  // A non-zero value is a fixed cap for both outbound commands and inbound records.
+  // With 0, inbound records are capped at kDefaultInboundLineBytes (engine records are short).
+  std::size_t max_line_bytes{0};
   std::size_t max_prompt_tokens{262144};
   std::size_t max_generated_tokens{262144};
   std::uint32_t max_new_tokens{262144};
@@ -119,6 +122,11 @@ class EngineProtocolClient final {
   EngineGeneration active_generation_;
   bool supports_stop_{false};
   bool stop_requested_{false};
+  // Outbound command cap; sized from READY when limits_.max_line_bytes == 0.
+  std::size_t effective_max_line_bytes_;
+
+  static constexpr std::size_t kDefaultInboundLineBytes = 8192;
+  [[nodiscard]] std::size_t inbound_max_line_bytes() const noexcept;
 
   [[nodiscard]] std::optional<EngineProtocolError> write_command(std::string_view command);
   [[nodiscard]] std::optional<EngineProtocolError> validate_incoming(std::string_view line) const;

@@ -42,6 +42,17 @@ void test_round_trip(const std::filesystem::path& self) {
   secure_frontend::EngineReady ready{};
   expect(!client.await_ready(std::chrono::seconds(2), ready).has_value(), "READY must parse");
   expect(ready.max_context_tokens == 4096 && ready.supports_stop, "READY capabilities must survive transport");
+  // E4: the GEN line for a full context is far beyond 8 KiB; the write cap must allow it.
+  // Raw write while the client is idle, then consume the fake's two reply lines so
+  // the protocol client continues from a clean stream.
+  std::string big(100000U, '1'); std::string werr;
+  const bool big_written = transport.write_line("GEN 1 " + big, werr);
+  expect(big_written, "a 100 KB GEN line must be writable: " + werr);
+  const auto reply_token = transport.read_line(std::chrono::seconds(2));
+  const auto reply_done = transport.read_line(std::chrono::seconds(2));
+  expect(reply_token.kind == secure_frontend::EngineReadKind::line && reply_token.line == "T 7" &&
+             reply_done.kind == secure_frontend::EngineReadKind::line && reply_done.line == "DONE stop",
+         "the fake engine must answer the 100 KB GEN line");
   expect(!client.begin_generation(2, {1, 2, 3}).has_value(), "GEN must write through transport");
   secure_frontend::EngineGeneration generation{};
   expect(!client.read_generation(std::chrono::seconds(2), generation).has_value(), "generation must read through transport");

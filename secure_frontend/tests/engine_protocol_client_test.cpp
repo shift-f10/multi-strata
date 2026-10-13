@@ -177,6 +177,18 @@ void generation_total_deadline_is_enforced() {
 
 }  // namespace
 
+// E4: a prompt at the engine's advertised context must fit the GEN line.
+void gen_line_fits_max_prompt_tokens() {
+  FakeTransport transport;
+  transport.reads = {line("READY 4096 stop"), line("DONE 0 4000 1.0 1.0 length")};
+  EngineProtocolClient client(transport);  // default limits: derive from READY
+  secure_frontend::EngineReady ready{};
+  (void)client.await_ready(std::chrono::seconds(1), ready);
+  std::vector<std::uint32_t> prompt(4000U, 4294967295U);  // worst case: 10-digit ids
+  expect(!client.begin_generation(1, prompt).has_value(), "4000 ten-digit ids must fit the derived GEN line limit");
+  expect(transport.writes.size() == 1U && transport.writes.front().size() > 40000U, "the GEN line must actually carry every id");
+}
+
 int main() {
   runs_the_solo_protocol();
   stop_and_quit_are_explicit();
@@ -185,5 +197,6 @@ int main() {
   bounds_and_engine_errors_fail_closed();
   prefill_progress_is_glm_only_and_strictly_bounded();
   generation_total_deadline_is_enforced();
+  gen_line_fits_max_prompt_tokens();
   return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

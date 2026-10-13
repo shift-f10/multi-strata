@@ -57,9 +57,11 @@ ChatExecutionOutcome ChatExecutionService::execute(const ChatCompletionRequest& 
     received_ready_ = true;
   }
 
+  // The engine's own rule (generate.cpp): n + max_new + 8 <= --max-context.
+  // Both terms are already bounded (prompt by maximum_prompt_tokens, output by
+  // uint32), so the sum cannot overflow std::size_t.
   if (!protocol_.ready() || engine_context_tokens_ == 0U ||
-      plan->prompt_token_ids.size() >= engine_context_tokens_ ||
-      plan->max_tokens > engine_context_tokens_ - plan->prompt_token_ids.size()) {
+      plan->prompt_token_ids.size() + plan->max_tokens + 8U > engine_context_tokens_) {
     return error(ChatExecutionErrorCode::context_limit_exceeded,
                  "request exceeds the local engine context limit");
   }

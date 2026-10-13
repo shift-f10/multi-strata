@@ -59,7 +59,14 @@ std::vector<std::string_view> fields(const std::string_view line) {
 EngineProtocolClient::EngineProtocolClient(EngineLineTransport& transport,
                                            const EngineProtocolLimits limits,
                                            const EngineProtocolFlavor flavor)
-    : transport_(transport), limits_(limits), flavor_(flavor) {}
+    : transport_(transport),
+      limits_(limits),
+      flavor_(flavor),
+      effective_max_line_bytes_(limits.max_line_bytes != 0U ? limits.max_line_bytes : kDefaultInboundLineBytes) {}
+
+std::size_t EngineProtocolClient::inbound_max_line_bytes() const noexcept {
+  return limits_.max_line_bytes != 0U ? limits_.max_line_bytes : kDefaultInboundLineBytes;
+}
 
 std::optional<EngineProtocolError> EngineProtocolClient::fail(const EngineProtocolErrorCode code,
                                                               std::string message) {
@@ -68,7 +75,7 @@ std::optional<EngineProtocolError> EngineProtocolClient::fail(const EngineProtoc
 }
 
 std::optional<EngineProtocolError> EngineProtocolClient::validate_incoming(const std::string_view line) const {
-  if (line.empty() || line.size() > limits_.max_line_bytes) {
+  if (line.empty() || line.size() > inbound_max_line_bytes()) {
     return EngineProtocolError{line.empty() ? EngineProtocolErrorCode::malformed_line
                                              : EngineProtocolErrorCode::line_too_long,
                                "engine sent an empty or oversized protocol line"};
@@ -81,7 +88,7 @@ std::optional<EngineProtocolError> EngineProtocolClient::validate_incoming(const
 }
 
 std::optional<EngineProtocolError> EngineProtocolClient::write_command(const std::string_view command) {
-  if (command.empty() || command.size() > limits_.max_line_bytes || !ascii_printable(command)) {
+  if (command.empty() || command.size() > effective_max_line_bytes_ || !ascii_printable(command)) {
     return fail(EngineProtocolErrorCode::invalid_argument, "outbound protocol command is invalid");
   }
   std::string transport_error;
@@ -129,6 +136,11 @@ std::optional<EngineProtocolError> EngineProtocolClient::await_ready(const std::
       if (parsed[index] == "stop") can_stop = true;
     }
     ready = EngineReady{context, can_stop};
+    // The engine reads stdin lines without bound, so the frontend caps its own
+    // GEN line: a full-context prompt of 10-digit ids plus separators and header.
+    effective_max_line_bytes_ = limits_.max_line_bytes != 0U
+        ? limits_.max_line_bytes
+        : 32U + 11U * static_cast<std::size_t>(context);
     supports_stop_ = can_stop;
     state_ = State::idle;
     return std::nullopt;
@@ -146,7 +158,7 @@ std::optional<EngineProtocolError> EngineProtocolClient::begin_generation(
   for (std::size_t index = 0; index < prompt_token_ids.size(); ++index) {
     if (index != 0) command.push_back(',');
     command += std::to_string(prompt_token_ids[index]);
-    if (command.size() > limits_.max_line_bytes) {
+    if (command.size() > effective_max_line_bytes_) {
       return EngineProtocolError{EngineProtocolErrorCode::invalid_argument, "generation command exceeds line limit"};
     }
   }
