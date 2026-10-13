@@ -1656,3 +1656,12 @@ if(STRATA_HIP_GFX906)
   add_executable(gfx906_qsa_query_swizzle_probe bench/gfx906_qsa_query_swizzle_probe.cpp)
   target_link_libraries(gfx906_qsa_query_swizzle_probe PRIVATE strata_kernels ${_strata_gpu_runtime_target})
 endif()
+
+# The portable native service boundary is intentionally isolated from the
+# inference engine while it reaches feature parity.  It is dependency-free and
+# is built on Windows and Linux; keep it available to downstream packagers.
+option(STRATA_BUILD_SECURE_FRONTEND "Build the portable hardened frontend foundation" ON)
+option(STRATA_BUILD_SECURE_FRONTEND_TESTS "Build the portable frontend tests" ${STRATA_BUILD_TESTS})
+if(STRATA_BUILD_SECURE_FRONTEND)
+  add_subdirectory(secure_frontend)
+endif()

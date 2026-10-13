@@ -63,6 +63,32 @@ QWEN35_PATTERN = (
     r"|\s+"
 )
 
+# llama.cpp's LLAMA_VOCAB_PRE_TYPE_CHATGLM4.  GLM-5.3 tokenizer packs identify
+# this as either `glm4` or the older `chatglm-bpe` alias.  The three-digit cap
+# is semantic: using the Qwen pattern here tokenizes every digit separately,
+# while accepting arbitrarily long numeric runs changes BPE merge boundaries.
+GLM4_PATTERN = (
+    r"(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])"
+    r"|[^\r\n\p{L}\p{N}]?\p{L}+"
+    r"|\p{N}{1,3}"
+    r"| ?[^\s\p{L}\p{N}]+[\r\n]*"
+    r"|\s*[\r\n]+|\s+(?!\S)|\s+"
+)
+
+
+def pre_tokenizer_pattern(pre: str) -> tuple[str, str]:
+    """Return the fixed regex and provenance for a declared GGUF pre-tokenizer.
+
+    Unknown pre-tokenizers retain the historic Qwen35 fallback so this utility
+    remains usable for existing Strata packs.  A caller that needs exact
+    compatibility must validate `pre` against its model profile before use.
+    """
+    if pre in ("glm4", "chatglm-bpe"):
+        return (GLM4_PATTERN,
+                ".ref/llama.cpp src/llama-vocab.cpp (LLAMA_VOCAB_PRE_TYPE_CHATGLM4)")
+    return (QWEN35_PATTERN,
+            ".ref/llama.cpp src/llama-vocab.cpp L396 (LLAMA_VOCAB_PRE_TYPE_QWEN35)")
+
 
 class Tokenizer:
     def __init__(self, tokens: list[str], merges: list[str], token_types: list[int] | None = None,
@@ -86,7 +112,7 @@ class Tokenizer:
             if parts[0] not in self.ids or parts[1] not in self.ids:
                 raise ValueError("merge %d names a token outside the vocabulary: %r" % (i, m))
             self.ranks[(parts[0], parts[1])] = i
-        self._re = regex.compile(QWEN35_PATTERN)
+        self._re = regex.compile(pre_tokenizer_pattern(pre)[0])
 
         # The literals matched directly instead of being run through BPE.  GGUF token types: 3 = CONTROL,
         # 4 = USER_DEFINED.  The two classes behave DIFFERENTLY and llama.cpp's own tokenizer settled which:
@@ -317,9 +343,10 @@ def extract(gguf_path, out_dir) -> dict:
         "special_ids": tk.special_ids,
         "add_bos_token": False,
         # The pattern is SHIPPED, not recomputed by the reader: it is transcribed from llama.cpp for the
-        # declared `pre` type, and a C++ port that re-derived it would be free to get `\p{M}` wrong again.
-        "pre_pattern": QWEN35_PATTERN,
-        "pre_pattern_source": ".ref/llama.cpp src/llama-vocab.cpp L396 (LLAMA_VOCAB_PRE_TYPE_QWEN35)",
+        # declared `pre` type, and a C++ port that re-derived it would be free to get `\p{M}` or GLM's
+        # three-digit numeric boundary wrong again.
+        "pre_pattern": pre_tokenizer_pattern(tk.pre)[0],
+        "pre_pattern_source": pre_tokenizer_pattern(tk.pre)[1],
     }
     (out / "vocab.json").write_text(json.dumps(tk.ids, ensure_ascii=False), encoding="utf-8")
     (out / "merges.txt").write_text("\n".join("%s %s" % k for k, _ in

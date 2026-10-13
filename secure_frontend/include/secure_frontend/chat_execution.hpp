@@ -1,0 +1,76 @@
+#pragma once
+
+#include "secure_frontend/chat_generation_plan.hpp"
+#include "secure_frontend/engine_protocol_client.hpp"
+
+#include <chrono>
+#include <cstddef>
+#include <string>
+#include <variant>
+
+namespace secure_frontend {
+
+// An explicit startup-selected prompt/tokenizer contract.  This is not
+// inferred from a model name or tokenizer asset: that would allow a model
+// artifact to select behavior in the HTTP-serving process.
+enum class NativeChatProfile {
+  qwen,
+  glm53,
+};
+
+// Fixed bounds for the native, non-streaming chat path.  These are separate
+// from engine-protocol bounds: both layers must agree before an engine command
+// is issued.
+struct ChatExecutionLimits final {
+  std::size_t maximum_prompt_tokens{32768U};
+  std::size_t maximum_output_tokens{4096U};
+  std::chrono::milliseconds ready_timeout{std::chrono::seconds(30)};
+  std::chrono::milliseconds generation_timeout{std::chrono::seconds(120)};
+};
+
+enum class ChatExecutionErrorCode {
+  invalid_request,
+  planning_failed,
+  context_limit_exceeded,
+  engine_protocol_failed,
+  output_decode_failed,
+};
+
+struct ChatExecutionError final {
+  ChatExecutionErrorCode code;
+  std::string message;
+};
+
+struct ChatExecutionResult final {
+  std::string text;
+  std::size_t generated_tokens;
+};
+
+using ChatExecutionOutcome = std::variant<ChatExecutionResult, ChatExecutionError>;
+
+// Stateful adapter for one private Strata --serve connection. It accepts a
+// schema-validated request, uses the startup-selected fixed prompt renderer
+// and offline tokenizer, and decodes only ordinary generated token IDs. It does not load
+// files, spawn processes, expose streaming data, or contact a network.
+//
+// The first execution waits for READY. Later executions reuse a clean idle
+// protocol client. Any engine protocol failure is returned without reflecting
+// engine or prompt data to a network caller.
+class ChatExecutionService final {
+ public:
+  explicit ChatExecutionService(EngineProtocolClient& protocol,
+                                ChatExecutionLimits limits = {},
+                                NativeChatProfile profile = NativeChatProfile::qwen);
+
+  [[nodiscard]] ChatExecutionOutcome execute(const ChatCompletionRequest& request,
+                                              const TokenizerPack& tokenizer);
+
+ private:
+  EngineProtocolClient& protocol_;
+  ChatExecutionLimits limits_;
+  NativeChatProfile profile_;
+  bool received_ready_{false};
+  std::size_t engine_context_tokens_{0U};
+};
+
+}  // namespace secure_frontend

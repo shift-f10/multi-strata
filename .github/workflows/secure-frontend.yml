@@ -1,0 +1,48 @@
+name: Secure frontend portability
+
+on:
+  push:
+    paths:
+      - 'secure_frontend/**'
+      - '.github/workflows/secure-frontend.yml'
+  pull_request:
+    paths:
+      - 'secure_frontend/**'
+      - '.github/workflows/secure-frontend.yml'
+  workflow_dispatch:
+
+# The workflow only configures secure_frontend as an independent CMake project.
+# It must not configure the top-level inference engine, fetch dependencies, or
+# enable any GPU backend.
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux GCC
+            os: ubuntu-latest
+            preset: linux-gcc
+          - name: Linux Clang
+            os: ubuntu-latest
+            preset: linux-clang
+          - name: Windows MSVC
+            os: windows-latest
+            preset: windows-msvc
+    defaults:
+      run:
+        shell: bash
+        working-directory: secure_frontend
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake --preset "${{ matrix.preset }}"
+      - name: Build
+        run: cmake --build --preset "${{ matrix.preset }}" --parallel
+      - name: Test
+        run: ctest --preset "${{ matrix.preset }}"
