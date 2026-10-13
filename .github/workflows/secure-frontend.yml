@@ -2,18 +2,23 @@ name: secure-frontend
 
 # Blocking: linux-gcc, linux-clang, windows-llvm-mingw-cross, windows-msys2-clang,
 # top-level-integration. Non-blocking: windows-msvc (informational).
-# Network fetches, exactly: the GitHub actions used below; the pip wheels pinned
-# in requirements.txt (cmake/ninja) and scripts/dev/requirements-dev.txt (pytest
-# and its dependencies) via scripts/dev/bootstrap-linux.sh, plus a pip wheel
-# when the venv has no pip; MSYS2 packages via msys2/setup-msys2; and the pinned,
+# Upstream Strata is the git submodule upstream/ (gitlink 7695859a, tag v0.1.43).
+# Jobs that run pytest or configure our root CMakeLists.txt check it out with
+# `submodules: true` (depth 1: about a 19.7 MB pack, 50.7 MB and 2,976 files
+# checked out); preset-only jobs build secure_frontend/ alone and do not.
+# Network fetches, exactly: the GitHub actions used below; the upstream submodule
+# (linux, top-level-integration); the pip wheels pinned in
+# scripts/dev/requirements-dev.txt (cmake, ninja, regex, pytest and its
+# dependencies) via scripts/dev/bootstrap-linux.sh, plus a pip wheel when the
+# venv has no pip; MSYS2 packages via msys2/setup-msys2; and the pinned,
 # sha256-checked llvm-mingw tarball (scripts/dev/bootstrap-llvm-mingw.sh).
-# No models are downloaded and no GPU backend is enabled. The root configure
-# runs with STRATA_NATIVE_EXPERTS=OFF, so no llama.cpp clone (FetchContent) occurs.
+# No models are downloaded and no GPU backend is enabled. Our root seeds
+# STRATA_NATIVE_EXPERTS=OFF, so no llama.cpp clone (FetchContent) occurs.
 on:
   push:
-    paths: ["secure_frontend/**", "CMakeLists.txt", "scripts/dev/**", "requirements.txt", "pytest.ini", "tools/**", ".github/workflows/secure-frontend.yml"]
+    paths: ["secure_frontend/**", "CMakeLists.txt", "scripts/**", "pytest.ini", "conftest.py", "tools/**", "upstream", ".gitmodules", ".github/workflows/secure-frontend.yml"]
   pull_request:
-    paths: ["secure_frontend/**", "CMakeLists.txt", "scripts/dev/**", "requirements.txt", "pytest.ini", "tools/**", ".github/workflows/secure-frontend.yml"]
+    paths: ["secure_frontend/**", "CMakeLists.txt", "scripts/**", "pytest.ini", "conftest.py", "tools/**", "upstream", ".gitmodules", ".github/workflows/secure-frontend.yml"]
   workflow_dispatch:
 
 permissions:
@@ -30,8 +35,19 @@ jobs:
         preset: [linux-gcc, linux-clang]
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
       - run: scripts/dev/bootstrap-linux.sh
       - run: echo "$GITHUB_WORKSPACE/.venv-dev/bin" >> "$GITHUB_PATH"
+      - name: pytest collects tools/secure only
+        if: matrix.preset == 'linux-gcc'
+        run: |
+          collected="$(.venv-dev/bin/pytest -q --collect-only)"
+          printf '%s\n' "$collected"
+          if printf '%s\n' "$collected" | grep '::' | grep -v '^tools/secure/'; then
+            echo "pytest -q collected tests outside tools/secure/" >&2
+            exit 1
+          fi
       - name: pytest (repo root)
         if: matrix.preset == 'linux-gcc'
         run: .venv-dev/bin/pytest -q
@@ -41,6 +57,14 @@ jobs:
         working-directory: secure_frontend
       - run: ctest --preset ${{ matrix.preset }}
         working-directory: secure_frontend
+      - name: upstream submodule pinned and unmodified
+        run: |
+          git submodule status
+          if git submodule status | grep -qE '^[-+U]'; then
+            echo "upstream/ is not at the recorded gitlink" >&2
+            exit 1
+          fi
+          test -z "$(git -C upstream status --porcelain)"
 
   windows-cross:
     name: windows-llvm-mingw-cross (compile+link on Linux)
@@ -96,15 +120,26 @@ jobs:
         working-directory: secure_frontend
 
   top-level-integration:
-    name: root CMake with STRATA_BUILD_SECURE_FRONTEND=ON
+    name: top-level-integration (our root CMake + upstream/ engine)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
       - run: scripts/dev/bootstrap-linux.sh
       - run: echo "$GITHUB_WORKSPACE/.venv-dev/bin" >> "$GITHUB_PATH"
-      - run: cmake -S . -B out/root -G Ninja -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_ENABLE_HIP=OFF -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_BUILD_SECURE_FRONTEND=ON -DSTRATA_BUILD_SECURE_FRONTEND_TESTS=ON
-      - run: cmake --build out/root --target strata-secure-server secure_frontend_config_tests --parallel
-      # With these flags the root build registers no tests, so ctest must target
-      # the frontend's test dir; --no-tests=error stops a vacuous pass.
-      - run: ctest --test-dir out/root/secure_frontend -R secure_frontend_config_tests --no-tests=error --output-on-failure
+      - run: cmake -S . -B out/root -G Ninja -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_ENABLE_HIP=OFF -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_BUILD_SECURE_FRONTEND_TESTS=ON
+      - run: cmake --build out/root --target strata-secure-server secure_frontend_config_tests strata-plan --parallel
+      # --no-tests=error stops a vacuous pass if the frontend tests stop registering.
+      - run: ctest --test-dir out/root -R secure_frontend_config_tests --no-tests=error --output-on-failure
+      - name: no FetchContent download
+        run: test ! -e out/root/_deps
+      - name: upstream submodule pinned and unmodified
+        run: |
+          git submodule status
+          if git submodule status | grep -qE '^[-+U]'; then
+            echo "upstream/ is not at the recorded gitlink" >&2
+            exit 1
+          fi
+          test -z "$(git -C upstream status --porcelain)"
