@@ -1,6 +1,6 @@
 # Sub-project 2 — Portable child supervision of the engine
 
-Date: 2026-10-13. Status: DRAFT for owner review — not yet approved. Parent
+Date: 2026-10-13. Status: APPROVED by rflores 2026-10-13 19:08 UTC — decisions: restart 3/1 s→60 s/300 s window/900 s READY; typed `--gpu`; subreaper default + cgroup.kill when delegated; overlapped stdin writes NOW; PR_SET_NO_NEW_PRIVS DEFAULT ON and refuse root/elevated start ON (owner overrode the orchestrator's default-off recommendation; validation kit must include an nvidia-modprobe check). Parent
 effort: Secure Strata full release path (sub-projects 0–7), see
 `docs/AGENT_HANDOFF.md` Phase 2. Fact base:
 `docs/superpowers/research/sp2-supervision-proc.md` (cited below as "research
