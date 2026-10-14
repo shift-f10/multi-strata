@@ -1,5 +1,8 @@
 #include "secure_frontend/config_file.hpp"
 #include "secure_frontend/frontend_config.hpp"
+#include "secure_frontend/secret_bytes.hpp"
+#include "secure_frontend/secret_source.hpp"
+#include "secure_frontend/token_reader.hpp"
 #include "support/config_json.hpp"
 #include "support/test_support.hpp"
 
@@ -8,6 +11,8 @@
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <string_view>
+#include <type_traits>
 #include <variant>
 #include <vector>
 
@@ -351,6 +356,64 @@ void cfg02_logs_and_cache_roots_are_created_private() {
   expect(!std::filesystem::exists(shared / "logs"), "and nothing was created");
 #endif
 }
+
+template <typename T>
+constexpr bool is_secret_v = std::is_same_v<std::remove_cv_t<T>, secure_frontend::SecretBytes>;
+
+// CFG-06 at compile time: the long-lived configuration cannot hold a token.
+static_assert(!is_secret_v<decltype(secure_frontend::FrontendConfig::listener)>);
+static_assert(!is_secret_v<decltype(secure_frontend::FrontendConfig::limits)>);
+static_assert(!is_secret_v<decltype(secure_frontend::FrontendConfig::roots)>);
+static_assert(!is_secret_v<decltype(secure_frontend::FrontendConfig::token)>);
+static_assert(!is_secret_v<decltype(secure_frontend::FrontendConfig::engine)>);
+static_assert(std::is_same_v<std::remove_cv_t<decltype(secure_frontend::FrontendConfig::token)>, secure_frontend::SecretSource>,
+              "the token member is source metadata (kind + env name or relative path)");
+static_assert(!std::is_constructible_v<secure_frontend::SecretSource, secure_frontend::SecretBytes>,
+              "a secret cannot become a SecretSource");
+static_assert(!std::is_copy_constructible_v<secure_frontend::SecretBytes>,
+              "a secret cannot be copied into any config value");
+
+void cfg06_config_has_no_secret_typed_member() {
+  // The proof is the static_asserts above (this file would not compile otherwise).
+  // At run time, re-check the same traits so the case records real values.
+  using secure_frontend::FrontendConfig;
+  expect(std::is_same_v<std::remove_cv_t<decltype(FrontendConfig::token)>, secure_frontend::SecretSource>,
+         "FrontendConfig::token is a SecretSource (metadata)");
+  expect(!std::is_constructible_v<secure_frontend::SecretSource, secure_frontend::SecretBytes> &&
+             !std::is_copy_constructible_v<secure_frontend::SecretBytes>,
+         "a secret can neither become a SecretSource nor be copied");
+}
+
+void cfg06_validated_config_bytes_do_not_contain_token() {
+  ConfigFixture f;
+  const std::string token = "cfg06-token-0123456789abcdefghijklmnopqrstu";
+#if defined(_WIN32)
+  _putenv_s("SF_CFG06_TOKEN", token.c_str());
+#else
+  setenv("SF_CFG06_TOKEN", token.c_str(), 1);
+#endif
+  // Read the token through the production reader first, so its bytes are live
+  // in this process while the config is validated and described: a config that
+  // captured the resolved token would make the scans below fail.
+  const auto source = secure_frontend::make_environment_secret_source("SF_CFG06_TOKEN");
+  expect(std::holds_alternative<secure_frontend::SecretSource>(source), "test setup: env secret source");
+  if (!std::holds_alternative<secure_frontend::SecretSource>(source)) return;
+  auto read = secure_frontend::read_token(std::get<secure_frontend::SecretSource>(source), f.dir / "secret");
+  const auto* secret = std::get_if<secure_frontend::SecretBytes>(&read);
+  expect(secret != nullptr && secret->view() == token, "the token was read from its configured source");
+  if (secret == nullptr) return;
+  auto literals = f.literals;
+  literals["token.source"] = secure_frontend_test::json_literal("env:SF_CFG06_TOKEN");
+  const auto result = validate_text(render_config_json(literals), f.dir);
+  const auto* validated = std::get_if<secure_frontend::ValidatedConfig>(&result);
+  expect(validated != nullptr, "config validates: " + issues_of(result));
+  if (validated == nullptr) return;
+  const std::string described = secure_frontend::describe(validated->get());
+  expect(described.find("env:SF_CFG06_TOKEN") != std::string::npos, "the source is described as metadata");
+  expect(described.find(secret->view()) == std::string::npos, "the described object graph never contains the token");
+  const std::string_view bytes{reinterpret_cast<const char*>(&validated->get()), sizeof(secure_frontend::FrontendConfig)};
+  expect(bytes.find(secret->view()) == std::string_view::npos, "the object's own bytes never contain the token");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -364,6 +427,8 @@ int main(int argc, char** argv) {
       {"typed_config_cross_field_rules", typed_config_cross_field_rules},
       {"typed_config_errors_never_contain_values", typed_config_errors_never_contain_values},
       {"cfg02_logs_and_cache_roots_are_created_private", cfg02_logs_and_cache_roots_are_created_private},
+      {"cfg06_config_has_no_secret_typed_member", cfg06_config_has_no_secret_typed_member},
+      {"cfg06_validated_config_bytes_do_not_contain_token", cfg06_validated_config_bytes_do_not_contain_token},
 #if !defined(_WIN32)
       {"cfg02_env_token_ignores_config_folder_permissions", cfg02_env_token_ignores_config_folder_permissions},
       {"cfg02_file_token_default_secret_root_reports_one_issue", cfg02_file_token_default_secret_root_reports_one_issue},

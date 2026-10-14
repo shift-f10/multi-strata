@@ -572,6 +572,11 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         secure_frontend_add_cases(secure_frontend_typed_config_tests
             cfg02_env_token_ignores_config_folder_permissions cfg02_file_token_default_secret_root_reports_one_issue)
     endif()
+    # CFG-06: the second case reads the token through the production reader first.
+    target_link_libraries(secure_frontend_typed_config_tests PRIVATE secure_frontend_secrets secure_frontend_token_reader)
+    secure_frontend_add_cases(secure_frontend_typed_config_tests cfg06_config_has_no_secret_typed_member)
+    secure_frontend_add_cases(secure_frontend_typed_config_tests cfg06_validated_config_bytes_do_not_contain_token
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     if(WIN32)
         secure_frontend_add_cases(secure_frontend_typed_config_tests cfg01_config_with_everyone_write_ace_rejected
             LABELS windows-runtime)
@@ -652,6 +657,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_server_e2e_tests
         cfg01_invalid_config_fails_before_listener_and_child net02_remote_addresses_need_opt_in
         net02_error_is_non_secret_and_exits_before_bind ready_timeout_is_configurable
+        cfg05_token_absent_from_child_argv_env_and_outputs
         ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
     # GetExtendedTcpTable is not faithful under wine.
     secure_frontend_add_cases(secure_frontend_server_e2e_tests net01_default_listener_is_loopback_only

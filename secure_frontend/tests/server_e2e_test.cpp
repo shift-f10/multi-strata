@@ -160,6 +160,39 @@ void ready_timeout_is_configurable() {
   }
 }
 
+void cfg05_token_absent_from_child_argv_env_and_outputs() {
+  ServerFixture f;
+  const auto dump = f.dir / "engine-dump.txt";
+  secure_frontend_test::ChildProcess server;
+  expect(f.start(server, with(f.base_flags(), {"--engine-arg", "--dump=" + dump.string()})), "server starts: " + server.stderr_text());
+  const std::string token{secure_frontend_test::kTestToken};
+  std::string seen;
+  // A completed chat proves READY was read, so the engine has already written its dump.
+  seen += f.request("POST", "/v1/chat/completions", f.bearer(),
+                    R"({"model":"qwen-local","messages":[{"role":"user","content":"Hi"}],"max_tokens":2})");
+  seen += f.request("GET", "/health", f.bearer());
+  seen += f.request("GET", "/v1/models", f.bearer());
+  seen += f.request("GET", "/health", "");
+  seen += f.request("GET", "/health", "Bearer wrong-token-0123456789abcdefghijklmnop");
+  seen += f.request("GET", "/does-not-exist", f.bearer());
+  seen += f.request("POST", "/v1/chat/completions", f.bearer(), "{not json");
+  expect(contains(seen, "HTTP/1.1 200") && contains(seen, "HTTP/1.1 401") && contains(seen, "HTTP/1.1 404") &&
+             contains(seen, "HTTP/1.1 400"),
+         "success, auth failure, not found and bad request were all exercised");
+  expect(!contains(seen, token), "no response header or body carries the token");
+#if !defined(_WIN32)
+  const std::string cmdline = secure_frontend_test::read_file("/proc/" + std::to_string(server.pid()) + "/cmdline");
+  expect(!cmdline.empty() && !contains(cmdline, token), "the server's /proc/<pid>/cmdline lacks the token");
+#endif
+  const std::string child = secure_frontend_test::read_file(dump);
+  expect(contains(child, "argv:--serve"), "the fake engine dumped its argv and environment");
+  expect(!contains(child, token), "the engine child's argv and environment lack the token");
+  expect(!contains(child, secure_frontend_test::kTestTokenVariable), "the child does not inherit the token variable at all");
+  server.terminate();
+  expect(!contains(server.stdout_text(), token) && !contains(server.stderr_text(), token),
+         "the server's stdout and stderr lack the token");
+}
+
 #if !defined(_WIN32)
 // P7 / defect e: the fixture's models root is configured through a symlink; the
 // engine must receive the canonical root the inventory used, never the raw string.
@@ -216,6 +249,7 @@ int main(int argc, char** argv) {
       {"net02_remote_addresses_need_opt_in", net02_remote_addresses_need_opt_in},
       {"net02_error_is_non_secret_and_exits_before_bind", net02_error_is_non_secret_and_exits_before_bind},
       {"ready_timeout_is_configurable", ready_timeout_is_configurable},
+      {"cfg05_token_absent_from_child_argv_env_and_outputs", cfg05_token_absent_from_child_argv_env_and_outputs},
 #if !defined(_WIN32)
       {"cfg03_engine_receives_canonical_models_root", cfg03_engine_receives_canonical_models_root},
       {"server_process_is_not_dumpable", server_process_is_not_dumpable},
