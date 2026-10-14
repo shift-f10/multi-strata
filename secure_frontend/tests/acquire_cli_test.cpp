@@ -62,6 +62,12 @@ void program_update_exits_12_without_network() {
   expect(code == 12, "program update exits 12");
   expect(h.out.find("program update not available in this release; install the new release manually") != std::string::npos, "message");
   expect(!network_seam_used, "no transport, downloader probe or resolver is created (§6.2: no network access)");
+  // Controller note 16 / C7 with note 2's mandatory --config: the documented form.
+  expect(h.run({"update"}) == 12, "strata --config <f> update exits 12: " + h.err);
+  expect(h.out.find("program update not available in this release; install the new release manually") != std::string::npos,
+         "message with --config");
+  expect(!network_seam_used, "--config update creates no seam either");
+  expect(h.run({"update", "--models"}) != 12, "update --models is the models part, not the program update");
 }
 
 void cli_requires_config_and_known_verb() {

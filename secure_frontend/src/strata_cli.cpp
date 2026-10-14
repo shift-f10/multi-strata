@@ -399,12 +399,17 @@ int run_strata(const std::span<const std::string> args, CliStreams& io, CliServi
     io.out << "usage: " << kUsage << '\n';
     return args.empty() ? exit_code_value(ExitCode::usage) : 0;
   }
-  if (args[0] == "update" && args.size() == 1) {
-    // §6.2 / Controller note 16: program updates need SP7's signature verification. No network
-    // access: no config is read and no transport, probe or resolver is created.
+  // §6.2 / Controller note 16 / C7: program updates need SP7's signature verification. No network
+  // access: no transport, probe or resolver is created.
+  const auto program_update = [&io] {
     io.out << "program update not available in this release; install the new release manually\n";
     return exit_code_value(ExitCode::program_update);
-  }
+  };
+  if (args[0] == "update" && args.size() == 1) return program_update();
+  // The documented form under note 2 (--config on every verb): `update` with no operands is the
+  // program part too, exactly like the bare form (the config is not read). `update --models …`
+  // (and any other operand) goes to the network verbs (Task 27).
+  if (args.size() == 3 && args[0] == "--config" && args[2] == "update") return program_update();
   if (args[0] != "--config" || args.size() < 3) return usage(io, "--config <file> is required before the verb (no default location yet)");
   auto loaded = load_config(args[1], io);
   if (auto* code = std::get_if<int>(&loaded)) return *code;
