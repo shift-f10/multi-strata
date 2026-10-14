@@ -1,12 +1,17 @@
 #include "secure_frontend/frontend_config.hpp"
+#include "secure_frontend/server_cli.hpp"
 #include "secure_frontend/token_reader.hpp"
 #include "support/server_fixture.hpp"
 #include "support/test_support.hpp"
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
+#include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -190,17 +195,58 @@ void auth04_empty_token_rejected_on_loopback() {
   expect(!secure_frontend_test::can_connect(f.port), "and nothing listens");
 }
 
+// Every "--name" token in `text` (the name ends at a byte outside [a-z0-9-]).
+std::set<std::string> option_names_in(std::string_view text) {
+  std::set<std::string> names;
+  for (std::size_t at = text.find("--"); at != std::string_view::npos; at = text.find("--", at + 2)) {
+    std::size_t end = at + 2;
+    while (end < text.size() && ((text[end] >= 'a' && text[end] <= 'z') || (text[end] >= '0' && text[end] <= '9') ||
+                                 text[end] == '-')) {
+      ++end;
+    }
+    if (end > at + 2) names.emplace(text.substr(at, end - at));
+  }
+  return names;
+}
+
+// Every STRATA_[A-Z0-9_]+ name in `text`.
+void strata_names_in(std::string_view text, std::set<std::string>* names) {
+  for (std::size_t at = text.find("STRATA_"); at != std::string_view::npos; at = text.find("STRATA_", at + 7)) {
+    std::size_t end = at + 7;
+    while (end < text.size() && ((text[end] >= 'A' && text[end] <= 'Z') || (text[end] >= '0' && text[end] <= '9') ||
+                                 text[end] == '_')) {
+      ++end;
+    }
+    if (end > at + 7) names->emplace(text.substr(at, end - at));
+  }
+}
+
 void auth04_no_switch_disables_auth() {
+  constexpr std::array kForbidden{"auth", "insecure", "unauth", "dev", "anonymous", "disable", "no_token", "no-token"};
+  const auto forbidden_in = [&kForbidden](const std::string& text) {
+    return std::any_of(kForbidden.begin(), kForbidden.end(),
+                       [&text](const char* word) { return text.find(word) != std::string::npos; });
+  };
+  // Derived from the schema and the usage text, so a key or flag added later is examined by name.
+  std::set<std::string> flags = option_names_in(secure_frontend::server_usage());
+  std::set<std::string> strata_names;
+  strata_names_in(secure_frontend::server_usage(), &strata_names);
   for (const auto& key : secure_frontend::config_schema()) {
     const std::string path{key.path};
-    for (const char* word : {"auth", "insecure", "unauth", "dev", "anonymous", "disable", "no_token"}) {
-      expect(path.find(word) == std::string::npos, "no config key can switch off authentication: " + path);
+    expect(!forbidden_in(path), "no config key can switch off authentication: " + path);
+    for (const auto& flag : option_names_in(key.flag)) flags.insert(flag);
+    for (const std::string_view text : {key.path, key.flag, key.description, key.default_string}) {
+      strata_names_in(text, &strata_names);
     }
     if (key.type == secure_frontend::ConfigValueType::boolean) {
       expect(path == "listener.allow_remote" || path == "listener.allow_wildcard_bind",
              "the only switches are the two bind opt-ins: " + path);
     }
   }
+  expect(flags.count("--allow-remote") == 1U && flags.count("--token-env") == 1U && flags.count("--check") == 1U,
+         "the flag sweep sees the schema's and the usage text's options");
+  for (const auto& flag : flags) expect(!forbidden_in(flag), "no option can switch off authentication: " + flag);
+  expect(strata_names.count("STRATA_ENGINE_READY_S") == 1U, "the STRATA_* sweep is seeded from the schema text");
   ServerFixture f;
   for (const char* flag : {"--no-auth", "--insecure", "--dev", "--disable-auth", "--allow-unauthenticated", "--auth=none"}) {
     const auto result = f.run(with(f.base_flags(), {flag}));
@@ -208,9 +254,11 @@ void auth04_no_switch_disables_auth() {
   }
   // Upstream's STRATA_* knobs are never read (product spec §4); set them all and probe without a token.
   auto environment = f.environment();
+  // The schema-derived names plus guesses at knobs that could exist upstream.
   for (const char* name : {"STRATA_API_KEY", "STRATA_NO_AUTH", "STRATA_DEV", "STRATA_INSECURE", "STRATA_DEBUG", "STRATA_AUTH"}) {
-    environment.emplace_back(name, std::string{name} == "STRATA_API_KEY" ? "" : "1");
+    strata_names.emplace(name);
   }
+  for (const auto& name : strata_names) environment.emplace_back(name, name == "STRATA_API_KEY" ? "" : "1");
   secure_frontend_test::ChildProcess server;
   expect(server.start(secure_frontend_test::ProcessSpec{f.server_executable, f.base_flags(), environment}), "server spawned");
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);

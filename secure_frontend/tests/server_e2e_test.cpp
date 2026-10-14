@@ -204,6 +204,20 @@ void auth01_socket_rejects_missing_and_wrong_token_on_every_route() {
       expect(response.rfind("HTTP/1.1 401", 0) == 0, std::string{method} + " " + target + " over TCP must be 401");
       expect(!contains(response, "qwen-local") && !contains(response, "\"engine\""), "no route or model data leaks");
     }
+    // Header forms the fixture's request() cannot build: a tab separator and a duplicate header.
+    const std::string head = std::string{method} + " " + target + " HTTP/1.1\r\nHost: 127.0.0.1:" + std::to_string(f.port) + "\r\n";
+    const std::string tail = std::string{method} == "POST" ? "Content-Length: 2\r\n\r\n{}" : "\r\n";
+    const std::string token{secure_frontend_test::kTestToken};
+    for (const auto& [headers, status] :
+         {std::pair{"Authorization: Bearer\t" + token + "\r\n", std::string{"HTTP/1.1 401"}},
+          std::pair{"Authorization: Bearer " + token + "\r\nAuthorization: Bearer " + token + "\r\n",
+                    std::string{"HTTP/1.1 400"}}}) {
+      const auto response = secure_frontend_test::http_exchange(f.port, head + headers + tail);
+      expect(response.rfind(status, 0) == 0, std::string{method} + " " + target + " over TCP must be " + status + ", got " +
+                                                 response.substr(0, 16));
+      expect(!contains(response, "qwen-local") && !contains(response, "\"engine\"") && !contains(response, token),
+             "no route or model data or token leaks");
+    }
   }
 }
 

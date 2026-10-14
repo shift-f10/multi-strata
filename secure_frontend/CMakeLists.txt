@@ -645,7 +645,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
     secure_frontend_add_cases(secure_frontend_server_cli_tests cli_check_has_no_side_effects
         ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
-    target_link_libraries(secure_frontend_server_cli_tests PRIVATE secure_frontend_token_reader)
+    target_link_libraries(secure_frontend_server_cli_tests PRIVATE secure_frontend_token_reader secure_frontend_server_cli)
     secure_frontend_add_cases(secure_frontend_server_cli_tests
         init_writes_config_and_token_then_server_starts init_refuses_to_overwrite_without_force
         init_force_refuses_a_non_regular_config_target init_failure_creates_nothing
