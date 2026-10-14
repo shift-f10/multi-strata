@@ -245,11 +245,13 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `roots.secret` | string | unset | - | `--secret-root` | Absolute directory holding the token file. Default: the config file's directory. |
 | `roots.logs` | string | unset | - | - | Absolute log directory (created 0700; unused in SP1). |
 | `roots.cache` | string | unset | - | - | Absolute cache directory (created 0700; unused in SP1). |
+| `roots.state` | string | unset | - | `--state-dir` | Absolute, existing owner-only directory for engine state: the engine's cwd, per-generation temp and (without roots.cache) the CUDA cache. Required to serve. |
 | `token.source` | string | `file:token` | - | `--token-file, --token-env` | file:<relative path below roots.secret> or env:<NAME>. Metadata only; the token is never in the config. |
 | `engine.profile` | string | `qwen` | - | `--profile` | qwen or glm53. |
 | `engine.executable` | string | required | - | `--engine` | Absolute path of the engine; a regular file not writable by group or others. |
 | `engine.model_id` | string | required | - | `--model-id` | Model ID from the local inventory. |
 | `engine.args` | string array | `[]` | - | `--engine-arg (repeatable)` | Extra engine arguments; frontend-owned and unsupported flags are rejected. |
+| `engine.lib_dirs` | string array | `[]` | - | `--engine-lib-dir (repeatable)` | Absolute library directories for the engine (default: the engine executable's directory). |
 <!-- config-keys:end -->
 
 `roots.secret` defaults to the config file's directory only for a `file:` token
@@ -298,6 +300,7 @@ export STRATA_API_TOKEN='replace-with-a-long-random-token-of-32-bytes-or-more'
   --tokenizer-pack /absolute/path/to/tokenizer-pack \
   --engine /absolute/path/to/strata-engine \
   --engine-arg --pack --engine-arg /absolute/path/to/pack \
+  --state-dir /absolute/path/to/owner-only-state-dir \
   --token-env STRATA_API_TOKEN
 ```
 

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <iterator>
 #include <string>
@@ -69,6 +70,18 @@ ProcessFactory make_stdio_process_factory(EngineLaunchPlan plan, SupervisorLog l
   return [plan = std::move(plan), cgroups, log = log ? std::move(log) : SupervisorLog(log_to_stderr)](
              const std::uint64_t generation) -> SpawnResult {
     EngineCommand command = plan.command;
+    std::optional<std::filesystem::path> temp_dir;
+    if (plan.environment) {
+      EngineEnvironment environment = *plan.environment;
+      // Generation n gets <temp root>/<n>. It is removed by release_resources()
+      // after generation n is reaped (end_generation, shutdown_generation); the
+      // server clears <state>/engine-tmp/* at startup for anything a previous
+      // frontend left behind.
+      environment.temp_dir = environment.temp_dir / std::to_string(generation);
+      if (!create_owner_only_directory(environment.temp_dir)) return SpawnFailure{"engine temp directory setup failed"};
+      temp_dir = environment.temp_dir;
+      command.environment = render_engine_environment(environment);
+    }
     if (cgroups) {
       command.cgroup_procs = cgroups->prepare_generation(generation);
       // Fixed literal, no path (privacy rule): the generation runs without a cgroup.
@@ -79,8 +92,11 @@ ProcessFactory make_stdio_process_factory(EngineLaunchPlan plan, SupervisorLog l
       // open_cgroup, fork or execve failed: the generation's directory is empty
       // (an execve failure's child was already reaped), so remove it.
       if (command.cgroup_procs) (void)remove_cgroup(command.cgroup_procs->parent_path(), kCgroupRemoveBound);
+      std::error_code ignored;
+      if (temp_dir) std::filesystem::remove_all(*temp_dir, ignored);  // nothing ran in it
       return SpawnFailure{error->message};
     }
+    if (temp_dir) process->set_generation_temp_dir(*temp_dir);
     return std::unique_ptr<SupervisedProcess>(std::move(process));
   };
 }

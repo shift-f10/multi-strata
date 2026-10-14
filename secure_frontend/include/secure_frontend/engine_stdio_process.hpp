@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace secure_frontend {
 
@@ -58,6 +59,9 @@ class EngineStdioProcess final : public EngineLineTransport, public SupervisedPr
   void kill_group() noexcept override;
   void release_resources(std::chrono::milliseconds bound) noexcept override;
   [[nodiscard]] long pid() const noexcept override;
+  // The generation's private temp directory (Task 18). release_resources()
+  // removes it, which the supervisor calls only after the leader is reaped.
+  void set_generation_temp_dir(std::filesystem::path directory) { generation_temp_dir_ = std::move(directory); }
   // Test seam: bytes read from the engine but not yet returned as a line.
   [[nodiscard]] std::size_t pending_bytes_for_tests() const noexcept { return pending_stdout_.size(); }
 
@@ -89,6 +93,7 @@ class EngineStdioProcess final : public EngineLineTransport, public SupervisedPr
 #endif
   std::string pending_stdout_;
   std::optional<ExitStatus> exit_status_;
+  std::optional<std::filesystem::path> generation_temp_dir_;
 
   // Removes and validates one complete line from pending_stdout_, or returns
   // nullopt when no newline has arrived yet.

@@ -127,7 +127,8 @@ void cli_check_has_no_side_effects() {
 
 std::vector<std::string> init_flags(const ServerFixture& f, const std::filesystem::path& config) {
   return {"init", "--config", config.string(), "--models-root", f.models.string(), "--tokenizer-pack",
-          f.tokenizer.string(), "--engine", f.engine.string(), "--model-id", "qwen-local", "--port", std::to_string(f.port)};
+          f.tokenizer.string(), "--engine", f.engine.string(), "--model-id", "qwen-local", "--state-dir", f.state.string(),
+          "--port", std::to_string(f.port)};
 }
 
 void init_writes_config_and_token_then_server_starts() {

@@ -135,6 +135,7 @@ void child_receives_exact_argv_and_env(const std::filesystem::path& fake) {
   if (dump) {
     const std::vector<std::string> expected{fake.string(), "--serve", "--fake-engine", weird};
     expect(dump->argv == expected, "argv must arrive literally, no shell");
+    expect(dump->env == std::vector<std::string>{"STRATA_T=1"}, "the environment is exactly the allowlist passed in (N2)");
   }
   (void)transport.terminate(std::chrono::milliseconds(250));
 }

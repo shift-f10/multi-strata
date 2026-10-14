@@ -1,16 +1,20 @@
 #include "secure_frontend/engine_supervisor.hpp"
 #include "secure_frontend/cgroup_scope.hpp"
+#include "secure_frontend/engine_environment.hpp"
 #include "secure_frontend/engine_stdio_process.hpp"
 #include "secure_frontend/shutdown_signal.hpp"
 
+#include "support/fake_engine_dump.hpp"
 #include "support/fake_supervised_process.hpp"
 #include "support/server_harness.hpp"
 #include "support/test_paths.hpp"
 #include "support/test_tokenizer.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <new>
@@ -735,6 +739,73 @@ void supervisor_lease_outliving_shutdown_is_safe() {
   expect(true, "the Lease outlived the supervisor without touching it");
 }
 
+void set_parent_variable(const char* name, const char* value) {
+#if defined(_WIN32)
+  (void)_putenv_s(name, value);
+#else
+  (void)setenv(name, value, 1);
+#endif
+}
+
+// N1 (spec §3.9): the engine's environment is exactly the rendered allowlist.
+void proc02_child_env_is_exact_allowlist() {
+  // A hostile parent environment: none of it may reach the engine.
+  set_parent_variable("STRATA_TEST_TOKEN_ENV", "secret-token-value");
+  set_parent_variable("STRATA_API_KEY", "k");
+  set_parent_variable("HOME", "/home/someone");
+  set_parent_variable("LD_PRELOAD", "/nonexistent/libstrata-test.so");
+  set_parent_variable("HTTPS_PROXY", "http://proxy.invalid:3128");
+  set_parent_variable("CUDA_VISIBLE_DEVICES", "0");
+  const auto state = test_support::make_temp_dir("n1");
+  const secure_frontend::EngineEnvironment environment{
+      .lib_dirs = {state / "lib"}, .temp_dir = state / "engine-tmp", .cuda_cache_dir = state / "cache" / "cuda"};
+  auto plan = fake_plan({});
+  plan.environment = environment;
+  auto spawned = secure_frontend::make_stdio_process_factory(plan)(1U);
+  auto* process = std::get_if<std::unique_ptr<secure_frontend::SupervisedProcess>>(&spawned);
+  expect(process != nullptr, "spawn");
+  if (process == nullptr) return;
+  auto& transport = (*process)->transport();
+  expect(transport.read_line(5s).line == "READY 4096 stop", "READY");
+  const auto dump = test_support::request_dump(transport, 5s);
+  expect(dump.has_value(), "DUMP");
+  if (!dump) return;
+  auto rendered = environment;
+  rendered.temp_dir = state / "engine-tmp" / "1";
+  std::vector<std::string> expected;
+  for (const auto& [name, value] : secure_frontend::render_engine_environment(rendered)) expected.push_back(name + "=" + value);
+  std::sort(expected.begin(), expected.end());
+  // On a mismatch, name the entries that differ (names only, never values).
+  std::string differing;
+  const auto missing_from = [&differing](const std::vector<std::string>& side, const std::vector<std::string>& other,
+                                         const char* mark) {
+    for (const auto& entry : side) {
+      if (std::find(other.begin(), other.end(), entry) == other.end()) differing += mark + entry.substr(0, entry.find('='));
+    }
+  };
+  missing_from(dump->env, expected, " +");
+  missing_from(expected, dump->env, " -");
+  expect(dump->env == expected, "the child environment is exactly the rendered allowlist; differing:" + differing);
+  for (const auto& entry : dump->env) {
+    for (const std::string_view banned : secure_frontend::kNeverForwardedEnvironment) {
+      expect(entry.rfind(std::string(banned) + "=", 0) != 0, "never forwarded: " + std::string(banned));
+    }
+    expect(entry.rfind("STRATA_TEST_TOKEN_ENV=", 0) != 0, "the token variable never reaches the engine");
+    if (entry.rfind("STRATA_", 0) == 0) {
+      expect(entry.rfind("STRATA_HIPBLASLT_TUNING=", 0) == 0 || entry.rfind("STRATA_WATCHDOG_S=", 0) == 0 ||
+                 entry.rfind("STRATA_WATCHDOG_IO_S=", 0) == 0,
+             "no other STRATA_* variable: " + entry.substr(0, entry.find('=')));
+    }
+  }
+  expect(secure_frontend::is_owner_only_directory(state / "engine-tmp" / "1"), "the generation's temp directory exists, owner-only");
+  // The directory goes away once the generation is reaped, exactly as
+  // end_generation / shutdown_generation do it (kill, reap, release_resources).
+  (*process)->kill_group();
+  for (int step = 0; step < 500 && !(*process)->try_reap(); ++step) std::this_thread::sleep_for(10ms);
+  (*process)->release_resources(1000ms);
+  expect(!std::filesystem::exists(state / "engine-tmp" / "1"), "the generation's temp directory is removed after the reap");
+}
+
 #if !defined(_WIN32)
 // RF4: the shutdown signal handler preserves errno, also when its wake write
 // fails (a full self-pipe gives EAGAIN).
@@ -793,6 +864,7 @@ int main(int argc, char* argv[]) {
                                                 {"supervisor_exception_opens_circuit", supervisor_exception_opens_circuit},
                                                 {"supervisor_shutdown_sends_eof_first_then_kills", supervisor_shutdown_sends_eof_first_then_kills},
                                                 {"supervisor_lease_outliving_shutdown_is_safe", supervisor_lease_outliving_shutdown_is_safe},
+                                                {"proc02_child_env_is_exact_allowlist", proc02_child_env_is_exact_allowlist},
 #if !defined(_WIN32)
                                                 {"shutdown_signal_preserves_errno", shutdown_signal_preserves_errno},
                                                 {"supervisor_start_refuses_without_wake", supervisor_start_refuses_without_wake},

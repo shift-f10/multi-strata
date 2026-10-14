@@ -1,8 +1,10 @@
 #include "secure_frontend/api_router.hpp"
 #include "secure_frontend/chat_execution.hpp"
 #include "secure_frontend/chat_schema.hpp"
+#include "secure_frontend/canonical_path.hpp"
 #include "secure_frontend/config.hpp"
 #include "secure_frontend/engine_arguments.hpp"
+#include "secure_frontend/engine_environment.hpp"
 #include "secure_frontend/engine_supervisor.hpp"
 #include "secure_frontend/frontend_config.hpp"
 #include "secure_frontend/frontend_init.hpp"
@@ -65,7 +67,41 @@ int check(const FrontendConfig& config, const std::vector<std::string>& overridd
   return EXIT_SUCCESS;
 }
 
+// roots.state (--state-dir) holds the engine's cwd, temp and CUDA cache (spec
+// §3.9, §3.12). validate() only checked that it is absolute (--check stays
+// side-effect free); serve refuses, before anything is created, bound or
+// spawned, unless it is an existing owner-only directory.
+bool state_dir_is_usable(const FrontendConfig& config) {
+  if (!config.roots.state) {
+    std::cerr << "roots.state (--state-dir) is required to serve.\n";
+    return false;
+  }
+  // POSIX: lstat -- a real directory, not a symlink, owned by the effective
+  // uid, no group/other bits. Windows: not a link, plus SP1's owner and
+  // protected-DACL check on the root.
+  bool owner_only = secure_frontend::is_owner_only_directory(*config.roots.state);
+#if defined(_WIN32)
+  owner_only = owner_only && std::holds_alternative<secure_frontend::CanonicalRoot>(secure_frontend::open_root(*config.roots.state));
+#endif
+  if (!owner_only) {
+    std::cerr << "--state-dir must be an existing owner-only directory.\n";
+    return false;
+  }
+  return true;
+}
+
+// Creates <state>/engine, engine-tmp and cache/cuda owner-only and clears
+// engine-tmp: no engine runs yet, so temp directories a previous frontend left
+// behind are stale.
+bool prepare_state_dir(const std::filesystem::path& state_dir) {
+  for (const auto& directory : {state_dir / "engine", state_dir / "engine-tmp", state_dir / "cache", state_dir / "cache" / "cuda"}) {
+    if (!secure_frontend::create_owner_only_directory(directory)) return false;
+  }
+  return secure_frontend::clear_directory_contents(state_dir / "engine-tmp");
+}
+
 int run(const FrontendConfig& config) {
+  if (!state_dir_is_usable(config)) return EXIT_FAILURE;
   // roots.logs / roots.cache: validate() only checked them, so --check stays
   // side-effect free; serve creates a missing one here, before bind or spawn.
   if (const auto issues = secure_frontend::create_runtime_roots(config); !issues.empty()) {
@@ -118,8 +154,19 @@ int run(const FrontendConfig& config) {
   // Profile, protocol flavor, chat limits and the READY deadline all come from
   // the validated config (limits.engine.ready_timeout_s drives the policy).
   const secure_frontend::SupervisorConfig supervisor_config = secure_frontend::supervisor_config(config);
+  const std::filesystem::path& state_dir = *config.roots.state;
+  if (!prepare_state_dir(state_dir)) {
+    std::cerr << "Unable to prepare --state-dir.\n";
+    return EXIT_FAILURE;
+  }
+  std::vector<std::filesystem::path> lib_dirs = config.engine.lib_dirs;
+  if (lib_dirs.empty()) lib_dirs.push_back(config.engine.executable.path().parent_path());
   secure_frontend::EngineLaunchPlan plan{.command = {.executable = config.engine.executable.path(),
                                                      .arguments = std::move(*engine_arguments), .environment = {}}};
+  // Spec §3.9: the engine's whole environment, rendered per generation; nothing
+  // is inherited from this server's environment.
+  plan.environment = secure_frontend::EngineEnvironment{
+      .lib_dirs = std::move(lib_dirs), .temp_dir = state_dir / "engine-tmp", .cuda_cache_dir = state_dir / "cache" / "cuda"};
   // Spec §3.7(d): detected, never configured; off unless this process runs in
   // a writable delegated cgroup v2.
   plan.use_delegated_cgroup = true;

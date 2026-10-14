@@ -46,6 +46,7 @@ struct ServerOptions final {
   std::vector<std::string> extra_args{};             // appended verbatim
   std::map<std::string, std::string> extra_env{};    // added to the server's own environment
   std::optional<std::filesystem::path> engine{};     // default: the fake engine
+  std::optional<std::filesystem::path> state_dir{};  // --state-dir; default: <root>/state, created 0700
 };
 
 // strata-secure-server as a test child: fixture models (fake-model.gguf, 0600)

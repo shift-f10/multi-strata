@@ -133,12 +133,16 @@ struct Roots final {
   // (check_creatable_root); create_runtime_roots() creates them for serve/init.
   std::optional<std::filesystem::path> logs;
   std::optional<std::filesystem::path> cache;
+  // roots.state: absolute only; validate() never touches the filesystem. serve
+  // requires it and checks it is an existing owner-only directory (spec §3.9).
+  std::optional<std::filesystem::path> state{};
 };
 struct EngineLaunch final {
   EngineProfile profile;
   CanonicalFile executable;
   ModelId model_id;
   std::vector<std::string> args;
+  std::vector<std::filesystem::path> lib_dirs{};  // engine.lib_dirs, each absolute
 };
 
 class ValidatedConfig;

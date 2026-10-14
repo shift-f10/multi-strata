@@ -12,6 +12,7 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 #if defined(_WIN32)
@@ -509,6 +510,16 @@ void EngineStdioProcess::release_resources(const std::chrono::milliseconds bound
 #else
   (void)bound;
 #endif
+  if (generation_temp_dir_) {
+    // Called after the reap (end_generation, shutdown_generation): nothing of
+    // this generation can still be writing here.
+    try {
+      std::error_code ignored;
+      std::filesystem::remove_all(*generation_temp_dir_, ignored);
+    } catch (...) {
+    }
+    generation_temp_dir_.reset();
+  }
 }
 
 long EngineStdioProcess::pid() const noexcept {

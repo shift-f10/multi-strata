@@ -13,7 +13,12 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <utility>
 #include <vector>
+
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#endif
 
 namespace {
 
@@ -138,6 +143,38 @@ void proc04_health_leaves_ready_after_idle_engine_death() {
   expect(health && health->status == 503 && health->body != test_support::kHealthReady,
          "/health leaves ready with no chat request: " + describe(health));
   expect(noticed <= 1000ms, "within 1 s of the engine's death; took " + std::to_string(noticed.count()) + " ms");
+}
+
+// Review Focus 1: --state-dir (roots.state) must be an existing owner-only
+// directory, checked before anything is spawned (the POSIX variants are
+// compiled out on Windows).
+void state_dir_must_be_owner_only() {
+  const auto base = test_support::make_temp_dir("rf1");
+  std::vector<std::pair<std::string, std::filesystem::path>> variants{{"missing", base / "missing"}};
+#if !defined(_WIN32)
+  const auto open_dir = base / "world-writable";
+  std::filesystem::create_directory(open_dir);
+  (void)chmod(open_dir.c_str(), 0777);
+  const auto good = base / "good";
+  std::filesystem::create_directory(good);
+  (void)chmod(good.c_str(), 0700);
+  const auto link = base / "link";
+  std::filesystem::create_directory_symlink(good, link);
+  variants.emplace_back("world-writable", open_dir);
+  variants.emplace_back("symlink", link);
+#endif
+  for (const auto& [name, state] : variants) {
+    const auto record = base / (name + ".record");
+    test_support::ServerOptions options;
+    options.state_dir = state;
+    options.engine_args = {"--record-file=" + test_support::utf8_path(record)};
+    auto server = ServerProcess::start(options);
+    expect(server != nullptr, name + ": launched");
+    if (!server) continue;
+    expect(server->wait_exit(10s) == 1, name + ": the server refuses to start");
+    expect(server->stderr_text().find("--state-dir must be an existing owner-only directory.") != std::string::npos, name + ": fixed error");
+    expect(!std::filesystem::exists(record), name + ": no engine was spawned");
+  }
 }
 
 #if !defined(_WIN32)
@@ -312,6 +349,7 @@ int main(int argc, char* argv[]) {
                                              {"proc04_chat_during_restart_is_generic_503", proc04_chat_during_restart_is_generic_503},
                                              {"proc04_abort_in_generation_is_generic_503", proc04_abort_in_generation_is_generic_503},
                                              {"proc04_health_leaves_ready_after_idle_engine_death", proc04_health_leaves_ready_after_idle_engine_death},
+                                             {"state_dir_must_be_owner_only", state_dir_must_be_owner_only},
 #if !defined(_WIN32)
                                              {"proc05_frontend_sigkill_kills_engine", proc05_frontend_sigkill_kills_engine},
                                              {"proc05_frontend_sigterm_stops_all_descendants", proc05_frontend_sigterm_stops_all_descendants},
