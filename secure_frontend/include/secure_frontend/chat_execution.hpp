@@ -74,6 +74,9 @@ class ChatExecutionService final {
                                               const TokenizerPack& tokenizer);
 
   [[nodiscard]] EngineHealth health() const noexcept;
+  // Eager READY (SP2): the supervisor consumed READY on `protocol` before the
+  // first request; execute() then never waits for it. Call once, before execute().
+  void adopt_ready(const EngineReady& ready) noexcept;
 
  private:
   EngineProtocolClient& protocol_;

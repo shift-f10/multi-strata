@@ -73,6 +73,7 @@ std::size_t EngineProtocolClient::inbound_max_line_bytes() const noexcept {
 std::optional<EngineProtocolError> EngineProtocolClient::fail(const EngineProtocolErrorCode code,
                                                               std::string message) {
   state_ = State::failed;
+  failure_code_ = code;
   return EngineProtocolError{code, std::move(message)};
 }
 

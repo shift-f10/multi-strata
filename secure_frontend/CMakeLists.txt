@@ -144,6 +144,11 @@ add_library(secure_frontend_chat_execution
     src/chat_execution.cpp
 )
 
+add_library(secure_frontend_engine_supervisor
+    src/engine_supervisor.cpp
+    src/supervisor_wake.cpp
+)
+
 add_executable(secure-frontend-smoke src/smoke_main.cpp)
 
 # This deliberately small executable exposes only the authenticated smoke-test
@@ -266,6 +271,14 @@ target_include_directories(secure_frontend_chat_execution
 )
 target_link_libraries(secure_frontend_chat_execution
     PUBLIC secure_frontend_chat_generation_plan secure_frontend_engine_protocol_client secure_frontend_tokenizer_pack)
+target_compile_features(secure_frontend_engine_supervisor PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_engine_supervisor
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(secure_frontend_engine_supervisor
+    PUBLIC secure_frontend_chat_execution secure_frontend_engine_stdio_process)
 target_link_libraries(secure-frontend-smoke PRIVATE secure_frontend_config secure_frontend_token_reader
     secure_frontend_http_policy secure_frontend_http_request_handler secure_frontend_http_socket_server
     secure_frontend_api_router secure_frontend_model_inventory)
@@ -309,7 +322,7 @@ foreach(_target IN ITEMS
         secure_frontend_http_socket_server secure_frontend_model_inventory secure_frontend_engine_arguments
         secure_frontend_chat_schema
         secure_frontend_tokenizer_pack secure_frontend_qwen_prompt_renderer secure_frontend_glm_prompt_renderer
-        secure_frontend_chat_generation_plan secure_frontend_chat_execution
+        secure_frontend_chat_generation_plan secure_frontend_chat_execution secure_frontend_engine_supervisor
         secure-frontend-smoke strata-secure-smoke-server strata-secure-server)
     secure_frontend_set_warnings(${_target})
 endforeach()
@@ -430,6 +443,27 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_engine_child_tests ${SECURE_FRONTEND_CHILD_CASES}
         TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
+    secure_frontend_add_test_executable(secure_frontend_engine_supervisor_tests tests/engine_supervisor_test.cpp
+        secure_frontend_engine_supervisor secure_frontend_test_support)
+    secure_frontend_test_paths(secure_frontend_engine_supervisor_tests)
+    # UNIT: no surviving process (in-process fakes, or a spawn that fails
+    # before any child runs); also smoke-run under wine. PROCESS: real
+    # fake-engine children. LINUX / WINDOWS: platform-only process cases. Later
+    # tasks append case names to these four set() lines only.
+    set(SECURE_FRONTEND_SUPERVISOR_UNIT_CASES supervisor_health_literals_per_state)
+    set(SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES)
+    set(SECURE_FRONTEND_SUPERVISOR_LINUX_CASES)
+    set(SECURE_FRONTEND_SUPERVISOR_WINDOWS_CASES)
+    if(WIN32)
+        list(APPEND SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES ${SECURE_FRONTEND_SUPERVISOR_WINDOWS_CASES})
+    else()
+        list(APPEND SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES ${SECURE_FRONTEND_SUPERVISOR_LINUX_CASES})
+    endif()
+    secure_frontend_add_cases(secure_frontend_engine_supervisor_tests ${SECURE_FRONTEND_SUPERVISOR_UNIT_CASES} TIMEOUT 120)
+    # Process cases are windows-runtime on Windows (Jobs, exit codes, pipes).
+    secure_frontend_add_cases(secure_frontend_engine_supervisor_tests ${SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES}
+        TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+
     secure_frontend_add_test_executable(secure_frontend_http_policy_tests tests/http_policy_test.cpp secure_frontend_http_policy)
     secure_frontend_add_cases(secure_frontend_http_policy_tests
         accepts_exact_host_without_browser_origin rejects_ambiguous_or_untrusted_host requires_an_exact_same_origin
@@ -458,7 +492,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         health_samples_status_before_state_once_each health_includes_engine_state_when_provided
         health_is_503_with_engine_state_when_unavailable dispatches_exact_health_route
         dispatches_models_with_json_escaping rejects_non_exact_routes
-        fails_closed_when_provider_throws_or_returns_invalid_model)
+        fails_closed_when_provider_throws_or_returns_invalid_model health_carries_recovery_only_with_failed)
 
     secure_frontend_add_test_executable(secure_frontend_engine_process_tests tests/engine_process_test.cpp
         secure_frontend_engine_process)
@@ -526,7 +560,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         chat_recovers_after_generation_timeout chat_marks_engine_failed_when_drain_fails
         chat_rejects_nonfinite_done_and_stays_ready health_reflects_protocol_state
         health_is_failed_after_engine_closed_mid_generation health_is_failed_when_engine_closes_before_ready
-        chat_applies_engine_context_rule_with_eight_token_margin)
+        chat_applies_engine_context_rule_with_eight_token_margin chat_uses_adopted_ready_without_waiting)
 
     add_test(NAME strata_secure_server_help COMMAND strata-secure-server --help)
     # The GLM runner takes positional arguments: glm53 without any --engine-arg is a usage error.

@@ -131,4 +131,9 @@ EngineHealth ChatExecutionService::health() const noexcept {
   return EngineHealth::ready;
 }
 
+void ChatExecutionService::adopt_ready(const EngineReady& ready) noexcept {
+  engine_context_tokens_ = ready.max_context_tokens;
+  received_ready_ = true;
+}
+
 }  // namespace secure_frontend

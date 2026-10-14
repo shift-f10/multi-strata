@@ -116,6 +116,8 @@ class EngineProtocolClient final {
   // True only when the engine is between generations and accepts GEN.
   [[nodiscard]] bool idle() const noexcept;
   [[nodiscard]] bool closed() const noexcept;
+  // The code that failed the protocol (set by every terminal failure), or nullopt.
+  [[nodiscard]] std::optional<EngineProtocolErrorCode> failure_code() const noexcept { return failure_code_; }
 
  private:
   enum class State { waiting_ready, idle, generating, closed, failed };
@@ -127,6 +129,7 @@ class EngineProtocolClient final {
   EngineGeneration active_generation_;
   bool supports_stop_{false};
   bool stop_requested_{false};
+  std::optional<EngineProtocolErrorCode> failure_code_;
   // Outbound command cap; sized from READY when limits_.max_line_bytes == 0.
   std::size_t effective_max_line_bytes_;
 

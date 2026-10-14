@@ -312,6 +312,21 @@ void chat_applies_engine_context_rule_with_eight_token_margin() {
   }
 }
 
+void chat_uses_adopted_ready_without_waiting() {
+  const std::string prompt = "<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n";
+  const auto tokenizer = tokenizer_for(prompt + "OK");
+  FakeTransport transport;
+  transport.reads = {line("READY 512 stop"), line("T " + std::to_string(token_id_for(tokenizer, "O"))), line("DONE 1")};
+  secure_frontend::EngineProtocolClient protocol(transport);
+  secure_frontend::EngineReady ready{};
+  expect(!protocol.await_ready(std::chrono::seconds(1), ready).has_value(), "the supervisor consumed READY");
+  secure_frontend::ChatExecutionService service(protocol);
+  service.adopt_ready(ready);
+  expect(service.health() == secure_frontend::EngineHealth::ready, "an adopted READY is ready before any request");
+  const auto result = service.execute(valid_request(), tokenizer);
+  expect(std::holds_alternative<secure_frontend::ChatExecutionResult>(result), "execute does not wait for a second READY");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -327,5 +342,6 @@ int main(int argc, char** argv) {
       {"health_is_failed_after_engine_closed_mid_generation", health_is_failed_after_engine_closed_mid_generation},
       {"health_is_failed_when_engine_closes_before_ready", health_is_failed_when_engine_closes_before_ready},
       {"chat_applies_engine_context_rule_with_eight_token_margin", chat_applies_engine_context_rule_with_eight_token_margin},
+      {"chat_uses_adopted_ready_without_waiting", chat_uses_adopted_ready_without_waiting},
   }, failures);
 }

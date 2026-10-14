@@ -3,9 +3,11 @@
 #include "secure_frontend/engine_process.hpp"
 #include "secure_frontend/engine_protocol_client.hpp"
 #include "secure_frontend/exit_status.hpp"
+#include "secure_frontend/supervised_process.hpp"
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 
@@ -14,7 +16,7 @@ namespace secure_frontend {
 // Owns a Strata --serve child and provides its line-delimited stdin/stdout
 // protocol.  It deliberately starts a supplied executable directly, with an
 // environment allowlist, and never invokes a shell.
-class EngineStdioProcess final : public EngineLineTransport {
+class EngineStdioProcess final : public EngineLineTransport, public SupervisedProcess {
  public:
   static constexpr std::size_t kMaxReadLineBytes = 8192;              // engine → frontend records are short
   static constexpr std::size_t kMaxWriteLineBytes = kProtocolMaxLineBytes;  // GEN line; one constant shared with the protocol client
@@ -41,11 +43,22 @@ class EngineStdioProcess final : public EngineLineTransport {
   // Non-blocking: reaps the child once it has ended and keeps its raw status
   // (POSIX waitpid status; Windows GetExitCodeProcess). Later calls return the
   // same status. Lifecycle call: only the owning (supervisor) thread uses it.
-  [[nodiscard]] std::optional<ExitStatus> try_reap();
+  [[nodiscard]] std::optional<ExitStatus> try_reap() override;
   [[nodiscard]] std::optional<ExitStatus> exit_status() const noexcept { return exit_status_; }
 
   [[nodiscard]] bool write_line(std::string_view line, std::string& error) override;
   [[nodiscard]] EngineReadResult read_line(std::chrono::milliseconds timeout) override;
+
+  // SupervisedProcess (spec §3.1): lifecycle calls from the supervisor thread only.
+  [[nodiscard]] EngineLineTransport& transport() noexcept override { return *this; }
+  [[nodiscard]] std::intptr_t monitor_handle() const noexcept override;
+  void close_stdin() noexcept override;
+  void signal_group_terminate() noexcept override;
+  void kill_group() noexcept override;
+  void release_resources(std::chrono::milliseconds bound) noexcept override;
+  [[nodiscard]] long pid() const noexcept override;
+  // Test seam: bytes read from the engine but not yet returned as a line.
+  [[nodiscard]] std::size_t pending_bytes_for_tests() const noexcept { return pending_stdout_.size(); }
 
 #if !defined(_WIN32)
   // Test seam: the POSIX child pid, so tests can inspect /proc/<pid> after terminate.
@@ -60,6 +73,7 @@ class EngineStdioProcess final : public EngineLineTransport {
   void* stdout_read_{nullptr};
 #else
   int process_id_{-1};
+  int process_group_{-1};
   int stdin_write_{-1};
   int stdout_read_{-1};
 #endif

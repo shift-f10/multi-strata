@@ -25,14 +25,24 @@ bool is_engine_state_literal(std::string_view state) {
   return state == "starting" || state == "ready" || state == "generating" || state == "failed";
 }
 
-HttpResponse health_response(bool healthy, const EngineStateProvider& engine_state) {
+bool is_recovery_literal(std::string_view value) { return value == "restarting" || value == "exhausted"; }
+
+HttpResponse health_response(bool healthy, const EngineStateProvider& engine_state, const EngineStateProvider& recovery_state) {
   if (!engine_state) {
     return healthy ? json_response(200, "{\"status\":\"ok\"}\n") : json_response(503, "{\"status\":\"unavailable\"}\n");
   }
   const std::string_view state = engine_state();
   if (!is_engine_state_literal(state)) return json_response(503, "{\"status\":\"unavailable\"}\n");
+  const std::string_view recovery = recovery_state ? recovery_state() : std::string_view{};
+  if (!recovery.empty() && (state != "failed" || !is_recovery_literal(recovery))) {
+    return json_response(503, "{\"status\":\"unavailable\"}\n");
+  }
   std::string body{healthy ? "{\"status\":\"ok\",\"engine\":\"" : "{\"status\":\"unavailable\",\"engine\":\""};
   body.append(state);
+  if (!recovery.empty()) {
+    body.append("\",\"recovery\":\"");
+    body.append(recovery);
+  }
   body.append("\"}\n");
   return json_response(healthy ? 200 : 503, std::move(body));
 }
@@ -89,17 +99,19 @@ HttpResponse model_list_response(const std::vector<ApiModel>& models) {
 
 }  // namespace
 
-ApiRouter::ApiRouter(HealthStatusProvider health_status, ModelListProvider model_list, EngineStateProvider engine_state)
+ApiRouter::ApiRouter(HealthStatusProvider health_status, ModelListProvider model_list, EngineStateProvider engine_state,
+                     EngineStateProvider recovery_state)
     : health_status_(std::move(health_status)),
       model_list_(std::move(model_list)),
-      engine_state_(std::move(engine_state)) {}
+      engine_state_(std::move(engine_state)),
+      recovery_state_(std::move(recovery_state)) {}
 
 HttpResponse ApiRouter::dispatch(std::string_view method, std::string_view target) const {
   if (method != "GET") return not_found();
   try {
     if (target == "/health") {
       const bool healthy = health_status_ && health_status_();  // first, by contract
-      return health_response(healthy, engine_state_);
+      return health_response(healthy, engine_state_, recovery_state_);
     }
     if (target == "/v1/models") {
       if (!model_list_) return unavailable();

@@ -170,7 +170,7 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
   if (child == 0) posix_launch::exec_child(prepared, input[0], output[1], /*null_stderr=*/true, errors[1]);
   close_fd(input[0]); close_fd(output[1]); close_fd(errors[1]); int child_errno = 0; const ssize_t count = read(errors[0], &child_errno, sizeof(child_errno)); close_fd(errors[0]);
   if (count > 0) { close_fd(input[1]); close_fd(output[0]); int ignored = 0; (void)waitpid(child, &ignored, 0); return ProcessError{ProcessErrorCode::spawn_failed, std::string("execve failed: ") + std::strerror(child_errno)}; }
-  process_id_ = child; stdin_write_ = input[1]; stdout_read_ = output[0]; return std::nullopt;
+  process_id_ = child; process_group_ = child; stdin_write_ = input[1]; stdout_read_ = output[0]; return std::nullopt;
 #endif
 }
 
@@ -340,6 +340,47 @@ bool EngineStdioProcess::terminate(const std::chrono::milliseconds grace) {
     usleep(10000);
   }
   return false;
+#endif
+}
+
+std::intptr_t EngineStdioProcess::monitor_handle() const noexcept { return kNoMonitorHandle; }
+
+void EngineStdioProcess::close_stdin() noexcept {
+#if defined(_WIN32)
+  close_handle(stdin_write_);
+#else
+  close_fd(stdin_write_);
+#endif
+}
+
+void EngineStdioProcess::signal_group_terminate() noexcept {
+#if !defined(_WIN32)
+  if (process_group_ > 0) (void)kill(-process_group_, SIGTERM);
+#endif
+}
+
+void EngineStdioProcess::kill_group() noexcept {
+#if defined(_WIN32)
+  if (job_handle_ != nullptr) (void)TerminateJobObject(static_cast<HANDLE>(job_handle_), kSupervisorKillExitCode);
+#else
+  // Spec §3.7a: the process-group id stays valid while any member lives, so
+  // this reaches grandchildren even after the leader was reaped.
+  if (process_group_ > 0) (void)kill(-process_group_, SIGKILL);
+#endif
+}
+
+void EngineStdioProcess::release_resources(const std::chrono::milliseconds bound) noexcept {
+  (void)bound;
+#if !defined(_WIN32)
+  process_group_ = -1;  // never signal a group id the kernel may hand out again
+#endif
+}
+
+long EngineStdioProcess::pid() const noexcept {
+#if defined(_WIN32)
+  return process_handle_ != nullptr ? static_cast<long>(GetProcessId(static_cast<HANDLE>(process_handle_))) : -1;
+#else
+  return process_group_;
 #endif
 }
 
