@@ -526,6 +526,23 @@ owns it (see the decisions above).
 
 ## Verification performed
 
+### SP1 final fix wave (2026-10-14, branch `sp1-typed-config-paths-tokens`)
+
+Final whole-branch review fixes I1 (`9e8312b5`, chat ranges = enforced caps),
+I2 (`7d59353c`, engine `--native` as UTF-8), I3 + F3 (`4ad028c0`, serve prints
+the actionable reason; `--check` verdict after the token read), F1 + F2
+(`c706366d`, docs). Same dev host and `PATH`; HEAD before the wave `05c9db02`.
+These numbers supersede the Task 24 table below.
+
+| Command | Result |
+| --- | --- |
+| `.venv-dev/bin/pytest -q` (worktree root) | `13 passed` |
+| in `secure_frontend/`: `cmake --preset linux-gcc && cmake --build --preset linux-gcc && ctest --preset linux-gcc` | `100% tests passed out of 215` (210 + `cfg01_chat_ranges_match_enforced_caps`, `engine_native_path_is_utf8_for_non_ascii_root`, `serve_reports_why_the_token_and_tokenizer_pack_are_unusable`, `serve_reports_symlinked_model_entry` (POSIX only), `cli_check_unreadable_token_is_not_reported_valid`) |
+| `ctest --preset linux-gcc -N \| grep -cE '\.(net0[123]\|auth0[1234]\|cfg0[123456])_'` | `59` (58 + `cfg01_chat_ranges_match_enforced_caps`) |
+| in `secure_frontend/`: `cmake --preset windows-llvm-mingw-cross && cmake --build --preset windows-llvm-mingw-cross` | builds with `-Werror`, no diagnostics; 30 `.exe` files |
+| `ctest --preset windows-llvm-mingw-cross` (wine 6.0.3) | `100% tests passed out of 128`, 0 failed; 193 registered, the 65 `windows-runtime` cases excluded: the 61 listed below plus `secure_frontend_typed_config_tests.cfg01_chat_ranges_match_enforced_caps`, `secure_frontend_engine_arguments_tests.engine_native_path_is_utf8_for_non_ascii_root`, `secure_frontend_server_e2e_tests.serve_reports_why_the_token_and_tokenizer_pack_are_unusable`, `secure_frontend_server_cli_tests.cli_check_unreadable_token_is_not_reported_valid` (each **pending windows-msys2-clang**) |
+| direct wine runs (smoke, not evidence) | `engine_native_path_is_utf8_for_non_ascii_root`: RED before I2 (`--native` not UTF-8 under ACP 1252), pass after; `serve_reports_why_the_token_and_tokenizer_pack_are_unusable`, `cli_check_unreadable_token_is_not_reported_valid`, `cli_check_prints_no_token`: pass |
+
 ### SP1 (2026-10-14, Task 24 final verification, branch `sp1-typed-config-paths-tokens`)
 
 Dev host (Linux x86_64, no GPU), worktree `.worktrees/sp1`, `PATH` with
