@@ -116,8 +116,20 @@ void rejects_a_symlink_that_escapes_the_root() {
   std::filesystem::create_symlink(outside.path() / "token", directory.path() / "token");
   const auto result = read_file_source(directory.path(), "token");
   const auto* error = std::get_if<secure_frontend::TokenReadError>(&result);
-  expect(error != nullptr && error->code == secure_frontend::TokenReadErrorCode::path_escapes_root,
-         "symlink escaping the configured root should be rejected");
+  expect(error != nullptr && error->code == secure_frontend::TokenReadErrorCode::symlink_not_allowed,
+         "a symlinked token file is rejected, never followed");
+}
+
+void cfg03_rejects_hardlinked_token_file() {
+  TemporaryDirectory directory;
+  writes_file(directory.path() / "token", "linked-token", 0600);
+  if (link((directory.path() / "token").c_str(), (directory.path() / "second-name").c_str()) != 0) {
+    throw std::runtime_error(std::string{"link failed: "} + std::strerror(errno));
+  }
+  const auto result = read_file_source(directory.path(), "token");
+  const auto* error = std::get_if<secure_frontend::TokenReadError>(&result);
+  expect(error != nullptr && error->code == secure_frontend::TokenReadErrorCode::hard_link_not_allowed,
+         "a token file with a second hard link must be rejected");
 }
 
 void rejects_a_non_regular_file() {
@@ -141,5 +153,6 @@ int main(int argc, char** argv) {
       {"rejects_a_group_or_world_accessible_file", rejects_a_group_or_world_accessible_file},
       {"rejects_a_symlink_that_escapes_the_root", rejects_a_symlink_that_escapes_the_root},
       {"rejects_a_non_regular_file", rejects_a_non_regular_file},
+      {"cfg03_rejects_hardlinked_token_file", cfg03_rejects_hardlinked_token_file},
   }, failures);
 }

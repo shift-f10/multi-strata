@@ -5,11 +5,15 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <variant>
 
 #if !defined(_WIN32)
+#include <sched.h>
+#include <sys/mount.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -179,6 +183,97 @@ void cfg02_engine_executable_must_be_private_regular_file() {
   expect(fails_with(secure_frontend::open_executable(shared / "engine"), PathErrorCode::shared_writable),
          "an executable in a shared-writable directory");
 }
+
+secure_frontend::CanonicalRoot root_at(const std::filesystem::path& path) {
+  return std::get<secure_frontend::CanonicalRoot>(secure_frontend::open_root(path));
+}
+secure_frontend::RelativePath rel(const std::string& text) {
+  return std::get<secure_frontend::RelativePath>(secure_frontend::parse_relative_path(text));
+}
+constexpr secure_frontend::WalkMode kModes[] = {secure_frontend::WalkMode::automatic, secure_frontend::WalkMode::fallback_only};
+
+void cfg03_rejects_symlinked_intermediate_directory() {
+  const auto root = secure_frontend_test::make_scratch_directory();
+  const auto outside = secure_frontend_test::make_scratch_directory();
+  secure_frontend_test::make_private_directory(outside / "sub");
+  secure_frontend_test::write_file(outside / "sub" / "f", "outside");
+  std::filesystem::create_directory_symlink(outside / "sub", root / "sub");
+  for (const auto mode : kModes) {
+    expect(fails_with(secure_frontend::open_beneath(root_at(root), rel("sub/f"), {}, mode), PathErrorCode::symlink_not_allowed),
+           "a symlinked intermediate directory is rejected in both walk modes");
+  }
+}
+
+void cfg03_rejects_symlinked_final_file() {
+  const auto root = secure_frontend_test::make_scratch_directory();
+  const auto outside = secure_frontend_test::make_scratch_directory();
+  secure_frontend_test::write_file(outside / "f", "outside");
+  secure_frontend_test::write_file(root / "real", "inside");
+  std::filesystem::create_symlink(outside / "f", root / "escape");
+  std::filesystem::create_symlink(root / "real", root / "inside-link");
+  for (const auto mode : kModes) {
+    expect(fails_with(secure_frontend::open_beneath(root_at(root), rel("escape"), {}, mode), PathErrorCode::symlink_not_allowed),
+           "a symlink to a file outside the root is rejected");
+    expect(fails_with(secure_frontend::open_beneath(root_at(root), rel("inside-link"), {}, mode), PathErrorCode::symlink_not_allowed),
+           "a symlink is rejected even when its target is inside the root");
+  }
+}
+
+void cfg03_fallback_walk_matches_openat2() {
+  const auto root = secure_frontend_test::make_scratch_directory();
+  secure_frontend_test::make_private_directory(root / "dir");
+  secure_frontend_test::write_file(root / "dir" / "file", "payload");
+  std::filesystem::create_symlink(root / "dir" / "file", root / "link");
+  mkfifo((root / "fifo").c_str(), 0600);
+  struct Row { const char* path; std::optional<PathErrorCode> code; };
+  const Row rows[] = {{"dir/file", std::nullopt}, {"dir", PathErrorCode::not_regular_file},
+                      {"missing", PathErrorCode::not_found}, {"link", PathErrorCode::symlink_not_allowed},
+                      {"fifo", PathErrorCode::not_regular_file}, {"dir/file/x", PathErrorCode::not_directory}};
+  for (const auto& row : rows) {
+    for (const auto mode : kModes) {
+      const auto result = secure_frontend::open_beneath(root_at(root), rel(row.path), {}, mode);
+      if (!row.code.has_value()) {
+        const auto* opened = std::get_if<secure_frontend::OpenedFile>(&result);
+        expect(opened != nullptr, std::string{"opens: "} + row.path);
+        if (opened != nullptr) {
+          const auto text = opened->read_all(64);
+          expect(std::holds_alternative<std::string>(text) && std::get<std::string>(text) == "payload", "reads the file");
+        }
+      } else {
+        expect(fails_with(result, *row.code), std::string{"same outcome in both modes for "} + row.path);
+      }
+    }
+  }
+}
+
+// Mounts a tmpfs below the root inside a private user+mount namespace; skips
+// (exit 77 -> "SKIPPED:") where unprivileged namespaces are not allowed.
+void cfg03_rejects_mount_crossing() {
+  const auto root = secure_frontend_test::make_scratch_directory();
+  secure_frontend_test::make_private_directory(root / "mnt");
+  const uid_t uid = geteuid();
+  const gid_t gid = getegid();
+  const pid_t child = fork();
+  if (child == 0) {
+    if (unshare(CLONE_NEWUSER | CLONE_NEWNS) != 0) _exit(77);
+    std::ofstream("/proc/self/setgroups") << "deny";
+    std::ofstream("/proc/self/uid_map") << uid << ' ' << uid << " 1";
+    std::ofstream("/proc/self/gid_map") << gid << ' ' << gid << " 1";
+    if (mount("none", (root / "mnt").c_str(), "tmpfs", 0, "mode=0700") != 0) _exit(77);
+    std::ofstream(root / "mnt" / "f") << "x";
+    for (const auto mode : kModes) {
+      if (!fails_with(secure_frontend::open_beneath(root_at(root), rel("mnt/f"), {}, mode), PathErrorCode::cross_device)) _exit(1);
+    }
+    _exit(0);
+  }
+  int status = 0;
+  waitpid(child, &status, 0);
+  if (WIFEXITED(status) && WEXITSTATUS(status) == 77) {
+    std::cout << "SKIPPED: no unprivileged mount namespace on this host\n";
+    return;
+  }
+  expect(WIFEXITED(status) && WEXITSTATUS(status) == 0, "a mount below the root is a cross-device walk in both modes");
+}
 #endif
 }  // namespace
 
@@ -198,6 +293,10 @@ int main(int argc, char** argv) {
       {"cfg02_rejects_shared_writable_root", cfg02_rejects_shared_writable_root},
       {"cfg02_root_may_traverse_symlink", cfg02_root_may_traverse_symlink},
       {"cfg02_engine_executable_must_be_private_regular_file", cfg02_engine_executable_must_be_private_regular_file},
+      {"cfg03_rejects_symlinked_intermediate_directory", cfg03_rejects_symlinked_intermediate_directory},
+      {"cfg03_rejects_symlinked_final_file", cfg03_rejects_symlinked_final_file},
+      {"cfg03_fallback_walk_matches_openat2", cfg03_fallback_walk_matches_openat2},
+      {"cfg03_rejects_mount_crossing", cfg03_rejects_mount_crossing},
 #endif
   }, failures);
 }

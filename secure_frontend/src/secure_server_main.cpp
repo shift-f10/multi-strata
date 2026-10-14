@@ -57,8 +57,8 @@ secure_frontend::HttpResponse json_error(const int status, const char* message) 
 }
 
 secure_frontend::TokenReadResult read_configured_token(const FrontendConfig& config) {
-  return secure_frontend::read_token(config.token, config.roots.secret.has_value() ? config.roots.secret->path()
-                                                                                   : std::filesystem::path{"."});
+  if (config.roots.secret.has_value()) return secure_frontend::read_token(config.token, *config.roots.secret);
+  return secure_frontend::read_token(config.token, std::filesystem::path{"."});
 }
 
 int check(const FrontendConfig& config, const std::vector<std::string>& overridden) {

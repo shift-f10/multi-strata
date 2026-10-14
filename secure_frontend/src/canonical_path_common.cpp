@@ -2,6 +2,7 @@
 
 #include "canonical_path_internal.hpp"
 
+#include <array>
 #include <optional>
 #include <string>
 #include <utility>
@@ -165,6 +166,32 @@ std::variant<std::wstring, PathError> classify_final_path(const std::wstring_vie
     return std::wstring{final_path.substr(4)};
   }
   return detail::path_error(PathErrorCode::unsupported_root_form, "the folder resolves to an unsupported location");
+}
+
+OpenedFile& OpenedFile::operator=(OpenedFile&& other) noexcept {
+  if (this != &other) {
+    close_now();
+    handle_ = other.handle_;
+    size_ = other.size_;
+    owns_ = other.owns_;
+    other.owns_ = false;
+  }
+  return *this;
+}
+
+OpenedFile::~OpenedFile() { close_now(); }
+
+std::variant<std::string, PathError> OpenedFile::read_all(const std::size_t max_bytes) const {
+  std::string out;
+  std::array<char, 65536> chunk{};
+  while (true) {
+    auto got = read_some(chunk.data(), chunk.size());
+    if (auto* error = std::get_if<PathError>(&got)) return *error;
+    const std::size_t count = std::get<std::size_t>(got);
+    if (count == 0U) return out;
+    if (count > max_bytes - out.size()) return detail::path_error(PathErrorCode::too_large, "the file is larger than its limit");
+    out.append(chunk.data(), count);
+  }
 }
 
 }  // namespace secure_frontend

@@ -2,6 +2,8 @@
 #include "canonical_path_internal.hpp"
 #include "windows_security.hpp"
 
+#include <algorithm>
+
 namespace secure_frontend {
 namespace ws = windows_security;
 
@@ -13,6 +15,20 @@ NativeHandle OwnedHandle::release() noexcept {
   const NativeHandle kept = handle_;
   handle_ = nullptr;
   return kept;
+}
+
+void OpenedFile::close_now() noexcept {
+  if (owns_ && handle_ != nullptr && handle_ != INVALID_HANDLE_VALUE) CloseHandle(handle_);
+  owns_ = false;
+}
+
+std::variant<std::size_t, PathError> OpenedFile::read_some(char* const buffer, const std::size_t capacity) const {
+  DWORD count = 0;
+  const DWORD request = static_cast<DWORD>(std::min<std::size_t>(capacity, 1U << 20U));
+  if (ReadFile(handle_, buffer, request, &count, nullptr) == 0) {
+    return detail::path_error(PathErrorCode::read_failed, "the file could not be read");
+  }
+  return static_cast<std::size_t>(count);
 }
 
 namespace detail {

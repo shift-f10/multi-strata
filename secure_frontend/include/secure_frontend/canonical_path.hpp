@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -128,5 +129,47 @@ enum class RootPolicy { existing };
 [[nodiscard]] std::optional<PathError> check_windows_root_form(std::wstring_view text);
 // GetFinalPathNameByHandleW output -> X:\... ; \\?\UNC\... is network_location.
 [[nodiscard]] std::variant<std::wstring, PathError> classify_final_path(std::wstring_view final_path);
+
+enum class OpenKind { regular_file, directory };
+enum class FileTrust { any, not_shared_writable, owner_only };
+struct OpenOptions final {
+  OpenKind kind{OpenKind::regular_file};
+  FileTrust trust{FileTrust::any};
+  bool reject_hard_links{false};
+};
+// fallback_only: tests force the openat(O_NOFOLLOW) walk.
+enum class WalkMode { automatic, fallback_only };
+
+class OpenedFile final {
+ public:
+  OpenedFile(OpenedFile&& other) noexcept : handle_(other.handle_), size_(other.size_), owns_(other.owns_) { other.owns_ = false; }
+  OpenedFile& operator=(OpenedFile&& other) noexcept;
+  OpenedFile(const OpenedFile&) = delete;
+  OpenedFile& operator=(const OpenedFile&) = delete;
+  ~OpenedFile();
+  [[nodiscard]] NativeHandle native() const noexcept { return handle_; }
+  [[nodiscard]] std::uint64_t size() const noexcept { return size_; }
+  // Reads at most `capacity` bytes at the current position; 0 means end of file.
+  [[nodiscard]] std::variant<std::size_t, PathError> read_some(char* buffer, std::size_t capacity) const;
+  // The whole (regular) file, or too_large if it exceeds max_bytes.
+  [[nodiscard]] std::variant<std::string, PathError> read_all(std::size_t max_bytes) const;
+
+ private:
+  friend struct detail::PathFactory;
+  OpenedFile(const NativeHandle handle, const std::uint64_t size) noexcept : handle_(handle), size_(size), owns_(true) {}
+  void close_now() noexcept;
+  NativeHandle handle_;
+  std::uint64_t size_;
+  bool owns_;
+};
+
+// Opens `path` below `root` without following any link: Linux uses openat2
+// (RESOLVE_BENEATH | NO_SYMLINKS | NO_MAGICLINKS | NO_XDEV) when the kernel has
+// it, else a component-wise openat(O_NOFOLLOW) walk with st_dev checks;
+// Windows opens each component with FILE_FLAG_OPEN_REPARSE_POINT and checks
+// its reparse tag and final-path containment (Task 11).
+[[nodiscard]] std::variant<OpenedFile, PathError> open_beneath(const CanonicalRoot& root, const RelativePath& path,
+                                                               const OpenOptions& options = {},
+                                                               WalkMode mode = WalkMode::automatic);
 
 }  // namespace secure_frontend

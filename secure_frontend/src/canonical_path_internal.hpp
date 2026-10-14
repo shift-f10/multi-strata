@@ -12,6 +12,7 @@ struct PathFactory final {
     return CanonicalRoot{std::move(path), std::make_shared<const OwnedHandle>(handle), device};
   }
   static CanonicalFile file(std::filesystem::path path) { return CanonicalFile{std::move(path)}; }
+  static OpenedFile opened(const NativeHandle handle, const std::uint64_t size) { return OpenedFile{handle, size}; }
 };
 
 inline PathError path_error(const PathErrorCode code, std::string message) { return PathError{code, std::move(message)}; }

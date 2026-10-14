@@ -371,6 +371,11 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         secure_frontend_add_cases(secure_frontend_paths_tests
             cfg02_rejects_shared_writable_root cfg02_root_may_traverse_symlink
             cfg02_engine_executable_must_be_private_regular_file)
+        secure_frontend_add_cases(secure_frontend_paths_tests
+            cfg03_rejects_symlinked_intermediate_directory cfg03_rejects_symlinked_final_file
+            cfg03_fallback_walk_matches_openat2 cfg03_rejects_mount_crossing)
+        set_tests_properties(secure_frontend_paths_tests.cfg03_rejects_mount_crossing PROPERTIES
+            SKIP_REGULAR_EXPRESSION "SKIPPED:")
     endif()
 
     secure_frontend_add_test_executable(secure_frontend_config_tests tests/config_test.cpp secure_frontend_config)
@@ -395,7 +400,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         secure_frontend_add_cases(secure_frontend_token_reader_tests
             reads_an_owner_only_regular_file_below_the_root reads_the_named_environment_variable
             rejects_control_characters_in_resolved_tokens rejects_a_group_or_world_accessible_file
-            rejects_a_symlink_that_escapes_the_root rejects_a_non_regular_file)
+            rejects_a_symlink_that_escapes_the_root rejects_a_non_regular_file
+            cfg03_rejects_hardlinked_token_file)
     endif()
 
     secure_frontend_add_test_executable(secure_frontend_engine_stdio_process_tests tests/engine_stdio_process_test.cpp

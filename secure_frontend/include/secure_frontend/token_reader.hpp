@@ -1,6 +1,7 @@
 #pragma once
 
 #include "secure_frontend/secret_source.hpp"
+#include "secure_frontend/canonical_path.hpp"
 
 #include <filesystem>
 #include <string>
@@ -21,6 +22,7 @@ enum class TokenReadErrorCode {
   file_not_owned_by_current_user,
   read_failed,
   token_too_large,
+  hard_link_not_allowed,
 };
 
 struct TokenReadError final {
@@ -33,10 +35,10 @@ struct TokenReadError final {
 // as soon as their allocator/API permits.
 using TokenReadResult = std::variant<std::string, TokenReadError>;
 
-// Resolves a SecretSource at the last responsible moment. For a protected file on
-// Linux this canonicalizes the root and target, verifies target containment, then
-// opens every path component with O_NOFOLLOW. It accepts only a regular file owned
-// by the effective user with no group/world permission bits.
+// Resolves a SecretSource at the last responsible moment. For a protected file
+// the root is opened once (open_root) and the file is opened below it with
+// open_beneath (no symlink, no mount crossing, no second hard link); on Linux
+// it must then be owned by the effective user with no group/other bits.
 //
 // On Windows the root and every path component are opened with
 // FILE_FLAG_OPEN_REPARSE_POINT and rejected if they carry
@@ -56,7 +58,11 @@ using TokenReadResult = std::variant<std::string, TokenReadError>;
 // secure_frontend_token_reader_tests is built only on UNIX, so not even the
 // windows-msys2-clang CI job exercises them (and wine does not model DACLs
 // faithfully). Every Windows failure mode fails closed.
+[[nodiscard]] TokenReadResult read_token(const SecretSource& source, const CanonicalRoot& protected_file_root);
+// Opens `protected_file_root` with open_root first; used where only a path is known.
 [[nodiscard]] TokenReadResult read_token(const SecretSource& source,
                                          const std::filesystem::path& protected_file_root);
+// Maps a canonical-path failure to the token reader's fixed codes and messages.
+[[nodiscard]] TokenReadError token_error_from(const PathError& error);
 
 }  // namespace secure_frontend
