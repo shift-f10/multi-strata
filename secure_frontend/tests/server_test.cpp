@@ -184,7 +184,7 @@ void state_dir_must_be_owner_only() {
 // frontend left behind (here generation 7, with a file in it) is gone.
 void state_dir_stale_engine_tmp_is_cleared() {
   const auto state = test_support::make_temp_dir("stale") / "state";
-  secure_frontend_test::make_private_directory(state);
+  secure_frontend_test::make_owner_private_directory(state);
   secure_frontend_test::make_private_directory(state / "engine-tmp");
   secure_frontend_test::make_private_directory(state / "engine-tmp" / "7");
   secure_frontend_test::write_file(state / "engine-tmp" / "7" / "left-behind", "x");
@@ -235,9 +235,9 @@ bool grant_users_read(const std::filesystem::path& path) {
 void state_dir_must_be_owner_only_windows() {
   const auto base = test_support::make_temp_dir("rf1w");
   const auto good = base / "good";
-  secure_frontend_test::make_private_directory(good);
+  secure_frontend_test::make_owner_private_directory(good);
   const auto shared = base / "users-read";
-  secure_frontend_test::make_private_directory(shared);
+  secure_frontend_test::make_owner_private_directory(shared);  // the added Users ACE is its only defect
   expect(grant_users_read(shared), "test setup: add a Users read ACE");
   const auto junction = base / "junction";
   expect(secure_frontend_test::create_junction(junction, good), "test setup: a junction to a private directory");

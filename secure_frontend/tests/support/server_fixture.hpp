@@ -89,7 +89,8 @@ class ServerFixture final {
       std::exit(EXIT_FAILURE);
     }
     server_executable = args[0];
-    for (const auto& directory : {models, tokenizer, secret, state, dir / "bin"}) make_private_directory(directory);
+    for (const auto& directory : {models, tokenizer, secret, dir / "bin"}) make_private_directory(directory);
+    make_owner_private_directory(state);  // --state-dir: Windows owner must be the user, not Administrators
     write_file(models / "qwen-local.gguf", "GGUF");
 #if defined(_WIN32)
     engine = dir / "bin" / "strata.exe";

@@ -293,7 +293,7 @@ std::unique_ptr<ServerProcess> ServerProcess::start(const ServerOptions& options
 #endif
   server->port_ = secure_frontend_test::pick_free_port();  // SP1's helper (support/http_client.hpp)
   const std::filesystem::path state_dir = options.state_dir.value_or(server->root_ / "state");
-  if (!options.state_dir) secure_frontend_test::make_private_directory(state_dir);  // 0700 (SP1 fixture rule)
+  if (!options.state_dir) secure_frontend_test::make_owner_private_directory(state_dir);  // 0700; Windows owner = the user
   std::vector<std::string> arguments{utf8_path(server_path()), "--models-root", utf8_path(models), "--tokenizer-pack",
                                      utf8_path(tokenizer), "--engine", utf8_path(server->engine_path_),
                                      "--model-id", "fake-model", "--token-env", std::string(kHarnessTokenEnv), "--port",
