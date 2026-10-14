@@ -395,7 +395,10 @@ add_library(secure_frontend_manifest_core src/acquire_reason.cpp src/acquire_url
 target_compile_features(secure_frontend_manifest_core PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_manifest_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_sources(secure_frontend_manifest_core PRIVATE src/engine_version.cpp src/acquire_manifest.cpp)
 target_link_libraries(secure_frontend_manifest_core PUBLIC secure_frontend_sha256)
+# SP1 model-ID grammar and reserved device names (validate_model_id, is_windows_reserved_component).
+target_link_libraries(secure_frontend_manifest_core PUBLIC secure_frontend_model_inventory)
 secure_frontend_set_warnings(secure_frontend_manifest_core)
 
 add_library(secure_frontend_acquire_core src/address_policy.cpp src/download_response.cpp src/downloader_command.cpp
@@ -728,6 +731,15 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
 
     secure_frontend_add_test_executable(secure_frontend_manifest_tests tests/manifest_test.cpp secure_frontend_manifest_core)
     secure_frontend_add_cases(secure_frontend_manifest_tests source_url_grammar_matrix dns_names_and_wildcards proxy_grammar)
+    secure_frontend_add_cases(secure_frontend_manifest_tests valid_qwen_manifest_accepted manifest_field_rules_matrix
+        reserved_manifest_names_rejected model_name_index_json_rejected part_suffix_path_rejected
+        file_and_directory_prefix_collision_rejected shard_set_must_be_complete_in_one_directory
+        launch_keys_follow_profile wildcard_redirect_hosts_validated total_size_above_budget_is_total_budget_exceeded
+        engine_version_parsed_with_fourth_component)
+    secure_frontend_add_cases(secure_frontend_manifest_tests raw_profile_rejected_in_release_build LABELS release-only)
+    if(SECURE_FRONTEND_TEST_HOOKS)
+        secure_frontend_add_cases(secure_frontend_manifest_tests raw_profile_accepted_with_test_hooks)
+    endif()
     secure_frontend_add_test_executable(secure_frontend_fetch_tests tests/fetch_test.cpp secure_frontend_acquire_core)
     secure_frontend_add_cases(secure_frontend_fetch_tests dl03_location_with_glob_characters_rejected
         location_resolution_and_host_normalization location_query_characters
