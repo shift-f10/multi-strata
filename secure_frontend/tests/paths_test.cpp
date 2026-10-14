@@ -2,6 +2,7 @@
 #include "secure_frontend/token_reader.hpp"
 #include "support/test_support.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -9,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <variant>
+#include <vector>
 
 #if !defined(_WIN32)
 #include <sched.h>
@@ -347,6 +349,57 @@ void cfg03_rejects_mount_crossing() {
   expect(WIFEXITED(status) && WEXITSTATUS(status) == 0, "a mount below the root is a cross-device walk in both modes");
 }
 #endif
+
+std::vector<std::string> listing(const std::filesystem::path& base) {
+  std::vector<std::string> names;
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(base)) {
+    names.push_back(secure_frontend::path_to_utf8(entry.path().lexically_relative(base)));
+  }
+  std::sort(names.begin(), names.end());
+  return names;
+}
+
+void cfg02_create_within_root_writes_nothing_outside() {
+  const auto scratch = secure_frontend_test::make_scratch_directory();
+  secure_frontend_test::make_private_directory(scratch / "root");
+  secure_frontend_test::make_private_directory(scratch / "outside");
+  secure_frontend_test::make_private_directory(scratch / "root2");
+  const auto root = std::get<secure_frontend::CanonicalRoot>(secure_frontend::open_root(scratch / "root"));
+  const auto rel = [](const char* text) {
+    return std::get<secure_frontend::RelativePath>(secure_frontend::parse_relative_path(text));
+  };
+#if !defined(_WIN32)
+  std::filesystem::create_directory_symlink(scratch / "outside", scratch / "root" / "l");
+  secure_frontend_test::write_file(scratch / "root" / "f", "file");
+#else
+  secure_frontend_test::create_junction(scratch / "root" / "l", scratch / "outside");
+  secure_frontend_test::write_file(scratch / "root" / "f", "file");
+#endif
+  const auto before = listing(scratch);
+  for (const char* escape : {"../outside/x", "/abs", "a/../../x", "..\\root2\\x"}) {
+    expect(std::holds_alternative<secure_frontend::PathError>(secure_frontend::parse_relative_path(escape)),
+           std::string{"escapes never become a RelativePath: "} + escape);
+  }
+  const auto through_link = secure_frontend::create_directory_within(root, rel("l/x"));
+  expect(through_link.has_value() && through_link->code == secure_frontend::PathErrorCode::symlink_not_allowed,
+         "creating through a link is refused");
+  const auto through_file = secure_frontend::create_directory_within(root, rel("f/x"));
+  expect(through_file.has_value() && through_file->code == secure_frontend::PathErrorCode::not_directory,
+         "creating below a file is refused");
+  expect(listing(scratch) == before, "the failed attempts wrote nothing anywhere");
+  expect(!secure_frontend::create_directory_within(root, rel("a/b")).has_value(), "a/b is created below the root");
+  auto after = listing(scratch);
+  std::vector<std::string> expected = before;
+  expected.push_back(secure_frontend::path_to_utf8(std::filesystem::path{"root"} / "a"));
+  expected.push_back(secure_frontend::path_to_utf8(std::filesystem::path{"root"} / "a" / "b"));
+  std::sort(expected.begin(), expected.end());
+  expect(after == expected, "exactly root/a and root/a/b were added");
+#if !defined(_WIN32)
+  struct stat st {};
+  stat((scratch / "root" / "a" / "b").c_str(), &st);
+  expect((st.st_mode & 0777) == 0700, "created directories are 0700");
+#endif
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -362,6 +415,7 @@ int main(int argc, char** argv) {
       {"cfg04_rejects_unc_device_and_extended_roots", cfg04_rejects_unc_device_and_extended_roots},
       {"cfg04_final_path_on_network_share_is_actionable", cfg04_final_path_on_network_share_is_actionable},
       {"paths_handle_non_ascii_and_long_names", paths_handle_non_ascii_and_long_names},
+      {"cfg02_create_within_root_writes_nothing_outside", cfg02_create_within_root_writes_nothing_outside},
 #if defined(_WIN32)
       {"auth02_windows_token_file_reads_with_private_dacl", auth02_windows_token_file_reads_with_private_dacl},
       {"cfg03_rejects_junction_below_root", cfg03_rejects_junction_below_root},

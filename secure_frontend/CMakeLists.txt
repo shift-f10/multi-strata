@@ -370,6 +370,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     target_link_libraries(secure_frontend_paths_tests PRIVATE secure_frontend_token_reader)
     secure_frontend_add_cases(secure_frontend_paths_tests paths_handle_non_ascii_and_long_names
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    secure_frontend_add_cases(secure_frontend_paths_tests cfg02_create_within_root_writes_nothing_outside
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     if(WIN32)
         secure_frontend_add_cases(secure_frontend_paths_tests
             auth02_windows_token_file_reads_with_private_dacl cfg03_rejects_junction_below_root
@@ -513,6 +515,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         cfg01_type_confusion_rejected cfg01_missing_required_rejected cfg01_out_of_range_rejected
         typed_config_cross_field_rules typed_config_errors_never_contain_values
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    secure_frontend_add_cases(secure_frontend_typed_config_tests cfg02_logs_and_cache_roots_are_created_private
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     if(NOT WIN32)
         # chmod-based: the config folder's mode decides the roots.secret default.
         secure_frontend_add_cases(secure_frontend_typed_config_tests
@@ -580,6 +584,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_server_cli_tests
         cli_config_file_and_flags_share_validator cli_flag_overrides_file_and_is_reported cli_check_prints_no_token
         cli_unknown_option_does_not_echo_value
+        ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+    secure_frontend_add_cases(secure_frontend_server_cli_tests cli_check_has_no_side_effects
         ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
 
     secure_frontend_add_test_executable(secure_frontend_server_e2e_tests tests/server_e2e_test.cpp

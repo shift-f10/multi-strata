@@ -232,6 +232,42 @@ std::variant<CanonicalFile, PathError> open_executable(const std::filesystem::pa
   return detail::PathFactory::file(canonical_path);
 }
 
+std::optional<PathError> create_directory_within(const CanonicalRoot& root, const RelativePath& path) {
+  using detail::path_error;
+  int current = -1;
+  for (const auto& part : path.components()) {
+    const int base = current < 0 ? root.handle() : current;
+    if (::mkdirat(base, part.c_str(), 0700) != 0 && errno != EEXIST) {
+      if (current >= 0) ::close(current);
+      return path_error(PathErrorCode::create_failed, "a directory could not be created");
+    }
+    const int next = ::openat(base, part.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    const int saved = errno;
+    if (next < 0) {
+      struct stat entry {};
+      const bool is_link = (saved == ENOTDIR || saved == ELOOP) &&
+                           ::fstatat(base, part.c_str(), &entry, AT_SYMLINK_NOFOLLOW) == 0 && S_ISLNK(entry.st_mode);
+      if (current >= 0) ::close(current);
+      if (is_link) return path_error(PathErrorCode::symlink_not_allowed, "a path component is a symbolic link");
+      return saved == ENOTDIR ? path_error(PathErrorCode::not_directory, "a path component is not a directory")
+                              : path_error(PathErrorCode::create_failed, "a directory could not be opened");
+    }
+    if (current >= 0) ::close(current);
+    struct stat st {};
+    if (::fstat(next, &st) != 0 || static_cast<std::uint64_t>(st.st_dev) != root.device_id()) {
+      ::close(next);
+      return path_error(PathErrorCode::cross_device, "the path crosses into another file system");
+    }
+    if (st.st_uid != ::geteuid() || (st.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+      ::close(next);
+      return path_error(PathErrorCode::shared_writable, "an existing directory on the way is not private");
+    }
+    current = next;
+  }
+  if (current >= 0) ::close(current);
+  return std::nullopt;
+}
+
 std::variant<std::vector<DirectoryEntry>, PathError> list_directory(const CanonicalRoot& root,
                                                                     const std::optional<RelativePath>& below) {
   using detail::path_error;

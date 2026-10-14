@@ -173,6 +173,30 @@ std::variant<CanonicalFile, PathError> open_executable(const std::filesystem::pa
   return detail::PathFactory::file(canonical);
 }
 
+std::optional<PathError> create_directory_within(const CanonicalRoot& root, const RelativePath& path) {
+  using detail::path_error;
+  ws::PrivateSecurityAttributes attributes(true);
+  if (attributes.get() == nullptr) return path_error(PathErrorCode::create_failed, "a private security descriptor could not be built");
+  std::wstring current = root.path().wstring();
+  for (const auto& part : path.components()) {
+    current += L'\\';
+    current += path_from_utf8(part).wstring();
+    if (CreateDirectoryW(ws::extended_path(current).c_str(), attributes.get()) == 0 && GetLastError() != ERROR_ALREADY_EXISTS) {
+      return path_error(PathErrorCode::create_failed, "a directory could not be created");
+    }
+    HANDLE raw = CreateFileW(ws::extended_path(current).c_str(), FILE_READ_ATTRIBUTES,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (raw == INVALID_HANDLE_VALUE) return path_error(PathErrorCode::create_failed, "a directory could not be opened");
+    OwnedHandle guard(raw);
+    if (ws::is_reparse_point(raw)) return path_error(PathErrorCode::symlink_not_allowed, "a path component is a junction or link");
+    FILE_ATTRIBUTE_TAG_INFO tag{};
+    GetFileInformationByHandleEx(raw, FileAttributeTagInfo, &tag, sizeof(tag));
+    if ((tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0U) return path_error(PathErrorCode::not_directory, "a path component is not a directory");
+  }
+  return std::nullopt;
+}
+
 std::variant<std::vector<DirectoryEntry>, PathError> list_directory(const CanonicalRoot& root,
                                                                     const std::optional<RelativePath>& below) {
   using detail::path_error;

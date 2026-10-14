@@ -74,6 +74,12 @@ int check(const FrontendConfig& config, const std::vector<std::string>& overridd
 }
 
 int run(const FrontendConfig& config) {
+  // roots.logs / roots.cache: validate() only checked them, so --check stays
+  // side-effect free; serve creates a missing one here, before bind or spawn.
+  if (const auto issues = secure_frontend::create_runtime_roots(config); !issues.empty()) {
+    for (const auto& issue : issues) std::cerr << "Configuration error: " << secure_frontend::format_issue(issue) << '\n';
+    return EXIT_FAILURE;
+  }
   auto token_result = read_configured_token(config);
   auto* token = std::get_if<std::string>(&token_result);
   if (token == nullptr) { std::cerr << "Unable to read API token.\n"; return EXIT_FAILURE; }

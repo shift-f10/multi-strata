@@ -113,11 +113,25 @@ class CanonicalFile final {
   std::filesystem::path path_;
 };
 
-enum class RootPolicy { existing };
+// create_private: a missing last component is created 0700 / private DACL
+// (reached only from serve and init, never from validation or --check).
+enum class RootPolicy { existing, create_private };
 
 [[nodiscard]] std::variant<CanonicalRoot, PathError> open_root(const std::filesystem::path& requested,
                                                                RootPolicy policy = RootPolicy::existing);
 [[nodiscard]] std::variant<CanonicalFile, PathError> open_executable(const std::filesystem::path& requested);
+
+// Creates every missing component of `path` below `root` with mode 0700
+// (Linux) or a protected owner-only DACL (Windows), refusing links and
+// non-directories on the way. Nothing is created outside `root`.
+[[nodiscard]] std::optional<PathError> create_directory_within(const CanonicalRoot& root, const RelativePath& path);
+
+// Side-effect free (used by validation and therefore --check): if `requested`
+// exists it must open as a private root, and its canonical path is returned; if
+// it does not exist, its parent must open as a private root and its last
+// component must be one valid relative name, and canonical(parent)/name is
+// returned. Nothing is created, written or held open.
+[[nodiscard]] std::variant<std::filesystem::path, PathError> check_creatable_root(const std::filesystem::path& requested);
 
 // Containment on a separator boundary: "/r" does not contain "/r2". Windows
 // compares case-insensitively (CompareStringOrdinal).

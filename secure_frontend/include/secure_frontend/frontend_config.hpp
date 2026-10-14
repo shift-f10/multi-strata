@@ -126,8 +126,10 @@ struct Roots final {
   CanonicalRoot models;
   CanonicalRoot tokenizer_pack;
   std::optional<CanonicalRoot> secret;
-  std::optional<CanonicalRoot> logs;
-  std::optional<CanonicalRoot> cache;
+  // Canonical paths that may not exist yet: validate() only checks them
+  // (check_creatable_root); create_runtime_roots() creates them for serve/init.
+  std::optional<std::filesystem::path> logs;
+  std::optional<std::filesystem::path> cache;
 };
 struct EngineLaunch final {
   EngineProfile profile;
@@ -173,5 +175,9 @@ using ConfigValidationResult = std::variant<ValidatedConfig, ConfigErrors>;
 [[nodiscard]] std::string describe(const FrontendConfig& config);
 // The listener primitive HttpSocketServer::bind takes.
 [[nodiscard]] Config listener_config(const FrontendConfig& config);
+// The only filesystem side effect of a configuration: creates a missing
+// roots.logs / roots.cache (0700 / private DACL) and checks an existing one.
+// Called by serve and init, never by validate() or --check.
+[[nodiscard]] ConfigErrors create_runtime_roots(const FrontendConfig& config);
 
 }  // namespace secure_frontend

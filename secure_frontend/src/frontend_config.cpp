@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <utility>
 
 namespace secure_frontend {
 namespace {
@@ -149,6 +150,18 @@ std::optional<CanonicalRoot> canonical_root(DraftReader& read, ConfigErrors& err
   return std::get<CanonicalRoot>(std::move(opened));
 }
 
+// roots.logs / roots.cache: checked, never created, during validation.
+std::optional<std::filesystem::path> creatable_root(DraftReader& read, ConfigErrors& errors, const std::string_view path) {
+  const auto text = read.string(path);
+  if (!text.has_value()) return std::nullopt;
+  auto checked = check_creatable_root(path_from_utf8(*text));
+  if (auto* error = std::get_if<PathError>(&checked)) {
+    add(errors, std::string{path}, ConfigIssueCode::invalid_value, error->message);
+    return std::nullopt;
+  }
+  return std::get<std::filesystem::path>(std::move(checked));
+}
+
 std::optional<SecretSource> token_source(const std::string& text) {
   if (text.rfind("env:", 0) == 0) {
     auto result = make_environment_secret_source(std::string_view{text}.substr(4));
@@ -267,8 +280,8 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   const auto models = canonical_root(read, errors, "roots.models");
   const auto tokenizer = canonical_root(read, errors, "roots.tokenizer_pack");
   auto secret = canonical_root(read, errors, "roots.secret");
-  const auto logs = canonical_root(read, errors, "roots.logs");
-  const auto cache = canonical_root(read, errors, "roots.cache");
+  const auto logs = creatable_root(read, errors, "roots.logs");
+  const auto cache = creatable_root(read, errors, "roots.cache");
 
   // token. An unset roots.secret defaults to the config file's folder, and only
   // for a file: token: an env: token reads nothing below a secret root (spec
@@ -350,6 +363,9 @@ std::string describe(const FrontendConfig& c) {
   const auto root_or_unset = [&root_text](const std::optional<CanonicalRoot>& root) {
     return root.has_value() ? root_text(*root) : std::string{"(unset)"};
   };
+  const auto path_or_unset = [](const std::optional<std::filesystem::path>& p) {
+    return p.has_value() ? json_quoted(path_to_utf8(*p)) : std::string{"(unset)"};
+  };
   line("schema_version", "1");
   line("listener.host", json_quoted(c.listener.host.canonical_text()));
   line("listener.port", std::to_string(c.listener.port));
@@ -375,8 +391,8 @@ std::string describe(const FrontendConfig& c) {
   line("roots.models", root_text(c.roots.models));
   line("roots.tokenizer_pack", root_text(c.roots.tokenizer_pack));
   line("roots.secret", root_or_unset(c.roots.secret));
-  line("roots.logs", root_or_unset(c.roots.logs));
-  line("roots.cache", root_or_unset(c.roots.cache));
+  line("roots.logs", path_or_unset(c.roots.logs));
+  line("roots.cache", path_or_unset(c.roots.cache));
   line("token.source", json_quoted((c.token.kind() == SecretSourceKind::environment_variable ? "env:" : "file:") +
                               c.token.location()));
   line("engine.profile", c.engine.profile == EngineProfile::glm53 ? "\"glm53\"" : "\"qwen\"");
@@ -392,6 +408,18 @@ Config listener_config(const FrontendConfig& c) {
   return Config{c.listener.host.canonical_text(), c.listener.port, true,
                 c.listener.host.scope() == AddressScope::loopback, c.listener.allow_remote,
                 c.listener.allow_wildcard_bind};
+}
+
+ConfigErrors create_runtime_roots(const FrontendConfig& c) {
+  ConfigErrors errors;
+  const std::pair<const char*, const std::optional<std::filesystem::path>*> roots[] = {
+      {"roots.logs", &c.roots.logs}, {"roots.cache", &c.roots.cache}};
+  for (const auto& [key, root] : roots) {
+    if (!root->has_value()) continue;
+    auto opened = open_root(**root, RootPolicy::create_private);
+    if (const auto* failure = std::get_if<PathError>(&opened)) add(errors, key, ConfigIssueCode::invalid_value, failure->message);
+  }
+  return errors;
 }
 
 }  // namespace secure_frontend

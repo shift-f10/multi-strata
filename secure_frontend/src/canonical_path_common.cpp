@@ -5,6 +5,7 @@
 #include <array>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <utility>
 
 namespace secure_frontend {
@@ -116,8 +117,36 @@ std::filesystem::path CanonicalRoot::join(const RelativePath& relative) const {
 }
 
 std::variant<CanonicalRoot, PathError> open_root(const std::filesystem::path& requested, const RootPolicy policy) {
-  (void)policy;
+  if (policy == RootPolicy::create_private && requested.has_filename() && requested.has_parent_path()) {
+    std::error_code error;
+    const auto status = std::filesystem::symlink_status(requested, error);
+    if (status.type() == std::filesystem::file_type::not_found) {
+      auto parent = detail::open_existing_root(requested.parent_path());
+      if (const auto* failure = std::get_if<PathError>(&parent)) return *failure;
+      const auto name = parse_relative_path(path_to_utf8(requested.filename()));
+      if (const auto* failure = std::get_if<PathError>(&name)) return *failure;
+      if (auto failure = create_directory_within(std::get<CanonicalRoot>(parent), std::get<RelativePath>(name))) return *failure;
+    }
+  }
   return detail::open_existing_root(requested);
+}
+
+std::variant<std::filesystem::path, PathError> check_creatable_root(const std::filesystem::path& requested) {
+  std::error_code error;
+  const auto status = std::filesystem::symlink_status(requested, error);
+  if (status.type() != std::filesystem::file_type::not_found) {
+    auto existing = detail::open_existing_root(requested);  // also rejects a dangling link: it is not "absent"
+    if (const auto* failure = std::get_if<PathError>(&existing)) return *failure;
+    return std::get<CanonicalRoot>(existing).path();
+  }
+  if (!requested.is_absolute() || !requested.has_filename() || !requested.has_parent_path()) {
+    return detail::path_error(PathErrorCode::not_absolute, "roots must be absolute paths naming a directory");
+  }
+  auto parent = detail::open_existing_root(requested.parent_path());
+  if (const auto* failure = std::get_if<PathError>(&parent)) return *failure;
+  const auto name = parse_relative_path(path_to_utf8(requested.filename()));
+  if (const auto* failure = std::get_if<PathError>(&name)) return *failure;
+  return std::get<CanonicalRoot>(parent).path() / requested.filename();
 }
 
 std::optional<PathError> check_windows_root_form(const std::wstring_view text) {

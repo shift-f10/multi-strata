@@ -75,6 +75,28 @@ void cli_unknown_option_does_not_echo_value() {
   const auto missing = f.run({"--port"});
   expect(missing.exit_code != 0 && contains(missing.err, "missing value for --port"), "known flag without value");
 }
+
+void cli_check_has_no_side_effects() {
+  ServerFixture f;
+  auto literals = f.base_literals();
+  literals["roots.logs"] = secure_frontend_test::json_literal((f.dir / "logs").string());
+  literals["roots.cache"] = secure_frontend_test::json_literal((f.dir / "cache").string());
+  f.write_config(literals);
+  const auto before = secure_frontend_test::snapshot_tree(f.dir);
+  const auto checked = f.run({"--check", "--config", f.config.string()});
+  expect(checked.exit_code == 0, "--check accepts absent-but-creatable logs/cache roots: " + checked.err);
+  expect(secure_frontend_test::snapshot_tree(f.dir) == before, "--check created, wrote, renamed or removed nothing");
+  expect(!std::filesystem::exists(f.dir / "logs") && !std::filesystem::exists(f.dir / "cache"), "--check created no root");
+  secure_frontend_test::ChildProcess server;
+  expect(f.start(server, {"--config", f.config.string()}), "serve starts: " + server.stderr_text());
+  expect(std::filesystem::is_directory(f.dir / "logs") && std::filesystem::is_directory(f.dir / "cache"),
+         "serve creates both roots before it listens");
+#if !defined(_WIN32)
+  struct stat st {};
+  stat((f.dir / "logs").c_str(), &st);
+  expect((st.st_mode & 0777) == 0700, "serve creates them 0700");
+#endif
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -82,6 +104,7 @@ int main(int argc, char** argv) {
       {"cli_config_file_and_flags_share_validator", cli_config_file_and_flags_share_validator},
       {"cli_flag_overrides_file_and_is_reported", cli_flag_overrides_file_and_is_reported},
       {"cli_check_prints_no_token", cli_check_prints_no_token},
+      {"cli_check_has_no_side_effects", cli_check_has_no_side_effects},
       {"cli_unknown_option_does_not_echo_value", cli_unknown_option_does_not_echo_value},
   }, failures);
 }

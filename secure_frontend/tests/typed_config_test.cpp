@@ -321,6 +321,36 @@ void cfg01_config_with_everyone_write_ace_rejected() {
   expect(untrusted(secure_frontend::read_config_file(file)), "a config Everyone can write is rejected");
 }
 #endif
+
+void cfg02_logs_and_cache_roots_are_created_private() {
+  ConfigFixture f;
+  auto literals = f.literals;
+  literals["roots.logs"] = secure_frontend_test::json_literal((f.dir / "logs").string());
+  literals["roots.cache"] = secure_frontend_test::json_literal((f.dir / "cache").string());
+  const auto result = validate_text(render_config_json(literals), f.dir);
+  const auto* validated = std::get_if<secure_frontend::ValidatedConfig>(&result);
+  expect(validated != nullptr, "absent logs/cache roots under a private parent validate: " + issues_of(result));
+  expect(!std::filesystem::exists(f.dir / "logs") && !std::filesystem::exists(f.dir / "cache"),
+         "validate() creates nothing (--check has no side effects)");
+  if (validated == nullptr) return;
+  expect(secure_frontend::create_runtime_roots(validated->get()).empty(), "serve/init create the missing roots");
+  expect(std::filesystem::is_directory(f.dir / "logs") && std::filesystem::is_directory(f.dir / "cache"), "both exist");
+#if !defined(_WIN32)
+  struct stat st {};
+  stat((f.dir / "logs").c_str(), &st);
+  expect((st.st_mode & 0777) == 0700, "created 0700");
+#endif
+  expect(secure_frontend::create_runtime_roots(validated->get()).empty(), "existing private roots are accepted again");
+#if !defined(_WIN32)
+  const auto shared = f.dir / "shared";
+  secure_frontend_test::make_private_directory(shared);
+  chmod(shared.c_str(), 0777);
+  literals["roots.logs"] = secure_frontend_test::json_literal((shared / "logs").string());
+  expect(has_issue(validate_text(render_config_json(literals), f.dir), "roots.logs", ConfigIssueCode::invalid_value),
+         "an absent root whose parent others can write is rejected at validation");
+  expect(!std::filesystem::exists(shared / "logs"), "and nothing was created");
+#endif
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -333,6 +363,7 @@ int main(int argc, char** argv) {
       {"cfg01_out_of_range_rejected", cfg01_out_of_range_rejected},
       {"typed_config_cross_field_rules", typed_config_cross_field_rules},
       {"typed_config_errors_never_contain_values", typed_config_errors_never_contain_values},
+      {"cfg02_logs_and_cache_roots_are_created_private", cfg02_logs_and_cache_roots_are_created_private},
 #if !defined(_WIN32)
       {"cfg02_env_token_ignores_config_folder_permissions", cfg02_env_token_ignores_config_folder_permissions},
       {"cfg02_file_token_default_secret_root_reports_one_issue", cfg02_file_token_default_secret_root_reports_one_issue},
