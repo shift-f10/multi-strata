@@ -410,6 +410,52 @@ target_include_directories(secure_frontend_acquire_core PUBLIC
 target_link_libraries(secure_frontend_acquire_core PUBLIC secure_frontend_manifest_core)
 secure_frontend_set_warnings(secure_frontend_acquire_core)
 
+# SP4 §2.3 / ruling R-1: the engine version is the committed ../upstream.version
+# (one line, "v<x.y.z[.n]>"). When upstream/ has a reachable exact tag it must equal
+# the file (FATAL_ERROR only on a mismatch); a missing tag never fails configure.
+set(SECURE_STRATA_ENGINE_VERSION "" CACHE STRING "Override x.y.z[.n]; empty = ../upstream.version")
+if(SECURE_STRATA_ENGINE_VERSION STREQUAL "")
+    file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/../upstream.version" _sf_pinned LIMIT_COUNT 1)
+    if(NOT _sf_pinned MATCHES "^v[0-9]+\\.[0-9]+\\.[0-9]+(\\.[0-9]+)?$")
+        message(FATAL_ERROR "upstream.version must hold one line v<x.y.z[.n]>")
+    endif()
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../upstream.version")
+    set(_sf_describe_rc 1)
+    # Only a checked-out submodule is asked: an empty upstream/ must never let git walk up to the superproject's tags.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../upstream/.git")
+        execute_process(COMMAND git -C "${CMAKE_CURRENT_SOURCE_DIR}/../upstream" describe --tags --exact-match
+            RESULT_VARIABLE _sf_describe_rc OUTPUT_VARIABLE _sf_tag ERROR_QUIET OUTPUT_STRIP_TRAILING_WHITESPACE)
+    endif()
+    if(_sf_describe_rc EQUAL 0 AND NOT _sf_tag STREQUAL _sf_pinned)
+        message(FATAL_ERROR "upstream/ is at ${_sf_tag} but upstream.version says ${_sf_pinned}; bump upstream.version with the submodule")
+    endif()
+    string(SUBSTRING "${_sf_pinned}" 1 -1 SECURE_FRONTEND_ENGINE_VERSION_TEXT)
+else()
+    if(NOT SECURE_STRATA_ENGINE_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+(\\.[0-9]+)?$")
+        message(FATAL_ERROR "SECURE_STRATA_ENGINE_VERSION must be x.y.z or x.y.z.n")
+    endif()
+    set(SECURE_FRONTEND_ENGINE_VERSION_TEXT "${SECURE_STRATA_ENGINE_VERSION}")
+endif()
+configure_file(cmake/engine_version.hpp.in
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/secure_frontend/engine_version_generated.hpp" @ONLY)
+
+include(cmake/SecureFrontendCatalog.cmake)
+set(_sf_catalog_fixture "")
+if(SECURE_FRONTEND_TEST_HOOKS)
+    set(_sf_catalog_fixture FIXTURE "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/catalog")
+endif()
+secure_frontend_generate_catalog("${CMAKE_CURRENT_BINARY_DIR}/generated/catalog_data.cpp"
+    PRODUCTION "${CMAKE_CURRENT_SOURCE_DIR}/catalog" ${_sf_catalog_fixture})
+
+add_library(secure_frontend_model_store src/manifest_json.cpp src/catalog.cpp src/manifest_trust.cpp
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/catalog_data.cpp")
+target_compile_features(secure_frontend_model_store PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_model_store PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_include_directories(secure_frontend_model_store PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_link_libraries(secure_frontend_model_store PUBLIC secure_frontend_manifest_core secure_frontend_json secure_frontend_paths)
+secure_frontend_set_warnings(secure_frontend_model_store)
+
 if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     enable_testing()
 
@@ -739,7 +785,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         install_retires_previous_version reinstall_same_version_does_not_retire
         downgrade_to_retired_version_leaves_it_live_only)
 
-    secure_frontend_add_test_executable(secure_frontend_manifest_tests tests/manifest_test.cpp secure_frontend_manifest_core)
+    secure_frontend_add_test_executable(secure_frontend_manifest_tests tests/manifest_test.cpp secure_frontend_model_store)
     secure_frontend_add_cases(secure_frontend_manifest_tests source_url_grammar_matrix dns_names_and_wildcards proxy_grammar)
     secure_frontend_add_cases(secure_frontend_manifest_tests valid_qwen_manifest_accepted manifest_field_rules_matrix
         reserved_manifest_names_rejected model_name_index_json_rejected part_suffix_path_rejected
@@ -750,6 +796,13 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     if(SECURE_FRONTEND_TEST_HOOKS)
         secure_frontend_add_cases(secure_frontend_manifest_tests raw_profile_accepted_with_test_hooks)
     endif()
+    secure_frontend_add_cases(secure_frontend_manifest_tests base_manifest_parses dl03_invalid_manifest_matrix
+        dl03_http_url_rejected manifest_identity_is_sha256_of_exact_bytes trust_rules_catalog_digest_or_typed_digest)
+    secure_frontend_add_cases(secure_frontend_manifest_tests dl05_catalog_pins_match_committed_list
+        ARGS ${CMAKE_CURRENT_SOURCE_DIR}/catalog/CATALOG.sha256 ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/catalog/CATALOG.sha256
+        LABELS release-also)
+    secure_frontend_add_cases(secure_frontend_manifest_tests engine_version_read_from_upstream_version_file
+        ARGS ${SECURE_FRONTEND_ENGINE_VERSION_TEXT} LABELS release-also)
     secure_frontend_add_test_executable(secure_frontend_fetch_tests tests/fetch_test.cpp secure_frontend_acquire_core)
     secure_frontend_add_cases(secure_frontend_fetch_tests dl03_location_with_glob_characters_rejected
         location_resolution_and_host_normalization location_query_characters

@@ -1,15 +1,25 @@
 #include "secure_frontend/acquire_manifest.hpp"
 #include "secure_frontend/acquire_url.hpp"
+#include "secure_frontend/catalog.hpp"
 #include "secure_frontend/engine_version.hpp"
+#include "secure_frontend/manifest_json.hpp"
+#include "secure_frontend/manifest_trust.hpp"
+#include "secure_frontend/sha256.hpp"
 #include "secure_frontend/test_hooks.hpp"
 #include "support/test_support.hpp"
 
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <optional>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -184,6 +194,13 @@ void manifest_field_rules_matrix() {
       {"files[0].path", "backslash", [](auto& m) { m.files[0].path = "weights\\x"; }},
       {"files[0].path", "hidden component", [](auto& m) { m.files[0].path = "weights/.x"; }},
       {"files[0].path", "control byte", [](auto& m) { m.files[0].path = "weights/a\nb"; }},
+      {"files[0].path", "P1: reserved device component", [](auto& m) { m.files[0].path = "weights/con.txt"; }},
+      {"files[0].path", "P1: device name, mixed case, with extension", [](auto& m) { m.files[0].path = "weights/Lpt1.gguf"; }},
+      {"files[0].path", "P1: trailing dot", [](auto& m) { m.files[0].path = "weights/x."; }},
+      {"files[0].path", "P1: trailing space", [](auto& m) { m.files[0].path = "weights/x "; }},
+      {"files[0].path", "P1: 8.3 short-name alias", [](auto& m) { m.files[0].path = "weights/PROGRA~1"; }},
+      {"files[0].path", "P1: reserved character", [](auto& m) { m.files[0].path = "weights/a*b"; }},
+      {"files[0].path", "P1: component over 255 bytes", [](auto& m) { m.files[0].path = "weights/" + std::string(256, 'a'); }},
       {"files[1].path", "case-fold collision", [](auto& m) { m.files[1].path = "WEIGHTS/M-00001-OF-00002.GGUF"; }},
       {"files[0].size", "size 0", [](auto& m) { m.files[0].size = 0; }},
       {"files[0].size", "size above 2^40", [](auto& m) { m.files[0].size = (std::uint64_t{1} << 40U) + 1U; }},
@@ -321,6 +338,185 @@ void engine_version_parsed_with_fourth_component() {
   }
 }
 
+// ---- SP4 Task 14: manifest JSON, catalog, trust rules, engine version ----
+
+const std::string kBaseManifest = R"({
+  "format": "strata-model-manifest", "schema_version": 1, "name": "m", "tag": "t", "version": "2026.10.14.1",
+  "sequence": 1, "profile": "qwen", "engine": {"family": "strata", "min_version": "0.1.43"},
+  "license": {"id": "Apache-2.0", "url": "https://h.example/l", "bundle_allowed": true, "notice": "n"},
+  "hosts": ["h.example"], "redirect_hosts": ["*.cdn.h.example"],
+  "files": [
+    {"path": "weights/m-00001-of-00002.gguf", "role": "weights", "size": 1, "sha256": "SHA1", "sources": ["https://h.example/a"]},
+    {"path": "weights/m-00002-of-00002.gguf", "role": "weights", "size": 1, "sha256": "SHA2", "sources": []},
+    {"path": "pack/index.txt", "role": "pack", "size": 1, "sha256": "SHA3", "sources": []},
+    {"path": "pack/tokenizer/vocab.json", "role": "tokenizer", "size": 1, "sha256": "SHA4", "sources": []}
+  ],
+  "launch": {"native": "weights/m-00001-of-00002.gguf", "pack": "pack", "tokenizer_pack": "pack/tokenizer"}
+}
+)";
+
+std::string base_manifest() {
+  std::string text = kBaseManifest;
+  for (const auto& [mark, digit] : {std::pair{"SHA1", 'a'}, std::pair{"SHA2", 'b'}, std::pair{"SHA3", 'c'}, std::pair{"SHA4", 'd'}}) {
+    text.replace(text.find(mark), 4, std::string(64, digit));
+  }
+  return text;
+}
+
+std::string replaced(std::string text, const std::string& from, const std::string& to) {
+  const auto at = text.find(from);
+  if (at == std::string::npos) throw std::runtime_error("fixture text not found: " + from);
+  return text.replace(at, from.size(), to);
+}
+
+bool rejected(const std::string& text, const secure_frontend::AcquireReason reason = secure_frontend::AcquireReason::manifest_invalid) {
+  const auto result = secure_frontend::parse_manifest(text, secure_frontend::ManifestRules{});
+  const auto* issue = std::get_if<secure_frontend::ManifestIssue>(&result);
+  return issue != nullptr && issue->reason == reason;
+}
+
+// F-31: the reason alone can be satisfied by an unrelated rule; also pin the key.
+void expect_rejected_at(const std::string& text, const std::string& key, const std::string& why,
+                        const secure_frontend::AcquireReason reason = secure_frontend::AcquireReason::manifest_invalid) {
+  const auto result = secure_frontend::parse_manifest(text, secure_frontend::ManifestRules{});
+  const auto* issue = std::get_if<secure_frontend::ManifestIssue>(&result);
+  expect(issue != nullptr && issue->reason == reason && issue->key_path == key,
+         "manifest rejected at " + key + ": " + why + " (got " + (issue ? issue->key_path : std::string{"no issue"}) + ")");
+}
+
+void base_manifest_parses() {
+  const auto result = secure_frontend::parse_manifest(base_manifest(), secure_frontend::ManifestRules{});
+  const auto* parsed = std::get_if<secure_frontend::ParsedManifest>(&result);
+  expect(parsed != nullptr, "the base manifest parses");
+  if (parsed != nullptr) {
+    expect(parsed->manifest.files.size() == 4 && parsed->manifest.files[1].sources.empty(), "sourceless file kept");
+    expect(parsed->bytes == base_manifest(), "exact bytes kept");
+  }
+}
+
+// Spec §10.3 DL-03 matrix.
+void dl03_invalid_manifest_matrix() {
+  const std::string base = base_manifest();
+  struct Case final {
+    std::string why;
+    std::string text;
+    std::string key;
+  };
+  const std::vector<Case> cases{
+      {"unknown key", replaced(base, "\"sequence\": 1,", "\"sequence\": 1, \"extra\": 1,"), "extra"},
+      {"duplicate key", replaced(base, "\"sequence\": 1,", "\"sequence\": 1, \"sequence\": 2,"), "manifest"},
+      {"bad hex", replaced(base, std::string(64, 'a'), std::string(63, 'a') + "g"), "files[0].sha256"},
+      {"size 0", replaced(base, "\"size\": 1, \"sha256\": \"" + std::string(64, 'a'), "\"size\": 0, \"sha256\": \"" + std::string(64, 'a')),
+       "files[0].size"},
+      {"..", replaced(base, "pack/index.txt\"", "pack/../index.txt\""), "files[2].path"},
+      {"absolute", replaced(base, "\"pack/index.txt\"", "\"/pack/index.txt\""), "files[2].path"},
+      {"case-fold collision", replaced(base, "pack/tokenizer/vocab.json\", \"role", "PACK/INDEX.TXT\", \"role"), "files[3].path"},
+      {"control byte", replaced(base, "\"notice\": \"n\"", "\"notice\": \"n\\u0007\""), "license.notice"},
+      {"[ in URL", replaced(base, "https://h.example/a", "https://h.example/a[1]"), "files[0].sources[0]"},
+      {"role draft", replaced(base, "\"role\": \"pack\"", "\"role\": \"draft\""), "files[2].role"},
+      {"role vision", replaced(base, "\"role\": \"pack\"", "\"role\": \"vision\""), "files[2].role"},
+      {"incomplete shard set", replaced(base, "m-00002-of-00002.gguf", "m-00002-of-00003.gguf"), "files"},
+      {"launch names an unlisted file",
+       replaced(base, "\"native\": \"weights/m-00001-of-00002.gguf\"", "\"native\": \"weights/x.gguf\""), "launch.native"},
+      {"single-label wildcard base", replaced(base, "*.cdn.h.example", "*.example"), "redirect_hosts[0]"},
+      {"fraction", replaced(base, "\"sequence\": 1,", "\"sequence\": 1.0,"), "manifest"},
+      {"string where integer", replaced(base, "\"sequence\": 1,", "\"sequence\": \"1\","), "sequence"},
+      {"BOM", "\xEF\xBB\xBF" + base, "manifest"},
+      {"P1 reserved device component", replaced(base, "pack/index.txt\"", "pack/con.txt\""), "files[2].path"},
+      {"P1 trailing dot", replaced(base, "pack/index.txt\"", "pack/index.\""), "files[2].path"},
+  };
+  for (const auto& c : cases) {
+    expect(rejected(c.text), "manifest_invalid: " + c.why);
+    expect_rejected_at(c.text, c.key, c.why);
+  }
+  expect_rejected_at(replaced(base, "\"schema_version\": 1", "\"schema_version\": 2"), "schema_version", "schema_version 2",
+                     secure_frontend::AcquireReason::manifest_unsupported_version);
+  expect(rejected(std::string(secure_frontend::kManifestMaxBytes + 1, ' ')), "larger than 1 MiB");
+}
+
+void dl03_http_url_rejected() {
+  expect(rejected(replaced(base_manifest(), "https://h.example/a", "http://h.example/a")), "an http source is manifest_invalid");
+}
+
+void manifest_identity_is_sha256_of_exact_bytes() {
+  const std::string text = base_manifest();
+  const auto parsed = std::get<secure_frontend::ParsedManifest>(secure_frontend::parse_manifest(text, {}));
+  expect(parsed.sha256 == secure_frontend::to_hex(secure_frontend::sha256(text)), "digest of the exact bytes");
+  const auto spaced = std::get<secure_frontend::ParsedManifest>(secure_frontend::parse_manifest(text + " ", {}));
+  expect(spaced.sha256 != parsed.sha256, "nothing is re-serialized: one more byte is another manifest");
+  const auto upper = replaced(text, "\"name\": \"m\"", "\"name\": \"M\"");
+  const auto lowered = std::get<secure_frontend::ParsedManifest>(secure_frontend::parse_manifest(upper, {}));
+  expect(lowered.manifest.name == "m", "name ASCII-lowercased on input");
+}
+
+std::string read_text(const std::filesystem::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  return std::string{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
+// Spec §2.5: committed CATALOG.sha256 must list exactly the embedded manifests.
+void dl05_catalog_pins_match_committed_list() {
+  const auto& args = secure_frontend_test::extra_arguments();
+  const std::filesystem::path production = args.at(0);
+  const std::filesystem::path fixtures = args.at(1);
+  std::string embedded_production;
+  std::string embedded_fixtures;
+  for (const auto& entry : secure_frontend::catalog_entries()) {
+    expect(secure_frontend::to_hex(secure_frontend::sha256(entry.bytes)) == entry.sha256, "embedded digest recomputes");
+    const auto parsed = secure_frontend::parse_manifest(entry.bytes, {});
+    const auto* manifest = std::get_if<secure_frontend::ParsedManifest>(&parsed);
+    expect(manifest != nullptr && manifest->manifest.name == entry.name && manifest->manifest.tag == entry.tag &&
+               manifest->manifest.sequence == entry.sequence,
+           "catalog entry parses and matches its path");
+    (entry.fixture ? embedded_fixtures : embedded_production) +=
+        std::string{entry.sha256} + "  " + std::string{entry.name} + "/" + std::string{entry.tag} + ".json\n";
+  }
+  expect(embedded_production == read_text(production), "catalog/CATALOG.sha256 matches the embedded production catalog");
+  if (secure_frontend::kTestHooksEnabled) {
+    expect(embedded_fixtures == read_text(fixtures), "tests/fixtures/catalog/CATALOG.sha256 matches");
+  } else {
+    expect(embedded_fixtures.empty(), "release builds embed no fixture");
+  }
+}
+
+void engine_version_read_from_upstream_version_file() {
+  const auto& args = secure_frontend_test::extra_arguments();
+  expect(secure_frontend::built_engine_version_text() == args.at(0), "kEngineVersion is upstream.version without its leading v");
+  expect(secure_frontend::render_engine_version(secure_frontend::built_engine_version()) == args.at(0), "parsed");
+}
+
+void trust_rules_catalog_digest_or_typed_digest() {
+  using secure_frontend::AcquireReason;
+  const std::string text = base_manifest();
+  const std::string digest = secure_frontend::to_hex(secure_frontend::sha256(text));
+  const auto untrusted = secure_frontend::trust_manifest_bytes(text, std::nullopt, {});
+  expect(std::holds_alternative<secure_frontend::AcquireError>(untrusted) &&
+             std::get<secure_frontend::AcquireError>(untrusted).reason == AcquireReason::manifest_untrusted, "no trust");
+  const auto wrong = secure_frontend::trust_manifest_bytes(text, std::string(64, '0'), {});
+  expect(std::get<secure_frontend::AcquireError>(wrong).reason == AcquireReason::manifest_untrusted, "wrong typed digest");
+  const auto typed = secure_frontend::trust_manifest_bytes(text, digest, {});
+  expect(std::holds_alternative<secure_frontend::TrustedManifest>(typed) &&
+             std::get<secure_frontend::TrustedManifest>(typed).origin == secure_frontend::ModelOrigin::third_party,
+         "--trust-manifest with the exact digest");
+  expect(secure_frontend::parse_trust_argument("sha256:" + digest) == digest, "argument form");
+  for (const auto* bad : {"sha256:ABC", "sha512:00", "", "sha256:"}) expect(!secure_frontend::parse_trust_argument(bad), bad);
+  // Task 8 carry: a trusted digest never lets a P1-invalid path through.
+  const std::string device = replaced(text, "pack/index.txt\"", "pack/con.txt\"");
+  const auto device_trusted = secure_frontend::trust_manifest_bytes(device, secure_frontend::to_hex(secure_frontend::sha256(device)), {});
+  expect(std::holds_alternative<secure_frontend::AcquireError>(device_trusted) &&
+             std::get<secure_frontend::AcquireError>(device_trusted).reason == AcquireReason::manifest_invalid,
+         "a typed digest does not bypass the P1 path grammar");
+#if defined(SECURE_FRONTEND_TEST_HOOKS)
+  const auto* fixture = secure_frontend::find_catalog_entry("fixture-qwen", "default");
+  expect(fixture != nullptr && fixture->tag == "t1", "alias default -> t1");
+  const auto catalog = secure_frontend::trust_manifest_bytes(fixture->bytes, std::nullopt, {});
+  expect(std::get<secure_frontend::TrustedManifest>(catalog).origin == secure_frontend::ModelOrigin::catalog, "catalog digest");
+  const std::string shadow = replaced(replaced(text, "\"name\": \"m\"", "\"name\": \"fixture-qwen\""), "\"tag\": \"t\"", "\"tag\": \"t1\"");
+  const auto shadowed = secure_frontend::trust_manifest_bytes(shadow, secure_frontend::to_hex(secure_frontend::sha256(shadow)), {});
+  expect(std::get<secure_frontend::AcquireError>(shadowed).reason == AcquireReason::manifest_shadows_catalog, "shadowing");
+#endif
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -343,5 +539,12 @@ int main(int argc, char** argv) {
       {"raw_profile_accepted_with_test_hooks", raw_profile_accepted_with_test_hooks},
 #endif
       {"engine_version_parsed_with_fourth_component", engine_version_parsed_with_fourth_component},
+      {"base_manifest_parses", base_manifest_parses},
+      {"dl03_invalid_manifest_matrix", dl03_invalid_manifest_matrix},
+      {"dl03_http_url_rejected", dl03_http_url_rejected},
+      {"manifest_identity_is_sha256_of_exact_bytes", manifest_identity_is_sha256_of_exact_bytes},
+      {"dl05_catalog_pins_match_committed_list", dl05_catalog_pins_match_committed_list},
+      {"engine_version_read_from_upstream_version_file", engine_version_read_from_upstream_version_file},
+      {"trust_rules_catalog_digest_or_typed_digest", trust_rules_catalog_digest_or_typed_digest},
   }, failures);
 }

@@ -80,7 +80,8 @@ struct ManifestIssue final {
   std::string_view message;
 };
 
-// Every struct-level rule of spec §2.1-§2.4. Returns the first issue.
+// Every struct-level rule of spec §2.1-§2.4, including SP1's P1 path grammar for
+// file paths (so no caller can skip it). Returns the first issue.
 [[nodiscard]] std::optional<ManifestIssue> validate_manifest(const AcquireManifest& manifest, const ManifestRules& rules);
 
 [[nodiscard]] std::string ascii_lower(std::string_view text);

@@ -1,6 +1,7 @@
 #include "secure_frontend/acquire_manifest.hpp"
 
 #include "secure_frontend/acquire_url.hpp"
+#include "secure_frontend/canonical_path.hpp"
 #include "secure_frontend/model_inventory.hpp"
 #include "secure_frontend/sha256.hpp"
 
@@ -78,9 +79,16 @@ std::optional<std::string_view> path_problem(const std::string_view path) {
       return "is a reserved top-level name";
     }
     first = false;
-    if (slash == std::string_view::npos) return std::nullopt;
+    if (slash == std::string_view::npos) break;
     start = slash + 1;
   }
+  // SP1's P1 grammar is the one portable-path rule (device names, trailing dot or
+  // space, 8.3 aliases, < > " | ? *, 255-byte components). Applying it here means
+  // every caller of validate_manifest, and so parse_manifest, gets it.
+  const auto relative = parse_relative_path(path);
+  const auto* parsed = std::get_if<RelativePath>(&relative);
+  if (parsed == nullptr || parsed->generic() != path) return "must be a portable relative path (P1)";
+  return std::nullopt;
 }
 
 // "<dir>/<prefix>-NNNNN-of-MMMMM.gguf" → (set key, N, M).

@@ -172,6 +172,7 @@ Plan: `docs/superpowers/plans/2026-10-14-sp4-acquire.md`. One line per task.
 - Task 11: Landlock rights/dirs planning, readable-root rule, confinement labels, CRT descriptor block; fetch.landlock_rights_per_abi, confinement_plan_detects_readable_roots, confinement_label_texts, crt_fd_block_layout.
 - Task 12: fake downloader secure_frontend_fake_curl (scenario format, §3.3 grammar, record over fd 4 / CRT entry 4); fetch.fake_curl_* (2 portable + 3 POSIX + 1 windows-runtime; record-channel cases hooks-only).
 - Task 13: dev-only tools/secure/make_bundle.py (D5 (B′): local pack via upstream iq_pack.py, third-party manifest <quant>-local, SHA256SUMS, STRATA-BUNDLE last, 0-byte pack files refused per F-26) + Hub-read shard pins for the four D4 quants (iq3_xxs/iq3_s/iq1_m await owner confirmation, F-25); tools/secure/test_make_bundle.py (7).
+- Task 14: strict manifest parser, embedded catalog (production empty; hooks-only fixture-qwen:t1), --trust-manifest rules, kEngineVersion from upstream.version (checked against a reachable submodule tag), linux-release CI job; validate_manifest now enforces P1 paths for every caller; manifest.dl03_invalid_manifest_matrix, dl03_http_url_rejected, dl05_catalog_pins_match_committed_list (release-also), +4; pytest test_catalog_provenance.py.
 
 ### Upstream bump to `v0.1.44.1` (2026-10-14, branch `upstream/bump-v0.1.44.1`)
 
