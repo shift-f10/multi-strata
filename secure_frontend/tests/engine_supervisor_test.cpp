@@ -1328,53 +1328,139 @@ void sp6_env_strata_family_renders_unchanged() {
   expect(secure_frontend::render_windows_environment(representative_windows_environment(), kPinnedSystem) == kPinnedWindowsBlock,
          "Windows strata rendering is byte-identical to the pin");
   // The family defaults to strata, and naming it explicitly changes nothing.
-  expect(representative_posix_environment().family == secure_frontend::EngineFamily::strata, "the family defaults to strata");
-  expect(secure_frontend::family_forced_environment(secure_frontend::EngineFamily::strata).empty(), "the strata table is empty");
-  auto strata_posix = representative_posix_environment();
-  strata_posix.family = secure_frontend::EngineFamily::strata;
+  using secure_frontend::EngineFamily;
+  expect(representative_posix_environment().family == EngineFamily::strata, "the family defaults to strata");
   auto strata_windows = representative_windows_environment();
-  strata_windows.family = secure_frontend::EngineFamily::strata;
+  strata_windows.family = EngineFamily::strata;
+  const auto strata_rows = secure_frontend::family_environment_rows(strata_windows);
+  expect(strata_rows.forced.empty() && strata_rows.suppressed.empty(), "the strata hook forces and suppresses nothing");
+  const auto strata_family = secure_frontend::apply_family_environment(
+      secure_frontend::render_windows_environment(strata_windows, kPinnedSystem), strata_windows);
+  expect(strata_family == kPinnedWindowsBlock, "strata through the family step: Windows pin");
 #if !defined(_WIN32)
-  expect(secure_frontend::render_posix_environment(strata_posix) == kPinnedPosixBlock, "explicit strata: POSIX pin");
+  auto strata_posix = representative_posix_environment();
+  strata_posix.family = EngineFamily::strata;
+  expect(secure_frontend::render_family_environment(strata_posix) == kPinnedPosixBlock, "strata through the family step: POSIX pin");
 #endif
-  expect(secure_frontend::render_windows_environment(strata_windows, kPinnedSystem) == kPinnedWindowsBlock, "explicit strata: Windows pin");
-  // glm is reserved for SP6: its table is empty, so it renders no GLM value yet.
-  expect(secure_frontend::family_forced_environment(secure_frontend::EngineFamily::glm).empty(), "the glm table is empty until SP6");
+  // glm currently renders strata rows: not reachable from config; SP6 fills its table.
   auto glm_windows = representative_windows_environment();
-  glm_windows.family = secure_frontend::EngineFamily::glm;
-  expect(secure_frontend::render_windows_environment(glm_windows, kPinnedSystem) == kPinnedWindowsBlock, "glm renders no GLM value yet");
+  glm_windows.family = EngineFamily::glm;
+  const auto glm_rows = secure_frontend::family_environment_rows(glm_windows);
+  expect(glm_rows.forced.empty() && glm_rows.suppressed.empty(), "the glm hook is empty until SP6");
+  expect(secure_frontend::apply_family_environment(secure_frontend::render_windows_environment(glm_windows, kPinnedSystem), glm_windows) ==
+             kPinnedWindowsBlock,
+         "glm renders no GLM value yet");
   // The config path builds the strata family.
-  expect(secure_frontend::engine_environment_for("/srv/state", std::nullopt, {}).family == secure_frontend::EngineFamily::strata,
+  expect(secure_frontend::engine_environment_for("/srv/state", std::nullopt, {}).family == EngineFamily::strata,
          "engine_environment_for builds the strata family");
 }
 
-// A test-only family table: overrides a generic row and adds the two GPU selectors.
-constexpr std::array<secure_frontend::ForcedEnvironmentValue, 3> kTestGpuTable{{{"STRATA_WATCHDOG_S", "0"},
-                                                                                 {"CUDA_DEVICE_ORDER", "PCI_BUS_ID"},
-                                                                                 {"CUDA_VISIBLE_DEVICES", "1"}}};
+using secure_frontend::FamilyEnvironmentRows;
+
+// Test-only hooks (the production one is family_environment_rows).
+FamilyEnvironmentRows test_gpu_rows(const secure_frontend::EngineEnvironment&) {
+  return {.forced = {{"STRATA_WATCHDOG_S", "0"}, {"CUDA_DEVICE_ORDER", "PCI_BUS_ID"}, {"CUDA_VISIBLE_DEVICES", "1"}}};
+}
+FamilyEnvironmentRows test_gpu_rows_reversed(const secure_frontend::EngineEnvironment&) {
+  return {.forced = {{"CUDA_VISIBLE_DEVICES", "1"}, {"CUDA_DEVICE_ORDER", "PCI_BUS_ID"}, {"STRATA_WATCHDOG_S", "0"}}};
+}
+// Derives a value from the EngineEnvironment the way SP6 derives CUDA_VISIBLE_DEVICES
+// from the configured gpu list (absent -> 0). The stand-in source is watchdog_io_s:
+// no GLM config field is added (YAGNI).
+FamilyEnvironmentRows test_derived_rows(const secure_frontend::EngineEnvironment& environment) {
+  return {.forced = {{"CUDA_DEVICE_ORDER", "PCI_BUS_ID"},
+                     {"CUDA_VISIBLE_DEVICES", environment.watchdog_io_s ? std::to_string(*environment.watchdog_io_s) : "0"}}};
+}
+FamilyEnvironmentRows test_suppress_rows(const secure_frontend::EngineEnvironment&) {
+  return {.forced = {{"STRATA_WATCHDOG_S", "0"}}, .suppressed = {"STRATA_WATCHDOG_IO_S", "STRATA_HIPBLASLT_TUNING"}};
+}
+FamilyEnvironmentRows test_duplicate_rows(const secure_frontend::EngineEnvironment&) {
+  return {.forced = {{"CUDA_VISIBLE_DEVICES", "0"}, {"CUDA_VISIBLE_DEVICES", "1"}}};
+}
+FamilyEnvironmentRows test_nul_rows(const secure_frontend::EngineEnvironment&) {
+  return {.forced = {{"CUDA_VISIBLE_DEVICES", std::string("0\0x", 3)}}};
+}
 
 void sp6_env_forced_values_override_and_add() {
   // The Windows rendering of backslash paths is byte-stable on both hosts.
-  auto block = secure_frontend::render_windows_environment(representative_windows_environment(), kPinnedSystem);
-  expect(secure_frontend::merge_forced_environment(block, kTestGpuTable), "a valid table merges");
+  const auto environment = representative_windows_environment();
+  const auto generic = secure_frontend::render_windows_environment(environment, kPinnedSystem);
+  const auto block = secure_frontend::apply_family_environment(generic, environment, test_gpu_rows);
   auto expected = kPinnedWindowsBlock;
   expected["STRATA_WATCHDOG_S"] = "0";  // override: replaces the generic value 30
   expected.emplace("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
   expected.emplace("CUDA_VISIBLE_DEVICES", "1");
   expect(block == expected, "forced values override and add; every other row is untouched");
-  // Deterministic: the table's order does not change the result.
-  const std::array<secure_frontend::ForcedEnvironmentValue, 3> reversed{{kTestGpuTable[2], kTestGpuTable[1], kTestGpuTable[0]}};
-  auto again = secure_frontend::render_windows_environment(representative_windows_environment(), kPinnedSystem);
-  expect(secure_frontend::merge_forced_environment(again, reversed) && again == expected, "table order does not matter");
-  // Merging the same table twice is idempotent; an empty table changes nothing.
-  expect(secure_frontend::merge_forced_environment(again, kTestGpuTable) && again == expected, "a second merge is idempotent");
+  // Deterministic: the table's order does not change the result; a second merge is idempotent.
+  expect(secure_frontend::apply_family_environment(generic, environment, test_gpu_rows_reversed) == expected, "table order does not matter");
+  auto again = expected;
+  expect(secure_frontend::merge_forced_environment(again, test_gpu_rows(environment)) && again == expected, "a second merge is idempotent");
   auto untouched = kPinnedWindowsBlock;
   expect(secure_frontend::merge_forced_environment(untouched, {}) && untouched == kPinnedWindowsBlock, "an empty table changes nothing");
 }
 
+// Fix round 1, item 1: the controller-ruled forcible set, each name on its own.
+void sp6_env_forcible_names_are_the_ruled_set() {
+  const std::array<std::string_view, 7> ruled{"STRATA_GLM_SLOTS", "STRATA_GLM_LOOP_THINK", "STRATA_GLM_LOOP_ANSWER", "STRATA_GLM_SPLIT",
+                                               "STRATA_WATCHDOG_S", "CUDA_DEVICE_ORDER", "CUDA_VISIBLE_DEVICES"};
+  expect(secure_frontend::kFamilyForcibleEnvironment.size() == ruled.size(), "the forcible list is exactly the ruled set");
+  for (const auto name : ruled) {
+    auto block = kPinnedWindowsBlock;
+    FamilyEnvironmentRows rows{.forced = {{std::string(name), "0"}}};
+    expect(secure_frontend::merge_forced_environment(block, rows) && block.at(std::string(name)) == "0", "forcible: " + std::string(name));
+  }
+}
+
+// Fix round 1, item 2: a value derived from the EngineEnvironment, through the real renderer.
+void sp6_env_hook_derives_values_from_environment() {
+  auto environment = representative_windows_environment();  // watchdog_io_s = 5
+  auto block = secure_frontend::apply_family_environment(secure_frontend::render_windows_environment(environment, kPinnedSystem),
+                                                         environment, test_derived_rows);
+  expect(block.has_value() && block->at("CUDA_VISIBLE_DEVICES") == "5" && block->at("CUDA_DEVICE_ORDER") == "PCI_BUS_ID",
+         "the hook derives CUDA_VISIBLE_DEVICES from the environment");
+  environment.watchdog_io_s.reset();
+  block = secure_frontend::apply_family_environment(secure_frontend::render_windows_environment(environment, kPinnedSystem), environment,
+                                                    test_derived_rows);
+  expect(block.has_value() && block->at("CUDA_VISIBLE_DEVICES") == "0", "an absent source renders 0");
+  // The native renderer takes the same hook.
+  const auto native = secure_frontend::render_family_environment(environment, test_derived_rows);
+  expect(native.has_value() && native->at("CUDA_VISIBLE_DEVICES") == "0", "render_family_environment applies the hook");
+}
+
+// Fix round 1, item 4: the fixed suppressible set.
+void sp6_env_hook_suppresses_only_optional_rows() {
+  const auto environment = representative_windows_environment();
+  const auto block = secure_frontend::apply_family_environment(
+      secure_frontend::render_windows_environment(environment, kPinnedSystem), environment, test_suppress_rows);
+  auto expected = kPinnedWindowsBlock;
+  expected.erase("STRATA_WATCHDOG_IO_S");
+  expected.erase("STRATA_HIPBLASLT_TUNING");
+  expected["STRATA_WATCHDOG_S"] = "0";
+  expect(block == expected, "the hook suppresses STRATA_WATCHDOG_IO_S and STRATA_HIPBLASLT_TUNING");
+  for (const std::string_view name : {"STRATA_WATCHDOG_IO_S", "STRATA_HIPBLASLT_TUNING", "STRATA_WATCHDOG_S"}) {
+    auto rows_block = kPinnedWindowsBlock;
+    expect(secure_frontend::merge_forced_environment(rows_block, {.suppressed = {std::string(name)}}) && !rows_block.contains(std::string(name)),
+           "suppressible: " + std::string(name));
+  }
+  for (const std::string_view name : {"PATH", "TEMP", "TMP", "CUDA_CACHE_PATH", "SystemRoot", "LD_LIBRARY_PATH", "TMPDIR", "CUDA_VISIBLE_DEVICES", ""}) {
+    auto rows_block = kPinnedWindowsBlock;
+    expect(!secure_frontend::merge_forced_environment(rows_block, {.suppressed = {std::string(name)}}) && rows_block == kPinnedWindowsBlock,
+           "not suppressible: " + std::string(name));
+  }
+  // Ambiguous: a row both forced and suppressed, or suppressed twice.
+  auto both = kPinnedWindowsBlock;
+  expect(!secure_frontend::merge_forced_environment(both, {.forced = {{"STRATA_WATCHDOG_S", "0"}}, .suppressed = {"STRATA_WATCHDOG_S"}}) &&
+             both == kPinnedWindowsBlock,
+         "forced and suppressed at once is refused");
+  auto twice = kPinnedWindowsBlock;
+  expect(!secure_frontend::merge_forced_environment(twice, {.suppressed = {"STRATA_WATCHDOG_S", "STRATA_WATCHDOG_S"}}) &&
+             twice == kPinnedWindowsBlock,
+         "a duplicate suppression is refused");
+}
+
 void sp6_env_forced_values_reject_never_list() {
-  using secure_frontend::ForcedEnvironmentValue;
-  const std::array<std::array<ForcedEnvironmentValue, 2>, 11> rejected{{
+  using Row = secure_frontend::ForcedEnvironmentValue;
+  const std::array<std::array<Row, 2>, 10> rejected{{
       {{{"CUDA_VISIBLE_DEVICES", "0"}, {"LD_PRELOAD", "/tmp/x.so"}}},  // a valid row first: all-or-nothing
       {{{"CUDA_DEVICE_ORDER", "PCI_BUS_ID"}, {"LD_AUDIT", "/tmp/x.so"}}},
       {{{"CUDA_VISIBLE_DEVICES", "0"}, {"HIP_VISIBLE_DEVICES", "0"}}},
@@ -1384,27 +1470,70 @@ void sp6_env_forced_values_reject_never_list() {
       {{{"CUDA_VISIBLE_DEVICES", "0"}, {"STRATA_GLM_DFLASH", "1"}}},  // not on the forcible list
       {{{"CUDA_VISIBLE_DEVICES", "0"}, {"PATH", "/tmp"}}},             // generic base rows are not forcible
       {{{"CUDA_VISIBLE_DEVICES", "0"}, {"CUDA_VISIBLE_DEVICES", "1"}}},  // a duplicate name is ambiguous
-      {{{"CUDA_VISIBLE_DEVICES", "0"}, {"STRATA_WATCHDOG_S", std::string_view{"0\0x", 3}}}},  // NUL in a value
       {{{"CUDA_VISIBLE_DEVICES", "0"}, {"", "x"}}},
   }};
   for (const auto& table : rejected) {
     auto block = kPinnedPosixBlock;
-    expect(!secure_frontend::merge_forced_environment(block, table),
-           "rejected table (second row " + std::string(table[1].name) + ")");
-    expect(block == kPinnedPosixBlock, "a rejected table leaves the block unchanged (" + std::string(table[1].name) + ")");
+    const FamilyEnvironmentRows rows{.forced = {table.begin(), table.end()}};
+    expect(!secure_frontend::merge_forced_environment(block, rows), "rejected table (second row " + table[1].name + ")");
+    expect(block == kPinnedPosixBlock, "a rejected table leaves the block unchanged (" + table[1].name + ")");
   }
+  auto nul = kPinnedPosixBlock;
+  expect(!secure_frontend::merge_forced_environment(nul, test_nul_rows({})) && nul == kPinnedPosixBlock, "a NUL in a value is refused");
   // Every never-list name except the two frontend-rendered GPU selectors (RF9) is refused.
   for (const std::string_view banned : secure_frontend::kNeverForwardedEnvironment) {
-    const std::array<ForcedEnvironmentValue, 1> table{{{banned, "x"}}};
     auto block = kPinnedPosixBlock;
     const bool gpu_selector = banned == "CUDA_DEVICE_ORDER" || banned == "CUDA_VISIBLE_DEVICES";
-    expect(secure_frontend::merge_forced_environment(block, table) == gpu_selector, "never-list name: " + std::string(banned));
+    expect(secure_frontend::merge_forced_environment(block, {.forced = {{std::string(banned), "x"}}}) == gpu_selector,
+           "never-list name: " + std::string(banned));
   }
-  // Every shipped family table passes the same validation.
-  for (const auto family : {secure_frontend::EngineFamily::strata, secure_frontend::EngineFamily::glm}) {
-    auto block = kPinnedPosixBlock;
-    expect(secure_frontend::merge_forced_environment(block, secure_frontend::family_forced_environment(family)), "family table validates");
+  // An invalid derived table: the family step yields nothing (no partial block).
+  const auto environment = representative_windows_environment();
+  expect(!secure_frontend::apply_family_environment(kPinnedWindowsBlock, environment, test_duplicate_rows).has_value(),
+         "a refused family merge yields no environment");
+  expect(!secure_frontend::render_family_environment(environment, test_nul_rows).has_value(), "the native family renderer refuses too");
+}
+
+// Fix round 1, item 3: a refused family merge is a spawn failure with a fixed
+// literal, and nothing is spawned (never with an empty environment).
+void sp6_env_refused_family_is_spawn_failure() {
+  const auto state = test_support::make_temp_dir("sp6-refused");
+  auto plan = fake_plan({});
+  plan.environment = secure_frontend::EngineEnvironment{
+      .lib_dirs = {}, .temp_dir = state / "engine-tmp", .cuda_cache_dir = state / "cache" / "cuda"};
+  for (const auto hook : {test_duplicate_rows, test_nul_rows}) {
+    plan.family_hook = hook;
+    test_support::LogCapture log;
+    auto spawned = secure_frontend::make_stdio_process_factory(plan, log.sink())(1U);
+    const auto* failure = std::get_if<secure_frontend::SpawnFailure>(&spawned);
+    expect(failure != nullptr && failure->message == "engine environment refused", "a refused family merge is a spawn failure");
+    expect(log.contains("engine generation 1: family environment refused"), "the fixed literal is logged");
+    expect(!std::filesystem::exists(state / "engine-tmp" / "1"), "the generation's temp directory is removed");
   }
+}
+
+// Fix round 1, item 2: the derived value reaches a real child through the spawn path.
+void sp6_env_derived_value_reaches_child() {
+  const auto state = test_support::make_temp_dir("sp6-derived");
+  auto plan = fake_plan({});
+  plan.environment = secure_frontend::EngineEnvironment{
+      .lib_dirs = {}, .temp_dir = state / "engine-tmp", .cuda_cache_dir = state / "cache" / "cuda", .watchdog_io_s = 3U};
+  plan.family_hook = test_derived_rows;
+  auto spawned = secure_frontend::make_stdio_process_factory(plan)(1U);
+  auto* process = std::get_if<std::unique_ptr<secure_frontend::SupervisedProcess>>(&spawned);
+  expect(process != nullptr, "spawn");
+  if (process == nullptr) return;
+  auto& transport = (*process)->transport();
+  expect(transport.read_line(5s).line == "READY 4096 stop", "READY");
+  const auto dump = test_support::request_dump(transport, 5s);
+  expect(dump.has_value(), "DUMP");
+  if (dump) {
+    const auto has = [&](const std::string& entry) { return std::find(dump->env.begin(), dump->env.end(), entry) != dump->env.end(); };
+    expect(has("CUDA_VISIBLE_DEVICES=3") && has("CUDA_DEVICE_ORDER=PCI_BUS_ID"), "the derived rows reach the child");
+  }
+  (*process)->kill_group();
+  for (int step = 0; step < 500 && !(*process)->try_reap(); ++step) std::this_thread::sleep_for(10ms);
+  (*process)->release_resources(1000ms);
 }
 
 }  // namespace
@@ -1444,6 +1573,11 @@ int main(int argc, char* argv[]) {
                                                 {"sp6_env_strata_family_renders_unchanged", sp6_env_strata_family_renders_unchanged},
                                                 {"sp6_env_forced_values_override_and_add", sp6_env_forced_values_override_and_add},
                                                 {"sp6_env_forced_values_reject_never_list", sp6_env_forced_values_reject_never_list},
+                                                {"sp6_env_forcible_names_are_the_ruled_set", sp6_env_forcible_names_are_the_ruled_set},
+                                                {"sp6_env_hook_derives_values_from_environment", sp6_env_hook_derives_values_from_environment},
+                                                {"sp6_env_hook_suppresses_only_optional_rows", sp6_env_hook_suppresses_only_optional_rows},
+                                                {"sp6_env_refused_family_is_spawn_failure", sp6_env_refused_family_is_spawn_failure},
+                                                {"sp6_env_derived_value_reaches_child", sp6_env_derived_value_reaches_child},
                                                 {"proc02_child_env_is_exact_allowlist", proc02_child_env_is_exact_allowlist},
 #if !defined(_WIN32)
                                                 {"shutdown_signal_preserves_errno", shutdown_signal_preserves_errno},

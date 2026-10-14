@@ -82,7 +82,15 @@ ProcessFactory make_stdio_process_factory(EngineLaunchPlan plan, SupervisorLog l
       environment.temp_dir = environment.temp_dir / std::to_string(generation);
       if (!create_owner_only_directory(environment.temp_dir)) return SpawnFailure{"engine temp directory setup failed"};
       temp_dir = environment.temp_dir;
-      command.environment = render_engine_environment(environment);
+      auto rendered = render_family_environment(environment, plan.family_hook);
+      if (!rendered) {
+        // Fixed literal, no value or path. Never spawn with an empty or partial environment.
+        log("engine generation " + std::to_string(generation) + ": family environment refused");
+        std::error_code ignored;
+        std::filesystem::remove_all(*temp_dir, ignored);  // nothing ran in it
+        return SpawnFailure{"engine environment refused"};
+      }
+      command.environment = std::move(*rendered);
     }
     if (cgroups) {
       command.cgroup_procs = cgroups->prepare_generation(generation);

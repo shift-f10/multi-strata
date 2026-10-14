@@ -257,13 +257,17 @@ class EngineSupervisor final {
 struct EngineLaunchPlan final {
   EngineCommand command;                           // command.environment is replaced when `environment` is set
   std::optional<EngineEnvironment> environment{};  // spec §3.9; temp_dir is the per-generation root
+  // SP6 §4.9: derives the family's forced/suppressed rows; tests inject their own.
+  FamilyEnvironmentHook family_hook{family_environment_rows};
   bool use_delegated_cgroup{false};                // Linux: cgroup.kill when a delegated cgroup is detected
 };
 
 // Production factory: an EngineStdioProcess started from `plan` per generation.
 // `log` (default: stderr, like the supervisor's) receives the fixed literal
 // "engine generation <n>: cgroup unavailable" when a detected delegated cgroup
-// cannot hold a generation, which then runs without one.
+// cannot hold a generation, which then runs without one, and the fixed literal
+// "engine generation <n>: family environment refused" when the family's rows
+// are refused: that generation is a spawn failure and nothing is spawned.
 [[nodiscard]] ProcessFactory make_stdio_process_factory(EngineLaunchPlan plan, SupervisorLog log = {});
 
 }  // namespace secure_frontend
