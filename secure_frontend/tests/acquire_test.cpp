@@ -218,9 +218,32 @@ void update_diff_lists_changed_files_and_license() {
   };
   expect(license_diff.license_changed, "a url or per-file license change requires an interactive y");
   expect(has(license_expected[0]) && has(license_expected[1]) && has(license_expected[2]), "license url and notice shown old -> new");
-  expect(has("file weights/a.gguf license: Apache-2.0 -> BSD-3-Clause") ||
-             has("file weights/a.gguf license: (none) -> BSD-3-Clause"),
-         "per-file license change shown");
+  // The override is compared with the effective license of the other side (top level here), field by field.
+  expect(has("file weights/a.gguf license: Apache-2.0 -> BSD-3-Clause"), "override id vs effective top-level id");
+  expect(has("file weights/a.gguf license url: https://h.example/l -> https://h.example/b"), "override url vs effective url");
+  expect(has("file weights/a.gguf bundle_allowed: true -> false"), "effective bundle_allowed flip shown (appearing override)");
+  expect(has("file weights/a.gguf notice: n -> x"), "override notice vs effective notice");
+  expect(std::count_if(license_diff.lines.begin(), license_diff.lines.end(),
+                       [](const std::string& l) { return l.rfind("file pack/", 0) == 0; }) == 0,
+         "files without an override on either side add no per-file license lines");
+
+  // Reverse: an override that allowed bundling vanishes while the top level forbids it.
+  auto before = installed;
+  before.license.bundle_allowed = false;
+  before.files[0].license = secure_frontend::ManifestLicense{"Apache-2.0", "https://h.example/l", true, "n"};
+  auto after = before;
+  after.files[0].license.reset();
+  const auto reverse = secure_frontend::diff_manifests(before, after);
+  expect(reverse.license_changed, "a vanished override that flips effective bundle_allowed requires a y");
+  expect((reverse.lines == std::vector<std::string>{"file weights/a.gguf bundle_allowed: true -> false", "bytes to download: 0"}),
+         "vanishing override shows the effective bundle_allowed flip");
+
+  // An override identical to the top-level license is not a change.
+  auto same = installed;
+  same.files[0].license = installed.license;
+  const auto same_diff = secure_frontend::diff_manifests(installed, same);
+  expect(!same_diff.license_changed && same_diff.lines == std::vector<std::string>{"bytes to download: 0"},
+         "an override equal to the top-level license changes nothing effective");
   expect(license_diff.reusable_files.size() == 4, "a license change does not force a re-download");
 }
 

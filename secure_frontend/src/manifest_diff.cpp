@@ -84,12 +84,16 @@ ManifestDiff diff_manifests(const AcquireManifest& installed, const AcquireManif
                       ", sha256 " + old.sha256 + " -> " + f.sha256);
       diff.bytes_to_download += f.size;
     }
-    // A per-file license override that appeared, vanished or changed also needs a y.
-    if (old.license.has_value() != f.license.has_value() ||
-        (old.license && f.license && !same_license(*old.license, *f.license))) {
-      diff.license_changed = true;
-      const ManifestLicense none{"(none)", "", false, ""};
-      license_delta(lines, "file " + f.path + " ", old.license ? *old.license : none, f.license ? *f.license : none);
+    // Compare EFFECTIVE licenses (override, else top level), so an appearing or vanishing override
+    // shows the real flip (notably bundle_allowed). Files with no override on either side are
+    // covered by the top-level lines. An override equal to the top-level license is no change.
+    if (old.license.has_value() || f.license.has_value()) {
+      const auto& before = effective_license(installed, it->second);
+      const auto& after = effective_license(candidate, i);
+      if (!same_license(before, after)) {
+        diff.license_changed = true;
+        license_delta(lines, "file " + f.path + " ", before, after);
+      }
     }
   }
   for (const auto& f : installed.files) {
