@@ -13,6 +13,14 @@ else()
 endif()
 option(SECURE_FRONTEND_WERROR "Treat warnings as errors in the secure frontend" ${_secure_frontend_werror_default})
 
+# SP4 §10.5: test-only hooks (record channel, raw manifest profile, publish
+# fault injection, --cacert loopback test). OFF by default; the test presets
+# turn it ON; linux-gcc-release proves the shipped (OFF) configuration.
+option(SECURE_FRONTEND_TEST_HOOKS "Compile test-only hooks; never for shipped binaries" OFF)
+if(SECURE_FRONTEND_TEST_HOOKS)
+    add_compile_definitions(SECURE_FRONTEND_TEST_HOOKS=1)
+endif()
+
 function(secure_frontend_set_warnings target)
     if(MSVC)
         target_compile_options(${target} PRIVATE /W4)
@@ -376,6 +384,13 @@ foreach(_target IN ITEMS
     secure_frontend_set_warnings(${_target})
 endforeach()
 
+# --- SP4 acquisition libraries ---
+add_library(secure_frontend_sha256 src/sha256.cpp)
+target_compile_features(secure_frontend_sha256 PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_sha256 PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+secure_frontend_set_warnings(secure_frontend_sha256)
+
 if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     enable_testing()
 
@@ -679,6 +694,17 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
             ${SECURE_FRONTEND_SERVER_ARGS} TIMEOUT 120)
         secure_frontend_add_cases(secure_frontend_server_e2e_tests server_process_is_not_dumpable
             ${SECURE_FRONTEND_SERVER_ARGS} TIMEOUT 120)
+    endif()
+
+    # --- SP4 tests ---
+    secure_frontend_add_test_executable(secure_frontend_sha256_tests tests/sha256_test.cpp secure_frontend_sha256)
+    secure_frontend_add_cases(secure_frontend_sha256_tests fips_180_4_short_vectors fips_180_4_million_a
+        LABELS release-also)
+    secure_frontend_add_cases(secure_frontend_sha256_tests long_message_one_gibibyte TIMEOUT 900)
+    secure_frontend_add_cases(secure_frontend_sha256_tests chunk_boundaries_do_not_change_digest
+        length_field_encodes_bits_big_endian hex_helpers_are_strict)
+    if(SECURE_FRONTEND_TEST_HOOKS)
+        secure_frontend_add_cases(secure_frontend_sha256_tests length_counter_past_2_32_bytes)
     endif()
 
     add_test(NAME strata_secure_server_help COMMAND strata-secure-server --help)

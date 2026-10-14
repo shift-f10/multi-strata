@@ -155,6 +155,12 @@ Follow [`PROVENANCE.md`](PROVENANCE.md), "Updating the baseline" (the only copy 
 
 ## What has changed
 
+### SP4 (branch `sp4-acquire`)
+
+Plan: `docs/superpowers/plans/2026-10-14-sp4-acquire.md`. One line per task.
+
+- Task 1: `SECURE_FRONTEND_TEST_HOOKS` option (ON in test presets), `linux-gcc-release` preset (hooks OFF; runs `release-only|release-also`), in-tree FIPS 180-4 SHA-256; `secure_frontend_sha256_tests` (7 cases; 2 `release-also`).
+
 ### Upstream bump to `v0.1.44.1` (2026-10-14, branch `upstream/bump-v0.1.44.1`)
 
 `7695859a` (`v0.1.43`) → `296b59d2` (`v0.1.44.1`), 315 commits. Gates old →
