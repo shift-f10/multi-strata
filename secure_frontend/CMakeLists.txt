@@ -509,6 +509,12 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         secure_frontend_add_cases(secure_frontend_typed_config_tests
             cfg02_env_token_ignores_config_folder_permissions cfg02_file_token_default_secret_root_reports_one_issue)
     endif()
+    if(WIN32)
+        secure_frontend_add_cases(secure_frontend_typed_config_tests cfg01_config_with_everyone_write_ace_rejected
+            LABELS windows-runtime)
+    else()
+        secure_frontend_add_cases(secure_frontend_typed_config_tests cfg01_group_writable_config_rejected)
+    endif()
 
     secure_frontend_add_test_executable(secure_frontend_tokenizer_pack_tests tests/tokenizer_pack_test.cpp
         secure_frontend_tokenizer_pack)

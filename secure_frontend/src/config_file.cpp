@@ -1,11 +1,12 @@
 #include "secure_frontend/config_file.hpp"
 
+#include "secure_frontend/canonical_path.hpp"
 #include "secure_frontend/json.hpp"
 
-#include <fstream>
 #include <optional>
 #include <string>
 #include <system_error>
+#include <utility>
 
 namespace secure_frontend {
 namespace {
@@ -81,18 +82,39 @@ std::variant<FrontendConfigDraft, ConfigErrors> parse_config_text(const std::str
 }
 
 std::variant<FrontendConfigDraft, ConfigErrors> read_config_file(const std::filesystem::path& file) {
+  const auto issue = [](const ConfigIssueCode code, std::string reason) {
+    return ConfigErrors{ConfigIssue{"config file", code, std::move(reason)}};
+  };
   std::error_code error;
   const auto absolute = std::filesystem::absolute(file, error);
-  if (error) return ConfigErrors{ConfigIssue{"config file", ConfigIssueCode::file_unavailable, "cannot be resolved"}};
-  std::ifstream input(absolute, std::ios::binary);
-  if (!input) return ConfigErrors{ConfigIssue{"config file", ConfigIssueCode::file_unavailable, "cannot be opened"}};
-  std::string text(kMaxConfigFileBytes + 1U, '\0');
-  input.read(text.data(), static_cast<std::streamsize>(text.size()));
-  text.resize(static_cast<std::size_t>(input.gcount()));
-  if (text.size() > kMaxConfigFileBytes) {
-    return ConfigErrors{ConfigIssue{"config file", ConfigIssueCode::malformed_document, "is larger than 64 KiB"}};
+  if (error || !absolute.has_filename()) return issue(ConfigIssueCode::file_unavailable, "cannot be resolved");
+  // The directory is opened as a root: owned by you (or root) and not writable
+  // by others, who could otherwise replace the file between check and use.
+  auto directory = open_root(absolute.parent_path());
+  if (const auto* failure = std::get_if<PathError>(&directory)) {
+    const bool trust = failure->code == PathErrorCode::shared_writable || failure->code == PathErrorCode::untrusted_owner;
+    return issue(trust ? ConfigIssueCode::file_untrusted : ConfigIssueCode::file_unavailable, "directory: " + failure->message);
   }
-  return parse_config_text(text, absolute.parent_path());
+  const auto& root = std::get<CanonicalRoot>(directory);
+  const auto name = parse_relative_path(path_to_utf8(absolute.filename()));
+  if (!std::holds_alternative<RelativePath>(name)) return issue(ConfigIssueCode::file_unavailable, "has a non-portable file name");
+  auto opened = open_beneath(root, std::get<RelativePath>(name),
+                             OpenOptions{.kind = OpenKind::regular_file, .trust = FileTrust::not_shared_writable});
+  if (const auto* failure = std::get_if<PathError>(&opened)) {
+    switch (failure->code) {
+      case PathErrorCode::not_found: return issue(ConfigIssueCode::file_unavailable, "does not exist");
+      case PathErrorCode::symlink_not_allowed:
+      case PathErrorCode::shared_writable:
+      case PathErrorCode::untrusted_owner: return issue(ConfigIssueCode::file_untrusted, failure->message);
+      default: return issue(ConfigIssueCode::file_unavailable, failure->message);
+    }
+  }
+  auto text = std::get<OpenedFile>(opened).read_all(kMaxConfigFileBytes);
+  if (const auto* failure = std::get_if<PathError>(&text)) {
+    return failure->code == PathErrorCode::too_large ? issue(ConfigIssueCode::malformed_document, "is larger than 64 KiB")
+                                                     : issue(ConfigIssueCode::file_unavailable, failure->message);
+  }
+  return parse_config_text(std::get<std::string>(text), root.path());
 }
 
 FrontendConfigDraft merge_drafts(FrontendConfigDraft file, const FrontendConfigDraft& flags) {

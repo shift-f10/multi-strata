@@ -20,6 +20,7 @@
 
 #if defined(_WIN32)
 #include "secure_frontend/win32_prelude.hpp"
+#include <aclapi.h>
 #include <sddl.h>
 #include <winioctl.h>
 #include <cstdint>
@@ -234,6 +235,31 @@ inline void write_protected_file(const std::filesystem::path& path, const std::s
   const DWORD error = ok ? ERROR_SUCCESS : GetLastError();
   CloseHandle(file);
   if (!ok) throw std::runtime_error("protected file write failed: error " + std::to_string(error));
+}
+
+// Adds an explicit Everyone:FILE_GENERIC_WRITE ACE to `path`'s DACL.
+inline bool grant_everyone_write(const std::filesystem::path& path) {
+  PACL old_dacl = nullptr;
+  PSECURITY_DESCRIPTOR descriptor = nullptr;
+  if (GetNamedSecurityInfoW(path.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, &old_dacl, nullptr,
+                            &descriptor) != ERROR_SUCCESS) return false;
+  DWORD sid_size = SECURITY_MAX_SID_SIZE;
+  std::vector<unsigned char> world(SECURITY_MAX_SID_SIZE);
+  CreateWellKnownSid(WinWorldSid, nullptr, world.data(), &sid_size);
+  EXPLICIT_ACCESS_W access{};
+  access.grfAccessPermissions = FILE_GENERIC_WRITE;
+  access.grfAccessMode = GRANT_ACCESS;
+  access.grfInheritance = NO_INHERITANCE;
+  access.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+  access.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
+  access.Trustee.ptstrName = reinterpret_cast<LPWSTR>(world.data());
+  PACL updated = nullptr;
+  const bool ok = SetEntriesInAclW(1, &access, old_dacl, &updated) == ERROR_SUCCESS &&
+                  SetNamedSecurityInfoW(const_cast<LPWSTR>(path.c_str()), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+                                        nullptr, nullptr, updated, nullptr) == ERROR_SUCCESS;
+  if (updated != nullptr) LocalFree(updated);
+  LocalFree(descriptor);
+  return ok;
 }
 
 // A directory junction (mount point) at `link` pointing at `target`; needs no privilege.

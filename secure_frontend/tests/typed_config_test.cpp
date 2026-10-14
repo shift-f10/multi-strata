@@ -286,6 +286,41 @@ void cfg02_file_token_default_secret_root_reports_one_issue() {
          "a private config folder is the file token's secret root: " + issues_of(ok));
 }
 #endif
+
+bool untrusted(const std::variant<secure_frontend::FrontendConfigDraft, secure_frontend::ConfigErrors>& result) {
+  const auto* errors = std::get_if<secure_frontend::ConfigErrors>(&result);
+  return errors != nullptr && !errors->empty() && errors->front().key_path == "config file" &&
+         errors->front().code == secure_frontend::ConfigIssueCode::file_untrusted;
+}
+
+#if !defined(_WIN32)
+void cfg01_group_writable_config_rejected() {
+  ConfigFixture f;
+  const auto file = f.dir / "config.json";
+  secure_frontend_test::write_file(file, f.document(), 0664);
+  expect(untrusted(secure_frontend::read_config_file(file)), "a group-writable config file is rejected");
+  chmod(file.c_str(), 0644);
+  expect(std::holds_alternative<secure_frontend::FrontendConfigDraft>(secure_frontend::read_config_file(file)),
+         "0644 is fine: the config is not secret");
+  const auto shared = secure_frontend_test::make_scratch_directory();
+  secure_frontend_test::write_file(shared / "config.json", f.document(), 0600);
+  chmod(shared.c_str(), 0777);
+  expect(untrusted(secure_frontend::read_config_file(shared / "config.json")),
+         "a config in a directory others can write is rejected (they could swap it)");
+  std::filesystem::create_symlink(file, f.dir / "linked.json");
+  expect(untrusted(secure_frontend::read_config_file(f.dir / "linked.json")), "a symlinked config file is rejected");
+}
+#else
+void cfg01_config_with_everyone_write_ace_rejected() {
+  ConfigFixture f;
+  const auto file = f.dir / "config.json";
+  secure_frontend_test::write_file(file, f.document());
+  expect(std::holds_alternative<secure_frontend::FrontendConfigDraft>(secure_frontend::read_config_file(file)),
+         "a config with the inherited user ACL is accepted");
+  expect(secure_frontend_test::grant_everyone_write(file), "test setup: add an Everyone write ACE");
+  expect(untrusted(secure_frontend::read_config_file(file)), "a config Everyone can write is rejected");
+}
+#endif
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -301,6 +336,9 @@ int main(int argc, char** argv) {
 #if !defined(_WIN32)
       {"cfg02_env_token_ignores_config_folder_permissions", cfg02_env_token_ignores_config_folder_permissions},
       {"cfg02_file_token_default_secret_root_reports_one_issue", cfg02_file_token_default_secret_root_reports_one_issue},
+      {"cfg01_group_writable_config_rejected", cfg01_group_writable_config_rejected},
+#else
+      {"cfg01_config_with_everyone_write_ace_rejected", cfg01_config_with_everyone_write_ace_rejected},
 #endif
   }, failures);
 }
