@@ -499,6 +499,20 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         cli_unknown_option_does_not_echo_value
         ${SECURE_FRONTEND_SERVER_ARGS} TIMEOUT 120)
 
+    secure_frontend_add_test_executable(secure_frontend_server_e2e_tests tests/server_e2e_test.cpp
+        secure_frontend_typed_config)
+    add_dependencies(secure_frontend_server_e2e_tests strata-secure-server secure_frontend_fake_engine)
+    if(WIN32)
+        target_link_libraries(secure_frontend_server_e2e_tests PRIVATE iphlpapi ws2_32)
+    endif()
+    secure_frontend_add_cases(secure_frontend_server_e2e_tests
+        cfg01_invalid_config_fails_before_listener_and_child net02_remote_addresses_need_opt_in
+        net02_error_is_non_secret_and_exits_before_bind
+        ${SECURE_FRONTEND_SERVER_ARGS} TIMEOUT 120)
+    # GetExtendedTcpTable is not faithful under wine.
+    secure_frontend_add_cases(secure_frontend_server_e2e_tests net01_default_listener_is_loopback_only
+        ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+
     add_test(NAME strata_secure_server_help COMMAND strata-secure-server --help)
     # The GLM runner takes positional arguments: glm53 without any --engine-arg is a usage error.
     add_test(NAME strata_secure_server_glm_requires_engine_arg

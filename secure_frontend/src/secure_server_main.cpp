@@ -102,7 +102,6 @@ int run(const FrontendConfig& config) {
   secure_frontend::EngineStdioProcess engine;
   const secure_frontend::EngineCommand command{.executable = config.engine.executable,
                                                .arguments = std::move(*engine_arguments), .environment = {}};
-  if (engine.start(command).has_value()) { std::cerr << "Unable to start local engine.\n"; return EXIT_FAILURE; }
   const auto protocol_flavor = glm ? secure_frontend::EngineProtocolFlavor::lighttransport_glm53
                                    : secure_frontend::EngineProtocolFlavor::strata_0143;
   secure_frontend::EngineProtocolClient protocol(engine, {}, protocol_flavor);
@@ -147,6 +146,9 @@ int run(const FrontendConfig& config) {
       },
       nullptr);
   if (!server) { std::cerr << "Unable to bind secure listener.\n"; return EXIT_FAILURE; }
+  // Bound first, spawned second: a listener that cannot bind never leaves an
+  // engine child behind (CFG-01).
+  if (engine.start(command).has_value()) { std::cerr << "Unable to start local engine.\n"; return EXIT_FAILURE; }
   std::cout << "Secure server listening on http://" << authority << " (authenticated; Ctrl-C to stop)\n";
   std::cout.flush();
   for (;;) {
