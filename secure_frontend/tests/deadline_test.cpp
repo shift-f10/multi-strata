@@ -27,7 +27,7 @@ class CountingTransport final : public secure_frontend::EngineLineTransport {
  public:
   std::deque<secure_frontend::EngineReadResult> reads;
   int read_calls{0};
-  bool write_line(std::string_view, std::string&) override { return true; }
+  bool write_line(std::string_view, secure_frontend::MonotonicClock::time_point, std::string&) override { return true; }
   secure_frontend::EngineReadResult read_line(std::chrono::milliseconds) override {
     ++read_calls;
     if (reads.empty()) return {secure_frontend::EngineReadKind::timeout, {}, {}};
@@ -59,7 +59,7 @@ void deadline_zero_timeout_is_immediate_everywhere() {
 
   // read_generation: the same rule.
   transport.reads = {line("T 1"), line("DONE stop")};
-  expect(!client.begin_generation(1, {1}).has_value(), "GEN");
+  expect(!client.begin_generation(1, {1}, secure_frontend::deadline_after(std::chrono::seconds(5))).has_value(), "GEN");
   const int calls_before = transport.read_calls;
   secure_frontend::EngineGeneration generation{};
   const auto generation_error = client.read_generation(0ms, generation);
@@ -71,7 +71,7 @@ void deadline_zero_timeout_is_immediate_everywhere() {
   expect(!child.start({.executable = test_support::fake_engine_path(), .arguments = {}, .environment = {}}).has_value(), "start");
   expect(child.read_line(5s).line == "READY 4096 stop", "READY");
   std::string error;
-  expect(child.write_line("GEN 1 1", error), "GEN");
+  expect(child.write_line("GEN 1 1", secure_frontend::deadline_after(std::chrono::seconds(5)), error), "GEN");
   expect(child.read_line(5s).line == "T 7", "T 7 (the fake writes DONE in the same flush, so it waits in the buffer)");
   std::this_thread::sleep_for(100ms);
   expect(child.read_line(0ms).kind == secure_frontend::EngineReadKind::timeout, "read_line(0) is an immediate timeout even with a buffered line");

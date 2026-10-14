@@ -55,7 +55,7 @@ struct FakeChild final {
 class FakeChildTransport final : public secure_frontend::EngineLineTransport {
  public:
   explicit FakeChildTransport(std::shared_ptr<FakeChild> child) : child_(std::move(child)) {}
-  bool write_line(const std::string_view line, std::string&) override {
+  bool write_line(const std::string_view line, secure_frontend::MonotonicClock::time_point, std::string&) override {
     std::lock_guard lock(child_->mutex);
     if (child_->exit) return false;
     child_->writes.emplace_back(line);

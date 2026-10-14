@@ -247,7 +247,7 @@ void proc03_other_uid_cannot_open_engine_fd() {
                                             (other_uid ? std::to_string(*other_uid) : std::string("none")));
   // The engine was alive throughout: it still answers on the frontend's own stdin.
   std::string error;
-  expect(child.write_line("DUMP", error), "DUMP through the frontend's stdin: " + error);
+  expect(child.write_line("DUMP", secure_frontend::deadline_after(std::chrono::seconds(5)), error), "DUMP through the frontend's stdin: " + error);
   const auto reply = child.read_line(5s);
   expect(reply.kind == secure_frontend::EngineReadKind::line && reply.line.rfind("FDS ", 0) == 0, "the engine is alive after the probes");
   (void)child.terminate(250ms);

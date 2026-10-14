@@ -1,5 +1,7 @@
 #pragma once
 
+#include "secure_frontend/deadline.hpp"
+
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -31,8 +33,12 @@ class EngineLineTransport {
  public:
   virtual ~EngineLineTransport() = default;
   // `line` never contains a newline. Implementations must write it as one
-  // atomic protocol record (line plus LF) or report failure.
-  [[nodiscard]] virtual bool write_line(std::string_view line, std::string& error) = 0;
+  // atomic protocol record (line plus LF) or report failure. `deadline` is the
+  // absolute overall bound for the whole record (spec §3.10, owner ruling
+  // 2026-10-14): a write still incomplete at `deadline` fails exactly like a
+  // chunk that misses its per-chunk deadline. No write is ever unbounded.
+  [[nodiscard]] virtual bool write_line(std::string_view line, MonotonicClock::time_point deadline,
+                                        std::string& error) = 0;
   [[nodiscard]] virtual EngineReadResult read_line(std::chrono::milliseconds timeout) = 0;
 };
 
@@ -117,8 +123,12 @@ class EngineProtocolClient final {
 
   [[nodiscard]] std::optional<EngineProtocolError> await_ready(std::chrono::milliseconds timeout,
                                                                  EngineReady& ready);
+  // `write_deadline` bounds the whole GEN write (the request's generation
+  // deadline, supplied by ChatExecutionService); a miss fails the protocol with
+  // transport_write_failed, which the supervisor kills as write_timeout.
   [[nodiscard]] std::optional<EngineProtocolError> begin_generation(
-      std::uint32_t max_new_tokens, const std::vector<std::uint32_t>& prompt_token_ids);
+      std::uint32_t max_new_tokens, const std::vector<std::uint32_t>& prompt_token_ids,
+      MonotonicClock::time_point write_deadline);
   // Reads until DONE. `timeout` is the TOTAL budget for this call, not a
   // per-line allowance. A timeout leaves a generation active so the caller may
   // issue STOP and continue draining; all malformed/terminal failures close it.
@@ -128,6 +138,9 @@ class EngineProtocolClient final {
       std::chrono::milliseconds timeout, EngineGeneration& generation);
   // Sends STOP once per generation; `cause` is recorded only when STOP was
   // written and is forgotten by the next begin_generation() call, even a refused one.
+  // STOP and QUIT are single-chunk control records sent after (or without) a
+  // request deadline: each write is bounded overall by one per-chunk deadline
+  // (config_defaults::kStdinWriteDeadline) from the call.
   [[nodiscard]] std::optional<EngineProtocolError> stop(EngineStopCause cause = EngineStopCause::generation_timeout);
   [[nodiscard]] std::optional<EngineProtocolError> quit();
   // Marks the protocol failed without writing anything, e.g. when the engine
@@ -167,7 +180,8 @@ class EngineProtocolClient final {
   static constexpr std::size_t kDefaultInboundLineBytes = 8192;
   [[nodiscard]] std::size_t inbound_max_line_bytes() const noexcept;
 
-  [[nodiscard]] std::optional<EngineProtocolError> write_command(std::string_view command);
+  [[nodiscard]] std::optional<EngineProtocolError> write_command(std::string_view command,
+                                                                  MonotonicClock::time_point deadline);
   [[nodiscard]] std::optional<EngineProtocolError> validate_incoming(std::string_view line) const;
   [[nodiscard]] std::optional<EngineProtocolError> fail(EngineProtocolErrorCode code,
                                                          std::string message);

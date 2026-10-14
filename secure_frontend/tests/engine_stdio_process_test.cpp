@@ -43,14 +43,14 @@ void test_round_trip(const std::filesystem::path& fake) {
   // E4: the GEN line for a full context is far beyond 8 KiB; the write cap must allow it.
   std::string big(100000U, '1');
   std::string werr;
-  const bool big_written = transport.write_line("GEN 1 " + big, werr);
+  const bool big_written = transport.write_line("GEN 1 " + big, secure_frontend::deadline_after(std::chrono::seconds(5)), werr);
   expect(big_written, "a 100 KB GEN line must be writable: " + werr);
   const auto reply_token = transport.read_line(std::chrono::seconds(2));
   const auto reply_done = transport.read_line(std::chrono::seconds(2));
   expect(reply_token.kind == secure_frontend::EngineReadKind::line && reply_token.line == "T 7" &&
              reply_done.kind == secure_frontend::EngineReadKind::line && reply_done.line == "DONE stop",
          "the fake engine must answer the 100 KB GEN line");
-  expect(!client.begin_generation(2, {1, 2, 3}).has_value(), "GEN must write through transport");
+  expect(!client.begin_generation(2, {1, 2, 3}, secure_frontend::deadline_after(std::chrono::seconds(5))).has_value(), "GEN must write through transport");
   secure_frontend::EngineGeneration generation{};
   expect(!client.read_generation(std::chrono::seconds(2), generation).has_value(), "generation must read through transport");
   expect(generation.token_ids == std::vector<std::uint32_t>{7}, "token must survive transport");
@@ -61,7 +61,20 @@ void test_round_trip(const std::filesystem::path& fake) {
 void test_invalid_record() {
   secure_frontend::EngineStdioProcess transport;
   std::string error;
-  expect(!transport.write_line("bad\nline", error), "multiline writes must be rejected");
+  expect(!transport.write_line("bad\nline", secure_frontend::deadline_after(std::chrono::seconds(5)), error), "multiline writes must be rejected");
+}
+
+// R1: a record whose overall deadline has already passed is not written; the
+// write fails the same way as a stalled chunk ("not writable").
+void write_line_fails_once_deadline_passed(const std::filesystem::path& fake) {
+  secure_frontend::EngineStdioProcess transport;
+  expect(!transport.start({.executable = fake, .arguments = {"--fake-engine"}, .environment = {}}).has_value(), "fake engine must start");
+  (void)transport.read_line(std::chrono::seconds(2));  // READY
+  std::string error;
+  const auto passed = secure_frontend::MonotonicClock::now() - std::chrono::milliseconds(1);
+  expect(!transport.write_line("GEN 1 1", passed, error) && error == "engine stdin is not writable", "a passed deadline fails the write: " + error);
+  expect(transport.read_line(std::chrono::milliseconds(300)).kind == secure_frontend::EngineReadKind::timeout, "nothing reached the engine");
+  (void)transport.terminate(std::chrono::milliseconds(250));
 }
 
 void read_line_rejects_oversize_on_all_platforms(const std::filesystem::path& fake) {
@@ -167,6 +180,7 @@ int main(int argc, char* argv[]) {
   return secure_frontend_test::run_cases(argc, argv, {
       {"test_round_trip", [] { test_round_trip(fake); }},
       {"test_invalid_record", [] { test_invalid_record(); }},
+      {"write_line_fails_once_deadline_passed", [] { write_line_fails_once_deadline_passed(fake); }},
       {"read_line_rejects_oversize_on_all_platforms", [] { read_line_rejects_oversize_on_all_platforms(fake); }},
       {"read_line_waits_for_a_record_split_across_writes", [] { read_line_waits_for_a_record_split_across_writes(fake); }},
 #if defined(_WIN32)

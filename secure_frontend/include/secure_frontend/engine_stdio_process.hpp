@@ -48,7 +48,10 @@ class EngineStdioProcess final : public EngineLineTransport, public SupervisedPr
   [[nodiscard]] std::optional<ExitStatus> try_reap() override;
   [[nodiscard]] std::optional<ExitStatus> exit_status() const noexcept { return exit_status_; }
 
-  [[nodiscard]] bool write_line(std::string_view line, std::string& error) override;
+  // Spec §3.10: chunks of kStdinWriteChunk; each waits at most
+  // min(kStdinWriteDeadline, time left to `deadline`), so a write fails both
+  // when a chunk stalls and when the whole record misses `deadline`.
+  [[nodiscard]] bool write_line(std::string_view line, MonotonicClock::time_point deadline, std::string& error) override;
   [[nodiscard]] EngineReadResult read_line(std::chrono::milliseconds timeout) override;
 
   // SupervisedProcess (spec §3.1): lifecycle calls from the supervisor thread only.

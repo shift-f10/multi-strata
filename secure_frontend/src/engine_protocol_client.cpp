@@ -1,5 +1,6 @@
 #include "secure_frontend/engine_protocol_client.hpp"
 
+#include "secure_frontend/config_defaults.hpp"
 #include "secure_frontend/deadline.hpp"
 
 #include <algorithm>
@@ -95,12 +96,13 @@ std::optional<EngineProtocolError> EngineProtocolClient::validate_incoming(const
   return std::nullopt;
 }
 
-std::optional<EngineProtocolError> EngineProtocolClient::write_command(const std::string_view command) {
+std::optional<EngineProtocolError> EngineProtocolClient::write_command(const std::string_view command,
+                                                                        const MonotonicClock::time_point deadline) {
   if (command.empty() || command.size() > effective_max_line_bytes_ || !ascii_printable(command)) {
     return fail(EngineProtocolErrorCode::invalid_argument, "outbound protocol command is invalid");
   }
   std::string transport_error;
-  if (!transport_.write_line(command, transport_error)) {
+  if (!transport_.write_line(command, deadline, transport_error)) {
     return fail(EngineProtocolErrorCode::transport_write_failed,
                 transport_error.empty() ? "engine command write failed" : transport_error);
   }
@@ -162,7 +164,8 @@ std::optional<EngineProtocolError> EngineProtocolClient::await_ready(const std::
 }
 
 std::optional<EngineProtocolError> EngineProtocolClient::begin_generation(
-    const std::uint32_t max_new_tokens, const std::vector<std::uint32_t>& prompt_token_ids) {
+    const std::uint32_t max_new_tokens, const std::vector<std::uint32_t>& prompt_token_ids,
+    const MonotonicClock::time_point write_deadline) {
   stop_cause_.reset();  // a cause never outlives its request, even if this GEN is refused
   if (state_ != State::idle) return EngineProtocolError{EngineProtocolErrorCode::invalid_state, "engine is not idle"};
   if (max_new_tokens == 0 || max_new_tokens > limits_.max_new_tokens || prompt_token_ids.empty() ||
@@ -177,7 +180,7 @@ std::optional<EngineProtocolError> EngineProtocolClient::begin_generation(
       return EngineProtocolError{EngineProtocolErrorCode::invalid_argument, "generation command exceeds line limit"};
     }
   }
-  if (const auto error = write_command(command); error.has_value()) return error;
+  if (const auto error = write_command(command, write_deadline); error.has_value()) return error;
   active_generation_ = EngineGeneration{};
   stop_requested_ = false;
   state_ = State::generating;
@@ -264,7 +267,7 @@ std::optional<EngineProtocolError> EngineProtocolClient::stop(const EngineStopCa
   if (state_ != State::generating) return EngineProtocolError{EngineProtocolErrorCode::invalid_state, "no generation is active"};
   if (!supports_stop_) return EngineProtocolError{EngineProtocolErrorCode::invalid_state, "engine did not advertise STOP support"};
   if (stop_requested_) return std::nullopt;
-  if (const auto error = write_command("STOP"); error.has_value()) return error;
+  if (const auto error = write_command("STOP", deadline_after(config_defaults::kStdinWriteDeadline)); error.has_value()) return error;
   stop_requested_ = true;
   stop_cause_ = cause;
   return std::nullopt;
@@ -273,7 +276,7 @@ std::optional<EngineProtocolError> EngineProtocolClient::stop(const EngineStopCa
 std::optional<EngineProtocolError> EngineProtocolClient::quit() {
   if (state_ == State::closed) return std::nullopt;
   if (state_ == State::failed) return EngineProtocolError{EngineProtocolErrorCode::invalid_state, "engine protocol has failed"};
-  if (const auto error = write_command("QUIT"); error.has_value()) return error;
+  if (const auto error = write_command("QUIT", deadline_after(config_defaults::kStdinWriteDeadline)); error.has_value()) return error;
   state_ = State::closed;
   return std::nullopt;
 }

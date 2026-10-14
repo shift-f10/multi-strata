@@ -314,7 +314,7 @@ void proc04_fatal_prefix_kills_engine() {
     secure_frontend::EngineProtocolClient protocol(transport);
     secure_frontend::EngineReady ready{};
     expect(!protocol.await_ready(1s, ready).has_value(), "READY");
-    expect(!protocol.begin_generation(1, {1}).has_value(), "GEN");
+    expect(!protocol.begin_generation(1, {1}, secure_frontend::deadline_after(std::chrono::seconds(5))).has_value(), "GEN");
     child->push_line("T 1");
     child->push_line(std::string(secure_frontend::kEngineFatalPrefixes[index]) + "12");
     child->push_line("DONE stop");
@@ -411,12 +411,12 @@ void sp3_d2_kill_reason_follows_stop_cause() {
     secure_frontend::EngineReady ready{};
     if (protocol.await_ready(1s, ready).has_value()) return KillReason::none;
     if (client_stop_drained_first) {
-      if (protocol.begin_generation(2U, {1U, 2U}).has_value() || protocol.stop(EngineStopCause::client_cancelled).has_value()) return KillReason::none;
+      if (protocol.begin_generation(2U, {1U, 2U}, secure_frontend::deadline_after(std::chrono::seconds(5))).has_value() || protocol.stop(EngineStopCause::client_cancelled).has_value()) return KillReason::none;
       child->push_line("DONE 0 2 1 1 cancel");
       secure_frontend::EngineGeneration drained{};
       if (protocol.read_generation(1s, drained).has_value()) return KillReason::none;
     }
-    if (protocol.begin_generation(2U, {1U, 2U}).has_value()) return KillReason::none;
+    if (protocol.begin_generation(2U, {1U, 2U}, secure_frontend::deadline_after(std::chrono::seconds(5))).has_value()) return KillReason::none;
     if ((cause ? protocol.stop(*cause) : protocol.stop()).has_value()) return KillReason::none;
     secure_frontend::EngineGeneration drained{};
     const auto drain = protocol.read_generation(20ms, drained);
@@ -442,7 +442,7 @@ bool client_stop_drain_fails(secure_frontend::EngineSupervisor& supervisor) {
   auto lease = supervisor.acquire();
   if (!lease) return false;
   auto& protocol = lease->protocol();
-  if (protocol.begin_generation(2U, {1U, 2U}).has_value()) return false;
+  if (protocol.begin_generation(2U, {1U, 2U}, secure_frontend::deadline_after(std::chrono::seconds(5))).has_value()) return false;
   if (protocol.stop(secure_frontend::EngineStopCause::client_cancelled).has_value()) return false;
   secure_frontend::EngineGeneration drained{};
   const auto drain = protocol.read_generation(20ms, drained);
@@ -471,7 +471,7 @@ void successful_done(secure_frontend::EngineSupervisor& supervisor, const test_s
   auto lease = supervisor.acquire();
   expect(lease.has_value(), "lease for the DONE");
   if (!lease) return;
-  expect(!lease->protocol().begin_generation(2U, {1U, 2U}).has_value(), "GEN accepted");
+  expect(!lease->protocol().begin_generation(2U, {1U, 2U}, secure_frontend::deadline_after(std::chrono::seconds(5))).has_value(), "GEN accepted");
   fakes.child(generation)->push_line("DONE 0 2 1 1 length");
   secure_frontend::EngineGeneration done{};
   expect(!lease->protocol().read_generation(1s, done).has_value(), "the generation ends with a successful DONE");
@@ -850,6 +850,39 @@ void proc04_windows_write_timeout_kills_engine() {
   supervisor.shutdown(5s);
 }
 #endif
+
+// R1 (owner ruling 2026-10-14, spec §3.10): an engine that drains stdin
+// slowly but steadily (16 KiB per 100 ms, so every 64 KiB chunk completes well
+// inside the 1 s per-chunk deadline) still cannot hold the serving thread past
+// the request's generation deadline: the GEN write is bounded overall by it
+// and fails through the write_timeout kill path. Portable (POSIX and Windows).
+void proc04_slow_stdin_write_bounded_by_request_deadline() {
+  secure_frontend::SupervisorConfig config;
+  config.policy.backoff_initial = 20ms;
+  config.chat_limits.generation_timeout = 2s;
+  config.chat_limits.maximum_prompt_tokens = 250000U;
+  test_support::LogCapture log;
+  secure_frontend::EngineSupervisor supervisor(
+      config, secure_frontend::make_stdio_process_factory(fake_plan({"--slow-stdin=16384", "--slow-stdin-interval-ms=100", "--ready-context=262144"})),
+      std::make_shared<secure_frontend::SteadySupervisorClock>(), log.sink());
+  expect(supervisor.start(), "the supervisor starts");
+  expect(test_support::wait_generation_ready(supervisor, 1U, 10s), "ready");
+  const auto tokenizer = test_support::byte_tokenizer();
+  // Four 60,000-byte messages (each under the renderer's 64 KiB per-message
+  // cap) are ~240,000 prompt tokens of id 239: a GEN line of ~960 KB, which the
+  // engine drains at <= 160 KiB/s, i.e. ~6 s, three times the 2 s deadline.
+  const std::string content(60000U, '0');
+  const secure_frontend::ChatCompletionRequest request{
+      "fake-model", {{"user", content}, {"assistant", content}, {"user", content}, {"assistant", content}, {"user", "go"}}, 2U};
+  const auto started = std::chrono::steady_clock::now();
+  const auto outcome = secure_frontend::execute_with_lease(supervisor, request, tokenizer);
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  expect(outcome && std::holds_alternative<secure_frontend::ChatExecutionError>(*outcome), "the request fails");
+  expect(elapsed < 3500ms, "the write ends within the 2 s request deadline + 1.5 s slack, took " +
+                               std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()) + " ms");
+  expect(log.wait_for("engine generation 1 ended: killed_by_supervisor(write_timeout)", 5s), "killed as write_timeout");
+  supervisor.shutdown(5s);
+}
 
 // RF4: an exception that escapes the supervisor thread (the factory, the log
 // sink, the clock) opens the circuit instead of reaching std::terminate, and
@@ -1290,5 +1323,6 @@ int main(int argc, char* argv[]) {
                                                 {"proc04_windows_crash_does_not_stall", proc04_windows_crash_does_not_stall},
                                                 {"proc04_windows_write_timeout_kills_engine", proc04_windows_write_timeout_kills_engine},
 #endif
+                                                {"proc04_slow_stdin_write_bounded_by_request_deadline", proc04_slow_stdin_write_bounded_by_request_deadline},
                                                }, failures);
 }

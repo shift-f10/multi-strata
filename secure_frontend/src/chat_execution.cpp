@@ -1,5 +1,7 @@
 #include "secure_frontend/chat_execution.hpp"
 
+#include "secure_frontend/deadline.hpp"
+
 #include <limits>
 #include <utility>
 #include <vector>
@@ -76,14 +78,17 @@ ChatExecutionOutcome ChatExecutionService::execute(const ChatCompletionRequest& 
     prompt_ids.push_back(static_cast<std::uint32_t>(token_id));
   }
 
-  if (protocol_.begin_generation(static_cast<std::uint32_t>(plan->max_tokens), prompt_ids)
+  // One request generation deadline (K1, R1): it bounds the GEN write overall
+  // and then the read to DONE, which gets only what the write left.
+  const auto generation_deadline = deadline_after(limits_.generation_timeout);
+  if (protocol_.begin_generation(static_cast<std::uint32_t>(plan->max_tokens), prompt_ids, generation_deadline)
           .has_value()) {
     return error(ChatExecutionErrorCode::engine_protocol_failed,
                  "local engine rejected the generation request");
   }
 
   EngineGeneration generation{};
-  if (const auto generation_error = protocol_.read_generation(limits_.generation_timeout, generation);
+  if (const auto generation_error = protocol_.read_generation(remaining_until(generation_deadline), generation);
       generation_error.has_value()) {
     if (generation_error->code != EngineProtocolErrorCode::timeout) {
       return error(ChatExecutionErrorCode::engine_protocol_failed,

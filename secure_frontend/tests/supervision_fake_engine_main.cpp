@@ -56,6 +56,8 @@ struct Options final {
   bool abort_in_gen{false};
   std::optional<int> fatal_line;
   bool stall_stdin{false};
+  int slow_stdin_bytes{0};  // > 0: after READY, only drain stdin, this many bytes per interval
+  int slow_stdin_interval_ms{100};
   int fail_first{0};
   std::string counter_file;
   std::string record_file;
@@ -107,6 +109,8 @@ Options parse_options(const int argc, char** argv) {
     else if (value_of(argument, "--record-file", value)) options.record_file = value;
     else if (value_of(argument, "--grandchild-pidfile", value)) options.grandchild_pidfile = value;
     else if (value_of(argument, "--dump-file", value)) options.dump_file = value;
+    else if (value_of(argument, "--slow-stdin", value)) options.slow_stdin_bytes = std::max(1, std::stoi(value));
+    else if (value_of(argument, "--slow-stdin-interval-ms", value)) options.slow_stdin_interval_ms = std::max(1, std::stoi(value));
   }
   return options;
 }
@@ -115,6 +119,24 @@ void sleep_ms(const int milliseconds) { std::this_thread::sleep_for(std::chrono:
 
 [[noreturn]] void sleep_forever() {
   for (;;) std::this_thread::sleep_for(std::chrono::hours(1));
+}
+
+// --slow-stdin=BYTES: a slow but steady stdin reader (SP2 R1). It reads at
+// most BYTES raw bytes every --slow-stdin-interval-ms (default 100) and
+// discards them, never answering, until EOF. Each 64 KiB write chunk drains
+// well inside 1 s while a large GEN line takes far longer overall.
+void drain_stdin_slowly(const int bytes, const int interval_ms) {
+  std::vector<char> buffer(static_cast<std::size_t>(bytes));
+  for (;;) {
+#if defined(_WIN32)
+    DWORD count = 0;
+    if (!ReadFile(GetStdHandle(STD_INPUT_HANDLE), buffer.data(), static_cast<DWORD>(buffer.size()), &count, nullptr) || count == 0) return;
+#else
+    const ssize_t count = read(STDIN_FILENO, buffer.data(), buffer.size());
+    if (count <= 0) return;
+#endif
+    sleep_ms(interval_ms);
+  }
 }
 
 std::string hex(const std::string_view bytes) {
@@ -391,6 +413,10 @@ int serve(const Options& options) {
     crash(*options.crash_after_ready);
   }
   if (options.stall_stdin) sleep_forever();
+  if (options.slow_stdin_bytes > 0) {
+    drain_stdin_slowly(options.slow_stdin_bytes, options.slow_stdin_interval_ms);
+    return 0;
+  }
   std::string line;
   if (options.spew) {
     // One record larger than kMaxReadLineBytes with no newline, then stay alive.

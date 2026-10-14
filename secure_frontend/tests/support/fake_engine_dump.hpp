@@ -113,7 +113,7 @@ inline std::optional<FakeDump> parse_dump(const std::vector<std::string>& lines)
 // Sends DUMP and reads the report (at most 16 lines, each within `timeout`).
 inline std::optional<FakeDump> request_dump(secure_frontend::EngineLineTransport& transport, const std::chrono::milliseconds timeout) {
   std::string error;
-  if (!transport.write_line("DUMP", error)) return std::nullopt;
+  if (!transport.write_line("DUMP", secure_frontend::deadline_after(timeout), error)) return std::nullopt;
   std::vector<std::string> lines;
   for (int count = 0; count < 16; ++count) {
     const auto result = transport.read_line(timeout);

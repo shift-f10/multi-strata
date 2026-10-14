@@ -264,7 +264,11 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
   // O_CLOEXEC on every pipe end: nothing created here can leak into this or any
   // other child.  The child's ends reach fds 0/1 through dup2, which clears it.
   int input[2]{-1, -1}; int output[2]{-1, -1}; int errors[2]{-1, -1};
-  if (pipe2(input, O_CLOEXEC) != 0 || pipe2(output, O_CLOEXEC) != 0 || pipe2(errors, O_CLOEXEC) != 0) { for (int* pipe_fd : {input, output, errors}) { close_fd(pipe_fd[0]); close_fd(pipe_fd[1]); } return ProcessError{ProcessErrorCode::platform_failure, "pipe setup failed"}; }
+  // The frontend's stdin end is also O_NONBLOCK (spec §3.10): write_line()
+  // bounds every wait with poll(), never with a blocking write. The flag is on
+  // the write end's own file description; the engine's read end is unaffected.
+  const auto nonblocking = [](const int fd) { const int flags = fcntl(fd, F_GETFL); return flags >= 0 && fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0; };
+  if (pipe2(input, O_CLOEXEC) != 0 || pipe2(output, O_CLOEXEC) != 0 || pipe2(errors, O_CLOEXEC) != 0 || !nonblocking(input[1])) { for (int* pipe_fd : {input, output, errors}) { close_fd(pipe_fd[0]); close_fd(pipe_fd[1]); } return ProcessError{ProcessErrorCode::platform_failure, "pipe setup failed"}; }
   pid_t child = -1;
   {
     posix_launch::BlockAllSignals blocked;
@@ -315,20 +319,36 @@ bool EngineStdioProcess::running() {
 #endif
 }
 
-bool EngineStdioProcess::write_line(const std::string_view line, std::string& error) {
+namespace {
+// How long the next chunk may wait: the per-chunk deadline, cut short by the
+// record's overall deadline (spec §3.10, owner ruling 2026-10-14). Zero means
+// the overall deadline has passed.
+std::chrono::milliseconds chunk_wait(const MonotonicClock::time_point deadline) {
+  return std::min(remaining_until(deadline), config_defaults::kStdinWriteDeadline);
+}
+}  // namespace
+
+bool EngineStdioProcess::write_line(const std::string_view line, const MonotonicClock::time_point deadline, std::string& error) {
   if (line.empty() || line.size() > kMaxWriteLineBytes || line.find('\n') != std::string_view::npos || line.find('\r') != std::string_view::npos || contains_nul(line)) { error = "protocol line is invalid"; return false; }
   std::string record(line); record.push_back('\n');
 #if defined(_WIN32)
   if (!stdin_write_) { error = "engine stdin is closed"; return false; }
-  // Spec §3.10: overlapped writes in chunks; a chunk that makes no progress
-  // within kStdinWriteDeadline is cancelled and the write fails, so a hung
-  // engine can never hang the serving thread (the supervisor then kills it).
+  // Spec §3.10: overlapped writes in chunks; a chunk that does not complete
+  // within kStdinWriteDeadline, or by the record's overall deadline, is
+  // cancelled and the write fails, so a hung or slowly draining engine can
+  // never hold the serving thread (the supervisor then kills it).
   HANDLE pipe = static_cast<HANDLE>(stdin_write_);
   HANDLE event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   if (event == nullptr) { error = "engine stdin write failed"; return false; }
   bool ok = true;
   std::size_t offset = 0;
   while (ok && offset < record.size()) {
+    const auto wait = chunk_wait(deadline);
+    if (wait.count() == 0) {
+      error = "engine stdin is not writable";
+      ok = false;
+      break;
+    }
     const auto chunk = static_cast<DWORD>(std::min<std::size_t>(record.size() - offset, config_defaults::kStdinWriteChunk));
     OVERLAPPED overlapped{};
     overlapped.hEvent = event;
@@ -339,7 +359,7 @@ bool EngineStdioProcess::write_line(const std::string_view line, std::string& er
       ok = false;
       break;
     }
-    if (WaitForSingleObject(event, static_cast<DWORD>(config_defaults::kStdinWriteDeadline.count())) != WAIT_OBJECT_0) {
+    if (WaitForSingleObject(event, static_cast<DWORD>(wait.count())) != WAIT_OBJECT_0) {
       (void)CancelIoEx(pipe, &overlapped);
       (void)GetOverlappedResult(pipe, &overlapped, &written, TRUE);  // the cancelled I/O must finish before `overlapped` goes away
       error = "engine stdin is not writable";
@@ -356,7 +376,25 @@ bool EngineStdioProcess::write_line(const std::string_view line, std::string& er
   CloseHandle(event);
   return ok;
 #else
-  if (stdin_write_ < 0) { error = "engine stdin is closed"; return false; } std::size_t offset = 0; while (offset < record.size()) { pollfd pollfd{stdin_write_, POLLOUT, 0}; if (poll(&pollfd, 1, 1000) <= 0) { error = "engine stdin is not writable"; return false; } ssize_t count = -1; if (!write_without_sigpipe(stdin_write_, record.data() + offset, record.size() - offset, count) || count <= 0) { error = "engine stdin write failed"; return false; } offset += static_cast<std::size_t>(count); } return true;
+  if (stdin_write_ < 0) { error = "engine stdin is closed"; return false; }
+  // The stdin end is O_NONBLOCK (start()), so a write never blocks past the
+  // poll: each chunk waits for writability at most chunk_wait(deadline).
+  std::size_t offset = 0;
+  while (offset < record.size()) {
+    const auto wait = chunk_wait(deadline);
+    if (wait.count() == 0) { error = "engine stdin is not writable"; return false; }
+    pollfd pollfd{stdin_write_, POLLOUT, 0};
+    const int status = poll(&pollfd, 1, static_cast<int>(wait.count()));
+    if (status < 0 && errno == EINTR) continue;
+    if (status <= 0) { error = "engine stdin is not writable"; return false; }
+    const std::size_t chunk = std::min(record.size() - offset, config_defaults::kStdinWriteChunk);
+    ssize_t count = -1;
+    if (!write_without_sigpipe(stdin_write_, record.data() + offset, chunk, count)) { error = "engine stdin write failed"; return false; }
+    if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue;
+    if (count <= 0) { error = "engine stdin write failed"; return false; }
+    offset += static_cast<std::size_t>(count);
+  }
+  return true;
 #endif
 }
 

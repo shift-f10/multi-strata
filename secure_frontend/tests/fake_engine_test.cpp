@@ -51,7 +51,7 @@ struct Child final {
   EngineReadKind kind(const std::chrono::milliseconds timeout) { return transport.read_line(timeout).kind; }
   void send(const std::string& text) {
     std::string error;
-    expect(transport.write_line(text, error), "write must succeed: " + text);
+    expect(transport.write_line(text, secure_frontend::deadline_after(std::chrono::seconds(5)), error), "write must succeed: " + text);
   }
 };
 
