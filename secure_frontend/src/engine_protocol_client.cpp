@@ -224,18 +224,36 @@ std::optional<EngineProtocolError> EngineProtocolClient::read_generation(const s
       continue;
     }
     if (response.line.rfind("PP ", 0) == 0) {
-      // PP is allowed only for the startup-selected GLM wire profile. Its
-      // exact shape is either `PP <read> <total>` or the extended
-      // `PP <read> <total> <milliseconds> <tokens-per-second>` form. It is a
-      // private prefill heartbeat, not client-visible output.
+      // PP is a private prefill-progress heartbeat, never client-visible
+      // output. Both engine profiles emit it, with different semantics:
+      //
+      // Strata (upstream v0.1.44.1): `generate.cpp` prints
+      // `PP <position reached> <prompt tokens> <ms> <fresh tokens/s>` after
+      // every batched prompt chunk (`%lld %lld %.0f %.1f`), and the
+      // `qwen35moe` engine (`q36_engine.cu`) prints `PP <done> <fresh> <ms>
+      // <tokens/s>` where the second field counts only the tokens not reused
+      // from the held state. Upstream's own server accepts any `PP` with two
+      // decimal fields (`serve/server.py`). The frontend accepts the same
+      // family of shapes, bounded: 3 to 5 fields, two decimal counters,
+      // optional non-negative metrics. No ordering between the two counters
+      // is assumed, because `fresh` is not a total.
+      //
+      // GLM (startup-selected LightTransport profile): exactly
+      // `PP <read> <total>` or `PP <read> <total> <ms> <tokens/s>` with
+      // `0 < total` and `read <= total` (SP6 research §4; strict on purpose,
+      // the engine is built and audited independently).
       const auto progress = fields(response.line);
-      std::uint32_t read = 0;
-      std::uint32_t total = 0;
-      const bool extended = progress.size() == 5U &&
-          nonnegative_decimal_metric(progress[3]) && nonnegative_decimal_metric(progress[4]);
-      if (flavor_ != EngineProtocolFlavor::lighttransport_glm53 ||
-          (progress.size() != 3U && !extended) || !parse_decimal(progress[1], read) ||
-          !parse_decimal(progress[2], total) || total == 0U || read > total) {
+      std::uint32_t first = 0;
+      std::uint32_t second = 0;
+      const bool metrics_ok = (progress.size() < 4U || nonnegative_decimal_metric(progress[3])) &&
+                              (progress.size() < 5U || nonnegative_decimal_metric(progress[4]));
+      const bool counters_ok = progress.size() >= 3U && progress.size() <= 5U &&
+                               parse_decimal(progress[1], first) && parse_decimal(progress[2], second);
+      bool accepted = counters_ok && metrics_ok;
+      if (flavor_ == EngineProtocolFlavor::lighttransport_glm53) {
+        accepted = accepted && progress.size() != 4U && second != 0U && first <= second;
+      }
+      if (!accepted) {
         return fail(EngineProtocolErrorCode::unexpected_line,
                     "engine emitted an invalid or unsupported prefill progress line");
       }

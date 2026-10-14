@@ -226,11 +226,18 @@ network code. Upstream changes that matter to the frontend:
   path): a DLL search-order and packaging question for GPU builds.
 - New family check: the engine refuses any `general.architecture` other than
   `qwen4exp` / `qwen35moe` — affects the SP6 GLM port.
-- Open item for the controller (pre-existing since `v0.1.43`, not fixed here):
-  the engine emits `PP <done> <total> <ms> <tok/s>` during batched prompt
-  reads, and `engine_protocol_client.cpp` rejects `PP` outside the GLM
-  profile, so such a Strata-profile request would fail. Not observed at run
-  time (no GPU).
+- RESOLVED 2026-10-14 (commit on `main`, "protocol: Strata-profile PP prefill
+  heartbeats are consumed"): the engine emits `PP <position> <prompt tokens>
+  <ms> <tok/s>` during batched prompt reads (`generate.cpp`), and the
+  `qwen35moe` engine emits `PP <done> <fresh> <ms> <tok/s>` (`q36_engine.cu`);
+  `engine_protocol_client.cpp` used to reject `PP` outside the GLM profile, so
+  every real Strata-profile request with a batched prefill would have failed
+  with a generic `503`. It now consumes bounded `PP` records (3–5 fields, two
+  decimal counters, optional non-negative metrics, no ordering assumed) under
+  the Strata profile; the GLM profile keeps its exact 3-/5-field record with
+  `read <= total`. Case `engine_protocol_client_tests.prefill_progress_is_bounded_in_both_profiles`
+  (RED against the old client on the first Strata-shaped line). Still never
+  observed against a real engine (no GPU here).
 
 The runbook in `PROVENANCE.md` was corrected on its first real run (gates at
 the old pin first, per-run `out/<name>-<L>` dirs, rule for new upstream test
