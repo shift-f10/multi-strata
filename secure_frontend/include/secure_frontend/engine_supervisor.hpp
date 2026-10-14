@@ -120,7 +120,11 @@ using SupervisorLog = std::function<void(std::string_view line)>;
 //   (~Lease) may be called concurrently from any number of threads. Each one
 //   takes `mutex_` (or reads an atomic) for the duration of the call only;
 //   none forks, reaps, kills or waits on a child. That stays on the supervisor
-//   thread (spec §3.1).
+//   thread (spec §3.1), with one exception: a Lease that outlives the
+//   supervisor and holds a generation the supervisor abandoned (never reaped)
+//   drops the last reference, and that process's destructor runs
+//   terminate(250 ms) (group kill, then a bounded wait) on the thread
+//   destroying the Lease.
 // - At most one Lease exists at a time: acquire() returns nullopt while one is
 //   out, so callers need no lock of their own around it.
 // - A Lease is used by one thread at a time: its accessors and the
@@ -131,9 +135,11 @@ using SupervisorLog = std::function<void(std::string_view line)>;
 //   thread, or the destructor). shutdown() may run while other threads use the
 //   serving API or hold a Lease: from `shutting_down` on, acquire() returns
 //   nullopt and waiters wake.
-// - Nothing may call into the supervisor once its destructor has begun. A
-//   Lease is the exception: it may outlive shutdown() and the supervisor
-//   (RF4, see Lease).
+// - Nothing may call into the supervisor once its destructor has begun, and
+//   every serving-API call (including a wait_for_change/wait_for_state still
+//   blocked) must have returned before it begins: the destructor does not wait
+//   for callers. A Lease is the exception: it may outlive shutdown() and the
+//   supervisor (RF4, see Lease).
 class EngineSupervisor final {
  public:
   EngineSupervisor(SupervisorConfig config, ProcessFactory factory,
@@ -162,15 +168,23 @@ class EngineSupervisor final {
   // circuit_open. A successful DONE ends the streak; a counted failure does not.
   // Production code derives this reason only through kill_reason_for(protocol)
   // (abandoned + a STOP sent with EngineStopCause::client_cancelled); passing
-  // it here directly is for tests only.
+  // it here directly is for tests only. Two edges SP3 should know: a stray
+  // begin_generation() while a client-STOP generation is still active is
+  // refused but erases the recorded cause, so that generation's failure counts
+  // as drain_failed (errs toward counting); and a STOPped generation that
+  // finishes with DONE (a cancel that completed) is a successful DONE and
+  // ends the uncounted streak.
   void report_fatal(const Lease& lease, KillReason reason);
   // One sample per /health request (SP0's sample-once rule).
   [[nodiscard]] HealthSnapshot snapshot() const;
   // Blocks until the state is no longer `from` or `timeout` passes, and returns
   // the state then (still `from` on timeout). The wait is not a poll: it uses
   // the condition variable that every state change notifies under `mutex_`,
-  // the same one wait_for_state() uses. Use wait_for_change(generating, t) to
-  // wait for a Lease release (-> ready). The same wait wakes when the leased
+  // the same one wait_for_state() uses. It observes states, not transitions:
+  // the predicate is re-checked when the waiter wakes, so a change that is
+  // undone before then is missed (a release immediately followed by another
+  // acquire leaves `generating`, and the wait goes on). Use
+  // wait_for_change(generating, t) to wait for a Lease release (-> ready). The same wait wakes when the leased
   // generation fails (report_fatal or a crash -> stopping) and on shutdown
   // (-> shutting_down), so a waiter never sleeps through either. Once the state
   // is `stopped` nothing changes it, so a wait from `stopped` runs to its timeout.
