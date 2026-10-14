@@ -529,6 +529,10 @@ void proc05_cgroup_kill_when_delegated() {
   expect(test_support::wait_generation_ready(supervisor, 1U, 10s), "ready");
   const auto grandchild = test_support::read_pidfile(pidfile, 5s);
   expect(grandchild.has_value(), "grandchild started");
+  const auto generation = cgroups->generation_directory(1U);
+  if (grandchild) {
+    expect(test_support::cgroup_directory_of(*grandchild) == generation, "the setsid grandchild runs in the generation's cgroup");
+  }
   {
     auto lease = supervisor.acquire();
     if (lease) supervisor.report_fatal(*lease, secure_frontend::KillReason::protocol_failed);
@@ -538,7 +542,7 @@ void proc05_cgroup_kill_when_delegated() {
     expect(test_support::wait_until_gone(*grandchild, 2s), "cgroup.kill ends a setsid grandchild with no sweep");
     test_support::kill_process(*grandchild);
   }
-  expect(!std::filesystem::exists(cgroups->root() / "strata-engine-1"), "the generation's cgroup is removed");
+  expect(!std::filesystem::exists(generation), "the generation's cgroup is removed");
   supervisor.shutdown(5s);
 }
 #endif

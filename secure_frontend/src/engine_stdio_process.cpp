@@ -501,10 +501,10 @@ void EngineStdioProcess::kill_group() noexcept {
 
 void EngineStdioProcess::release_resources(const std::chrono::milliseconds bound) noexcept {
 #if !defined(_WIN32)
-  if (cgroup_dir_) {
-    (void)remove_cgroup(*cgroup_dir_, bound);
-    cgroup_dir_.reset();
-  }
+  // The cgroup empties just after the leader is reaped, so even a 0 ms caller
+  // (shutdown, exception path) gets kCgroupRemoveBound; a failed removal keeps
+  // cgroup_dir_ so cleanup() kills and retries it.
+  if (cgroup_dir_ && remove_cgroup(*cgroup_dir_, std::max(bound, kCgroupRemoveBound))) cgroup_dir_.reset();
   process_group_ = -1;  // never signal a group id the kernel may hand out again
 #else
   (void)bound;
@@ -524,6 +524,10 @@ void EngineStdioProcess::cleanup() noexcept { (void)terminate(std::chrono::milli
   close_handle(stdin_write_); close_handle(stdout_read_); close_handle(process_handle_); close_handle(job_handle_);
 #else
   close_fd(stdin_write_); close_fd(stdout_read_); close_fd(pidfd_);
+  if (cgroup_dir_) {  // never released, or its removal failed: last try
+    (void)kill_cgroup(*cgroup_dir_);
+    if (remove_cgroup(*cgroup_dir_, kCgroupRemoveBound)) cgroup_dir_.reset();
+  }
 #endif
 }
 

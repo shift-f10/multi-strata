@@ -199,6 +199,9 @@ struct EngineLaunchPlan final {
 };
 
 // Production factory: an EngineStdioProcess started from `plan` per generation.
-[[nodiscard]] ProcessFactory make_stdio_process_factory(EngineLaunchPlan plan);
+// `log` (default: stderr, like the supervisor's) receives the fixed literal
+// "engine generation <n>: cgroup unavailable" when a detected delegated cgroup
+// cannot hold a generation, which then runs without one.
+[[nodiscard]] ProcessFactory make_stdio_process_factory(EngineLaunchPlan plan, SupervisorLog log = {});
 
 }  // namespace secure_frontend

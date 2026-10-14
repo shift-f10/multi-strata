@@ -171,6 +171,19 @@ inline std::optional<long> read_pidfile(const std::filesystem::path& path, const
   }
 }
 
+#if defined(__linux__)
+// The cgroup v2 directory `pid` runs in, from /proc/<pid>/cgroup ("0::<path>");
+// nullopt when the process is gone or has no v2 entry.
+inline std::optional<std::filesystem::path> cgroup_directory_of(const long pid) {
+  std::ifstream input("/proc/" + std::to_string(pid) + "/cgroup");
+  std::string line;
+  while (std::getline(input, line)) {
+    if (line.rfind("0::/", 0) == 0) return std::filesystem::path("/sys/fs/cgroup") / line.substr(4);
+  }
+  return std::nullopt;
+}
+#endif
+
 inline void kill_process(const long pid) {
   if (pid <= 0) return;
 #if defined(_WIN32)

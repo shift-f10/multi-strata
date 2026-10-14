@@ -63,14 +63,24 @@ std::optional<ChatExecutionOutcome> execute_with_lease(EngineSupervisor& supervi
   return outcome;
 }
 
-ProcessFactory make_stdio_process_factory(EngineLaunchPlan plan) {
+ProcessFactory make_stdio_process_factory(EngineLaunchPlan plan, SupervisorLog log) {
   std::optional<EngineCgroups> cgroups;
   if (plan.use_delegated_cgroup) cgroups = EngineCgroups::detect();
-  return [plan = std::move(plan), cgroups](const std::uint64_t generation) -> SpawnResult {
+  return [plan = std::move(plan), cgroups, log = log ? std::move(log) : SupervisorLog(log_to_stderr)](
+             const std::uint64_t generation) -> SpawnResult {
     EngineCommand command = plan.command;
-    if (cgroups) command.cgroup_procs = cgroups->prepare_generation(generation);
+    if (cgroups) {
+      command.cgroup_procs = cgroups->prepare_generation(generation);
+      // Fixed literal, no path (privacy rule): the generation runs without a cgroup.
+      if (!command.cgroup_procs) log("engine generation " + std::to_string(generation) + ": cgroup unavailable");
+    }
     auto process = std::make_unique<EngineStdioProcess>();
-    if (const auto error = process->start(command); error.has_value()) return SpawnFailure{error->message};
+    if (const auto error = process->start(command); error.has_value()) {
+      // open_cgroup, fork or execve failed: the generation's directory is empty
+      // (an execve failure's child was already reaped), so remove it.
+      if (command.cgroup_procs) (void)remove_cgroup(command.cgroup_procs->parent_path(), kCgroupRemoveBound);
+      return SpawnFailure{error->message};
+    }
     return std::unique_ptr<SupervisedProcess>(std::move(process));
   };
 }
@@ -412,8 +422,9 @@ void EngineSupervisor::wait_in_circuit_open() {
 
 // Spec §3.7: EOF first (the engine exits 0 on EOF) unless a Lease still uses
 // engine stdin; then SIGTERM to the group; then always SIGKILL the group
-// (§3.7a); reap, sweep (§3.7b), retire. Worst case 2 + 1 + 1 + 0.25 s, inside
-// the 5 s bound (ruling RF5).
+// (§3.7a); reap, sweep (§3.7b), retire, remove a delegated cgroup (§3.7d).
+// Worst case 2 + 1 + 1 + 0.25 + 0.1 (kCgroupRemoveBound) = 4.35 s, inside the
+// 5 s bound (ruling RF5).
 void EngineSupervisor::shutdown_generation(const std::shared_ptr<EngineInstance>& instance) {
   note_shutdown_started();
   bool lease_outstanding = false;

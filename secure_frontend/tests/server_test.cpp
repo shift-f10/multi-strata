@@ -150,6 +150,7 @@ void proc05_frontend_sigkill_kills_engine() {
   auto server = ServerProcess::start(options);
   expect(server != nullptr && server->wait_until_listening(10s), "the server listens");
   if (!server) return;
+  const long frontend_pid = server->pid();
   // The fake writes the grandchild's pidfile after READY: the engine is up
   // whether or not the supervisor has consumed READY yet.
   const auto grandchild = test_support::read_pidfile(pidfile, 10s);
@@ -161,8 +162,15 @@ void proc05_frontend_sigkill_kills_engine() {
   (void)server->wait_exit(5s);
   expect(test_support::wait_until_gone(children.front(), 2s), "the engine leader dies with a SIGKILLed frontend (PR_SET_PDEATHSIG)");
   if (grandchild) {
-    if (secure_frontend::EngineCgroups::detect()) {
-      expect(test_support::wait_until_gone(*grandchild, 2s), "with a delegated cgroup the engine's descendants die too");
+    if (const auto cgroups = secure_frontend::EngineCgroups::detect()) {
+      // Nothing writes cgroup.kill once the frontend is SIGKILLed: the
+      // grandchild stays inside the generation's cgroup (ruling on Task 16).
+      const auto generation = cgroups->generation_directory(1U, frontend_pid);
+      expect(test_support::cgroup_directory_of(*grandchild) == generation, "with a delegated cgroup the grandchild is in the generation's cgroup");
+      std::cout << "grandchild remains until the scope's cgroup.kill (frontend SIGKILL residual, delegated)\n";
+      (void)secure_frontend::kill_cgroup(generation);
+      (void)test_support::wait_until_gone(*grandchild, 2s);
+      (void)secure_frontend::remove_cgroup(generation, 2s);
     } else {
       // Spec §3.7 residual risk: without a delegated cgroup the engine's own
       // descendants survive a frontend SIGKILL. Logged, not asserted.

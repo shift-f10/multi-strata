@@ -2,7 +2,6 @@
 
 #include "secure_frontend/deadline.hpp"
 
-#include <cerrno>
 #include <fstream>
 #include <string>
 #include <thread>
@@ -47,10 +46,22 @@ std::optional<EngineCgroups> EngineCgroups::detect() {
 #endif
 }
 
+std::filesystem::path EngineCgroups::generation_directory(const std::uint64_t generation, const long frontend_pid) const {
+  return root_ / ("strata-engine-" + std::to_string(frontend_pid) + "-" + std::to_string(generation));
+}
+
+std::filesystem::path EngineCgroups::generation_directory(const std::uint64_t generation) const {
+#if defined(__linux__)
+  return generation_directory(generation, static_cast<long>(getpid()));
+#else
+  return generation_directory(generation, -1L);
+#endif
+}
+
 std::optional<std::filesystem::path> EngineCgroups::prepare_generation(const std::uint64_t generation) const {
 #if defined(__linux__)
-  const auto directory = root_ / ("strata-engine-" + std::to_string(generation));
-  if (mkdir(directory.c_str(), 0700) != 0 && errno != EEXIST) return std::nullopt;
+  const auto directory = generation_directory(generation);
+  if (mkdir(directory.c_str(), 0700) != 0) return std::nullopt;  // EEXIST included: never join a directory we did not create
   return directory / "cgroup.procs";
 #else
   (void)generation;
