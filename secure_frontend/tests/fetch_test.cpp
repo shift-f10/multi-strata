@@ -608,5 +608,21 @@ int main(int argc, char** argv) {
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
       {"test_cacert_reaches_argv_in_hook_builds", fetch_cases::test_cacert_reaches_argv_in_hook_builds},
 #endif
+#if !defined(_WIN32)
+      {"downloader_spawn_report_classified", fetch_cases::downloader_spawn_report_classified},
+#if defined(SECURE_FRONTEND_TEST_HOOKS)
+      {"priv04_downloader_argv_exact", fetch_cases::priv04_downloader_argv_exact},
+      {"priv04_downloader_env_is_empty", fetch_cases::priv04_downloader_env_is_empty},
+      {"redirect_url_absent_from_downloader_argv", fetch_cases::redirect_url_absent_from_downloader_argv},
+      {"dl03_downloader_untrusted_path_rejected", fetch_cases::dl03_downloader_untrusted_path_rejected},
+      {"downloader_below_floor_exits_9", fetch_cases::downloader_below_floor_exits_9},
+      {"dl03_downloader_cannot_write_files", fetch_cases::dl03_downloader_cannot_write_files},
+      {"dl03_downloader_cannot_read_home", fetch_cases::dl03_downloader_cannot_read_home},
+      {"pre_exec_failure_fails_closed_exit_9", fetch_cases::pre_exec_failure_fails_closed_exit_9},
+      {"ruleset_failure_fails_closed_exit_9", fetch_cases::ruleset_failure_fails_closed_exit_9},
+      {"record_fd_does_not_clobber_report_pipe", fetch_cases::record_fd_does_not_clobber_report_pipe},
+      {"confinement_reduced_is_announced_without_landlock", fetch_cases::confinement_reduced_is_announced_without_landlock},
+#endif
+#endif
   }, secure_frontend_test::failures);
 }

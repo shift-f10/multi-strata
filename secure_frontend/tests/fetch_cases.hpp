@@ -26,4 +26,21 @@ void test_cacert_reaches_argv_in_hook_builds();
 #endif
 // fetch_pull_test.cpp (Task 22)
 void dl03_wrong_digest_rejected_prior_version_intact();
+#if !defined(_WIN32)
+// fetch_spawn_test.cpp (Task 25)
+void downloader_spawn_report_classified();
+#if defined(SECURE_FRONTEND_TEST_HOOKS)
+void priv04_downloader_argv_exact();
+void priv04_downloader_env_is_empty();
+void redirect_url_absent_from_downloader_argv();
+void dl03_downloader_untrusted_path_rejected();
+void downloader_below_floor_exits_9();
+void dl03_downloader_cannot_write_files();
+void dl03_downloader_cannot_read_home();
+void pre_exec_failure_fails_closed_exit_9();
+void ruleset_failure_fails_closed_exit_9();
+void record_fd_does_not_clobber_report_pipe();
+void confinement_reduced_is_announced_without_landlock();
+#endif
+#endif
 }  // namespace fetch_cases

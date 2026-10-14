@@ -1,6 +1,7 @@
 #include "secure_frontend/strata_cli.hpp"
 #include "secure_frontend/utf8_argv.hpp"
 
+#include <csignal>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -13,6 +14,11 @@
 #endif
 
 int main(int argc, char** argv) {
+#if !defined(_WIN32)
+  // SP4 §3.2: strata writes to pipes whose reader (the downloader) can die first;
+  // that must be an EPIPE, never a SIGPIPE death.
+  std::signal(SIGPIPE, SIG_IGN);
+#endif
   // Spec A2 (as strata-secure-server): on Windows every argument is UTF-8 from
   // the wide command line, never the ANSI code page; the verbs decode paths
   // with path_from_utf8.

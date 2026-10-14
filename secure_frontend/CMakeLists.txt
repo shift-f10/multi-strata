@@ -473,6 +473,19 @@ if(WIN32)
 endif()
 secure_frontend_set_warnings(secure_frontend_acquire)
 
+# SP4 Task 25 (spec §3.1-§3.3): the confined system curl. Linked only by
+# secure_frontend_strata_cli and tests; strata-secure-server never links it (§7.1).
+# POSIX-only until Task 26 adds the Windows source (the cross build does not build it).
+if(NOT WIN32)
+    add_library(secure_frontend_downloader src/downloader_common.cpp src/downloader_posix.cpp)
+    target_compile_features(secure_frontend_downloader PUBLIC cxx_std_20)
+    target_include_directories(secure_frontend_downloader PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+    # secure_frontend_engine_process provides EngineCommand for posix_launch::prepare.
+    target_link_libraries(secure_frontend_downloader PUBLIC secure_frontend_acquire secure_frontend_engine_process)
+    secure_frontend_set_warnings(secure_frontend_downloader)
+endif()
+
 # SP4 §2.3 / ruling R-1: the engine version is the committed ../upstream.version
 # (one line, "v<x.y.z[.n]>"). When upstream/ has a reachable exact tag it must equal
 # the file (FATAL_ERROR only on a mismatch); a missing tag never fails configure.
@@ -1245,6 +1258,27 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     target_sources(secure_frontend_fetch_tests PRIVATE tests/fetch_pull_test.cpp)
     secure_frontend_add_cases(secure_frontend_fetch_tests dl03_wrong_digest_rejected_prior_version_intact
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # SP4 Task 25 (spec §3.1-§3.3, §10.3): the confined downloader on Linux. The
+    # library is POSIX-only until Task 26 adds the Windows source.
+    if(NOT WIN32)
+        target_sources(secure_frontend_fetch_tests PRIVATE tests/fetch_spawn_test.cpp)
+        target_link_libraries(secure_frontend_fetch_tests PRIVATE secure_frontend_downloader)
+        secure_frontend_add_cases(secure_frontend_fetch_tests downloader_spawn_report_classified)
+        # Record-channel and hook-switch cases (plan Global Constraints).
+        if(SECURE_FRONTEND_TEST_HOOKS)
+            secure_frontend_add_cases(secure_frontend_fetch_tests priv04_downloader_argv_exact priv04_downloader_env_is_empty
+                redirect_url_absent_from_downloader_argv dl03_downloader_untrusted_path_rejected downloader_below_floor_exits_9
+                dl03_downloader_cannot_write_files dl03_downloader_cannot_read_home pre_exec_failure_fails_closed_exit_9
+                ruleset_failure_fails_closed_exit_9 record_fd_does_not_clobber_report_pipe
+                confinement_reduced_is_announced_without_landlock
+                ARGS $<TARGET_FILE:secure_frontend_fake_curl>)
+            # Ruling R7: skipped only on a kernel without Landlock; a rejected ruleset is a failure.
+            set_tests_properties(secure_frontend_fetch_tests.dl03_downloader_cannot_write_files
+                secure_frontend_fetch_tests.dl03_downloader_cannot_read_home
+                secure_frontend_fetch_tests.ruleset_failure_fails_closed_exit_9
+                PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED: Landlock is unavailable")
+        endif()
+    endif()
 
     add_test(NAME strata_secure_server_help COMMAND strata-secure-server --help)
     # G4: past --help the server refuses an elevated token, and the Windows CI
