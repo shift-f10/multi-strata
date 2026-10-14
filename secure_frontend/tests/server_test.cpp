@@ -16,7 +16,10 @@
 #include <utility>
 #include <vector>
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#include "secure_frontend/win32_prelude.hpp"
+#include <aclapi.h>
+#else
 #include <sys/stat.h>
 #endif
 
@@ -176,6 +179,88 @@ void state_dir_must_be_owner_only() {
     expect(!std::filesystem::exists(record), name + ": no engine was spawned");
   }
 }
+
+// Startup clears <state>/engine-tmp/*: a generation directory a previous
+// frontend left behind (here generation 7, with a file in it) is gone.
+void state_dir_stale_engine_tmp_is_cleared() {
+  const auto state = test_support::make_temp_dir("stale") / "state";
+  secure_frontend_test::make_private_directory(state);
+  secure_frontend_test::make_private_directory(state / "engine-tmp");
+  secure_frontend_test::make_private_directory(state / "engine-tmp" / "7");
+  secure_frontend_test::write_file(state / "engine-tmp" / "7" / "left-behind", "x");
+  test_support::ServerOptions options;
+  options.state_dir = state;
+  auto server = ServerProcess::start(options);
+  expect(server != nullptr, "launched");
+  if (!server) return;
+  expect(server->wait_until_listening(10s), "the server starts: " + server->stderr_text());
+  expect(!std::filesystem::exists(state / "engine-tmp" / "7"), "the stale generation directory was removed at startup");
+  expect(std::filesystem::is_directory(state / "engine") && std::filesystem::is_directory(state / "cache" / "cuda"),
+         "the state layout was created");
+  server->stop(ServerProcess::Stop::kill);
+  (void)server->wait_exit(5s);
+}
+
+#if defined(_WIN32)
+// Adds an explicit BUILTIN\Users read ACE to `path`'s DACL.
+bool grant_users_read(const std::filesystem::path& path) {
+  PACL old_dacl = nullptr;
+  PSECURITY_DESCRIPTOR descriptor = nullptr;
+  if (GetNamedSecurityInfoW(path.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, &old_dacl, nullptr,
+                            &descriptor) != ERROR_SUCCESS) {
+    return false;
+  }
+  DWORD sid_size = SECURITY_MAX_SID_SIZE;
+  std::vector<unsigned char> users(SECURITY_MAX_SID_SIZE);
+  const bool have_sid = CreateWellKnownSid(WinBuiltinUsersSid, nullptr, users.data(), &sid_size) != 0;
+  EXPLICIT_ACCESS_W access{};
+  access.grfAccessPermissions = FILE_GENERIC_READ;
+  access.grfAccessMode = GRANT_ACCESS;
+  access.grfInheritance = NO_INHERITANCE;
+  access.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+  access.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
+  access.Trustee.ptstrName = reinterpret_cast<LPWSTR>(users.data());
+  PACL updated = nullptr;
+  const bool ok = have_sid && SetEntriesInAclW(1, &access, old_dacl, &updated) == ERROR_SUCCESS &&
+                  SetNamedSecurityInfoW(const_cast<LPWSTR>(path.c_str()), SE_FILE_OBJECT,
+                                        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, nullptr, nullptr,
+                                        updated, nullptr) == ERROR_SUCCESS;
+  if (updated != nullptr) LocalFree(updated);
+  LocalFree(descriptor);
+  return ok;
+}
+
+// Review Focus 1, Windows: owner-only means SP1's protected private DACL, not
+// just "not writable by others"; a junction root is refused, not followed.
+void state_dir_must_be_owner_only_windows() {
+  const auto base = test_support::make_temp_dir("rf1w");
+  const auto good = base / "good";
+  secure_frontend_test::make_private_directory(good);
+  const auto shared = base / "users-read";
+  secure_frontend_test::make_private_directory(shared);
+  expect(grant_users_read(shared), "test setup: add a Users read ACE");
+  const auto junction = base / "junction";
+  expect(secure_frontend_test::create_junction(junction, good), "test setup: a junction to a private directory");
+  for (const auto& [name, state] : std::vector<std::pair<std::string, std::filesystem::path>>{{"users-read", shared}, {"junction", junction}}) {
+    const auto record = base / (name + ".record");
+    test_support::ServerOptions options;
+    options.state_dir = state;
+    options.engine_args = {"--record-file=" + test_support::utf8_path(record)};
+    auto server = ServerProcess::start(options);
+    expect(server != nullptr, name + ": launched");
+    if (!server) continue;
+    expect(server->wait_exit(10s) == 1, name + ": the server refuses to start");
+    expect(server->stderr_text().find("--state-dir must be an existing owner-only directory.") != std::string::npos, name + ": fixed error");
+    expect(!std::filesystem::exists(record), name + ": no engine was spawned");
+  }
+  // Control: the same layout with a private directory serves.
+  test_support::ServerOptions options;
+  options.state_dir = good;
+  auto server = ServerProcess::start(options);
+  expect(server != nullptr && server->wait_until_listening(10s), "a private state directory is accepted");
+  if (server) server->stop(ServerProcess::Stop::kill);
+}
+#endif
 
 #if !defined(_WIN32)
 void proc05_frontend_sigkill_kills_engine() {
@@ -350,6 +435,7 @@ int main(int argc, char* argv[]) {
                                              {"proc04_abort_in_generation_is_generic_503", proc04_abort_in_generation_is_generic_503},
                                              {"proc04_health_leaves_ready_after_idle_engine_death", proc04_health_leaves_ready_after_idle_engine_death},
                                              {"state_dir_must_be_owner_only", state_dir_must_be_owner_only},
+                                             {"state_dir_stale_engine_tmp_is_cleared", state_dir_stale_engine_tmp_is_cleared},
 #if !defined(_WIN32)
                                              {"proc05_frontend_sigkill_kills_engine", proc05_frontend_sigkill_kills_engine},
                                              {"proc05_frontend_sigterm_stops_all_descendants", proc05_frontend_sigterm_stops_all_descendants},
@@ -361,6 +447,7 @@ int main(int argc, char* argv[]) {
 #if defined(_WIN32)
                                              {"proc05_windows_ctrl_break_stops_all_descendants", proc05_windows_ctrl_break_stops_all_descendants},
                                              {"proc05_windows_terminate_frontend_kills_job", proc05_windows_terminate_frontend_kills_job},
+                                             {"state_dir_must_be_owner_only_windows", state_dir_must_be_owner_only_windows},
 #endif
                                          },
                                          failures);

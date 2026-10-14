@@ -349,6 +349,37 @@ void cfg01_config_with_everyone_write_ace_rejected() {
 }
 #endif
 
+// engine.lib_dirs: each entry an absolute directory without the platform's
+// list separator (':' POSIX, ';' Windows), which would split LD_LIBRARY_PATH /
+// PATH into extra, unvalidated directories.
+void engine_lib_dirs_must_be_absolute_directories() {
+  ConfigFixture f;
+#if defined(_WIN32)
+  const std::string separator = ";";
+#else
+  const std::string separator = ":";
+#endif
+  const auto with_lib_dirs = [&f](const std::vector<std::string>& entries) {
+    auto literals = f.literals;
+    std::string array = "[";
+    for (const auto& entry : entries) array += (array.size() > 1U ? "," : "") + secure_frontend_test::json_literal(entry);
+    literals["engine.lib_dirs"] = array + "]";
+    return validate_text(render_config_json(literals), f.dir);
+  };
+  const std::string good = (f.dir / "lib").string();
+  const auto accepted = with_lib_dirs({good, (f.dir / "lib2").string()});
+  const auto* validated = std::get_if<secure_frontend::ValidatedConfig>(&accepted);
+  expect(validated != nullptr, "absolute lib dirs validate: " + issues_of(accepted));
+  if (validated != nullptr) {
+    expect(validated->get().engine.lib_dirs ==
+               std::vector<std::filesystem::path>{f.dir / "lib", f.dir / "lib2"}, "lib dirs pass through in order");
+  }
+  for (const auto& bad : std::vector<std::string>{"lib", "", good + separator + (f.dir / "other").string()}) {
+    expect(has_issue(with_lib_dirs({good, bad}), "engine.lib_dirs", ConfigIssueCode::invalid_value),
+           "rejected lib dir entry of " + std::to_string(bad.size()) + " bytes");
+  }
+}
+
 void cfg02_logs_and_cache_roots_are_created_private() {
   ConfigFixture f;
   auto literals = f.literals;
@@ -469,6 +500,7 @@ int main(int argc, char** argv) {
       {"cfg01_chat_ranges_match_enforced_caps", cfg01_chat_ranges_match_enforced_caps},
       {"typed_config_cross_field_rules", typed_config_cross_field_rules},
       {"typed_config_errors_never_contain_values", typed_config_errors_never_contain_values},
+      {"engine_lib_dirs_must_be_absolute_directories", engine_lib_dirs_must_be_absolute_directories},
       {"cfg02_logs_and_cache_roots_are_created_private", cfg02_logs_and_cache_roots_are_created_private},
       {"cfg06_config_has_no_secret_typed_member", cfg06_config_has_no_secret_typed_member},
       {"cfg06_validated_config_bytes_do_not_contain_token", cfg06_validated_config_bytes_do_not_contain_token},

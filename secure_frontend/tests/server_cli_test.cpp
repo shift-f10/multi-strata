@@ -195,6 +195,24 @@ void init_failure_creates_nothing() {
   expect(secure_frontend_test::snapshot_tree(f.dir) == before, "nothing below the scratch tree changed");
 }
 
+// roots.state (--state-dir) is optional for --check and init but required to
+// serve: without it the server refuses before anything is spawned.
+void serve_requires_state_root() {
+  ServerFixture f;
+  const auto marker = f.dir / "engine-started";
+  auto flags = f.base_flags();
+  const auto state_flag = std::find(flags.begin(), flags.end(), "--state-dir");
+  expect(state_flag != flags.end(), "the fixture passes --state-dir");
+  if (state_flag == flags.end()) return;
+  flags.erase(state_flag, state_flag + 2);
+  const auto checked = f.run(with(flags, {"--check"}));
+  expect(checked.exit_code == 0, "--check accepts a config without roots.state: " + checked.err);
+  const auto result = f.run(with(flags, {"--engine-arg", "--marker=" + marker.string()}));
+  expect(result.exit_code != 0 && contains(result.err, "roots.state (--state-dir) is required to serve."),
+         "serve without roots.state is refused: " + result.err);
+  expect(!std::filesystem::exists(marker), "no engine was spawned");
+}
+
 void auth04_empty_token_rejected_on_loopback() {
   ServerFixture f;
   const auto marker = f.dir / "engine-started";
@@ -306,5 +324,6 @@ int main(int argc, char** argv) {
       {"init_failure_creates_nothing", init_failure_creates_nothing},
       {"auth04_empty_token_rejected_on_loopback", auth04_empty_token_rejected_on_loopback},
       {"auth04_no_switch_disables_auth", auth04_no_switch_disables_auth},
+      {"serve_requires_state_root", serve_requires_state_root},
   }, failures);
 }

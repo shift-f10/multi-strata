@@ -739,23 +739,49 @@ void supervisor_lease_outliving_shutdown_is_safe() {
   expect(true, "the Lease outlived the supervisor without touching it");
 }
 
-void set_parent_variable(const char* name, const char* value) {
+// Sets a variable of this test process for one case and restores the previous
+// value (or removes it) when the case ends.
+class ScopedParentVariable final {
+ public:
+  ScopedParentVariable(const char* name, const char* value) : name_(name) {
+    if (const char* previous = std::getenv(name)) previous_ = std::string(previous);
+    set(value);
+  }
+  ~ScopedParentVariable() {
+    if (previous_) {
+      set(previous_->c_str());
+    } else {
 #if defined(_WIN32)
-  (void)_putenv_s(name, value);
+      (void)_putenv_s(name_, "");  // an empty value removes it
 #else
-  (void)setenv(name, value, 1);
+      (void)unsetenv(name_);
 #endif
-}
+    }
+  }
+  ScopedParentVariable(const ScopedParentVariable&) = delete;
+  ScopedParentVariable& operator=(const ScopedParentVariable&) = delete;
+
+ private:
+  void set(const char* value) const {
+#if defined(_WIN32)
+    (void)_putenv_s(name_, value);
+#else
+    (void)setenv(name_, value, 1);
+#endif
+  }
+  const char* name_;
+  std::optional<std::string> previous_;
+};
 
 // N1 (spec §3.9): the engine's environment is exactly the rendered allowlist.
 void proc02_child_env_is_exact_allowlist() {
   // A hostile parent environment: none of it may reach the engine.
-  set_parent_variable("STRATA_TEST_TOKEN_ENV", "secret-token-value");
-  set_parent_variable("STRATA_API_KEY", "k");
-  set_parent_variable("HOME", "/home/someone");
-  set_parent_variable("LD_PRELOAD", "/nonexistent/libstrata-test.so");
-  set_parent_variable("HTTPS_PROXY", "http://proxy.invalid:3128");
-  set_parent_variable("CUDA_VISIBLE_DEVICES", "0");
+  const ScopedParentVariable token("STRATA_TEST_TOKEN_ENV", "secret-token-value");
+  const ScopedParentVariable api_key("STRATA_API_KEY", "k");
+  const ScopedParentVariable home("HOME", "/home/someone");
+  const ScopedParentVariable preload("LD_PRELOAD", "/nonexistent/libstrata-test.so");
+  const ScopedParentVariable proxy("HTTPS_PROXY", "http://proxy.invalid:3128");
+  const ScopedParentVariable devices("CUDA_VISIBLE_DEVICES", "0");
   const auto state = test_support::make_temp_dir("n1");
   const secure_frontend::EngineEnvironment environment{
       .lib_dirs = {state / "lib"}, .temp_dir = state / "engine-tmp", .cuda_cache_dir = state / "cache" / "cuda"};

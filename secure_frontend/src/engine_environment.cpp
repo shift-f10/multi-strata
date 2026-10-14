@@ -1,9 +1,12 @@
 #include "secure_frontend/engine_environment.hpp"
 
+#include <array>
+#include <cstddef>
 #include <system_error>
 
 #if defined(_WIN32)
 #include "secure_frontend/win32_prelude.hpp"
+#include "windows_security.hpp"
 #else
 #include <sys/stat.h>
 #include <unistd.h>
@@ -98,6 +101,30 @@ bool is_owner_only_directory(const std::filesystem::path& path) {
   struct stat info {};
   if (lstat(path.c_str(), &info) != 0) return false;
   return S_ISDIR(info.st_mode) && info.st_uid == geteuid() && (info.st_mode & 077) == 0;
+#endif
+}
+
+bool is_private_state_root(const std::filesystem::path& path) {
+#if defined(_WIN32)
+  namespace ws = windows_security;
+  std::error_code error;
+  const auto absolute = std::filesystem::absolute(path, error);
+  if (error) return false;
+  HANDLE handle = CreateFileW(ws::extended_path(absolute.wstring()).c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                              FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) return false;
+  FILE_ATTRIBUTE_TAG_INFO tag{};
+  std::array<std::byte, SECURITY_MAX_SID_SIZE> user_storage{};
+  PSID user = nullptr;
+  const bool directory = GetFileInformationByHandleEx(handle, FileAttributeTagInfo, &tag, sizeof(tag)) != 0 &&
+                         (tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0U;
+  const bool owner_only = directory && !ws::is_reparse_point(handle) && ws::current_user_sid(user_storage, &user) &&
+                          ws::has_private_owner_dacl(handle, user);
+  CloseHandle(handle);
+  return owner_only;
+#else
+  return is_owner_only_directory(path);
 #endif
 }
 

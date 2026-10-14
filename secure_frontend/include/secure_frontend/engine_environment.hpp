@@ -53,6 +53,13 @@ inline constexpr std::array<std::string_view, 16> kNeverForwardedEnvironment{
 // POSIX: a real directory (not a symlink), owned by the effective uid, no group/other bits.
 // Windows: a directory that is not a symlink.
 [[nodiscard]] bool is_owner_only_directory(const std::filesystem::path& path);
+// The --state-dir (roots.state) check, run by serve before anything is spawned.
+// POSIX: is_owner_only_directory (lstat checks only the final component).
+// Windows: opened with FILE_FLAG_OPEN_REPARSE_POINT, so a junction or symlink
+// root is refused, and SP1's has_private_owner_dacl must hold: owner is the
+// current user, protected DACL, allow-ACEs only for the user, SYSTEM and
+// Administrators (a read ACE for anyone else is refused too).
+[[nodiscard]] bool is_private_state_root(const std::filesystem::path& path);
 // Removes every entry below `directory` (a symlink entry itself, never its
 // target), keeping `directory`. Used at startup on <state>/engine-tmp: temp
 // directories of generations that ended with a previous frontend never leak.

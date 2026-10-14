@@ -387,9 +387,17 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   if (profile == EngineProfile::glm53 && args.empty()) {
     add(errors, "engine.args", ConfigIssueCode::missing_required, "--profile glm53 requires at least one --engine-arg");
   }
+  // Each entry is one directory: the platform's list separator would split
+  // LD_LIBRARY_PATH (':') or PATH (';') into extra, unvalidated entries.
+#if defined(_WIN32)
+  constexpr char kListSeparator = ';';
+#else
+  constexpr char kListSeparator = ':';
+#endif
   std::vector<std::filesystem::path> lib_dirs;
   for (const auto& text : read.strings("engine.lib_dirs")) {
-    if (text.empty() || text.find('\0') != std::string::npos || !path_from_utf8(text).is_absolute()) {
+    if (text.empty() || text.find('\0') != std::string::npos || text.find(kListSeparator) != std::string::npos ||
+        !path_from_utf8(text).is_absolute()) {
       add(errors, "engine.lib_dirs", ConfigIssueCode::invalid_value, "every entry must be an absolute directory");
       break;
     }

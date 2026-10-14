@@ -335,6 +335,8 @@ target_include_directories(secure_frontend_engine_supervisor
 )
 target_link_libraries(secure_frontend_engine_supervisor
     PUBLIC secure_frontend_chat_execution secure_frontend_engine_stdio_process)
+# engine_environment.cpp: SP1's windows_security helpers (the --state-dir check).
+target_link_libraries(secure_frontend_engine_supervisor PRIVATE secure_frontend_paths)
 target_link_libraries(secure-frontend-smoke PRIVATE secure_frontend_config secure_frontend_token_reader
     secure_frontend_http_policy secure_frontend_http_request_handler secure_frontend_http_socket_server
     secure_frontend_api_router secure_frontend_model_inventory)
@@ -548,9 +550,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # Later tasks append case names to these three set() lines only. Every
     # server-level test is windows-runtime on Windows: it relies on console
     # groups, Jobs, tokens and process exit codes.
-    set(SECURE_FRONTEND_SERVER_CASES harness_server_lifecycle_selftest proc01_server_passes_literal_argv proc04_ready_is_eager_and_health_starting_is_503 proc04_chat_during_restart_is_generic_503 proc04_abort_in_generation_is_generic_503 proc04_health_leaves_ready_after_idle_engine_death state_dir_must_be_owner_only)
+    set(SECURE_FRONTEND_SERVER_CASES harness_server_lifecycle_selftest proc01_server_passes_literal_argv proc04_ready_is_eager_and_health_starting_is_503 proc04_chat_during_restart_is_generic_503 proc04_abort_in_generation_is_generic_503 proc04_health_leaves_ready_after_idle_engine_death state_dir_must_be_owner_only state_dir_stale_engine_tmp_is_cleared)
     set(SECURE_FRONTEND_SERVER_LINUX_CASES proc05_frontend_sigkill_kills_engine proc05_frontend_sigterm_stops_all_descendants proc05_frontend_sigint_stops_all_descendants proc05_frontend_has_only_engine_children proc05_sigterm_during_generation_exits_cleanly proc05_double_sigterm_is_idempotent)
-    set(SECURE_FRONTEND_SERVER_WINDOWS_CASES proc05_windows_ctrl_break_stops_all_descendants proc05_windows_terminate_frontend_kills_job)
+    set(SECURE_FRONTEND_SERVER_WINDOWS_CASES proc05_windows_ctrl_break_stops_all_descendants proc05_windows_terminate_frontend_kills_job state_dir_must_be_owner_only_windows)
     if(WIN32)
         list(APPEND SECURE_FRONTEND_SERVER_CASES ${SECURE_FRONTEND_SERVER_WINDOWS_CASES})
     else()
@@ -703,6 +705,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         typed_config_accepts_minimal_file_and_applies_defaults cfg01_unknown_key_rejected cfg01_duplicate_key_rejected
         cfg01_type_confusion_rejected cfg01_missing_required_rejected cfg01_out_of_range_rejected
         cfg01_chat_ranges_match_enforced_caps typed_config_cross_field_rules typed_config_errors_never_contain_values
+        engine_lib_dirs_must_be_absolute_directories
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     secure_frontend_add_cases(secure_frontend_typed_config_tests cfg02_logs_and_cache_roots_are_created_private
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
@@ -782,7 +785,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         cli_config_file_and_flags_share_validator cli_flag_overrides_file_and_is_reported cli_check_prints_no_token
         cli_check_unreadable_token_is_not_reported_valid
         cli_unknown_option_does_not_echo_value
-        auth04_empty_token_rejected_on_loopback auth04_no_switch_disables_auth
+        auth04_empty_token_rejected_on_loopback auth04_no_switch_disables_auth serve_requires_state_root
         ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
     secure_frontend_add_cases(secure_frontend_server_cli_tests cli_check_has_no_side_effects
         ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)

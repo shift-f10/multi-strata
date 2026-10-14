@@ -1,7 +1,6 @@
 #include "secure_frontend/api_router.hpp"
 #include "secure_frontend/chat_execution.hpp"
 #include "secure_frontend/chat_schema.hpp"
-#include "secure_frontend/canonical_path.hpp"
 #include "secure_frontend/config.hpp"
 #include "secure_frontend/engine_arguments.hpp"
 #include "secure_frontend/engine_environment.hpp"
@@ -77,12 +76,10 @@ bool state_dir_is_usable(const FrontendConfig& config) {
     return false;
   }
   // POSIX: lstat -- a real directory, not a symlink, owned by the effective
-  // uid, no group/other bits. Windows: not a link, plus SP1's owner and
-  // protected-DACL check on the root.
-  bool owner_only = secure_frontend::is_owner_only_directory(*config.roots.state);
-#if defined(_WIN32)
-  owner_only = owner_only && std::holds_alternative<secure_frontend::CanonicalRoot>(secure_frontend::open_root(*config.roots.state));
-#endif
+  // uid, no group/other bits. Windows: opened without following a junction or
+  // symlink (refused), owner the current user, protected DACL with allow-ACEs
+  // only for the user, SYSTEM and Administrators (is_private_state_root).
+  const bool owner_only = secure_frontend::is_private_state_root(*config.roots.state);
   if (!owner_only) {
     std::cerr << "--state-dir must be an existing owner-only directory.\n";
     return false;
