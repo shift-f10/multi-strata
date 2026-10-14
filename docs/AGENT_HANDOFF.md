@@ -406,8 +406,9 @@ Notes on the SP2 table above:
   wherever no delegated cgroup exists. G3 is a validation-kit step. Nothing ran
   on a GPU.
 - **MSYS2 watch list for the first SP2 push:** Windows A2 argv[0] final-path
-  form (the harness's `engine_path()` is `make_preferred`, not canonical, on
-  Windows: an 8.3 or junction `TEMP` may mismatch); the LUA token executing the
+  form (CI run `38598235525` failed it; since the winfix branch the harness
+  puts `root()` in `GetFinalPathNameByHandleW` form on Windows, so an 8.3 or
+  junction `TEMP` no longer mismatches — pending the next MSYS2 run); the LUA token executing the
   harness `bin/` copy; the console handler, `CTRL_CLOSE` and `CREATE_NO_WINDOW`
   engine stdio (C6); the owner-only `--state-dir` check, the
   `make_owner_private_directory` test roots and the junction case (N3); SP1

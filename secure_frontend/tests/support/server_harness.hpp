@@ -86,7 +86,11 @@ class ServerProcess final {
   [[nodiscard]] long pid() const noexcept { return pid_; }
   [[nodiscard]] std::uint16_t port() const noexcept { return port_; }
   [[nodiscard]] const std::filesystem::path& root() const noexcept { return root_; }
-  // The private engine copy the server was given (--engine); the server passes it as argv[0].
+  // The private engine copy the server was given (--engine); the server passes
+  // it as argv[0], in the form the server canonicalises to: POSIX canonical()
+  // of the copy; Windows: root() itself is already in GetFinalPathNameByHandleW
+  // form (FILE_NAME_NORMALIZED, "\\?\" removed), so an 8.3 %TEMP% such as
+  // C:\Users\RUNNER~1\... reads as the long names the server hands the engine.
   [[nodiscard]] const std::filesystem::path& engine_path() const noexcept { return engine_path_; }
   [[nodiscard]] std::optional<HttpResult> get(std::string_view target,
                                               std::chrono::milliseconds timeout = std::chrono::seconds(5)) const;

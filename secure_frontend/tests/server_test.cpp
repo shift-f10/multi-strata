@@ -91,7 +91,9 @@ void proc01_server_passes_literal_argv() {
     const std::vector<std::string> expected{test_support::utf8_path(server->engine_path()), "--serve",
                                             "--dump-file=" + test_support::utf8_path(dump_file), weird, "--max-context", "8192",
                                             "--gpu", "0,1", "--native", test_support::utf8_path(model)};
-    expect(dump->argv == expected, "every value arrives literally as one argv entry, in order, with no shell");
+    std::string seen;
+    for (const auto& entry : dump->argv) seen += "\n  [" + entry + "]";
+    expect(dump->argv == expected, "every value arrives literally as one argv entry, in order, with no shell; saw:" + seen);
     // Spec §3.12: the server pins the engine's cwd to <state>/engine (the
     // harness default --state-dir is <root>/state).
     std::error_code error;

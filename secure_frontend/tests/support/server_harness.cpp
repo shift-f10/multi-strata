@@ -57,6 +57,23 @@ std::wstring widen(const std::string& text) {
   return out;
 }
 using secure_frontend_test::token_elevated;
+
+// The path Windows resolves `path` to, in the server's canonical form
+// (canonical_path_windows.cpp: GetFinalPathNameByHandleW with
+// FILE_NAME_NORMALIZED, "\\?\" removed): long names for 8.3 components, the
+// on-disk case. Unchanged when the path cannot be opened or resolved.
+std::filesystem::path final_path(const std::filesystem::path& path) {
+  HANDLE handle = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                              OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) return path;
+  std::wstring resolved(32768, L'\0');
+  const DWORD length = GetFinalPathNameByHandleW(handle, resolved.data(), static_cast<DWORD>(resolved.size()), FILE_NAME_NORMALIZED);
+  CloseHandle(handle);
+  if (length == 0U || length >= resolved.size()) return path;
+  resolved.resize(length);
+  if (resolved.size() >= 7U && resolved.compare(0, 4, L"\\\\?\\") == 0 && resolved[5] == L':') resolved.erase(0, 4);
+  return std::filesystem::path{resolved};
+}
 #else
 using Socket = int;
 constexpr Socket kInvalidSocket = -1;
@@ -210,6 +227,12 @@ std::unique_ptr<ServerProcess> ServerProcess::start(const ServerOptions& options
 #endif
   std::unique_ptr<ServerProcess> server(new ServerProcess());
   server->root_ = make_temp_dir("server");  // 0700; Windows: the current user is granted access
+#if defined(_WIN32)
+  // The server canonicalises the engine and every root to the final path, and
+  // hands the engine those (argv[0], the model path); %TEMP% may be 8.3
+  // (C:\Users\RUNNER~1\...). Use the same form so expected paths compare equal.
+  server->root_ = final_path(server->root_);
+#endif
   const auto models = server->root_ / "models";
   const auto tokenizer = server->root_ / "tokenizer";
   secure_frontend_test::make_private_directory(models);     // 0700
