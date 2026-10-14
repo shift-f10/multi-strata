@@ -227,9 +227,9 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `limits.http.max_headers` | integer | `64` | 8-256 | - | Most header fields. |
 | `limits.http.max_request_line_bytes` | integer | `4096` | 256-16384 | - | Longest request line; at most limits.http.max_header_bytes. |
 | `limits.chat.max_body_bytes` | integer | `49152` | 1-16777216 | - | Largest chat request body; at most max_request_bytes minus max_header_bytes. |
-| `limits.chat.max_messages` | integer | `128` | 1-1024 | - | Most messages in one chat request. |
-| `limits.chat.max_message_bytes` | integer | `65536` | 1-16777216 | - | Largest single message content. |
-| `limits.chat.max_prompt_tokens` | integer | `32768` | 1-1048576 | - | Largest tokenized prompt sent to the engine. |
+| `limits.chat.max_messages` | integer | `128` | 1-128 | - | Most messages in one chat request. |
+| `limits.chat.max_message_bytes` | integer | `65536` | 1-65536 | - | Largest single message content. |
+| `limits.chat.max_prompt_tokens` | integer | `32768` | 1-262144 | - | Largest tokenized prompt sent to the engine. |
 | `limits.chat.max_completion_tokens` | integer | `4096` | 1-16384 | - | Largest max_tokens a request may ask for. |
 | `limits.chat.default_max_tokens` | integer | `256` | 1-16384 | - | max_tokens when a request omits it; at most limits.chat.max_completion_tokens. |
 | `limits.chat.max_generated_bytes` | integer | `1048576` | 1-16777216 | - | Largest generated text returned. |

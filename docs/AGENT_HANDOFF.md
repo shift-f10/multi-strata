@@ -725,16 +725,14 @@ D4) and the stale "MSVC/Windows runtime coverage" CMake comment (Task 18).
    `limits.concurrency.*`) and `token.source`, and the future `strata` CLI
    follows SP1's names (the product spec §4 text is updated when that CLI is
    planned).
-7. Configuration ranges wider than internal caps (recorded, not fixed):
-   `limits.chat.max_prompt_tokens` accepts up to 1048576 but
-   `EngineProtocolLimits` refuses prompts over 262144 tokens, and
-   `limits.chat.max_messages` accepts up to 1024 but the Qwen/GLM renderers
-   refuse more than 128 messages. `EngineProtocolLimits` (262144
-   prompt/generated/new tokens, built with `{}` in `secure_server_main.cpp`) is
-   classified as internal protocol backstops, not configuration keys; details
-   in `docs/security/engine-protocol-limits.md`. Narrow the ranges or derive the
-   caps from the validated configuration in the next task that touches chat
-   limits (SP3 or SP5).
+7. Closed in the SP1 final fix wave: the configuration ranges now match the
+   enforced caps — `limits.chat.max_messages` 1–128 (renderer
+   `kMaximumMessages`), `limits.chat.max_message_bytes` 1–65536 (renderer
+   `kMaximumMessageBytes`), `limits.chat.max_prompt_tokens` 1–262144
+   (`EngineProtocolLimits`), pinned by `cfg01_chat_ranges_match_enforced_caps`.
+   `EngineProtocolLimits` and the renderers' 512 KiB rendered-prompt cap stay
+   internal constants, not configuration keys; details in
+   `docs/security/engine-protocol-limits.md`.
 8. Windows `create_directory_within` does not check the DACL, owner or volume
    of components that already exist (POSIX does). No SP1 caller reaches that
    path with untrusted components (every caller ends in `open_existing_root`);

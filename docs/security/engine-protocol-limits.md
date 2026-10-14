@@ -39,7 +39,7 @@ is a parsing bound, not a second model-ID rule: the field must still equal the
 configured `engine.model_id`, whose grammar caps it at 128 bytes, so a 129–256
 byte value parses and is then rejected as a model mismatch.
 
-### `EngineProtocolLimits`: internal backstops, and a recorded range gap
+### `EngineProtocolLimits` and the renderer caps: internal backstops
 
 `EngineProtocolLimits` (`include/secure_frontend/engine_protocol_client.hpp`)
 holds `max_prompt_tokens`, `max_generated_tokens` and `max_new_tokens`, each
@@ -50,23 +50,28 @@ line or accumulate from `T` records no matter what the layers above decide, and
 they are not in spec §4's list of keys. The operator-facing limits are the
 `limits.chat.*` keys, enforced before `begin_generation` is called.
 
-Recorded gap (not fixed in SP1): two configuration ranges are wider than an
-internal cap below them, so the effective limit is the smaller of the two and a
-configured value above the cap has no effect.
+The Qwen and GLM prompt renderers (`qwen_prompt_renderer.cpp`,
+`glm_prompt_renderer.cpp`) carry three more internal constants:
+`kMaximumMessages` 128, `kMaximumMessageBytes` 64 KiB (65536) and
+`kMaximumPromptBytes` 512 KiB, the cap on the rendered prompt text (template
+markup plus every message) before tokenization. The rendered-prompt cap is an
+internal constant, not a configuration key (controller ruling, SP1 final fix
+wave): with the defaults a chat body is at most 49152 bytes, far below it. An
+operator who raises `limits.http.max_request_bytes` and
+`limits.chat.max_body_bytes` above roughly 512 KiB can send messages that pass
+the per-message and message-count limits but whose rendered prompt exceeds
+512 KiB; such a request is refused at planning (`503`), as before.
 
-- `limits.chat.max_prompt_tokens` accepts up to 1048576, but the protocol
-  client refuses a prompt over 262144 tokens ("generation request exceeds
-  protocol limits"). With a configured value above 262144 and an engine
-  context large enough to pass the context check, a prompt between the two is
-  still refused (the chat route answers `503`, as it does for every execution
-  error). `max_completion_tokens` (≤ 16384) is always below `max_new_tokens`,
-  so that pair cannot diverge.
-- `limits.chat.max_messages` accepts up to 1024, but the Qwen and GLM renderers
-  (`kMaximumMessages` 128 in `qwen_prompt_renderer.cpp` and
-  `glm_prompt_renderer.cpp`) refuse more than 128 messages, so a request with
-  129 or more messages is refused even when the configured limit allows it.
+Since the SP1 final fix wave the configuration ranges match the enforced caps
+(spec §9.5: every value the schema accepts is one the server can honour):
 
-Either the ranges are narrowed to the internal caps or the caps are derived from
-the validated configuration; the choice is left to the task that next touches
-chat limits (recorded in `docs/AGENT_HANDOFF.md`). The defaults (32768 prompt
-tokens, 128 messages) are within both caps.
+| Key | Range | Enforced cap it matches |
+| --- | --- | --- |
+| `limits.chat.max_messages` | 1–128 | renderer `kMaximumMessages` 128 |
+| `limits.chat.max_message_bytes` | 1–65536 | renderer `kMaximumMessageBytes` 64 KiB |
+| `limits.chat.max_prompt_tokens` | 1–262144 | `EngineProtocolLimits::max_prompt_tokens` 262144 |
+
+`max_completion_tokens` (≤ 16384) is always below `max_new_tokens`, so that
+pair cannot diverge. The defaults (128 messages, 65536 message bytes, 32768
+prompt tokens) are inside these ranges. `cfg01_chat_ranges_match_enforced_caps`
+pins each cap (the cap is accepted, one above it is `out_of_range`).

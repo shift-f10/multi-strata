@@ -565,7 +565,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_typed_config_tests
         typed_config_accepts_minimal_file_and_applies_defaults cfg01_unknown_key_rejected cfg01_duplicate_key_rejected
         cfg01_type_confusion_rejected cfg01_missing_required_rejected cfg01_out_of_range_rejected
-        typed_config_cross_field_rules typed_config_errors_never_contain_values
+        cfg01_chat_ranges_match_enforced_caps typed_config_cross_field_rules typed_config_errors_never_contain_values
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     secure_frontend_add_cases(secure_frontend_typed_config_tests cfg02_logs_and_cache_roots_are_created_private
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})

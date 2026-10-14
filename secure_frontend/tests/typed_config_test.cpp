@@ -207,6 +207,28 @@ void cfg01_out_of_range_rejected() {
   }
 }
 
+// Spec §9.5: a value the schema accepts must be one the server can honour. The
+// prompt renderers cap messages at 128 and one message at 64 KiB
+// (src/qwen_prompt_renderer.cpp, src/glm_prompt_renderer.cpp); the engine
+// protocol caps a prompt at 262144 tokens (EngineProtocolLimits).
+void cfg01_chat_ranges_match_enforced_caps() {
+  ConfigFixture f;
+  const auto with = [&](const std::string& key, const std::string& value) {
+    auto literals = f.literals;
+    literals[key] = value;
+    return validate_text(render_config_json(literals), f.dir);
+  };
+  for (const auto& [key, cap] : std::vector<std::pair<std::string, std::int64_t>>{
+           {"limits.chat.max_messages", 128},
+           {"limits.chat.max_message_bytes", 65'536},
+           {"limits.chat.max_prompt_tokens", 262'144}}) {
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(with(key, std::to_string(cap))),
+           "the enforced cap is accepted: " + key);
+    expect(has_issue(with(key, std::to_string(cap + 1)), key, ConfigIssueCode::out_of_range),
+           "one above the enforced cap is rejected: " + key);
+  }
+}
+
 void typed_config_cross_field_rules() {
   ConfigFixture f;
   const auto with = [&](std::map<std::string, std::string> extra) {
@@ -444,6 +466,7 @@ int main(int argc, char** argv) {
       {"cfg01_type_confusion_rejected", cfg01_type_confusion_rejected},
       {"cfg01_missing_required_rejected", cfg01_missing_required_rejected},
       {"cfg01_out_of_range_rejected", cfg01_out_of_range_rejected},
+      {"cfg01_chat_ranges_match_enforced_caps", cfg01_chat_ranges_match_enforced_caps},
       {"typed_config_cross_field_rules", typed_config_cross_field_rules},
       {"typed_config_errors_never_contain_values", typed_config_errors_never_contain_values},
       {"cfg02_logs_and_cache_roots_are_created_private", cfg02_logs_and_cache_roots_are_created_private},
