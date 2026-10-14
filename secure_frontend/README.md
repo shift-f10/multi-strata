@@ -253,6 +253,7 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `engine.args` | string array | `[]` | - | `--engine-arg (repeatable)` | Extra engine arguments; frontend-owned and unsupported flags are rejected. |
 | `engine.lib_dirs` | string array | `[]` | - | `--engine-lib-dir (repeatable)` | Absolute library directories for the engine (default: the engine executable's directory). |
 | `engine.gpu` | string | unset | - | `--gpu` | GPU device indices for the engine, e.g. 0 or 0,1 (distinct, 0-255, at most 16); rendered as the engine's --gpu argument (strata family: no GPU variable). Not supported with engine.profile glm53. |
+| `engine.allow_new_privileges` | boolean | `false` | - | `--allow-new-privileges` | Linux: do not set PR_SET_NO_NEW_PRIVS on the engine (default: set). Only for hosts whose NVIDIA driver must run setuid nvidia-modprobe to create /dev/nvidia-uvm on first use. |
 <!-- config-keys:end -->
 
 `roots.secret` defaults to the config file's directory only for a `file:` token

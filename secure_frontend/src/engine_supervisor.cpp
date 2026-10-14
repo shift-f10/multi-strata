@@ -402,6 +402,10 @@ bool EngineSupervisor::end_generation(const std::shared_ptr<EngineInstance>& ins
   process.release_resources(std::chrono::milliseconds(1000));
   const KillReason sent = ended_on_its_own ? KillReason::none : (reason == KillReason::none ? KillReason::protocol_failed : reason);
   log_end(instance->number, describe_exit(classify_exit(*status, sent)));
+  if (config_.no_new_privileges_hint && !nnp_hint_logged_ && !instance->chat && sent == KillReason::none) {
+    nnp_hint_logged_ = true;
+    log_(kNoNewPrivilegesHint);
+  }
   return true;
 }
 

@@ -11,6 +11,7 @@
 
 #if defined(_WIN32)
 #include "secure_frontend/win32_prelude.hpp"
+#include "support/non_elevated_launch.hpp"
 #include <cwchar>
 #else
 #include <csignal>
@@ -86,12 +87,20 @@ class ChildProcess final {
     startup.hStdOutput = out;
     startup.hStdError = err;
     PROCESS_INFORMATION info{};
-    const BOOL ok = CreateProcessW(spec.executable.c_str(), command.data(), nullptr, nullptr, TRUE,
-                                   CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW, block.data(), nullptr, &startup, &info);
+    const DWORD flags = CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW;
+    // G4: strata-secure-server refuses an elevated token, so it always starts
+    // through the shared non-elevated launch (no override flag exists); any
+    // other executable keeps the plain CreateProcessW.
+    const bool server = spec.executable.stem() == L"strata-secure-server";
+    const bool ok = server ? create_non_elevated_process(spec.executable.wstring(), command, flags, block.data(), startup, info,
+                                                         "process_runner")
+                           : CreateProcessW(spec.executable.c_str(), command.data(), nullptr, nullptr, TRUE, flags,
+                                            block.data(), nullptr, &startup, &info) != 0;
     CloseHandle(in);
     CloseHandle(out);
     CloseHandle(err);
-    if (ok == 0) return false;
+    if (!ok) return false;
+    if (server) (void)ResumeThread(info.hThread);
     CloseHandle(info.hThread);
     process_ = info.hProcess;
     return true;

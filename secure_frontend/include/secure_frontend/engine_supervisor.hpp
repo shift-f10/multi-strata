@@ -94,6 +94,14 @@ struct SupervisorConfig final {
   bool no_new_privileges_hint{false};
 };
 
+// Logged once when a generation ends before READY on its own while
+// PR_SET_NO_NEW_PRIVS is set: the NVIDIA driver may need to exec setuid
+// nvidia-modprobe to create /dev/nvidia-uvm*, which NNP blocks (spec open question 5).
+inline constexpr std::string_view kNoNewPrivilegesHint =
+    "engine ended before READY while PR_SET_NO_NEW_PRIVS is set; if this host relies on nvidia-modprobe to create "
+    "/dev/nvidia-uvm, create the device nodes at boot (as root: nvidia-modprobe -u -c=0, or enable nvidia-persistenced) "
+    "or start the frontend with --allow-new-privileges";
+
 // Receives fixed-literal lines such as "engine generation 2 ended: abort".
 using SupervisorLog = std::function<void(std::string_view line)>;
 
@@ -181,6 +189,7 @@ class EngineSupervisor final {
   // shutdown; finish() waits for main's shutdown() until then, else exits 1.
   std::chrono::steady_clock::time_point shutdown_deadline_{};
   bool main_acknowledged_{false};
+  bool nnp_hint_logged_{false};  // kNoNewPrivilegesHint, at most once per supervisor
   std::thread thread_;
 };
 

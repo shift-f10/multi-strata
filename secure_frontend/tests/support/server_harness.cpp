@@ -1,6 +1,7 @@
 #include "server_harness.hpp"
 
 #include "http_client.hpp"
+#include "non_elevated_launch.hpp"
 #include "test_paths.hpp"
 #include "test_tokenizer.hpp"
 
@@ -16,7 +17,6 @@
 
 #if defined(_WIN32)
 #include "secure_frontend/win32_prelude.hpp"
-#include <winsafer.h>
 #else
 #include <arpa/inet.h>
 #include <cerrno>
@@ -76,47 +76,7 @@ std::wstring quote(const std::wstring& argument) {
   return result;
 }
 
-bool token_elevated(HANDLE token) {
-  TOKEN_ELEVATION elevation{};
-  DWORD size = sizeof(elevation);
-  return GetTokenInformation(token, TokenElevation, &elevation, size, &size) && elevation.TokenIsElevated != 0;
-}
-
-// Spec G4: the server refuses an elevated token, and GitHub's Windows runners
-// (and any elevated developer shell) are elevated. So the harness ALWAYS starts
-// the server with a LUA-restricted copy of its own token (CreateProcessAsUserW
-// needs no extra privilege for a restricted copy of the caller's token). There
-// is no test-only override flag in the server.
-HANDLE lua_restricted_token() {
-  HANDLE own = nullptr;
-  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY, &own)) return nullptr;
-  HANDLE restricted = nullptr;
-  if (!CreateRestrictedToken(own, LUA_TOKEN | DISABLE_MAX_PRIVILEGE, 0, nullptr, 0, nullptr, 0, nullptr, &restricted)) restricted = nullptr;
-  CloseHandle(own);
-  return restricted;
-}
-
-// Fallback when the LUA copy still reports elevation: a Safer NORMALUSER token.
-HANDLE safer_normal_user_token() {
-  SAFER_LEVEL_HANDLE level = nullptr;
-  if (!SaferCreateLevel(SAFER_SCOPEID_USER, SAFER_LEVELID_NORMALUSER, SAFER_LEVEL_OPEN, &level, nullptr)) return nullptr;
-  HANDLE token = nullptr;
-  if (!SaferComputeTokenFromLevel(level, nullptr, &token, 0, nullptr)) token = nullptr;
-  (void)SaferCloseLevel(level);
-  return token;
-}
-
-// A non-elevated primary token for the server, or nullptr: then the executor
-// STOPS and asks rflores (Global Constraints: no override flag exists).
-HANDLE non_elevated_server_token() {
-  HANDLE token = lua_restricted_token();
-  if (token != nullptr && !token_elevated(token)) return token;
-  if (token != nullptr) CloseHandle(token);
-  token = safer_normal_user_token();
-  if (token != nullptr && !token_elevated(token)) return token;
-  if (token != nullptr) CloseHandle(token);
-  return nullptr;
-}
+using secure_frontend_test::token_elevated;
 #else
 using Socket = int;
 constexpr Socket kInvalidSocket = -1;
@@ -335,12 +295,6 @@ bool ServerProcess::launch(const std::vector<std::string>& arguments, const std:
     block.push_back(L'\0');
   }
   block.push_back(L'\0');
-  HANDLE token = non_elevated_server_token();
-  if (token == nullptr) {
-    std::cerr << "harness: no non-elevated token for strata-secure-server (LUA and Safer NORMALUSER both elevated); "
-                 "STOP and ask rflores -- there is no test-only override\n";
-    return false;
-  }
   SECURITY_ATTRIBUTES inherit{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
   HANDLE input = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit, OPEN_EXISTING, 0, nullptr);
   HANDLE output = CreateFileW(widen(out_log).c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit, CREATE_ALWAYS, 0, nullptr);
@@ -358,10 +312,10 @@ bool ServerProcess::launch(const std::vector<std::string>& arguments, const std:
   startup.hStdError = error;
   PROCESS_INFORMATION info{};
   const std::wstring executable = widen(arguments.front());
-  const DWORD flags = CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED;
-  const bool created = ready && CreateProcessAsUserW(token, executable.c_str(), command_line.data(), nullptr, nullptr, TRUE, flags,
-                                                     block.data(), nullptr, &startup, &info);
-  CloseHandle(token);
+  // Non-elevated (G4) and still suspended, so the Job is assigned before it runs.
+  const bool created = ready && secure_frontend_test::create_non_elevated_process(
+                                    executable, command_line, CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_PROCESS_GROUP,
+                                    block.data(), startup, info, "harness");
   for (HANDLE handle : {input, output, error}) {
     if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
   }
@@ -369,12 +323,7 @@ bool ServerProcess::launch(const std::vector<std::string>& arguments, const std:
     if (job != nullptr) CloseHandle(job);
     return false;
   }
-  // Still suspended: refuse to run a server whose token is elevated after all.
-  HANDLE server_token = nullptr;
-  const bool elevated = OpenProcessToken(info.hProcess, TOKEN_QUERY, &server_token) == 0 || token_elevated(server_token);
-  if (server_token != nullptr) CloseHandle(server_token);
-  if (elevated || !AssignProcessToJobObject(job, info.hProcess)) {
-    if (elevated) std::cerr << "harness: the server token is elevated; STOP and ask rflores\n";
+  if (!AssignProcessToJobObject(job, info.hProcess)) {
     (void)TerminateProcess(info.hProcess, 1);
     CloseHandle(info.hThread);
     CloseHandle(info.hProcess);

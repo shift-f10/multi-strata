@@ -176,6 +176,7 @@ add_library(secure_frontend_engine_supervisor
     src/descendant_sweep.cpp
     src/engine_environment.cpp
     src/engine_supervisor.cpp
+    src/privilege_check.cpp
     src/restart_policy.cpp
     src/shutdown_signal.cpp
     src/supervisor_wake.cpp
@@ -552,7 +553,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # server-level test is windows-runtime on Windows: it relies on console
     # groups, Jobs, tokens and process exit codes.
     set(SECURE_FRONTEND_SERVER_CASES harness_server_lifecycle_selftest proc01_server_passes_literal_argv proc04_ready_is_eager_and_health_starting_is_503 proc04_chat_during_restart_is_generic_503 proc04_abort_in_generation_is_generic_503 proc04_health_leaves_ready_after_idle_engine_death state_dir_must_be_owner_only state_dir_stale_engine_tmp_is_cleared)
-    set(SECURE_FRONTEND_SERVER_LINUX_CASES proc05_frontend_sigkill_kills_engine proc05_frontend_sigterm_stops_all_descendants proc05_frontend_sigint_stops_all_descendants proc05_frontend_has_only_engine_children proc05_sigterm_during_generation_exits_cleanly proc05_double_sigterm_is_idempotent)
+    set(SECURE_FRONTEND_SERVER_LINUX_CASES proc05_frontend_sigkill_kills_engine proc05_frontend_sigterm_stops_all_descendants proc05_frontend_sigint_stops_all_descendants proc05_frontend_has_only_engine_children proc05_sigterm_during_generation_exits_cleanly proc05_double_sigterm_is_idempotent proc06_nnp_startup_hint_names_nvidia_uvm_fix)
     set(SECURE_FRONTEND_SERVER_WINDOWS_CASES proc05_windows_ctrl_break_stops_all_descendants proc05_windows_terminate_frontend_kills_job state_dir_must_be_owner_only_windows)
     if(WIN32)
         list(APPEND SECURE_FRONTEND_SERVER_CASES ${SECURE_FRONTEND_SERVER_WINDOWS_CASES})
@@ -573,7 +574,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     target_link_libraries(secure_frontend_engine_child_tests PRIVATE secure_frontend_engine_process)
     set(SECURE_FRONTEND_CHILD_CASES proc04_exit_status_is_classified proc06_child_ids_and_cwd)
     set(SECURE_FRONTEND_CHILD_LINUX_CASES proc05_group_killed_after_leader_reaped proc02_child_signal_state_is_default proc02_canary_descriptors_absent
-        proc03_other_uid_cannot_open_engine_fd proc03_same_uid_reopen_is_accepted_risk)
+        proc03_other_uid_cannot_open_engine_fd proc03_same_uid_reopen_is_accepted_risk proc06_child_has_no_new_privs)
     set(SECURE_FRONTEND_CHILD_WINDOWS_CASES proc02_canary_handles_absent proc02_stdin_pipe_dacl_is_owner_only proc03_windows_pipe_second_open_fails proc01_windows_argv_round_trip)
     if(WIN32)
         list(APPEND SECURE_FRONTEND_CHILD_CASES ${SECURE_FRONTEND_CHILD_WINDOWS_CASES})
@@ -614,7 +615,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # before any child runs); also smoke-run under wine. PROCESS: real
     # fake-engine children. LINUX / WINDOWS: platform-only process cases. Later
     # tasks append case names to these four set() lines only.
-    set(SECURE_FRONTEND_SUPERVISOR_UNIT_CASES supervisor_health_literals_per_state proc04_restart_backoff_then_circuit_open proc04_healthy_window_resets_failure_count proc04_missing_engine_opens_circuit_without_spinning proc04_client_err_lines_open_circuit_until_restart supervisor_retires_ended_generation_on_its_own_thread proc04_monitor_fallback_without_pidfd proc04_backoff_survives_stale_wake proc04_fatal_line_before_ready_kills_as_fatal_line proc04_unreaped_child_opens_circuit supervisor_exception_opens_circuit supervisor_shutdown_sends_eof_first_then_kills supervisor_lease_outliving_shutdown_is_safe)
+    set(SECURE_FRONTEND_SUPERVISOR_UNIT_CASES supervisor_health_literals_per_state proc04_restart_backoff_then_circuit_open proc04_healthy_window_resets_failure_count proc04_missing_engine_opens_circuit_without_spinning proc04_client_err_lines_open_circuit_until_restart supervisor_retires_ended_generation_on_its_own_thread proc04_monitor_fallback_without_pidfd proc04_backoff_survives_stale_wake proc04_fatal_line_before_ready_kills_as_fatal_line proc04_unreaped_child_opens_circuit supervisor_exception_opens_circuit supervisor_shutdown_sends_eof_first_then_kills supervisor_lease_outliving_shutdown_is_safe proc06_refuses_privileged_start)
     set(SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES proc04_recovers_after_transient_crash proc04_monitor_detects_idle_crash proc04_fatal_prefix_kills_engine proc04_ready_timeout_kills_and_counts proc04_drain_failure_kills_and_restarts proc04_no_leak_across_restarts proc02_child_env_is_exact_allowlist)
     set(SECURE_FRONTEND_SUPERVISOR_LINUX_CASES proc05_setsid_grandchild_is_reaped proc05_setsid_grandchild_is_reaped_at_shutdown supervisor_start_refuses_without_wake shutdown_signal_preserves_errno proc05_cgroup_kill_when_delegated)
     set(SECURE_FRONTEND_SUPERVISOR_WINDOWS_CASES proc04_windows_abort_does_not_stall proc04_windows_crash_does_not_stall proc04_windows_write_timeout_kills_engine)
@@ -845,17 +846,33 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     endif()
 
     add_test(NAME strata_secure_server_help COMMAND strata-secure-server --help)
+    # G4: past --help the server refuses an elevated token, and the Windows CI
+    # runners (and wine) are elevated. On Windows the CLI checks below run it
+    # through the shared non-elevated launch (tests/support/non_elevated_launch.hpp)
+    # and are windows-runtime (wine cannot produce a non-elevated token); on
+    # Linux they run the server directly and stay unlabeled.
+    set(SECURE_FRONTEND_SERVER_CLI_LAUNCH strata-secure-server)
+    if(WIN32)
+        secure_frontend_add_test_executable(secure_frontend_non_elevated_run tests/non_elevated_run_main.cpp shell32)
+        target_include_directories(secure_frontend_non_elevated_run PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        add_dependencies(secure_frontend_non_elevated_run strata-secure-server)
+        set(SECURE_FRONTEND_SERVER_CLI_LAUNCH secure_frontend_non_elevated_run $<TARGET_FILE:strata-secure-server>)
+    endif()
     # The GLM runner takes positional arguments: glm53 without any --engine-arg is a usage error.
     add_test(NAME strata_secure_server_glm_requires_engine_arg
-        COMMAND strata-secure-server --profile glm53 --models-root models --tokenizer-pack tok
+        COMMAND ${SECURE_FRONTEND_SERVER_CLI_LAUNCH} --profile glm53 --models-root models --tokenizer-pack tok
                 --engine engine --model-id glm-local --token-env STRATA_UNUSED_TOKEN)
     set_tests_properties(strata_secure_server_glm_requires_engine_arg PROPERTIES
         PASS_REGULAR_EXPRESSION "glm53 requires at least one --engine-arg")
     # Review Focus 4: a malformed --gpu is a startup error with a fixed message (never the value).
     add_test(NAME strata_secure_server_rejects_malformed_gpu
-        COMMAND strata-secure-server --models-root models --tokenizer-pack tok --engine engine
+        COMMAND ${SECURE_FRONTEND_SERVER_CLI_LAUNCH} --models-root models --tokenizer-pack tok --engine engine
                 --model-id m --token-env STRATA_UNUSED_TOKEN --gpu 0,0)
     set_tests_properties(strata_secure_server_rejects_malformed_gpu PROPERTIES
         PASS_REGULAR_EXPRESSION "engine.gpu: must be a comma-separated list of distinct device indices"
         FAIL_REGULAR_EXPRESSION "0,0")
+    if(WIN32)
+        set_tests_properties(strata_secure_server_glm_requires_engine_arg strata_secure_server_rejects_malformed_gpu
+            PROPERTIES LABELS windows-runtime)
+    endif()
 endif()

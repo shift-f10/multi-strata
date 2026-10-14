@@ -3,6 +3,7 @@
 #include "secure_frontend/exit_status.hpp"
 
 #include "support/fake_engine_dump.hpp"
+#include "support/server_harness.hpp"
 #include "support/test_paths.hpp"
 
 #include <algorithm>
@@ -12,6 +13,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <map>
@@ -544,6 +546,49 @@ void proc06_elevation_required_is_spawn_failed() {
 }
 #endif
 
+#if !defined(_WIN32)
+// This test process's own NoNewPrivs ("1" when an outer sandbox already set
+// it: then every child inherits it and "not requested" cannot read "0").
+std::string own_no_new_privs() {
+  std::ifstream status("/proc/self/status");
+  std::string line;
+  while (std::getline(status, line)) {
+    if (line.rfind("NoNewPrivs:", 0) == 0) return line.substr(line.find_first_not_of(" \t", 11));
+  }
+  return "?";
+}
+
+// G2 (spec §3.12): PR_SET_NO_NEW_PRIVS before execve when the command asks for
+// it; the server asks by default and --allow-new-privileges turns it off.
+void proc06_child_has_no_new_privs() {
+  for (const bool requested : {true, false}) {
+    secure_frontend::EngineStdioProcess child;
+    expect(!child.start({.executable = test_support::fake_engine_path(), .arguments = {}, .environment = {}, .no_new_privileges = requested})
+                .has_value(),
+           "start");
+    expect(child.read_line(5s).line == "READY 4096 stop", "READY");
+    const auto dump = test_support::request_dump(child, 5s);
+    const std::string expected = requested || own_no_new_privs() == "1" ? "1" : "0";
+    expect(dump && dump->ids.count("nnp") == 1 && dump->ids.at("nnp") == expected,
+           std::string("NoNewPrivs is ") + expected + (requested ? " when requested" : " when not requested"));
+    (void)child.terminate(250ms);
+  }
+  // The production default is ON; --allow-new-privileges turns it off.
+  for (const bool allow : {false, true}) {
+    const auto dir = test_support::make_temp_dir("g2");
+    test_support::ServerOptions options;
+    options.engine_args = {"--dump-file=" + test_support::utf8_path(dir / "dump.txt")};
+    if (allow) options.extra_args = {"--allow-new-privileges"};
+    auto server = test_support::ServerProcess::start(options);
+    expect(server != nullptr && server->wait_until_listening(10s), "server listens");
+    const auto dump = test_support::read_dump_file(dir / "dump.txt", 10s);
+    const std::string expected = !allow || own_no_new_privs() == "1" ? "1" : "0";
+    expect(dump && dump->ids.count("nnp") == 1 && dump->ids.at("nnp") == expected,
+           allow ? "--allow-new-privileges leaves NoNewPrivs off" : "the server sets NoNewPrivs by default");
+  }
+}
+#endif
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -557,6 +602,7 @@ int main(int argc, char* argv[]) {
                                              {"proc02_canary_descriptors_absent", proc02_canary_descriptors_absent},
                                              {"proc03_other_uid_cannot_open_engine_fd", proc03_other_uid_cannot_open_engine_fd},
                                              {"proc03_same_uid_reopen_is_accepted_risk", proc03_same_uid_reopen_is_accepted_risk},
+                                             {"proc06_child_has_no_new_privs", proc06_child_has_no_new_privs},
 #endif
 #if defined(_WIN32)
                                              {"proc02_canary_handles_absent", proc02_canary_handles_absent},

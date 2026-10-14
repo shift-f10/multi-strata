@@ -279,8 +279,10 @@ void auth04_no_switch_disables_auth() {
       strata_names_in(text, &strata_names);
     }
     if (key.type == secure_frontend::ConfigValueType::boolean) {
-      expect(path == "listener.allow_remote" || path == "listener.allow_wildcard_bind",
-             "the only switches are the two bind opt-ins: " + path);
+      // SP2 Task 26 (owner-visible edit of this SP1 security test): the third
+      // switch is the engine's Linux NNP opt-out; it never touches authentication.
+      expect(path == "listener.allow_remote" || path == "listener.allow_wildcard_bind" || path == "engine.allow_new_privileges",
+             "the only switches are the two bind opt-ins and the engine's NNP opt-out: " + path);
     }
   }
   expect(flags.count("--allow-remote") == 1U && flags.count("--token-env") == 1U && flags.count("--check") == 1U,

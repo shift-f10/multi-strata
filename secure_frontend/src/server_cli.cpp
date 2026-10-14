@@ -20,7 +20,7 @@ struct FlagSpec final {
   FlagKind kind;
 };
 
-constexpr std::array<FlagSpec, 16> kFlags{{
+constexpr std::array<FlagSpec, 17> kFlags{{
     {"--host", "listener.host", FlagKind::string},
     {"--port", "listener.port", FlagKind::integer},
     {"--allow-remote", "listener.allow_remote", FlagKind::boolean},
@@ -37,6 +37,7 @@ constexpr std::array<FlagSpec, 16> kFlags{{
     {"--state-dir", "roots.state", FlagKind::string},
     {"--engine-lib-dir", "engine.lib_dirs", FlagKind::append},
     {"--gpu", "engine.gpu", FlagKind::string},
+    {"--allow-new-privileges", "engine.allow_new_privileges", FlagKind::boolean},
 }};
 
 const FlagSpec* find_flag(const std::string_view argument) {

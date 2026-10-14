@@ -2,6 +2,7 @@
 #include "secure_frontend/cgroup_scope.hpp"
 #include "secure_frontend/engine_environment.hpp"
 #include "secure_frontend/engine_stdio_process.hpp"
+#include "secure_frontend/privilege_check.hpp"
 #include "secure_frontend/shutdown_signal.hpp"
 
 #include "support/fake_engine_dump.hpp"
@@ -868,6 +869,16 @@ void supervisor_start_refuses_without_wake() {
 }
 #endif
 
+// G4 (spec §3.12): the frontend runs as the invoking unprivileged user.
+void proc06_refuses_privileged_start() {
+  expect(secure_frontend::privileged_start_error({.posix_root = true, .windows_elevated = false}).has_value(), "root is refused");
+  expect(secure_frontend::privileged_start_error({.posix_root = false, .windows_elevated = true}).has_value(), "an elevated token is refused");
+  expect(!secure_frontend::privileged_start_error({.posix_root = false, .windows_elevated = false}).has_value(), "an unprivileged user starts");
+#if !defined(_WIN32)
+  expect(secure_frontend::current_process_privileges().posix_root == (geteuid() == 0), "the probe reads the effective uid");
+#endif
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -890,6 +901,7 @@ int main(int argc, char* argv[]) {
                                                 {"supervisor_exception_opens_circuit", supervisor_exception_opens_circuit},
                                                 {"supervisor_shutdown_sends_eof_first_then_kills", supervisor_shutdown_sends_eof_first_then_kills},
                                                 {"supervisor_lease_outliving_shutdown_is_safe", supervisor_lease_outliving_shutdown_is_safe},
+                                                {"proc06_refuses_privileged_start", proc06_refuses_privileged_start},
                                                 {"proc02_child_env_is_exact_allowlist", proc02_child_env_is_exact_allowlist},
 #if !defined(_WIN32)
                                                 {"shutdown_signal_preserves_errno", shutdown_signal_preserves_errno},

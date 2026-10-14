@@ -424,6 +424,32 @@ void proc05_windows_terminate_frontend_kills_job() {
 }
 #endif
 
+#if !defined(_WIN32)
+// G2: an engine that dies before READY under PR_SET_NO_NEW_PRIVS gets a
+// one-time hint naming the /dev/nvidia-uvm fix; with NNP off it does not.
+void proc06_nnp_startup_hint_names_nvidia_uvm_fix() {
+  test_support::ServerOptions options;
+  options.engine_args = {"--exit-before-ready=1"};
+  auto server = ServerProcess::start(options);
+  expect(server != nullptr && server->wait_until_listening(10s), "the server listens while the engine fails");
+  if (!server) return;
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  while (server->stderr_text().find("/dev/nvidia-uvm") == std::string::npos && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(20ms);
+  }
+  const std::string log = server->stderr_text();
+  expect(log.find("/dev/nvidia-uvm") != std::string::npos && log.find("nvidia-modprobe") != std::string::npos &&
+             log.find("--allow-new-privileges") != std::string::npos,
+         "an engine that dies before READY under NNP gets the nvidia-uvm hint");
+  test_support::ServerOptions allowed = options;
+  allowed.extra_args = {"--allow-new-privileges"};
+  auto second = ServerProcess::start(allowed);
+  expect(second != nullptr && second->wait_until_listening(10s), "second server listens");
+  std::this_thread::sleep_for(1500ms);
+  expect(second && second->stderr_text().find("/dev/nvidia-uvm") == std::string::npos, "no hint when NNP is off");
+}
+#endif
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -444,6 +470,7 @@ int main(int argc, char* argv[]) {
                                              {"proc05_frontend_has_only_engine_children", proc05_frontend_has_only_engine_children},
                                              {"proc05_sigterm_during_generation_exits_cleanly", proc05_sigterm_during_generation_exits_cleanly},
                                              {"proc05_double_sigterm_is_idempotent", proc05_double_sigterm_is_idempotent},
+                                             {"proc06_nnp_startup_hint_names_nvidia_uvm_fix", proc06_nnp_startup_hint_names_nvidia_uvm_fix},
 #endif
 #if defined(_WIN32)
                                              {"proc05_windows_ctrl_break_stops_all_descendants", proc05_windows_ctrl_break_stops_all_descendants},

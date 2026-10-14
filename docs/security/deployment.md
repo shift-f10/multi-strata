@@ -122,6 +122,18 @@ renaming a quarantined component.
   [`../../tests/security/README.md`](../../tests/security/README.md), including
   monitored startup/inference/shutdown/restart proving no outbound connection
   or DNS lookup.
+- The engine runs with `PR_SET_NO_NEW_PRIVS` (default). On hosts where the
+  NVIDIA driver creates `/dev/nvidia-uvm*` on first CUDA use by executing the
+  setuid `nvidia-modprobe`, NNP blocks that: create the nodes at boot instead
+  (as root: `nvidia-modprobe -u -c=0`, or enable `nvidia-persistenced`). The
+  frontend logs a hint naming this fix when an engine dies before READY under
+  NNP. `--allow-new-privileges` turns NNP off; it exists for the offline GPU
+  validation kit and such hosts, and is not the default.
+- `strata-secure-server` refuses to start as root (Windows: with an elevated
+  token). Containers must run it as an unprivileged user.
+- `--state-dir` must be an existing directory owned by the service user with
+  no group/other permissions; the engine's working directory, temp and CUDA
+  cache live below it.
 
 ## Windows prerequisites and operational checks
 

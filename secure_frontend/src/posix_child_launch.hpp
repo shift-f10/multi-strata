@@ -63,12 +63,15 @@ struct PreparedExec {
   int cgroup_fd{-1};
   // The engine's working directory (spec §3.12); empty: inherit the parent's.
   std::string working_directory{};
+  // Linux: PR_SET_NO_NEW_PRIVS before execve (spec §3.12, G2).
+  bool no_new_privileges{false};
 };
 
 inline void prepare(PreparedExec& out, const EngineCommand& command, const bool insert_serve) {
   out.expected_parent = getpid();
   out.executable = command.executable.string();
   out.working_directory = command.working_directory.string();
+  out.no_new_privileges = command.no_new_privileges;
   out.argument_storage.reserve(command.arguments.size() + 2);
   out.argument_storage.push_back(out.executable);
   if (insert_serve) out.argument_storage.emplace_back("--serve");
@@ -176,6 +179,11 @@ inline int lift(const int fd) noexcept { return fd < 0 ? -1 : fcntl(fd, F_DUPFD_
   }
   // Spec §3.12: the engine's cwd-relative files land in <state_dir>/engine.
   if (!prepared.working_directory.empty() && chdir(prepared.working_directory.c_str()) != 0) fail(kReportFd);
+#if defined(__linux__)
+  // Spec §3.12 (G2): neither the engine nor anything it execs gains privilege
+  // through setuid/setgid bits or file capabilities.
+  if (prepared.no_new_privileges && prctl(PR_SET_NO_NEW_PRIVS, 1UL, 0UL, 0UL, 0UL) != 0) fail(kReportFd);
+#endif
 #if defined(__linux__) && defined(SYS_close_range)
   if (syscall(SYS_close_range, static_cast<unsigned>(kReportFd + 1), ~0U, 0U) != 0)
 #endif

@@ -144,6 +144,7 @@ struct EngineLaunch final {
   std::vector<std::string> args;
   std::vector<std::filesystem::path> lib_dirs{};  // engine.lib_dirs, each absolute
   std::vector<unsigned> gpus{};                   // engine.gpu, parsed by parse_gpu_list (empty: unset)
+  bool allow_new_privileges{false};               // engine.allow_new_privileges (Linux: no PR_SET_NO_NEW_PRIVS)
 };
 
 class ValidatedConfig;

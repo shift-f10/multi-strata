@@ -14,7 +14,7 @@ namespace {
 namespace d = config_defaults;
 using T = ConfigValueType;
 
-constexpr std::array<ConfigKey, 35> kSchema{{
+constexpr std::array<ConfigKey, 36> kSchema{{
     {"schema_version", T::integer, false, 1, 1, d::kSchemaVersion, false, "", "",
      "Config format version; must be 1. Required in a config file."},
     {"listener.host", T::string, false, 0, 0, 0, false, "127.0.0.1", "--host",
@@ -78,6 +78,8 @@ constexpr std::array<ConfigKey, 35> kSchema{{
      "Absolute library directories for the engine (default: the engine executable's directory)."},
     {"engine.gpu", T::string, false, 0, 0, 0, false, "", "--gpu",
      "GPU device indices for the engine, e.g. 0 or 0,1 (distinct, 0-255, at most 16); rendered as the engine's --gpu argument (strata family: no GPU variable). Not supported with engine.profile glm53."},
+    {"engine.allow_new_privileges", T::boolean, false, 0, 0, 0, false, "", "--allow-new-privileges",
+     "Linux: do not set PR_SET_NO_NEW_PRIVS on the engine (default: set). Only for hosts whose NVIDIA driver must run setuid nvidia-modprobe to create /dev/nvidia-uvm on first use."},
 }};
 
 void add(ConfigErrors& errors, std::string key, const ConfigIssueCode code, std::string reason) {
@@ -418,6 +420,7 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
           "must be a comma-separated list of distinct device indices 0-255, at most 16");
     }
   }
+  const bool allow_new_privileges = read.boolean("engine.allow_new_privileges");
 
   if (!errors.empty() || !host || !models || !tokenizer || !token || !executable || !model_id) {
     if (errors.empty()) add(errors, "config file", ConfigIssueCode::invalid_value, "is incomplete");
@@ -432,7 +435,7 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
       EngineLimits{std::chrono::seconds(ready_s), std::chrono::seconds(generation_s), std::chrono::seconds(drain_s)},
       ConcurrencyLimits{u32(concurrent)}};
   Roots roots{*models, *tokenizer, secret, logs, cache, state};
-  EngineLaunch engine{profile, *executable, std::move(*model_id), args, std::move(lib_dirs), std::move(gpus)};
+  EngineLaunch engine{profile, *executable, std::move(*model_id), args, std::move(lib_dirs), std::move(gpus), allow_new_privileges};
   return ValidatedConfig{std::shared_ptr<const FrontendConfig>(
       new FrontendConfig(std::move(listener), limits, std::move(roots), std::move(*token), std::move(engine)))};
 }
@@ -491,6 +494,7 @@ std::string describe(const FrontendConfig& c) {
   std::string gpu_list;
   for (const unsigned device : c.engine.gpus) gpu_list += (gpu_list.empty() ? "" : ",") + std::to_string(device);
   line("engine.gpu", gpu_list.empty() ? std::string{"(unset)"} : json_quoted(gpu_list));
+  line("engine.allow_new_privileges", c.engine.allow_new_privileges ? "true" : "false");
   return out;
 }
 

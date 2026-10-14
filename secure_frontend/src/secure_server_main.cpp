@@ -10,6 +10,7 @@
 #include "secure_frontend/http_request_handler.hpp"
 #include "secure_frontend/http_socket_server.hpp"
 #include "secure_frontend/model_inventory.hpp"
+#include "secure_frontend/privilege_check.hpp"
 #include "secure_frontend/process_defaults.hpp"
 #include "secure_frontend/server_cli.hpp"
 #include "secure_frontend/shutdown_signal.hpp"
@@ -151,7 +152,7 @@ int run(const FrontendConfig& config) {
 
   // Profile, protocol flavor, chat limits and the READY deadline all come from
   // the validated config (limits.engine.ready_timeout_s drives the policy).
-  const secure_frontend::SupervisorConfig supervisor_config = secure_frontend::supervisor_config(config);
+  secure_frontend::SupervisorConfig supervisor_config = secure_frontend::supervisor_config(config);
   const std::filesystem::path& state_dir = *config.roots.state;
   if (!prepare_state_dir(state_dir)) {
     std::cerr << "Unable to prepare --state-dir.\n";
@@ -171,6 +172,14 @@ int run(const FrontendConfig& config) {
   // Spec §3.7(d): detected, never configured; off unless this process runs in
   // a writable delegated cgroup v2.
   plan.use_delegated_cgroup = true;
+  // Spec §3.12 (G2): PR_SET_NO_NEW_PRIVS on the engine unless
+  // engine.allow_new_privileges (--allow-new-privileges); when it is set, an
+  // engine that dies before READY gets the one-time /dev/nvidia-uvm hint.
+  plan.command.no_new_privileges =
+      secure_frontend::config_defaults::kNoNewPrivilegesDefault && !config.engine.allow_new_privileges;
+#if defined(__linux__)
+  supervisor_config.no_new_privileges_hint = plan.command.no_new_privileges;
+#endif
   // The supervisor thread spawns, watches and restarts the engine (spec §3.1).
   // Declared before the listener and the router, so it outlives both; a Lease
   // lives only inside one execute_with_lease() call.
@@ -257,6 +266,12 @@ int main(int argc, char* argv[]) {
   if (invocation.command == secure_frontend::ServerCommand::help) {
     std::cout << secure_frontend::server_usage();
     return EXIT_SUCCESS;
+  }
+  // Spec §3.12 (G4): never as root or with an elevated Windows token, for
+  // init and --check too. No flag or variable overrides this.
+  if (const auto refused = secure_frontend::privileged_start_error(secure_frontend::current_process_privileges())) {
+    std::cerr << *refused << '\n';
+    return EXIT_FAILURE;
   }
   if (invocation.command == secure_frontend::ServerCommand::init) {
     const auto failure = secure_frontend::init_frontend(*invocation.config_file, invocation.flags, invocation.force);

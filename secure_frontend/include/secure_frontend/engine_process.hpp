@@ -22,6 +22,10 @@ struct EngineCommand final {
   // cwd-relative `pack/full` default and `strata-stall-<pid>.dmp` there. Empty: inherit.
   // `{}`: existing designated initializers that omit it keep compiling (-Werror).
   std::filesystem::path working_directory{};
+  // Linux: PR_SET_NO_NEW_PRIVS before execve (spec §3.12). The server turns it
+  // on by default (owner decision 2026-10-13); --allow-new-privileges turns it off.
+  // `{false}`: existing designated initializers that omit it keep compiling (-Werror).
+  bool no_new_privileges{false};
 };
 
 enum class ProcessErrorCode {
