@@ -1,8 +1,11 @@
 #include "secure_frontend/http_request_handler.hpp"
+#include "secure_frontend/http_policy.hpp"
 #include "secure_frontend/secret_bytes.hpp"
 
 #include <algorithm>
 #include <limits>
+#include <string>
+#include <utility>
 
 namespace secure_frontend {
 namespace {
@@ -16,6 +19,7 @@ struct ParsedRequest final {
   std::vector<std::string_view> authorizations;
   std::vector<std::string_view> content_lengths;
   std::vector<std::string_view> preflight_methods;
+  std::vector<std::string_view> preflight_headers;
   bool has_transfer_encoding{false};
   std::size_t body_size{0};
 };
@@ -115,6 +119,7 @@ bool parse_request(std::string_view request, ParsedRequest* parsed, const HttpPa
     if (ascii_case_equal(name, "content-length")) parsed->content_lengths.push_back(value);
     if (ascii_case_equal(name, "transfer-encoding")) parsed->has_transfer_encoding = true;
     if (ascii_case_equal(name, "access-control-request-method")) parsed->preflight_methods.push_back(value);
+    if (ascii_case_equal(name, "access-control-request-headers")) parsed->preflight_headers.push_back(value);
     if (separator == std::string_view::npos) break;
     start = end + 2U;
   }
@@ -139,17 +144,27 @@ HttpResponse unauthorized() { return response(401, "Unauthorized\n"); }
 HttpResponse forbidden() { return response(403, "Forbidden\n"); }
 HttpResponse service_unavailable() { return response(503, "Service Unavailable\n"); }
 
-bool policy_error_is_malformed(HttpPolicyError error) {
-  return error == HttpPolicyError::missing_host || error == HttpPolicyError::duplicate_host ||
-         error == HttpPolicyError::invalid_host || error == HttpPolicyError::duplicate_origin ||
-         error == HttpPolicyError::invalid_origin;
-}
-
-void append_cors_headers(HttpResponse* response, const HttpPolicyDecision& decision) {
-  if (decision.access_control_allow_origin.has_value()) {
-    response->headers.emplace_back("Access-Control-Allow-Origin", *decision.access_control_allow_origin);
+void append_cors_headers(HttpResponse* response, const OriginDecision& decision) {
+  if (decision.allow_origin.has_value()) {
+    response->headers.emplace_back("Access-Control-Allow-Origin", *decision.allow_origin);
     response->headers.emplace_back("Vary", "Origin");
   }
+}
+
+// Temporary (removed in Task 6a, which rewrites this file): the preflight
+// fields as a RequestHead so evaluate_preflight decides the preflight.
+RequestHead preflight_head(const ParsedRequest& parsed) {
+  RequestHead head;
+  head.method = std::string{parsed.method};
+  head.target = std::string{parsed.target};
+  for (const std::string_view value : parsed.origins) head.fields.push_back({"Origin", std::string{value}});
+  for (const std::string_view value : parsed.preflight_methods) {
+    head.fields.push_back({"Access-Control-Request-Method", std::string{value}});
+  }
+  for (const std::string_view value : parsed.preflight_headers) {
+    head.fields.push_back({"Access-Control-Request-Headers", std::string{value}});
+  }
+  return head;
 }
 
 }  // namespace
@@ -170,24 +185,12 @@ HttpResponse handle_http_request(std::string_view request, const HttpPolicy& pol
                                  const RequestDispatcher& dispatch_request, const HttpParserLimits& limits) {
   ParsedRequest parsed;
   if (!parse_request(request, &parsed, limits)) return bad_request();
-  const HttpPolicyDecision policy_decision =
-      validate_http_request_headers(policy, parsed.hosts, parsed.origins);
-  if (!policy_decision.allowed) {
-    return policy_error_is_malformed(*policy_decision.error) ? bad_request() : forbidden();
-  }
-
-  const bool cors_preflight = parsed.method == "OPTIONS" && !parsed.origins.empty() &&
-                              !parsed.preflight_methods.empty();
-  if (cors_preflight) {
-    if (parsed.preflight_methods.size() != 1U || !is_token(parsed.preflight_methods.front()) ||
-        !policy_decision.access_control_allow_origin.has_value() ||
-        (parsed.preflight_methods.front() != "GET" && parsed.preflight_methods.front() != "POST" &&
-         parsed.preflight_methods.front() != "OPTIONS")) return forbidden();
-    HttpResponse preflight{.status = 204, .headers = {}, .body = ""};
-    append_cors_headers(&preflight, policy_decision);
-    preflight.headers.emplace_back("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    return preflight;
-  }
+  // Temporary Task 3 shim over the new policy API (Task 6a rewrites this file).
+  const PolicyVerdict host_verdict = check_host(policy, parsed.hosts);
+  if (host_verdict != PolicyVerdict::allowed) return host_verdict == PolicyVerdict::malformed ? bad_request() : forbidden();
+  if (auto preflight = evaluate_preflight(policy, preflight_head(parsed))) return std::move(*preflight);
+  const OriginDecision policy_decision = check_origin(policy, parsed.origins);
+  if (policy_decision.verdict != PolicyVerdict::allowed) return forbidden();
 
   if (parsed.authorizations.size() != 1U) return parsed.authorizations.size() > 1U ? bad_request() : unauthorized();
   constexpr std::string_view kBearerPrefix = "Bearer ";

@@ -7,6 +7,7 @@
 #include "secure_frontend/engine_supervisor.hpp"
 #include "secure_frontend/frontend_config.hpp"
 #include "secure_frontend/frontend_init.hpp"
+#include "secure_frontend/http_policy.hpp"
 #include "secure_frontend/http_request_handler.hpp"
 #include "secure_frontend/http_socket_server.hpp"
 #include "secure_frontend/launch_composition.hpp"
@@ -201,8 +202,10 @@ int run(const FrontendConfig& config, const bool expert) {
   secure_frontend::EngineSupervisor supervisor(supervisor_config, secure_frontend::make_stdio_process_factory(std::move(plan)));
 
   const std::string authority = host_header(listener);
-  secure_frontend::HttpPolicy policy{.allowed_hosts = {authority}, .same_origin_origins = {"http://" + authority},
-                                     .cors_allowed_origins = {}, .cors_enabled = false};
+  // The old allowlist ({authority}) is kept as an alias; listener.host_aliases
+  // and listener.cors_origins are wired by a later task (no CORS yet).
+  secure_frontend::HttpPolicy policy =
+      secure_frontend::make_http_policy(config.listener.host, config.listener.port, {authority}, {});
   // /health takes one supervisor snapshot per request: the router calls the
   // bool provider first, then the engine and recovery providers, once each
   // (api_router.hpp), and the listener is serial.

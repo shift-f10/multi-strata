@@ -1,3 +1,4 @@
+#include "secure_frontend/http_policy.hpp"
 #include "secure_frontend/http_request_handler.hpp"
 #include "secure_frontend/token_verifier.hpp"
 #include "support/test_support.hpp"
@@ -19,11 +20,12 @@ void expect(bool condition, const std::string& message) {
   }
 }
 
-secure_frontend::HttpPolicy policy(bool cors_enabled = false) {
-  return {.allowed_hosts = {"127.0.0.1:8080"},
-          .same_origin_origins = {"http://127.0.0.1:8080"},
-          .cors_allowed_origins = {"https://console.example.test"},
-          .cors_enabled = cors_enabled};
+// The new policy has no CORS switch: a configured cors_origins entry is the
+// switch (pre-flight P10). The flag is kept so call sites stay unchanged until
+// Task 6b ports these cases to the router.
+secure_frontend::HttpPolicy policy(bool /*cors_enabled*/ = false) {
+  return secure_frontend::make_http_policy(*secure_frontend::parse_listener_address("127.0.0.1"), 8080, {},
+                                           {"https://console.example.test"});
 }
 
 secure_frontend::BearerTokenValidator validator() {

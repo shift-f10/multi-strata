@@ -1,6 +1,7 @@
 #pragma once
 
 #include "secure_frontend/config.hpp"
+#include "secure_frontend/http_policy.hpp"
 #include "secure_frontend/http_request_handler.hpp"
 #include "secure_frontend/config_defaults.hpp"
 

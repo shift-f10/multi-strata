@@ -61,8 +61,10 @@ struct Fixture final {
       const std::string client_authority = authority_for(client_host, port);
       // has_api_key, is_loopback, allow_remote, allow_wildcard_bind
       secure_frontend::Config config{host, port, true, !wildcard, wildcard, wildcard};
-      secure_frontend::HttpPolicy policy{{authority, client_authority},
-                                         {"http://" + authority, "http://" + client_authority}, {}, false};
+      // The bound and client authorities stay allowed as aliases (a wildcard
+      // bind trusts only aliases), no CORS.
+      secure_frontend::HttpPolicy policy = secure_frontend::make_http_policy(
+          *secure_frontend::parse_listener_address(host), port, {authority, client_authority}, {});
       server = secure_frontend::HttpSocketServer::bind(
           config, std::move(policy),
           [](std::string_view token) { return secure_frontend::constant_time_token_equals(token, "test-token"); },

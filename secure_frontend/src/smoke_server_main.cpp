@@ -1,5 +1,6 @@
 #include "secure_frontend/api_router.hpp"
 #include "secure_frontend/config.hpp"
+#include "secure_frontend/http_policy.hpp"
 #include "secure_frontend/http_request_handler.hpp"
 #include "secure_frontend/http_socket_server.hpp"
 #include "secure_frontend/model_inventory.hpp"
@@ -182,10 +183,13 @@ int run(const Options& options) {
   for (const auto& manifest : *manifests) models.push_back({.id = manifest.id, .owned_by = manifest.owned_by});
 
   const std::string authority = host_header(*config);
-  secure_frontend::HttpPolicy policy{.allowed_hosts = {authority},
-                                     .same_origin_origins = {"http://" + authority},
-                                     .cors_allowed_origins = {},
-                                     .cors_enabled = false};
+  const auto bind_address = secure_frontend::parse_listener_address(config->host);
+  if (!bind_address.has_value()) {
+    std::cerr << "Invalid listener configuration.\n";
+    return EXIT_FAILURE;
+  }
+  // Same allowlist as before ({authority}, kept as an alias), no CORS.
+  secure_frontend::HttpPolicy policy = secure_frontend::make_http_policy(*bind_address, config->port, {authority}, {});
   const secure_frontend::ApiRouter router(
       [] { return true; }, [models = std::move(models)] { return models; });
   auto server = secure_frontend::HttpSocketServer::bind(

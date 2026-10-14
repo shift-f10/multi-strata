@@ -1,5 +1,6 @@
 #include "secure_frontend/api_router.hpp"
 #include "secure_frontend/config.hpp"
+#include "secure_frontend/http_policy.hpp"
 #include "secure_frontend/http_request_handler.hpp"
 #include "secure_frontend/http_socket_server.hpp"
 #include "secure_frontend/model_inventory.hpp"
@@ -62,7 +63,8 @@ int main(int argc, char** argv) {
   const std::string host_header = options->host.find(':') == std::string::npos
       ? options->host + ":" + std::to_string(options->port)
       : "[" + options->host + "]:" + std::to_string(options->port);
-  const std::string origin = "http://" + host_header;
+  const auto bind_address = secure_frontend::parse_listener_address(config->host);
+  if (!bind_address.has_value()) { std::cerr << "invalid listener configuration\n"; return EXIT_FAILURE; }
   const std::filesystem::path models_root = options->models_root;
   const secure_frontend::ApiRouter router(
       [] { return true; },
@@ -75,8 +77,9 @@ int main(int argc, char** argv) {
         return models;
       });
   std::string error;
-  auto server = secure_frontend::HttpSocketServer::bind(*config, {.allowed_hosts = {host_header},
-      .same_origin_origins = {origin}, .cors_allowed_origins = {}, .cors_enabled = false},
+  // Same allowlist as before ({host_header}, kept as an alias), no CORS.
+  auto server = secure_frontend::HttpSocketServer::bind(*config,
+      secure_frontend::make_http_policy(*bind_address, config->port, {host_header}, {}),
       secure_frontend::make_bearer_validator(verifier),
       [router](std::string_view method, std::string_view target, std::string_view) {
         return router.dispatch(method, target);

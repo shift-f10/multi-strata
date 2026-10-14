@@ -1,4 +1,5 @@
 #include "secure_frontend/api_router.hpp"
+#include "secure_frontend/http_policy.hpp"
 #include "secure_frontend/token_verifier.hpp"
 #include "support/test_support.hpp"
 
@@ -149,9 +150,8 @@ void auth01_every_route_rejects_missing_malformed_wrong_token() {
                                                                            std::string_view) {
     return routes_under_test.dispatch(method, target);
   };
-  const secure_frontend::HttpPolicy policy{.allowed_hosts = {"127.0.0.1:8080"},
-                                           .same_origin_origins = {"http://127.0.0.1:8080"},
-                                           .cors_allowed_origins = {}, .cors_enabled = false};
+  const secure_frontend::HttpPolicy policy =
+      secure_frontend::make_http_policy(*secure_frontend::parse_listener_address("127.0.0.1"), 8080, {}, {});
   const std::string token = "auth01-token-0123456789abcdefghijklmnopq";
   const std::pair<std::string, int> variants[] = {
       {"", 401},                                                           // missing

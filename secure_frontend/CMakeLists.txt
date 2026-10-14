@@ -248,6 +248,7 @@ target_include_directories(secure_frontend_http_policy
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
+target_link_libraries(secure_frontend_http_policy PUBLIC secure_frontend_api_core secure_frontend_config)
 
 target_compile_features(secure_frontend_http_request_handler PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_http_request_handler
@@ -812,10 +813,10 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         set_tests_properties(secure_frontend_engine_supervisor_tests.proc05_cgroup_kill_when_delegated PROPERTIES SKIP_RETURN_CODE 77)
     endif()
 
-    secure_frontend_add_test_executable(secure_frontend_http_policy_tests tests/http_policy_test.cpp secure_frontend_http_policy)
+    secure_frontend_add_test_executable(secure_frontend_http_policy_tests tests/http_policy_test.cpp secure_frontend_http_policy
+        secure_frontend_api_core secure_frontend_config secure_frontend_http_request_handler)
     secure_frontend_add_cases(secure_frontend_http_policy_tests
-        accepts_exact_host_without_browser_origin rejects_ambiguous_or_untrusted_host requires_an_exact_same_origin
-        rejects_duplicate_or_malformed_origin permits_only_configured_cors_origin_when_enabled)
+        web01_host_matrix web02_host_name_case_is_folded web03_origin_matrix web06_preflight_rules_unit cors_and_alias_grammar)
 
     secure_frontend_add_test_executable(secure_frontend_http_parser_tests tests/http_parser_test.cpp
         secure_frontend_api_core secure_frontend_http_request_handler)

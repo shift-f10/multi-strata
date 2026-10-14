@@ -1,7 +1,6 @@
 #pragma once
 
 #include "secure_frontend/config_defaults.hpp"
-#include "secure_frontend/http_policy.hpp"
 
 #include <cstddef>
 #include <functional>
@@ -12,6 +11,9 @@
 #include <vector>
 
 namespace secure_frontend {
+
+// Defined in http_policy.hpp, which includes this header for HttpResponse.
+struct HttpPolicy;
 
 // The validator owns any secret material. It is called only after request
 // syntax and Host/Origin policy have been accepted, and should compare the
