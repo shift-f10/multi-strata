@@ -356,6 +356,22 @@ void proc03_windows_pipe_second_open_fails() {
          "a second server instance on the name is refused, error " + std::to_string(rival_error));
   (void)child.terminate(250ms);
 }
+void proc01_windows_argv_round_trip() {
+  const std::vector<std::string> tricky{"a \"quoted\" word", "C:\\path with space\\", "trailing\\", "back\\\\slashes\\\"",
+                                        "%PATH%",           "^&|<>()",               "line\nbreak", "\xE2\x9C\x93 \xF0\x9F\x98\x80",
+                                        "",                 "-flag=value"};
+  std::vector<std::string> arguments{"--echo-cmdline"};
+  arguments.insert(arguments.end(), tricky.begin(), tricky.end());
+  secure_frontend::EngineStdioProcess child;
+  expect(!child.start({.executable = test_support::fake_engine_path(), .arguments = arguments, .environment = {}}).has_value(), "start");
+  expect(child.read_line(5s).line.rfind("CMDLINE ", 0) == 0, "the raw command line is reported first");
+  expect(child.read_line(5s).line == "READY 4096 stop", "READY");
+  const auto dump = test_support::request_dump(child, 5s);
+  std::vector<std::string> expected{test_support::utf8_path(test_support::fake_engine_path()), "--serve"};
+  expected.insert(expected.end(), arguments.begin(), arguments.end());
+  expect(dump && dump->argv == expected, "CommandLineToArgvW in the child yields exactly the argv the frontend was given");
+  (void)child.terminate(250ms);
+}
 #endif
 
 }  // namespace
@@ -373,6 +389,7 @@ int main(int argc, char* argv[]) {
                                              {"proc02_canary_handles_absent", proc02_canary_handles_absent},
                                              {"proc02_stdin_pipe_dacl_is_owner_only", proc02_stdin_pipe_dacl_is_owner_only},
                                              {"proc03_windows_pipe_second_open_fails", proc03_windows_pipe_second_open_fails},
+                                             {"proc01_windows_argv_round_trip", proc01_windows_argv_round_trip},
 #endif
                                          },
                                          failures);

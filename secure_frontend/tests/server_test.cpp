@@ -1,9 +1,11 @@
+#include "support/fake_engine_dump.hpp"
 #include "support/server_harness.hpp"
 #include "support/test_paths.hpp"
 
 #include <chrono>
 #include <iostream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -39,6 +41,30 @@ void harness_server_lifecycle_selftest() {
   expect(health && (health->status == 200 || health->status == 503), "/health answers: " + describe(health));
   server->stop(ServerProcess::Stop::kill);
   expect(server->wait_exit(5s).has_value(), "a killed server is reaped");
+}
+
+void proc01_server_passes_literal_argv() {
+  const auto dir = test_support::make_temp_dir("a2");
+  const auto dump_file = dir / "dump.txt";
+  const std::string weird = "--weird=a b;$(touch x)|&`\"q\"'\\ \xE2\x9C\x93";
+  test_support::ServerOptions options;
+  options.engine_args = {"--dump-file=" + test_support::utf8_path(dump_file), weird, "--max-context", "8192"};
+  auto server = ServerProcess::start(options);
+  expect(server != nullptr && server->wait_until_listening(10s), "the server must listen");
+  if (!server) return;
+  const auto dump = test_support::read_dump_file(dump_file, 10s);
+  expect(dump.has_value(), "the engine reported its argv");
+  if (dump) {
+    auto model = server->root() / "models" / "fake-model.gguf";
+    model.make_preferred();
+    const std::vector<std::string> expected{test_support::utf8_path(test_support::fake_engine_path()), "--serve",
+                                            "--dump-file=" + test_support::utf8_path(dump_file), weird, "--max-context", "8192",
+                                            "--native", test_support::utf8_path(model)};
+    expect(dump->argv == expected, "every value arrives literally as one argv entry, in order, with no shell");
+  }
+#if !defined(_WIN32)
+  expect(test_support::children_of(server->pid()).size() == 1U, "exactly one child process: no shell in between");
+#endif
 }
 
 #if !defined(_WIN32)
@@ -77,6 +103,7 @@ int main(int argc, char* argv[]) {
   return secure_frontend_test::run_cases(argc, argv,
                                          {
                                              {"harness_server_lifecycle_selftest", harness_server_lifecycle_selftest},
+                                             {"proc01_server_passes_literal_argv", proc01_server_passes_literal_argv},
 #if !defined(_WIN32)
                                              {"proc05_frontend_sigkill_kills_engine", proc05_frontend_sigkill_kills_engine},
 #endif

@@ -416,7 +416,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # Later tasks append case names to these three set() lines only. Every
     # server-level test is windows-runtime on Windows: it relies on console
     # groups, Jobs, tokens and process exit codes.
-    set(SECURE_FRONTEND_SERVER_CASES harness_server_lifecycle_selftest)
+    set(SECURE_FRONTEND_SERVER_CASES harness_server_lifecycle_selftest proc01_server_passes_literal_argv)
     set(SECURE_FRONTEND_SERVER_LINUX_CASES proc05_frontend_sigkill_kills_engine)
     set(SECURE_FRONTEND_SERVER_WINDOWS_CASES)
     if(WIN32)
@@ -437,7 +437,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_test_paths(secure_frontend_engine_child_tests)
     set(SECURE_FRONTEND_CHILD_CASES proc04_exit_status_is_classified)
     set(SECURE_FRONTEND_CHILD_LINUX_CASES proc05_group_killed_after_leader_reaped proc02_child_signal_state_is_default proc02_canary_descriptors_absent)
-    set(SECURE_FRONTEND_CHILD_WINDOWS_CASES proc02_canary_handles_absent proc02_stdin_pipe_dacl_is_owner_only proc03_windows_pipe_second_open_fails)
+    set(SECURE_FRONTEND_CHILD_WINDOWS_CASES proc02_canary_handles_absent proc02_stdin_pipe_dacl_is_owner_only proc03_windows_pipe_second_open_fails proc01_windows_argv_round_trip)
     if(WIN32)
         list(APPEND SECURE_FRONTEND_CHILD_CASES ${SECURE_FRONTEND_CHILD_WINDOWS_CASES})
     else()
