@@ -121,7 +121,7 @@ class EngineSupervisor final {
 
  private:
   friend class Lease;
-  void release(const EngineInstance& instance) noexcept;
+  void release(std::shared_ptr<EngineInstance> instance) noexcept;
   void run();
   std::shared_ptr<EngineInstance> spawn_generation();
   KillReason supervise(EngineInstance& instance, std::chrono::milliseconds& healthy_for);
@@ -131,6 +131,8 @@ class EngineSupervisor final {
   bool schedule_restart(std::chrono::milliseconds healthy_for, bool reaped);
   void wait_in_circuit_open();
   void shutdown_generation(const std::shared_ptr<EngineInstance>& instance);
+  void retire(const std::shared_ptr<EngineInstance>& instance, bool reaped);
+  void sweep_retired();
   void finish();
   void set_state(SupervisorState state);
   void set_state(SupervisorState state, std::shared_ptr<EngineInstance> current);
@@ -140,12 +142,17 @@ class EngineSupervisor final {
   ProcessFactory factory_;
   std::shared_ptr<SupervisorClock> clock_;
   SupervisorLog log_;
+  RestartTracker tracker_;
   SupervisorWake wake_;
   mutable std::mutex mutex_;
   mutable std::condition_variable changed_;
   SupervisorState state_{SupervisorState::stopped};
   std::shared_ptr<EngineInstance> current_;
   KillReason pending_kill_{KillReason::none};
+  // Ended generations still borrowed by a Lease: destroyed by sweep_retired()
+  // on the supervisor thread once the Lease lets go (spec §3.1; on Windows the
+  // destructor terminates the Job and waits).
+  std::vector<std::shared_ptr<EngineInstance>> retired_;
   std::vector<std::shared_ptr<EngineInstance>> abandoned_;
   std::atomic<std::uint64_t> generations_started_{0};
   std::atomic<bool> shutdown_requested_{false};

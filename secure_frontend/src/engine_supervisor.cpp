@@ -3,8 +3,10 @@
 #include "secure_frontend/deadline.hpp"
 #include "secure_frontend/engine_stdio_process.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <utility>
 #include <variant>
@@ -67,7 +69,7 @@ Lease::Lease(EngineSupervisor& owner, std::shared_ptr<EngineInstance> instance) 
     : owner_(&owner), instance_(std::move(instance)) {}
 Lease::Lease(Lease&& other) noexcept : owner_(std::exchange(other.owner_, nullptr)), instance_(std::move(other.instance_)) {}
 Lease::~Lease() {
-  if (owner_ != nullptr && instance_) owner_->release(*instance_);
+  if (owner_ != nullptr && instance_) owner_->release(std::move(instance_));
 }
 ChatExecutionService& Lease::chat() const noexcept { return *instance_->chat; }
 EngineProtocolClient& Lease::protocol() const noexcept { return *instance_->protocol; }
@@ -79,7 +81,8 @@ EngineSupervisor::EngineSupervisor(SupervisorConfig config, ProcessFactory facto
     : config_(std::move(config)),
       factory_(std::move(factory)),
       clock_(std::move(clock)),
-      log_(log ? std::move(log) : SupervisorLog(log_to_stderr)) {}
+      log_(log ? std::move(log) : SupervisorLog(log_to_stderr)),
+      tracker_(config_.policy) {}
 
 EngineSupervisor::~EngineSupervisor() {
   if (thread_.joinable()) shutdown(supervision_defaults::kShutdownBound);
@@ -103,12 +106,15 @@ std::optional<Lease> EngineSupervisor::acquire() {
   return Lease(*this, current_);
 }
 
-void EngineSupervisor::release(const EngineInstance& instance) noexcept {
+// The Lease's reference is dropped under the lock: current_ or retired_ still
+// holds the instance, so its destructor never runs on the serving thread.
+void EngineSupervisor::release(std::shared_ptr<EngineInstance> instance) noexcept {
   std::lock_guard lock(mutex_);
-  if (state_ == SupervisorState::generating && current_.get() == &instance) {
+  if (state_ == SupervisorState::generating && current_ == instance) {
     state_ = SupervisorState::ready;
     changed_.notify_all();
   }
+  instance.reset();
 }
 
 void EngineSupervisor::report_fatal(const Lease& lease, const KillReason reason) {
@@ -150,6 +156,7 @@ void EngineSupervisor::shutdown(const std::chrono::milliseconds bound) {
 
 void EngineSupervisor::run() {
   for (;;) {
+    sweep_retired();
     if (stop_requested()) break;
     auto instance = spawn_generation();
     std::chrono::milliseconds healthy_for{0};
@@ -220,6 +227,7 @@ KillReason EngineSupervisor::watch(EngineInstance& instance) {
     }
     if (stop_requested()) return KillReason::shutdown;
     if (instance.process->try_reap()) return KillReason::none;
+    sweep_retired();
     (void)wake_.wait(kNoMonitorHandle, std::chrono::milliseconds(-1));
   }
 }
@@ -237,15 +245,9 @@ bool EngineSupervisor::end_generation(const std::shared_ptr<EngineInstance>& ins
     std::this_thread::sleep_for(kReapPoll);
     status = process.try_reap();
   }
-  {
-    std::lock_guard lock(mutex_);
-    current_.reset();
-    pending_kill_ = KillReason::none;
-  }
+  retire(instance, status.has_value());
   if (!status) {
     log_end(instance->number, "unreaped");
-    std::lock_guard lock(mutex_);
-    abandoned_.push_back(instance);  // kept alive: destroying it would wait for the child again
     return false;
   }
   process.release_resources(std::chrono::milliseconds(1000));
@@ -254,12 +256,16 @@ bool EngineSupervisor::end_generation(const std::shared_ptr<EngineInstance>& ins
   return true;
 }
 
-// No restart policy yet: every unrequested end opens the circuit.
 bool EngineSupervisor::schedule_restart(const std::chrono::milliseconds healthy_for, const bool reaped) {
-  (void)healthy_for;
   (void)reaped;
-  set_state(SupervisorState::circuit_open, nullptr);
-  return false;
+  const RestartDecision decision = tracker_.record_failure(healthy_for);
+  if (decision.circuit_open) {
+    set_state(SupervisorState::circuit_open, nullptr);
+    return false;
+  }
+  set_state(SupervisorState::backoff, nullptr);
+  (void)clock_->sleep_backoff(decision.delay, wake_);  // woken early only by shutdown; run() re-checks
+  return true;
 }
 
 void EngineSupervisor::wait_in_circuit_open() {
@@ -271,12 +277,37 @@ void EngineSupervisor::shutdown_generation(const std::shared_ptr<EngineInstance>
   instance->process->kill_group();
   const auto deadline = deadline_after(config_.shutdown_term_wait);
   while (!instance->process->try_reap() && remaining_until(deadline).count() > 0) std::this_thread::sleep_for(kReapPoll);
-  if (instance->process->try_reap()) instance->process->release_resources(std::chrono::milliseconds(0));
-  std::lock_guard lock(mutex_);
-  current_.reset();
+  const bool reaped = instance->process->try_reap().has_value();
+  if (reaped) instance->process->release_resources(std::chrono::milliseconds(0));
+  retire(instance, reaped);
 }
 
-void EngineSupervisor::finish() { set_state(SupervisorState::stopped, nullptr); }
+// Takes the ended generation out of service. A reaped one waits in retired_
+// for its Lease; an unreaped one is kept alive in abandoned_, since destroying
+// it would wait for the child again.
+void EngineSupervisor::retire(const std::shared_ptr<EngineInstance>& instance, const bool reaped) {
+  std::lock_guard lock(mutex_);
+  current_.reset();
+  pending_kill_ = KillReason::none;
+  (reaped ? retired_ : abandoned_).push_back(instance);
+}
+
+// Supervisor thread only: destroys retired generations no Lease still holds.
+void EngineSupervisor::sweep_retired() {
+  std::vector<std::shared_ptr<EngineInstance>> released;
+  {
+    std::lock_guard lock(mutex_);
+    const auto still_leased = std::partition(retired_.begin(), retired_.end(),
+                                             [](const std::shared_ptr<EngineInstance>& instance) { return instance.use_count() > 1; });
+    released.assign(std::make_move_iterator(still_leased), std::make_move_iterator(retired_.end()));
+    retired_.erase(still_leased, retired_.end());
+  }
+}
+
+void EngineSupervisor::finish() {
+  sweep_retired();
+  set_state(SupervisorState::stopped, nullptr);
+}
 
 void EngineSupervisor::set_state(const SupervisorState state) {
   std::lock_guard lock(mutex_);

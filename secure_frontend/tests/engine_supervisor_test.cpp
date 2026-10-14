@@ -1,12 +1,18 @@
 #include "secure_frontend/engine_supervisor.hpp"
 
+#include "support/fake_supervised_process.hpp"
 #include "support/test_paths.hpp"
+#include "support/test_tokenizer.hpp"
 
 #include <chrono>
 #include <cstdint>
 #include <iostream>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -45,8 +51,156 @@ void supervisor_health_literals_per_state() {
   expect(idle.snapshot().state == SupervisorState::stopped && !idle.acquire().has_value(), "before start(): stopped, no lease");
 }
 
+secure_frontend::EngineLaunchPlan fake_plan(std::vector<std::string> arguments) {
+  return {.command = {.executable = test_support::fake_engine_path(), .arguments = std::move(arguments), .environment = {}}};
+}
+
+void proc04_restart_backoff_then_circuit_open() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.end({false, 1U}); });
+  auto clock = std::make_shared<test_support::ManualClock>();
+  test_support::LogCapture log;
+  secure_frontend::EngineSupervisor supervisor({}, fakes.factory(), clock, log.sink());
+  std::mutex seen_mutex;
+  std::vector<std::string_view> recovery_in_backoff;
+  clock->on_sleep([&] {
+    std::lock_guard lock(seen_mutex);
+    recovery_in_backoff.push_back(supervisor.snapshot().recovery);
+  });
+  supervisor.start();
+  expect(supervisor.wait_for_state(SupervisorState::circuit_open, 5s), "the 3rd consecutive failure opens the circuit");
+  expect(clock->delays() == std::vector<std::chrono::milliseconds>{1000ms, 2000ms}, "backoff is exactly 1 s, then 2 s");
+  expect(fakes.spawned() == 3U, "exactly three generations");
+  {
+    std::lock_guard lock(seen_mutex);
+    expect(recovery_in_backoff == std::vector<std::string_view>{"restarting", "restarting"}, "backoff reports recovery=restarting");
+  }
+  const auto health = supervisor.snapshot();
+  expect(!health.healthy && health.engine == "failed" && health.recovery == "exhausted", "circuit_open is failed/exhausted");
+  expect(!supervisor.acquire().has_value(), "no lease in circuit_open");
+  expect(log.contains("engine generation 1 ended: error_exit"), "each end is logged with its classification");
+  supervisor.shutdown(5s);
+}
+
+void proc04_healthy_window_resets_failure_count() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.push_line("READY 4096 stop"); });
+  auto clock = std::make_shared<test_support::ManualClock>();
+  secure_frontend::EngineSupervisor supervisor({}, fakes.factory(), clock);
+  const auto fail_now = [&supervisor] {
+    auto lease = supervisor.acquire();
+    if (lease) supervisor.report_fatal(*lease, secure_frontend::KillReason::protocol_failed);
+    return lease.has_value();
+  };
+  supervisor.start();
+  expect(test_support::wait_generation_ready(supervisor, 1U, 5s), "generation 1 ready");
+  clock->advance(301s);  // healthy for longer than the 300 s window
+  expect(fail_now(), "lease on generation 1");
+  expect(test_support::wait_generation_ready(supervisor, 2U, 5s), "generation 2 ready");
+  expect(fail_now(), "generation 2 fails at once and counts on top");
+  expect(test_support::wait_generation_ready(supervisor, 3U, 5s), "generation 3 ready");
+  clock->advance(301s);
+  expect(fail_now(), "generation 3 was healthy again");
+  expect(test_support::wait_generation_ready(supervisor, 4U, 5s), "generation 4 ready: the circuit stayed closed");
+  expect(clock->delays() == std::vector<std::chrono::milliseconds>{1000ms, 2000ms, 1000ms},
+         "1 s, 2 s, then 1 s again after a healthy window reset the count");
+  supervisor.shutdown(5s);
+}
+
+void proc04_recovers_after_transient_crash() {
+  const auto dir = test_support::make_temp_dir("transient");
+  secure_frontend::SupervisorConfig config;
+  config.policy.backoff_initial = 50ms;
+  test_support::LogCapture log;
+  secure_frontend::EngineSupervisor supervisor(
+      config, secure_frontend::make_stdio_process_factory(fake_plan({"--fail-first=1", "--counter-file=" + test_support::utf8_path(dir / "count")})),
+      std::make_shared<secure_frontend::SteadySupervisorClock>(), log.sink());
+  supervisor.start();
+  expect(test_support::wait_generation_ready(supervisor, 2U, 10s), "a one-off failure is recovered by generation 2");
+  expect(log.contains("engine generation 1 ended: error_exit"), "generation 1's exit 1 is logged as error_exit");
+  supervisor.shutdown(5s);
+}
+
+void proc04_missing_engine_opens_circuit_without_spinning() {
+  const auto dir = test_support::make_temp_dir("missing-engine");
+  auto clock = std::make_shared<test_support::ManualClock>();
+  test_support::LogCapture log;
+  const secure_frontend::EngineLaunchPlan plan{.command = {.executable = dir / "no-such-engine", .arguments = {}, .environment = {}}};
+  secure_frontend::EngineSupervisor supervisor({}, secure_frontend::make_stdio_process_factory(plan), clock, log.sink());
+  supervisor.start();
+  expect(supervisor.wait_for_state(SupervisorState::circuit_open, 5s), "three spawn failures open the circuit");
+  expect(supervisor.generations_started() == 3U, "exactly three attempts: no tight loop");
+  expect(clock->delays() == std::vector<std::chrono::milliseconds>{1000ms, 2000ms}, "spawn failures back off like any failure");
+  expect(log.contains("engine generation 1 ended: spawn_failed"), "logged as spawn_failed");
+  const auto health = supervisor.snapshot();
+  expect(health.engine == "failed" && health.recovery == "exhausted", "/health: failed / exhausted");
+  supervisor.shutdown(5s);
+}
+
+// Review Focus 6: a client can make the engine answer ERR (SP0 keeps the
+// per-request answer), and an ERR leaves the protocol failed, so the
+// generation is replaced and counts as a failure. Three such requests in a
+// row, inside the healthy window, open the circuit until the frontend restarts.
+void proc04_client_err_lines_open_circuit_until_restart() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) {
+    child.push_line("READY 4096 stop");
+    child.push_line("ERR invalid request");  // the answer to the first GEN
+  });
+  auto clock = std::make_shared<test_support::ManualClock>();
+  test_support::LogCapture log;
+  secure_frontend::EngineSupervisor supervisor({}, fakes.factory(), clock, log.sink());
+  supervisor.start();
+  const auto tokenizer = test_support::byte_tokenizer();
+  const secure_frontend::ChatCompletionRequest request{"fake-model", {{"user", "Hi"}}, 2U};
+  for (std::uint64_t generation = 1U; generation <= 3U; ++generation) {
+    expect(test_support::wait_generation_ready(supervisor, generation, 5s), "generation " + std::to_string(generation) + " ready");
+    const auto outcome = secure_frontend::execute_with_lease(supervisor, request, tokenizer);
+    expect(outcome && std::holds_alternative<secure_frontend::ChatExecutionError>(*outcome), "the ERR request fails for its own client");
+  }
+  expect(supervisor.wait_for_state(SupervisorState::circuit_open, 5s), "the third client-triggered ERR opens the circuit");
+  expect(fakes.spawned() == 3U, "no fourth generation: only a frontend restart closes the circuit");
+  expect(clock->delays() == std::vector<std::chrono::milliseconds>{1000ms, 2000ms}, "the first two ERR generations back off like any failure");
+  expect(log.contains("engine generation 3 ended: killed_by_supervisor(protocol_failed)"), "each ERR generation is killed as protocol_failed");
+  const auto health = supervisor.snapshot();
+  expect(health.engine == "failed" && health.recovery == "exhausted", "/health: failed / exhausted until restart");
+  expect(!supervisor.acquire().has_value(), "no lease for any later client");
+  supervisor.shutdown(5s);
+}
+
+// Spec §3.1: only the supervisor thread destroys a generation (on Windows the
+// destructor terminates the Job and waits). A Lease that outlives its
+// generation's end must not make the serving thread drop the last reference.
+void supervisor_retires_ended_generation_on_its_own_thread() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.push_line("READY 4096 stop"); });
+  auto clock = std::make_shared<test_support::ManualClock>();
+  secure_frontend::EngineSupervisor supervisor({}, fakes.factory(), clock, test_support::LogCapture{}.sink());
+  supervisor.start();
+  expect(test_support::wait_generation_ready(supervisor, 1U, 5s), "generation 1 ready");
+  auto lease = supervisor.acquire();
+  expect(lease.has_value(), "lease on generation 1");
+  if (!lease) {
+    supervisor.shutdown(5s);
+    return;
+  }
+  supervisor.report_fatal(*lease, secure_frontend::KillReason::protocol_failed);
+  expect(test_support::wait_generation_ready(supervisor, 2U, 5s), "generation 2 ready while generation 1 is still leased");
+  const auto first = fakes.child(1U);
+  lease.reset();  // the serving thread lets go of the ended generation
+  {
+    std::lock_guard lock(first->mutex);
+    expect(first->destroyed_on != std::this_thread::get_id(), "the serving thread did not destroy generation 1");
+  }
+  supervisor.shutdown(5s);
+  std::lock_guard lock(first->mutex);
+  expect(first->destroyed_on == first->spawned_on, "generation 1 was destroyed on the supervisor thread");
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
-  return secure_frontend_test::run_cases(argc, argv, {{"supervisor_health_literals_per_state", supervisor_health_literals_per_state}}, failures);
+  return secure_frontend_test::run_cases(argc, argv, {{"supervisor_health_literals_per_state", supervisor_health_literals_per_state},
+                                                {"proc04_restart_backoff_then_circuit_open", proc04_restart_backoff_then_circuit_open},
+                                                {"proc04_healthy_window_resets_failure_count", proc04_healthy_window_resets_failure_count},
+                                                {"proc04_recovers_after_transient_crash", proc04_recovers_after_transient_crash},
+                                                {"proc04_missing_engine_opens_circuit_without_spinning", proc04_missing_engine_opens_circuit_without_spinning},
+                                                {"proc04_client_err_lines_open_circuit_until_restart", proc04_client_err_lines_open_circuit_until_restart},
+                                                {"supervisor_retires_ended_generation_on_its_own_thread", supervisor_retires_ended_generation_on_its_own_thread}}, failures);
 }

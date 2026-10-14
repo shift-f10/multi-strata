@@ -146,6 +146,7 @@ add_library(secure_frontend_chat_execution
 
 add_library(secure_frontend_engine_supervisor
     src/engine_supervisor.cpp
+    src/restart_policy.cpp
     src/supervisor_wake.cpp
 )
 
@@ -450,8 +451,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # before any child runs); also smoke-run under wine. PROCESS: real
     # fake-engine children. LINUX / WINDOWS: platform-only process cases. Later
     # tasks append case names to these four set() lines only.
-    set(SECURE_FRONTEND_SUPERVISOR_UNIT_CASES supervisor_health_literals_per_state)
-    set(SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES)
+    set(SECURE_FRONTEND_SUPERVISOR_UNIT_CASES supervisor_health_literals_per_state proc04_restart_backoff_then_circuit_open proc04_healthy_window_resets_failure_count proc04_missing_engine_opens_circuit_without_spinning proc04_client_err_lines_open_circuit_until_restart supervisor_retires_ended_generation_on_its_own_thread)
+    set(SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES proc04_recovers_after_transient_crash)
     set(SECURE_FRONTEND_SUPERVISOR_LINUX_CASES)
     set(SECURE_FRONTEND_SUPERVISOR_WINDOWS_CASES)
     if(WIN32)
