@@ -1,7 +1,9 @@
 #include "secure_frontend/acquire_manifest.hpp"
 
 #include "secure_frontend/acquire_url.hpp"
+#include "secure_frontend/bundle_text.hpp"
 #include "secure_frontend/canonical_path.hpp"
+#include "secure_frontend/model_index_model.hpp"
 #include "secure_frontend/model_inventory.hpp"
 #include "secure_frontend/sha256.hpp"
 
@@ -18,6 +20,8 @@ bool printable(const std::string_view text) noexcept {
   return std::all_of(text.begin(), text.end(), [](const char c) { return c >= 0x20 && c <= 0x7E; });
 }
 
+}  // namespace
+
 bool is_version_label(const std::string_view text) noexcept {
   // YYYY.MM.DD.N, N 1..999
   if (text.size() < 12 || text.size() > 14 || text[4] != '.' || text[7] != '.' || text[10] != '.') return false;
@@ -33,6 +37,8 @@ bool is_version_label(const std::string_view text) noexcept {
   if (text[11] == '0') return false;
   return true;  // 1..3 digits without a leading zero: 1..999
 }
+
+namespace {
 
 bool is_license_id(const std::string_view id) noexcept {
   const auto body = id.starts_with("LicenseRef-") ? id.substr(11) : id;
@@ -209,6 +215,24 @@ std::string_view role_name(const FileRole role) noexcept {
   return "unknown";
 }
 
+namespace {
+
+// Controller ruling A: the store and bundles address a file under a prefix, and
+// SP1's P1 grammar caps the WHOLE relative path, so the longest stored form must
+// fit or a later join would fail. Lengths only: any digest gives the real widths.
+std::size_t stored_path_overhead(const AcquireManifest& m) {
+  const std::string digest = to_hex(sha256(std::string_view{}));
+  // <name>/<tag>/v<sequence>-<12 hex>/<path>
+  const std::size_t version = m.name.size() + 1U + m.tag.size() + 1U + version_directory_name(m.sequence, digest).size() + 1U;
+  // .staging/<32 hex>/<path>.part
+  const std::size_t staging = kStagingDirName.size() + 1U + staging_key(digest).size() + 1U + kPartSuffix.size();
+  // files/<path> (bundle)
+  const std::size_t bundle = kBundleFilesDir.size() + 1U;
+  return std::max({version, staging, bundle});
+}
+
+}  // namespace
+
 std::optional<ManifestIssue> validate_manifest(const AcquireManifest& m, const ManifestRules& rules) {
   const auto bad = [](std::string key, const std::string_view why) {
     return ManifestIssue{AcquireReason::manifest_invalid, std::move(key), why};
@@ -241,11 +265,15 @@ std::optional<ManifestIssue> validate_manifest(const AcquireManifest& m, const M
   }
   if (m.files.empty() || m.files.size() > kManifestMaxFiles) return bad("files", "must list 1..4096 files");
   std::set<std::string> folded_files;
+  const std::size_t overhead = stored_path_overhead(m);
   for (std::size_t i = 0; i < m.files.size(); ++i) {
     const auto& f = m.files[i];
     const std::string at = "files[" + std::to_string(i) + "]";
     if (const auto why = path_problem(f.path)) return bad(at + ".path", *why);
     if (!folded_files.insert(ascii_lower(f.path)).second) return bad(at + ".path", "must be unique after case folding");
+    if (f.path.size() > kRelativePathMaxBytes - overhead) {
+      return bad(at + ".path", "is too long once stored below <name>/<tag>/<version dir>, .staging or files/ (P1: 1024 bytes)");
+    }
     if (f.size < 1 || f.size > kManifestMaxFileBytes) return bad(at + ".size", "must be 1..2^40");
     if (!is_lower_hex_digest(f.sha256)) return bad(at + ".sha256", "must be 64 lowercase hex characters");
     if (f.sources.size() > kManifestMaxSources) return bad(at + ".sources", "must list at most 8 URLs");

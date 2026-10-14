@@ -1,6 +1,10 @@
+#include "secure_frontend/acquire_reason.hpp"
 #include "secure_frontend/canonical_path.hpp"
+#include "secure_frontend/manifest_json.hpp"
 #include "secure_frontend/model_index_model.hpp"
 #include "secure_frontend/model_index_store.hpp"
+#include "secure_frontend/model_index_write.hpp"
+#include "secure_frontend/sha256.hpp"
 #include "support/test_support.hpp"
 
 #include <cstdint>
@@ -8,6 +12,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -106,6 +111,110 @@ void scan_tolerates_repeated_shard_names_across_versions() {
   }
 }
 
+const char* kTinyManifest =
+    "{\"format\":\"strata-model-manifest\",\"schema_version\":1,\"name\":\"m\",\"tag\":\"t\",\"version\":\"2026.10.14.1\","
+    "\"sequence\":1,\"profile\":\"glm53\",\"engine\":{\"family\":\"glm\",\"min_version\":\"0.0.1\"},"
+    "\"license\":{\"id\":\"MIT\",\"url\":\"https://h.example/l\",\"bundle_allowed\":true},\"hosts\":[\"h.example\"],"
+    "\"files\":[{\"path\":\"w.gguf\",\"role\":\"weights\",\"size\":1,"
+    "\"sha256\":\"ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb\",\"sources\":[]}],"
+    "\"launch\":{\"native\":\"w.gguf\"}}";
+
+secure_frontend::CanonicalRoot models_root(const std::filesystem::path& path) {
+  return std::get<secure_frontend::CanonicalRoot>(secure_frontend::open_root(path));
+}
+
+secure_frontend::IndexEntry install_tiny(const std::filesystem::path& root_path) {
+  const std::string digest = secure_frontend::to_hex(secure_frontend::sha256(kTinyManifest));
+  const std::string dir = secure_frontend::version_directory_name(1, digest);
+  put(root_path / "m" / "t" / dir / "manifest.json", kTinyManifest);
+  put(root_path / "m" / "t" / dir / "w.gguf", "a");
+  return secure_frontend::IndexEntry{"m", "t", "2026.10.14.1", 1, dir, digest, secure_frontend::ModelOrigin::third_party};
+}
+
+void index_round_trip_through_disk() {
+  const auto root_path = secure_frontend_test::make_scratch_directory();
+  const auto root = models_root(root_path);
+  const auto empty = secure_frontend::read_model_index(root);
+  expect(std::holds_alternative<secure_frontend::ModelIndex>(empty) && std::get<secure_frontend::ModelIndex>(empty).models.empty(),
+         "a missing index.json is an empty index");
+  const auto entry = install_tiny(root_path);
+  const auto index = secure_frontend::with_installed({}, entry);
+  expect(!secure_frontend::write_model_index(root, index), "written atomically");
+  const auto read = secure_frontend::read_model_index(root);
+  expect(std::holds_alternative<secure_frontend::ModelIndex>(read) &&
+             secure_frontend::render_model_index(std::get<secure_frontend::ModelIndex>(read)) == secure_frontend::render_model_index(index),
+         "round trip");
+  const auto installed = secure_frontend::load_installed(root, entry);
+  expect(std::holds_alternative<secure_frontend::InstalledModel>(installed) &&
+             std::get<secure_frontend::InstalledModel>(installed).version_dir.generic() == "m/t/" + entry.dir,
+         "installed model loads, manifest re-hashed");
+}
+
+void index_inconsistent_manifest_fails_closed() {
+  const auto root_path = secure_frontend_test::make_scratch_directory();
+  const auto root = models_root(root_path);
+  const auto entry = install_tiny(root_path);
+  secure_frontend_test::write_file(root_path / "m" / "t" / entry.dir / "manifest.json", std::string{kTinyManifest} + " ");
+  const auto installed = secure_frontend::load_installed(root, entry);
+  expect(std::holds_alternative<secure_frontend::AcquireError>(installed) &&
+             std::get<secure_frontend::AcquireError>(installed).reason == secure_frontend::AcquireReason::index_inconsistent,
+         "a manifest.json that no longer hashes to the index entry fails closed");
+}
+
+void index_rejects_unknown_keys_and_bad_dirs() {
+  using secure_frontend::AcquireReason;
+  const std::string digest(64, 'a');
+  const std::string entry = "{\"name\":\"m\",\"tag\":\"t\",\"version\":\"2026.10.14.1\",\"sequence\":1,"
+                            "\"dir\":\"v1-aaaaaaaaaaaa\",\"manifest_sha256\":\"" + digest + "\",\"origin\":\"catalog\"}";
+  const std::string prefix = "{\"format\":\"strata-model-index\",\"schema_version\":1,\"models\":[";
+  const std::string suffix = "],\"retired\":[]}\n";
+  const std::string good = prefix + entry + suffix;
+  expect(std::holds_alternative<secure_frontend::ModelIndex>(secure_frontend::parse_model_index(good)), "good index");
+  for (const auto& [from, to] : std::vector<std::pair<std::string, std::string>>{
+           {"\"retired\":[]", "\"retired\":[],\"x\":1"}, {"v1-aaaaaaaaaaaa", "v2-aaaaaaaaaaaa"}, {"\"catalog\"", "\"other\""},
+           {"strata-model-index", "strata-model-indexes"}, {"\"name\":\"m\"", "\"name\":\"../m\""}}) {
+    std::string bad = good;
+    bad.replace(bad.find(from), from.size(), to);
+    const auto parsed = secure_frontend::parse_model_index(bad);
+    expect(std::holds_alternative<secure_frontend::AcquireError>(parsed) &&
+               std::get<secure_frontend::AcquireError>(parsed).reason == AcquireReason::index_inconsistent,
+           "index_inconsistent for " + to);
+  }
+  const std::string twice = prefix + entry + "," + entry + suffix;
+  expect(std::holds_alternative<secure_frontend::AcquireError>(secure_frontend::parse_model_index(twice)), "one entry per name:tag");
+}
+
+// Beyond the brief: version labels, retired dirs and hand-built entries are as strict as models dirs.
+void index_rejects_bad_versions_and_retired_dirs() {
+  using secure_frontend::AcquireReason;
+  const std::string digest(64, 'a');
+  const std::string prefix = "{\"format\":\"strata-model-index\",\"schema_version\":1,\"models\":[";
+  const std::string model = "{\"name\":\"m\",\"tag\":\"t\",\"version\":\"2026.10.14.1\",\"sequence\":1,"
+                            "\"dir\":\"v1-aaaaaaaaaaaa\",\"manifest_sha256\":\"" + digest + "\",\"origin\":\"catalog\"}";
+  const auto retired = [&](const std::string& dir) {
+    return "{\"name\":\"m\",\"tag\":\"t\",\"dir\":\"" + dir + "\",\"manifest_sha256\":\"" + digest + "\"}";
+  };
+  const auto is_inconsistent = [](const std::string& text) {
+    const auto parsed = secure_frontend::parse_model_index(text);
+    return std::holds_alternative<secure_frontend::AcquireError>(parsed) &&
+           std::get<secure_frontend::AcquireError>(parsed).reason == AcquireReason::index_inconsistent;
+  };
+  expect(!is_inconsistent(prefix + model + "],\"retired\":[" + retired("v7-aaaaaaaaaaaa") + "]}\n"), "a retired v7 dir");
+  for (const auto* dir : {"v/../../x-aaaaaaaaaaaa", "v-aaaaaaaaaaaa", "v0-aaaaaaaaaaaa", "v01-aaaaaaaaaaaa",
+                          "v2147483648-aaaaaaaaaaaa", "vx-aaaaaaaaaaaa", "v1-aaaaaaaaaaab"}) {
+    expect(is_inconsistent(prefix + model + "],\"retired\":[" + retired(dir) + "]}\n"), std::string{"retired dir "} + dir);
+  }
+  std::string bad_version = prefix + model + "],\"retired\":[]}\n";
+  bad_version.replace(bad_version.find("2026.10.14.1"), 12, "2026.13.14.1");
+  expect(is_inconsistent(bad_version), "version must be a YYYY.MM.DD.N label");
+  const auto root_path = secure_frontend_test::make_scratch_directory();
+  const auto root = models_root(root_path);
+  auto entry = install_tiny(root_path);
+  entry.dir = "../x";
+  const auto installed = secure_frontend::load_installed(root, entry);
+  expect(std::holds_alternative<secure_frontend::AcquireError>(installed), "a hand-built bad entry fails closed, never throws");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -115,5 +224,9 @@ int main(int argc, char** argv) {
       {"reinstall_same_version_does_not_retire", reinstall_same_version_does_not_retire},
       {"downgrade_to_retired_version_leaves_it_live_only", downgrade_to_retired_version_leaves_it_live_only},
       {"scan_tolerates_repeated_shard_names_across_versions", scan_tolerates_repeated_shard_names_across_versions},
+      {"index_round_trip_through_disk", index_round_trip_through_disk},
+      {"index_inconsistent_manifest_fails_closed", index_inconsistent_manifest_fails_closed},
+      {"index_rejects_unknown_keys_and_bad_dirs", index_rejects_unknown_keys_and_bad_dirs},
+      {"index_rejects_bad_versions_and_retired_dirs", index_rejects_bad_versions_and_retired_dirs},
   }, failures);
 }

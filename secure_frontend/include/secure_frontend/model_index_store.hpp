@@ -1,9 +1,13 @@
 #pragma once
 
+#include "secure_frontend/acquire_reason.hpp"
 #include "secure_frontend/canonical_path.hpp"
+#include "secure_frontend/manifest_json.hpp"
+#include "secure_frontend/model_index_model.hpp"
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
@@ -19,5 +23,24 @@ struct ModelRootFile final {
 // current, retired and orphaned versions is fine. Links/junctions and other
 // entries are skipped and never followed. Sorted by path.
 [[nodiscard]] std::variant<std::vector<ModelRootFile>, PathError> scan_model_root_files(const CanonicalRoot& root);
+
+// Strict JSON (§4.5): exact keys, format/schema_version, version labels,
+// dir == v<sequence>-<12 hex> (retired dirs too), names valid, one models entry
+// per name:tag. Any failure: index_inconsistent.
+[[nodiscard]] std::variant<ModelIndex, AcquireError> parse_model_index(std::string_view bytes);
+// roots.models/index.json (<= kIndexMaxBytes, owner-only); absent = empty index.
+[[nodiscard]] std::variant<ModelIndex, AcquireError> read_model_index(const CanonicalRoot& models);
+
+struct InstalledModel final {
+  IndexEntry entry;
+  ParsedManifest manifest;
+  RelativePath version_dir;  // <name>/<tag>/<dir>
+};
+// Re-hashes <dir>/manifest.json (<= 1 MiB) against the entry, parses it, and
+// checks name/tag/version/sequence; any mismatch, and an entry that
+// parse_model_index would refuse, is index_inconsistent (fail closed, no throw).
+[[nodiscard]] std::variant<InstalledModel, AcquireError> load_installed(const CanonicalRoot& models, const IndexEntry& entry);
+// For validated names only: throws std::logic_error if the result is not P1-valid.
+[[nodiscard]] RelativePath version_dir_path(std::string_view name, std::string_view tag, std::string_view dir);
 
 }  // namespace secure_frontend

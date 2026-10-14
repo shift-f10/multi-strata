@@ -88,6 +88,8 @@ struct ManifestIssue final {
 // [a-z0-9][a-z0-9._-]{0,127}, not a Windows device name (with any extension),
 // no trailing '.', not "index.json". Callers lowercase first.
 [[nodiscard]] bool is_valid_model_name(std::string_view name) noexcept;
+// YYYY.MM.DD.N with N 1..999 (spec §2.1 "version"; also index.json entries).
+[[nodiscard]] bool is_version_label(std::string_view text) noexcept;
 
 struct ModelReference final {
   std::string name;

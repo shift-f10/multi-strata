@@ -419,6 +419,7 @@ else()
     set(_sf_models_store_platform src/models_store_posix.cpp)
 endif()
 add_library(secure_frontend_acquire src/models_store_common.cpp ${_sf_models_store_platform})
+target_sources(secure_frontend_acquire PRIVATE src/model_index_write.cpp)
 target_compile_features(secure_frontend_acquire PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_acquire PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
@@ -825,11 +826,17 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # SP4 §4.9 delta b: DACL-private scratch roots.
     secure_frontend_add_cases(secure_frontend_model_index_tests scan_tolerates_repeated_shard_names_across_versions
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # SP4 §4.5: index.json on disk. Writing goes through the models store (ruling B).
+    target_link_libraries(secure_frontend_model_index_tests PRIVATE secure_frontend_acquire)
+    secure_frontend_add_cases(secure_frontend_model_index_tests index_round_trip_through_disk
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    secure_frontend_add_cases(secure_frontend_model_index_tests index_inconsistent_manifest_fails_closed
+        index_rejects_unknown_keys_and_bad_dirs index_rejects_bad_versions_and_retired_dirs)
 
     secure_frontend_add_test_executable(secure_frontend_manifest_tests tests/manifest_test.cpp secure_frontend_model_store)
     secure_frontend_add_cases(secure_frontend_manifest_tests source_url_grammar_matrix dns_names_and_wildcards proxy_grammar)
     secure_frontend_add_cases(secure_frontend_manifest_tests valid_qwen_manifest_accepted manifest_field_rules_matrix
-        reserved_manifest_names_rejected model_name_index_json_rejected part_suffix_path_rejected
+        reserved_manifest_names_rejected model_name_index_json_rejected part_suffix_path_rejected stored_path_length_fits_p1
         file_and_directory_prefix_collision_rejected shard_set_must_be_complete_in_one_directory
         launch_keys_follow_profile wildcard_redirect_hosts_validated total_size_above_budget_is_total_budget_exceeded
         engine_version_parsed_with_fourth_component)

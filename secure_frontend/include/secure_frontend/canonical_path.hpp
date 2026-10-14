@@ -34,6 +34,7 @@ struct PathError final {
 // 0x20 and 0x7F (NUL included), a trailing dot or space, Windows reserved
 // device names with any extension (CON PRN AUX NUL COM0-9 LPT0-9 incl. the
 // superscript digits, CONIN$ CONOUT$ CLOCK$), and 8.3 aliases ('~' + digit).
+inline constexpr std::size_t kRelativePathMaxBytes = 1024;  // the whole P1 path
 class RelativePath final {
  public:
   [[nodiscard]] const std::string& generic() const noexcept { return generic_; }

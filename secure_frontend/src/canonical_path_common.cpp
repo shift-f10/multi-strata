@@ -81,7 +81,7 @@ bool is_windows_reserved_component(const std::string_view component) noexcept {
 
 std::variant<RelativePath, PathError> parse_relative_path(const std::string_view text) {
   if (text.empty()) return fail(PathErrorCode::empty, "the path is empty");
-  if (text.size() > 1024U) return fail(PathErrorCode::too_long, "the path is longer than 1024 bytes");
+  if (text.size() > kRelativePathMaxBytes) return fail(PathErrorCode::too_long, "the path is longer than 1024 bytes");
   if (text.front() == '/' || text.front() == '\\') return fail(PathErrorCode::absolute, "the path must be relative");
   if (!valid_utf8(text)) return fail(PathErrorCode::invalid_utf8, "the path is not valid UTF-8");
   std::vector<std::string> components;

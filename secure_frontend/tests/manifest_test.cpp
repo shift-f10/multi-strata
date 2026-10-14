@@ -252,6 +252,45 @@ void part_suffix_path_rejected() {
   }
 }
 
+// A P1-valid path of exactly `length` bytes: 200-byte components below "x/".
+std::string path_of_length(const std::size_t length) {
+  std::string path = "x/";
+  while (length - path.size() > 201U) path += std::string(200, 'a') + "/";
+  return path + std::string(length - path.size(), 'b');
+}
+
+// Controller ruling A: the longest stored form (.staging/<key>/<path>.part,
+// <name>/<tag>/v<sequence>-<12 hex>/<path>, files/<path>) must fit P1's 1024 bytes.
+void stored_path_length_fits_p1() {
+  // Short name/tag: the staging form (+47 bytes) is the longest, so 977 fits and 978 does not.
+  for (const auto& [length, accepted] : std::vector<std::pair<std::size_t, bool>>{{1024, false}, {978, false}, {977, true}}) {
+    auto m = valid_qwen_manifest();
+    m.name = "q";
+    m.tag = "t";
+    m.files.push_back(file(path_of_length(length), FileRole::pack));
+    if (accepted) {
+      const auto issue = secure_frontend::validate_manifest(m, rules());
+      expect(!issue.has_value(), "staging form just fits at " + std::to_string(length) + " bytes");
+    } else {
+      expect_issue(m, "files[10].path", "staging form overflows P1 at " + std::to_string(length) + " bytes");
+    }
+  }
+  // Longest name, tag and sequence: <128>/<128>/v2147483647-<12 hex>/ is 283 bytes, so 741 fits and 742 does not.
+  for (const auto& [length, accepted] : std::vector<std::pair<std::size_t, bool>>{{1024, false}, {742, false}, {741, true}}) {
+    auto m = valid_qwen_manifest();
+    m.name = std::string(128, 'n');
+    m.tag = std::string(128, 't');
+    m.sequence = 0x7FFFFFFFU;
+    m.files.push_back(file(path_of_length(length), FileRole::pack));
+    if (accepted) {
+      const auto issue = secure_frontend::validate_manifest(m, rules());
+      expect(!issue.has_value(), "version-dir form just fits at " + std::to_string(length) + " bytes");
+    } else {
+      expect_issue(m, "files[10].path", "version-dir form overflows P1 at " + std::to_string(length) + " bytes");
+    }
+  }
+}
+
 void file_and_directory_prefix_collision_rejected() {
   auto file_is_dir = valid_qwen_manifest();
   file_is_dir.files.push_back(file("pack/tokenizer", FileRole::pack));
@@ -529,6 +568,7 @@ int main(int argc, char** argv) {
       {"reserved_manifest_names_rejected", reserved_manifest_names_rejected},
       {"model_name_index_json_rejected", model_name_index_json_rejected},
       {"part_suffix_path_rejected", part_suffix_path_rejected},
+      {"stored_path_length_fits_p1", stored_path_length_fits_p1},
       {"file_and_directory_prefix_collision_rejected", file_and_directory_prefix_collision_rejected},
       {"shard_set_must_be_complete_in_one_directory", shard_set_must_be_complete_in_one_directory},
       {"launch_keys_follow_profile", launch_keys_follow_profile},
