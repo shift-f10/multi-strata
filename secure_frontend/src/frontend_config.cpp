@@ -49,7 +49,7 @@ constexpr std::array<ConfigKey, 36> kSchema{{
     {"limits.chat.max_generated_bytes", T::integer, false, 1, 16'777'216, d::kChatMaxGeneratedBytes, false, "", "",
      "Largest generated text returned."},
     {"limits.engine.ready_timeout_s", T::integer, false, 1, 86'400, d::kEngineReadyTimeoutS, false, "", "",
-     "How long the first request waits for the engine's READY (upstream STRATA_ENGINE_READY_S)."},
+     "How long the supervisor waits for the engine's READY after each start; a miss kills and restarts it (upstream STRATA_ENGINE_READY_S)."},
     {"limits.engine.generation_timeout_s", T::integer, false, 1, 86'400, d::kEngineGenerationTimeoutS, false, "", "",
      "Total time for one generation before STOP."},
     {"limits.engine.stop_drain_timeout_s", T::integer, false, 1, 600, d::kEngineStopDrainTimeoutS, false, "", "",

@@ -66,6 +66,16 @@ inline constexpr int kReportFd = 3;
 // calls onto 0..kReportFd can never overwrite one of their own sources (which
 // happens when the parent runs with some of 0..2 closed).
 inline constexpr int kLiftFloor = 10;
+// Upper bound for the fallback descriptor sweep, which closes one descriptor
+// at a time below min(sysconf(_SC_OPEN_MAX), kSweepCap) (kSweepDefault when
+// that is unknown). The fallback runs only where close_range(2) is missing or
+// fails (Linux before 5.9, headers without SYS_close_range, or a non-Linux
+// POSIX system); a sweep to an unbounded RLIMIT_NOFILE could take seconds per
+// spawn. Not every descriptor the frontend opens is close-on-exec (the
+// listening and accepted sockets are created without SOCK_CLOEXEC), so on that
+// fallback path, with RLIMIT_NOFILE above the cap, such a descriptor numbered
+// at or above kSweepCap would reach the engine. close_range covers every
+// number, so Linux 5.9+ has no such gap.
 inline constexpr long kSweepCap = 65536;
 inline constexpr int kSweepDefault = 1024;
 

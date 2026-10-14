@@ -76,9 +76,11 @@ job (pending: that job has not yet run them).
   generation with `STOP` and a bounded drain (or marks the engine failed),
   sizes the outbound `GEN` cap from the engine's `READY` context, and reports
   its state through `/health` as `{"status":"ok"|"unavailable","engine":"<state>"}`:
-  `starting` → `200` with `engine=starting` (READY is consumed on the first
-  request; eager READY is SP2), `ready`/`generating` → `200`, `failed` (or a
-  stopped child) → `503`. The engine
+  `starting` → `503` (since SP2 a supervisor thread reads READY as soon as
+  the engine starts), `ready`/`generating` → `200`, `failed` → `503` with an
+  optional `recovery` of `restarting` or `exhausted`. The supervisor restarts
+  a failed engine with backoff and opens a circuit after three consecutive
+  failures. The engine
   facts these limits rely on are in
   [`docs/security/engine-protocol-limits.md`](../docs/security/engine-protocol-limits.md).
 
@@ -236,7 +238,7 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `limits.chat.max_completion_tokens` | integer | `4096` | 1-16384 | - | Largest max_tokens a request may ask for. |
 | `limits.chat.default_max_tokens` | integer | `256` | 1-16384 | - | max_tokens when a request omits it; at most limits.chat.max_completion_tokens. |
 | `limits.chat.max_generated_bytes` | integer | `1048576` | 1-16777216 | - | Largest generated text returned. |
-| `limits.engine.ready_timeout_s` | integer | `900` | 1-86400 | - | How long the first request waits for the engine's READY (upstream STRATA_ENGINE_READY_S). |
+| `limits.engine.ready_timeout_s` | integer | `900` | 1-86400 | - | How long the supervisor waits for the engine's READY after each start; a miss kills and restarts it (upstream STRATA_ENGINE_READY_S). |
 | `limits.engine.generation_timeout_s` | integer | `120` | 1-86400 | - | Total time for one generation before STOP. |
 | `limits.engine.stop_drain_timeout_s` | integer | `5` | 1-600 | - | Time to drain to DONE after STOP before the engine is marked failed. |
 | `limits.concurrency.max_concurrent_requests` | integer | `1` | 1-1 | - | Requests served at once; only 1 until SP3. |
@@ -286,8 +288,10 @@ its own `--engine-arg` (its own array element in `engine.args`). With the
 `qwen` profile, `--native`, `--serve`, `--batch`, `--slots` and `--vision` are
 rejected there, in both `--flag value` and `--flag=value` forms, and
 `--check` names `engine.args` as the key at fault.
-The engine child receives an empty environment allowlist, so encode all
-required engine options explicitly. The engine path (`engine.executable`)
+The engine child receives a fixed environment rendered by the frontend (see
+`docs/security/threat-model.md`, Engine process isolation); nothing is
+inherited from the server's environment, so pass every engine setting as a
+typed option or `--engine-arg`. The engine path (`engine.executable`)
 must be absolute and name a regular file not writable by group or others; the
 engine receives the canonical models root, never the configured spelling.
 

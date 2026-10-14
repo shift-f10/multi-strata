@@ -125,11 +125,11 @@ The supervisor kills the whole generation (group/Job SIGKILL, §3.7) and counts
 a failure when:
 
 1. a line matches one of upstream's `FATAL_PREFIXES` exactly as a prefix
-   (`upstream/serve/server.py:587-588`, research §4) — `"ERR verify: timed out at layer "`,
+   (`upstream/serve/server.py:734-735` at v0.1.44.1, research §4) — `"ERR verify: timed out at layer "`,
    `"ERR verify batch: timed out at layer "`, `"ERR verify: an earlier window
    never finished"`, `"ERR verify batch: an earlier window never finished"`.
    The engine lives on but is unusable; a trailing `DONE` is not accepted
-   (`_pump`, `upstream/serve/server.py:775-791`). Other `ERR` lines keep SP0 behavior;
+   (`_pump`, `upstream/serve/server.py:952-967` at v0.1.44.1). Other `ERR` lines keep SP0 behavior;
 2. READY does not arrive within `ready_timeout`;
 3. an E1/E2 drain fails (SP0 marks `failed`; SP2 adds kill and restart);
 4. a stdin write misses its deadline (§3.10).
@@ -238,7 +238,7 @@ other `STRATA_*`, `HOME`, `USERPROFILE`, `APPDATA`, and proxy variables
 
 **GPU selection by typed `--gpu` argv, not environment.** The engine's
 `--gpu LIST` sets `CUDA_DEVICE_ORDER=PCI_BUS_ID` and `CUDA_VISIBLE_DEVICES`
-(or HIP) itself (`generate.cpp:1765-1786`). The frontend renders `--gpu` from
+(or HIP) itself (`generate.cpp:1843-1865` at v0.1.44.1). The frontend renders `--gpu` from
 the SP1 typed list (non-negative integers), adds `--gpu` to the owned-flag
 deny-list for `--engine-arg`, and keeps all three GPU variables out of the
 environment. Rejected: frontend-set `CUDA_VISIBLE_DEVICES` etc. (two places
@@ -251,7 +251,7 @@ GPU run.
 The frontend owns the stdin named pipe, so its end gets `FILE_FLAG_OVERLAPPED`;
 writes wait with the remaining deadline and `CancelIoEx` on timeout (a §3.5
 kill). The engine's reader thread (`read(0)`/`_read(0)`,
-`generate.cpp:8860-8900`) normally drains the pipe, but a hung engine must not
+`generate.cpp:9433-9469` at v0.1.44.1) normally drains the pipe, but a hung engine must not
 hang the serving thread. Rejected: trusting the advisory buffer size
 (unprovable); `CancelSynchronousIo` from the supervisor (couples threads).
 Open question 4.
@@ -380,7 +380,7 @@ CTest names.
 | K3 | `terminate` contract in the header: returns `false` only if the child is still unreaped after the bound; the object is then "abandoned" and the supervisor applies V10. | review + V10 |
 | K4 | Comment on `kSweepCap` 65536: why bounded, when reached (no `close_range`, kernel < 5.9, and `RLIMIT_NOFILE` > cap), and that all frontend fds are `O_CLOEXEC`, so the sweep is defence in depth. | review |
 | K5 | `current_executable()` checks `readlink` (`-1`, truncation) and `GetModuleFileNameW` length; fails the test loudly. | review |
-| K6 | `docs/security/engine-protocol-limits.md`: replace "blocking `getline`" with the reader thread on `read(0)`/`_read(0)` (`generate.cpp:8860-8900`); state overlapped writes done. Threat model: env allowlist (no longer "empty"), restart policy, PROC-03 and PROC-05 residual risks. Handoff: Phase 2 item 3, Known gaps, Verification. | review |
+| K6 | `docs/security/engine-protocol-limits.md`: replace "blocking `getline`" with the reader thread on `read(0)`/`_read(0)` (`generate.cpp:9433-9469` at v0.1.44.1); state overlapped writes done. Threat model: env allowlist (no longer "empty"), restart policy, PROC-03 and PROC-05 residual risks. Handoff: Phase 2 item 3, Known gaps, Verification. | review |
 
 ## 5. Out of scope
 

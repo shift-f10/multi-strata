@@ -98,7 +98,8 @@ renaming a quarantined component.
   distinct `--engine-arg` (or `engine.args` element in the `--config` file;
   run `--check` first: it validates every key without side effects and lists
   every problem by key path). It appends `--serve` itself, runs exactly one child
-  with no inherited environment allowlist, and exposes only authenticated
+  with a fixed frontend-rendered environment (nothing inherited from the
+  server's), and exposes only authenticated
   `GET /health`, `GET /v1/models`, and non-streaming text-only
   `POST /v1/chat/completions`. The request `model` must equal the startup
   `--model-id`; streaming, tools, images, URLs, MCP, downloads, and remote
@@ -171,6 +172,11 @@ The release owner records the following alongside a staged package:
 5. A human review of the package file list confirming no legacy Python server,
    MCP/tool/plugin system, telemetry, updater, or analytics component is
    selected.
+6. Unresolved accepted risks to state: PROC-03 same-uid reopen of engine stdin
+   on Linux (SP2 spec §3.13); PROC-05 frontend SIGKILL leaves engine
+   descendants, without a delegated cgroup and, with one, until the operator's
+   scope is killed (SP2 spec §3.7); the SP2 environment allowlist and the
+   `PR_SET_NO_NEW_PRIVS` default not yet verified on a GPU.
 
 See [`threat-model.md`](threat-model.md) for the normative security contract
 and [`privacy-migration.md`](privacy-migration.md) for the upstream artifacts

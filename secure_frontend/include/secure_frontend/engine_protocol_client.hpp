@@ -58,9 +58,9 @@ enum class EngineProtocolErrorCode {
   abandoned,
 };
 
-// The engine's fatal verification lines (upstream/serve/server.py:587-588
+// The engine's fatal verification lines (upstream/serve/server.py:734-735
 // FATAL_PREFIXES), matched as prefixes. The engine lives on but is unusable;
-// a trailing DONE is never accepted (upstream _pump, upstream/serve/server.py:775-791).
+// a trailing DONE is never accepted (upstream _pump, upstream/serve/server.py:952-967).
 inline constexpr std::array<std::string_view, 4> kEngineFatalPrefixes{
     "ERR verify: timed out at layer ",
     "ERR verify batch: timed out at layer ",

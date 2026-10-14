@@ -71,9 +71,10 @@ CI job on a real Windows runner. The `windows-msvc` job is informational.
 
 Since SP1 every test binary, including `secure_frontend_token_reader_tests`,
 is built and run on Windows; the Windows protected-file reader's cases carry
-`windows-runtime`, so they run only in the `windows-msys2-clang` job (which has
-not yet run them: pending). Counts at the end of SP1 (Task 24): see
-`docs/AGENT_HANDOFF.md`, "Verification performed", SP1.
+`windows-runtime`, so they run only in the `windows-msys2-clang` job (run
+`38540719307`: `windows-msys2-clang` 193/193 on SP1, before the SP2 merge).
+Counts at the end of SP1 (Task 24): see `docs/AGENT_HANDOFF.md`,
+"Verification performed", SP1.
 `secure_frontend_http_socket_server_tests` is portable and runs the Windows
 listener in that job. `engine_process_tests` and `engine_stdio_process_tests`
 start and terminate through the Job on MSYS2; the grandchild assertion
@@ -81,6 +82,25 @@ start and terminate through the Job on MSYS2; the grandchild assertion
 which is not authoritative for Job Objects). `secure_frontend_http_socket_server_tests`
 and `secure_frontend_engine_stdio_process_tests` carry a 300 s ctest `TIMEOUT`, and
 every CI job has `timeout-minutes: 60`.
+
+SP2 adds eight `.exe` files (38 in all): the test-only
+`strata-supervision-fake-engine` and `strata-supervision-fake-engine-elevated`,
+the test launcher `secure_frontend_non_elevated_run` (starts
+`strata-secure-server` with a non-elevated token on Windows), and five test
+binaries (`secure_frontend_{fake_engine,deadline,engine_child,engine_supervisor,server}_tests`),
+each case registered as `<binary>.<case>` through SP1's `secure_frontend_add_cases`.
+Tests that need real Windows semantics (Job Objects, handles, DACLs, tokens,
+console events, crash exit codes, every server-level test) carry the CTest label
+`windows-runtime`; the `windows-llvm-mingw-cross` test preset excludes that
+label, so wine runs only the portable cases, and only the `windows-msys2-clang`
+job runs the Windows rows (not yet run on SP2: pending rflores's push). Two
+tests skip with a stated reason (exit 77) when their precondition is absent
+(`proc03_other_uid_cannot_open_engine_fd` needs
+`STRATA_TEST_SECOND_UID_SUDO=1`, set on the Linux ctest step in CI;
+`proc05_cgroup_kill_when_delegated` needs a delegated cgroup v2; no CI step
+creates one). G3
+(`proc06_elevation_required_is_spawn_failed`) is not a CTest test: the runners
+are elevated, so it is a validation-kit step for a non-elevated Windows prompt.
 
 ## Root build
 
@@ -171,6 +191,8 @@ Status (2026-10-13): all blocking jobs green on run `38458255140` (branch
 after it: all five blocking jobs green, `top-level-integration` building our
 root with the `upstream/` engine. The
 `windows-msys2-clang` preset links with `-static`, so a child started with the
-allowlisted environment (no `PATH`) needs no MSYS2 runtime DLL. `windows-msvc`
+allowlisted environment (SP0's had no `PATH`; SP2's `PATH` is the engine
+library directories plus `%SystemRoot%\System32`) needs no MSYS2 runtime DLL. `windows-msvc`
 currently fails at configure (the image ships Visual Studio 2026, the preset
-names 2022); it is non-blocking.
+names 2022); it is non-blocking. Run `38540719307` (SP1, reported by the
+controller) ran `windows-msys2-clang` 193/193. No CI run covers SP2 yet.
