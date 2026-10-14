@@ -4,6 +4,7 @@
 #include "secure_frontend/acquire_publish.hpp"
 #include "secure_frontend/model_index_store.hpp"
 
+#include <atomic>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -53,9 +54,12 @@ struct BundleTarget final {
                                                        const std::filesystem::path& target, const StoreEnvironment& env,
                                                        ProgressSink& progress);
 // <to>.part while hashing; renamed to <to> only when size and digest match; else on_mismatch.
+// `interrupted` (§8.3, final fix F1): checked before every chunk; set → the <to>.part is removed
+// and AcquireError interrupted is returned. nullptr: never interrupted.
 [[nodiscard]] std::variant<std::uint64_t, AcquireError> copy_verified(const CanonicalRoot& from_root, const RelativePath& from,
                                                                       const CanonicalRoot& to_root, const RelativePath& to,
                                                                       const ManifestFile& file, const StoreEnvironment& env,
-                                                                      ProgressSink& progress, AcquireReason on_mismatch);
+                                                                      ProgressSink& progress, AcquireReason on_mismatch,
+                                                                      const std::atomic<bool>* interrupted = nullptr);
 
 }  // namespace secure_frontend

@@ -38,6 +38,7 @@ void downloader_below_floor_exits_9();
 void dl03_downloader_cannot_write_files();
 void dl03_downloader_cannot_read_home();
 void pre_exec_failure_fails_closed_exit_9();
+void probe_interrupted_exits_8();
 void ruleset_failure_fails_closed_exit_9();
 void record_fd_does_not_clobber_report_pipe();
 void confinement_reduced_is_announced_without_landlock();

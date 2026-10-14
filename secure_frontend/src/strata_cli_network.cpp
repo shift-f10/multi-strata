@@ -303,8 +303,10 @@ int verb_update_models(const FrontendConfig& config, const std::filesystem::path
     request.reference = ref;
     request.yes = args->flags.contains("--yes");
     const int code = do_pull(std::move(request), "update", config, config_file, io, services);
+    // §8.3 (final fix F4): an interrupt stops the remaining targets and is the verb's exit (8),
+    // even when an earlier target failed for another reason.
+    if (code == exit_code_value(ExitCode::interrupted)) return code;
     if (code != 0 && first_failure == 0) first_failure = code;
-    if (code == exit_code_value(ExitCode::interrupted)) break;
   }
   return first_failure;
 }

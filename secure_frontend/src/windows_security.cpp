@@ -1,10 +1,15 @@
 #if defined(_WIN32)
 #include "windows_security.hpp"
 
-#include "secure_frontend/confinement_plan.hpp"
+#include <string>
+#include <string_view>
 
 namespace secure_frontend::windows_security {
 namespace {
+
+// NT SERVICE\TrustedInstaller. A file-local copy, so SP1 has no dependency on SP4's
+// confinement_plan.hpp (which holds the same SID for the downloader's DACL plan).
+constexpr std::wstring_view kTrustedInstallerSid = L"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
 
 // File-local RAII for the process token (OwnedHandle is the path module's handle type).
 class ProcessToken final {
@@ -55,7 +60,7 @@ bool is_permitted_acl_principal(const PSID principal, const PSID owner) {
 
 // SP4 §3.2: NT SERVICE\TrustedInstaller (a service SID, so no WELL_KNOWN_SID_TYPE).
 bool is_trusted_installer(const PSID principal) {
-  const std::wstring text(kTrustedInstallerSid.begin(), kTrustedInstallerSid.end());  // ASCII
+  const std::wstring text{kTrustedInstallerSid};
   PSID expected = nullptr;
   if (ConvertStringSidToSidW(text.c_str(), &expected) == 0) return false;
   const bool equal = EqualSid(principal, expected) != 0;

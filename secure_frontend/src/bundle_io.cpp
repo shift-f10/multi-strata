@@ -77,7 +77,7 @@ constexpr std::string_view kVolumeRootDetail = "the bundle directory is a drive 
 std::variant<std::uint64_t, AcquireError> copy_verified(const CanonicalRoot& from_root, const RelativePath& from,
                                                         const CanonicalRoot& to_root, const RelativePath& to, const ManifestFile& file,
                                                         const StoreEnvironment& env, ProgressSink& progress,
-                                                        const AcquireReason on_mismatch) {
+                                                        const AcquireReason on_mismatch, const std::atomic<bool>* interrupted) {
   auto opened = open_beneath(from_root, from, OpenOptions{OpenKind::regular_file, FileTrust::any, true});
   if (std::holds_alternative<PathError>(opened)) {
     // A bundle source is untrusted media (§5.2); an installed file that cannot be opened is a store problem.
@@ -102,6 +102,7 @@ std::variant<std::uint64_t, AcquireError> copy_verified(const CanonicalRoot& fro
   std::string buffer(kSha256ReadChunkBytes, '\0');
   progress.file_started(file.path, file.size);
   while (true) {
+    if (interrupted != nullptr && interrupted->load()) return abandon(err(AcquireReason::interrupted, file.path));
     auto read = source.read_some(buffer.data(), buffer.size());
     if (std::holds_alternative<PathError>(read)) {
       return abandon(err(from_root.external() ? AcquireReason::bundle_layout : AcquireReason::index_inconsistent,

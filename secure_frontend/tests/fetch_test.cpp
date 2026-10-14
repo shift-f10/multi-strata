@@ -633,6 +633,7 @@ int main(int argc, char** argv) {
       {"dl03_downloader_cannot_write_files", fetch_cases::dl03_downloader_cannot_write_files},
       {"dl03_downloader_cannot_read_home", fetch_cases::dl03_downloader_cannot_read_home},
       {"pre_exec_failure_fails_closed_exit_9", fetch_cases::pre_exec_failure_fails_closed_exit_9},
+      {"probe_interrupted_exits_8", fetch_cases::probe_interrupted_exits_8},
       {"ruleset_failure_fails_closed_exit_9", fetch_cases::ruleset_failure_fails_closed_exit_9},
       {"record_fd_does_not_clobber_report_pipe", fetch_cases::record_fd_does_not_clobber_report_pipe},
       {"confinement_reduced_is_announced_without_landlock", fetch_cases::confinement_reduced_is_announced_without_landlock},

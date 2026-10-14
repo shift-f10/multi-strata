@@ -8,6 +8,7 @@ void rename_within_never_replaces();
 void rename_fallback_never_replaces();
 void remove_tree_removes_links_without_following();
 void hash_into_rejects_hard_links_and_counts_bytes();
+void hash_into_stops_when_interrupted();
 void store_environment_seams_report_space_and_fs_kind();
 void overlong_joined_paths_fail_closed_without_throwing();
 // acquire_publish_test.cpp (Task 19)
@@ -65,6 +66,8 @@ void abandoned_staging_reported_and_offered_for_deletion();
 void all_sources_failed_exits_3_and_keeps_part();
 void enospc_mid_stream_keeps_part_and_exits_6();
 void update_reuses_unchanged_files();
+void update_reuse_copy_interrupted_mid_file_exits_8();
+void pull_verify_interrupted_exits_8();
 void license_change_requires_interactive_yes();
 void pull_without_bundle_refuses_sourceless_files();
 void confirmation_answers_parsed_strictly();

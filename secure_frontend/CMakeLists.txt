@@ -1071,6 +1071,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_acquire_tests concurrent_pull_same_manifest_second_is_models_busy
         part_file_create_append_resume_truncate rename_within_never_replaces rename_fallback_never_replaces
         remove_tree_removes_links_without_following hash_into_rejects_hard_links_and_counts_bytes
+        hash_into_stops_when_interrupted
         store_environment_seams_report_space_and_fs_kind overlong_joined_paths_fail_closed_without_throwing
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     if(WIN32)
@@ -1107,6 +1108,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         dl04_interrupt_during_download_never_indexed dl04_interrupt_during_verification dl04_stale_staging_from_other_manifest_discarded
         abandoned_partials_kept_with_yes abandoned_staging_reported_and_offered_for_deletion all_sources_failed_exits_3_and_keeps_part
         enospc_mid_stream_keeps_part_and_exits_6 update_reuses_unchanged_files license_change_requires_interactive_yes
+        update_reuse_copy_interrupted_mid_file_exits_8 pull_verify_interrupted_exits_8
         pull_without_bundle_refuses_sourceless_files confirmation_answers_parsed_strictly already_installed_needs_no_network
         pull_budgets_map_to_exit_classes discard_partial_runs_only_after_confirmation
         unreadable_installed_license_requires_interactive_yes
@@ -1311,6 +1313,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
             secure_frontend_add_cases(secure_frontend_fetch_tests priv04_downloader_argv_exact priv04_downloader_env_is_empty
                 redirect_url_absent_from_downloader_argv dl03_downloader_untrusted_path_rejected downloader_below_floor_exits_9
                 dl03_downloader_cannot_write_files dl03_downloader_cannot_read_home pre_exec_failure_fails_closed_exit_9
+                probe_interrupted_exits_8
                 ruleset_failure_fails_closed_exit_9 record_fd_does_not_clobber_report_pipe
                 confinement_reduced_is_announced_without_landlock
                 ARGS $<TARGET_FILE:secure_frontend_fake_curl>)

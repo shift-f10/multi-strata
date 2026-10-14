@@ -5,6 +5,7 @@
 #include "support/expect.hpp"
 #include "support/pull_harness.hpp"
 
+#include <string>
 #include <utility>
 
 #if defined(_WIN32)
@@ -311,6 +312,52 @@ void update_reuses_unchanged_files() {
   expect(h.transport->argvs.size() == 1, "only the changed file is downloaded");
   expect(h.ui.text().find("file changed: pack/index.txt") != std::string::npos, "manifest diff printed");
   expect(h.index().retired.empty(), "v1 retired and, being unheld, deleted (§4.5 step 6)");
+}
+
+// Final fix F1 (§8.3): Ctrl-C while an unchanged 30-55 GB shard is copied from the installed
+// version stops within one chunk, not after the whole file: exit 8, nothing indexed, the
+// half-copied file is discarded, and a rerun completes.
+void update_reuse_copy_interrupted_mid_file_exits_8() {
+  PullHarness h;
+  auto v1 = fx::qwen_payload();
+  v1[0].bytes = std::string(secure_frontend::kSha256ReadChunkBytes + 1, 's');  // two read chunks
+  h.serve(v1);
+  expect(h.pull(h.third_party(fx::manifest_text("m", "t", 1, v1))).exit == ExitCode::success, "v1");
+  auto v2 = v1;
+  v2[2].bytes = "index v2";
+  h.serve(v2);
+  h.transport->argvs.clear();
+  const auto v2_manifest = fx::manifest_text("m", "t", 2, v2);
+  const auto request = h.third_party(v2_manifest);
+  h.mid_file_interrupt = true;
+  const auto outcome = h.pull(request);
+  expect(outcome.error && outcome.error->reason == AcquireReason::interrupted && outcome.exit == ExitCode::interrupted, "exit 8");
+  const auto index = h.index();
+  expect(index.models.size() == 1 && index.models.front().sequence == 1, "v1 stays the indexed version");
+  const auto key = secure_frontend::staging_key(secure_frontend::to_hex(secure_frontend::sha256(v2_manifest)));
+  const auto shard = ".staging/" + key + "/" + v1[0].path;
+  expect(!secure_frontend::exists_within(h.models, secure_frontend::must_rel(shard)), "the copy stopped mid-file (never completed)");
+  expect(!secure_frontend::exists_within(h.models, secure_frontend::must_rel(shard + ".part")), "the half copy is discarded");
+  expect(h.transport->argvs.empty(), "nothing was downloaded");
+  expect(h.ui.text().find("again to resume") != std::string::npos, "resume hint printed");
+  h.mid_file_interrupt = false;
+  h.interrupted.store(false);
+  const auto rerun = h.pull(request);
+  expect(rerun.exit == ExitCode::success && h.index().models.front().sequence == 2, "a rerun completes the update");
+}
+
+// Final fix F1 (§8.3): pull --verify re-hashes every installed file; a set flag stops it with exit 8.
+void pull_verify_interrupted_exits_8() {
+  PullHarness h;
+  h.serve(fx::qwen_payload());
+  expect(h.pull(h.third_party(manifest())).exit == ExitCode::success, "installed");
+  auto request = h.third_party(manifest());
+  request.verify = true;
+  h.interrupted.store(true);
+  const auto outcome = h.pull(request);
+  expect(outcome.error && outcome.error->reason == AcquireReason::interrupted && outcome.exit == ExitCode::interrupted, "exit 8");
+  expect(h.ui.text().find("verified: m:t") == std::string::npos, "never reported as verified");
+  expect(h.index().models.size() == 1, "the index is unchanged");
 }
 
 void license_change_requires_interactive_yes() {

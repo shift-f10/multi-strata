@@ -31,7 +31,8 @@ struct CliServices final {
   std::function<std::unique_ptr<LoadedVersions>(const FrontendConfig&)> loaded;      // default NoServerDiscovery
   const StoreEnvironment* store{nullptr};                                            // default StoreEnvironment
   AcquireClock* clock{nullptr};                                                      // default SystemClock (Task 27)
-  const std::atomic<bool>* interrupted{nullptr};                                     // default: never set (Task 27)
+  // default: the network verbs' process-wide SIGINT/SIGTERM (Windows console) flag (Task 27)
+  const std::atomic<bool>* interrupted{nullptr};
   // SECURE_FRONTEND_TEST_HOOKS builds only; set from --test-record-file / --test-force-no-landlock (Task 27).
   std::filesystem::path test_record_file;
   bool test_force_no_landlock{false};
@@ -65,7 +66,7 @@ class StreamProgress final : public ProgressSink {
 };
 
 // strata --config <file> <verb> [arguments]; strata update; strata --help. Returns the exit code (§8.3).
-// Reads no environment variable.
+// Reads no environment variable value (doctor checks proxy variables for presence only, §3.8).
 [[nodiscard]] int run_strata(std::span<const std::string> args, CliStreams& streams, CliServices& services);
 
 // The engine argv tail the manifest's launch block implies, paths relative to roots.models.

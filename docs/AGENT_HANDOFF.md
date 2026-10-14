@@ -227,6 +227,7 @@ Merge into `main` (`4b9fdd31`, SP2 run 2 + SP4; merge-time changes, report `merg
   Fix round 1: the Windows DL-01 scan fails on any GetExtended{Tcp,Udp}Table error and must find the server's own 127.0.0.1:<port> listener under its pid each round (positive control); the link closure follows names inside generator expressions ($<LINK_ONLY:…>, conditional) and is also written for `strata`, whose set must contain secure_frontend_acquire/downloader/strata_cli (positive control); the shim also audits sendmsg/sendmmsg/getnameinfo/gethostbyname[_r]/gethostbyaddr (raw syscalls and io_uring are out of its reach) and the blocked probe must record all 9 calls, including connect.
 - Task 29: docs only — threat-model amendment (spec §7.4: "Privacy and offline operation" names `strata pull`/`update`/`run`-on-missing as the networked operations; "Artifact acquisition" states the manifest pins, our-redirects-only rule and what confinement does not stop), `PROVENANCE.md` "Model catalog (SP4)" (empty v1 catalog, developer-bundle shard pins) and the `upstream.version` pin site in runbook step 5, the part-2 verification record below; no tests added.
   Commit "docs: SP4 threat-model amendment, catalog provenance, handoff verification (SP4 Task 29; spec §7.4, §13.5)". CI check (Step 4): `grep -n SECURE_STRATA_ENGINE_VERSION .github/workflows/secure-frontend.yml` prints nothing, and both `paths:` filters list `upstream.version`.
+- Final-review fix wave: commit "sp4: final-review fixes — interruptible hashing and copying, probe interrupt exit 8, update --models interrupt exit, SP1 SID literal (SP4 final review; spec §8.3)". F1 `hash_into`, `copy_verified`, `verify_tree` and `adopt_orphan` take an optional interrupt flag (default nullptr: unchanged for import/export) checked before every 8 MiB chunk; `run_pull` passes its flag, so Ctrl-C/SIGTERM during a resume re-hash, an update's reuse copy, `pull --verify` or orphan adoption exits 8 within one chunk (the half copy removed, a `.part` never restarted from zero, nothing indexed); F3 a probe killed by the interrupt flag is `interrupted` (exit 8), not `downloader_unsupported`; F4 `update --models` returns 8 when a target is interrupted even after an earlier failure; F6 strata_cli.hpp comments; F7 DL-01 scope line (Part 2 deviations); C1 SP1 `windows_security.cpp` uses a file-local TrustedInstaller SID (no SP4 include); C2 Windows `untrusted_owner` text names the current user, SYSTEM, Administrators or TrustedInstaller. Tests added: acquire.hash_into_stops_when_interrupted, acquire.update_reuse_copy_interrupted_mid_file_exits_8, acquire.pull_verify_interrupted_exits_8 (windows-runtime label like their neighbours), fetch.probe_interrupted_exits_8 (Linux, hooks). Counts: linux-gcc 560/560 (+2 skips), linux-gcc-release 526/526 (10/10 `release-only|release-also`), wine 260/260 (518 registered), pytest 25. F4 has no case (the test catalog has one entry, so no two-target update exists).
 
 Part 2 deviations from the spec text (controller rulings, recorded here so a
 spec reader is not surprised):
@@ -272,6 +273,7 @@ spec reader is not surprised):
   and the link-set check together.
 - **`classify_spawn_report` is POSIX-only** (Windows has no report pipe;
   `launch_in_job`'s DWORD is mapped directly).
+- **DL-01 audit scope (Task 28):** the Linux shim audits the `strata-secure-server` process only (the engine child's allowlisted environment drops `LD_PRELOAD`), and the Windows socket-table scan filters by the server's pid; the engine child's network isolation is SP2's.
 
 SP4 closing summary (after Task 29).
 
@@ -933,7 +935,10 @@ there: the Job `ActiveProcessLimit = 1` against conhost and the
 Low-integrity child's access to `.staging/.cwd`. Wine-runnable additions
 (`dl03_downloader_path_normalised_windows`,
 `dl03_downloader_unc_path_rejected_windows`, priv04 and the hooks marker
-case) are in the wine 260. MSYS2 run id for this branch: to be added when
+case) are in the wine 260. Also to verify on real Windows: Ctrl-C at a
+pending `[y/N]` may race the console-handler thread (the handler runs on its
+own thread, so the read can return EOF before the flag is set: exit 2
+instead of 8). MSYS2 run id for this branch: to be added when
 the owner pushes.
 
 **Required manual step (spec §13.5 item 4, the only real-HTTPS proof of DL-02), not yet run:**
@@ -1208,10 +1213,9 @@ residue; none blocks the merge):
   by DWORD, ignoring `WinLaunchStep` (Job/attribute failures should be
   `downloader_confinement_failed`); an empty `cwd` inherits the parent's on
   Windows (POSIX fails closed; every caller passes `.staging/.cwd`); the
-  stdin write precedes the interrupt-aware loop; the Windows
-  `untrusted_owner` text is POSIX-worded; SP1 `windows_security.cpp`
-  includes SP4's `confinement_plan.hpp` only for `kTrustedInstallerSid`
-  (layering; use a local literal).
+  stdin write precedes the interrupt-aware loop. (The POSIX-worded Windows
+  `untrusted_owner` text and SP1 `windows_security.cpp`'s include of SP4's
+  `confinement_plan.hpp` were fixed in the final fix wave.)
 - Tests: no negative Windows validator case (writable file/parent, NULL
   DACL) and no non-ASCII downloader-argv case; the DL-04 Windows case leaks
   `strata` on timeout; the Linux prompt test re-sends SIGINT every 200 ms;

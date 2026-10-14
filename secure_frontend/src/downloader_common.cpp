@@ -14,7 +14,11 @@ std::string downloader_path_text(const PathErrorCode code) {
     case PathErrorCode::not_regular_file:
       return "pull.downloader must be a regular file";
     case PathErrorCode::untrusted_owner:
+#if defined(_WIN32)
+      return "pull.downloader must be owned by the current user, SYSTEM, Administrators or TrustedInstaller";
+#else
       return "pull.downloader must be owned by the current user or root";
+#endif
     case PathErrorCode::shared_writable:
 #if defined(_WIN32)
       return "pull.downloader and its directory must not be writable by another account";
@@ -53,6 +57,10 @@ std::optional<AcquireError> ConfinedDownloader::probe() {
     return output.size() <= 65536;
   });
   if (result.failure) return result.failure;
+  // §8.3 (final fix F3): a probe killed because of the interrupt flag is an interrupt (exit 8).
+  if (result.killed && options_.interrupted != nullptr && options_.interrupted->load()) {
+    return AcquireError{AcquireReason::interrupted, "the downloader probe was stopped"};
+  }
   if (result.exit.value_or(-1) != 0) return AcquireError{AcquireReason::downloader_unsupported, "the probe exited non-zero"};
   const auto parsed = parse_probe_output(output);
   if (!parsed) return AcquireError{AcquireReason::downloader_unsupported, "not a curl with a TLS backend"};

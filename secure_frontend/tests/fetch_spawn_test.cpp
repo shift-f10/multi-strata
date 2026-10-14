@@ -6,6 +6,7 @@
 #include "support/fake_curl_support.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
@@ -150,6 +151,20 @@ void dl03_downloader_cannot_read_home() {
   const auto lines = h.records();
   expect(!lines.empty() && lines[0].find("\"read_errno\":\"" + std::to_string(EACCES) + "\"") != std::string::npos,
          "files outside the system directories and the downloader's parent are unreadable");
+}
+
+// Final fix F3 (§8.3): a probe killed because of the interrupt flag is `interrupted` (exit 8),
+// never downloader_unsupported (exit 9).
+void probe_interrupted_exits_8() {
+  SpawnHarness h;
+  const std::atomic<bool> interrupted{true};
+  h.options.interrupted = &interrupted;
+  secure_frontend::ConfinedDownloader downloader(h.options);
+  const auto failure = downloader.probe();
+  const std::string got = failure ? std::string{secure_frontend::reason_name(failure->reason)} : std::string{"none"};
+  expect(failure && failure->reason == AcquireReason::interrupted &&
+             secure_frontend::exit_class(failure->reason) == secure_frontend::ExitCode::interrupted,
+         "interrupted probe: exit 8 (got " + got + ")");
 }
 
 void pre_exec_failure_fails_closed_exit_9() {

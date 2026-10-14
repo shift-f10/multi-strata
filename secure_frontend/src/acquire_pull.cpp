@@ -168,6 +168,13 @@ class ProbeOnce final {
   std::optional<std::optional<AcquireError>> result_;
 };
 
+// Final fix F1 (§8.3): an interrupt inside a whole-file hash or copy is reported as-is, never
+// mistaken for a file that does not verify (which would discard or re-fetch it).
+const AcquireError* interrupt_of(const std::variant<std::uint64_t, AcquireError>& result) {
+  const auto* failure = std::get_if<AcquireError>(&result);
+  return failure != nullptr && failure->reason == AcquireReason::interrupted ? failure : nullptr;
+}
+
 struct Work final {
   std::size_t file_index;
   FileStep step;
@@ -202,7 +209,8 @@ std::optional<AcquireError> acquire_file(const CanonicalRoot& root, const Relati
   if (step == FileStep::rehash_verified_candidate) {
     // §3.7: a suffix-less file from an earlier run is re-hashed before it is trusted.
     Sha256 hasher;
-    auto counted = hash_into(root, final_path, hasher, f.size);
+    auto counted = hash_into(root, final_path, hasher, f.size, &s.interrupted);
+    if (const auto* failure = interrupt_of(counted)) return *failure;  // the file stays for the next run
     if (std::holds_alternative<std::uint64_t>(counted) && std::get<std::uint64_t>(counted) == f.size && to_hex(hasher.finish()) == f.sha256) {
       return std::nullopt;
     }
@@ -213,7 +221,8 @@ std::optional<AcquireError> acquire_file(const CanonicalRoot& root, const Relati
   std::uint64_t existing = 0;
   if (step == FileStep::rehash_then_resume || step == FileStep::rehash_complete_part) {
     // Re-hash the .part's bytes up to its LENGTH (never its preallocation) before the writer opens it.
-    auto counted = hash_into(root, part, hasher, f.size);
+    auto counted = hash_into(root, part, hasher, f.size, &s.interrupted);
+    if (const auto* failure = interrupt_of(counted)) return *failure;  // never restart a resumable .part from zero
     existing = std::holds_alternative<std::uint64_t>(counted) ? std::get<std::uint64_t>(counted) : 0;
     if (existing == 0) hasher = Sha256{};
     if (existing == f.size) {
@@ -224,7 +233,8 @@ std::optional<AcquireError> acquire_file(const CanonicalRoot& root, const Relati
   }
   if (existing == 0 && work.reuse && installed) {
     auto copied = copy_verified(models, join_rel(installed->version_dir, f.path), root, final_path, f, s.store, s.progress,
-                                AcquireReason::digest_mismatch);
+                                AcquireReason::digest_mismatch, &s.interrupted);
+    if (const auto* failure = interrupt_of(copied)) return *failure;  // the half copy was removed; nothing is fetched
     if (std::holds_alternative<std::uint64_t>(copied)) return std::nullopt;  // §6.1: unchanged files are copied, not downloaded
   }
   if (f.sources.empty()) return AcquireError{AcquireReason::manifest_requires_bundle, f.path};
@@ -351,13 +361,14 @@ PullOutcome run_pull(const PullRequest& request, const CanonicalRoot& models, co
       }
       auto loaded_model = load_installed(models, *current);
       if (auto* failure = std::get_if<AcquireError>(&loaded_model)) return failed(*failure);
-      if (auto failure = verify_tree(models, std::get<InstalledModel>(loaded_model).version_dir, tm, kVersionManifestName, true)) {
+      if (auto failure = verify_tree(models, std::get<InstalledModel>(loaded_model).version_dir, tm, kVersionManifestName, true,
+                                     &s.interrupted)) {
         return failed(*failure);
       }
       s.ui.say("verified: " + ref);
       return PullOutcome{ExitCode::success, std::nullopt, current, true, false};
     }
-    if (auto adopted = adopt_orphan(models, tm, s.loaded, s.store)) {
+    if (auto adopted = adopt_orphan(models, tm, s.loaded, s.store, &s.interrupted)) {
       if (auto* failure = std::get_if<AcquireError>(&*adopted)) return failed(*failure);
       s.ui.say("adopted an earlier, interrupted publish of " + ref);
       return PullOutcome{ExitCode::success, std::nullopt, std::get<PublishResult>(*adopted).entry, false, false};
@@ -392,7 +403,8 @@ PullOutcome run_pull(const PullRequest& request, const CanonicalRoot& models, co
       if (exists_within(root, done)) {
         // §3.7: a run boundary is a trust boundary, also for files/ of an earlier pull --bundle run.
         Sha256 hasher;
-        auto counted = hash_into(root, done, hasher, f.size);
+        auto counted = hash_into(root, done, hasher, f.size, &s.interrupted);
+        if (const auto* failure = interrupt_of(counted)) return failed(*failure);  // before the [y/N]: nothing was touched
         if (std::holds_alternative<std::uint64_t>(counted) && std::get<std::uint64_t>(counted) == f.size &&
             to_hex(hasher.finish()) == f.sha256) {
           continue;

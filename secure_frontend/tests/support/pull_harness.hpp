@@ -60,14 +60,20 @@ class ForwardProbe final : public secure_frontend::DownloaderProbe {
 
 class InterruptingProgress final : public secure_frontend::ProgressSink {
  public:
-  InterruptingProgress(std::atomic<bool>& flag, const bool& armed) : flag_(flag), armed_(armed) {}
+  InterruptingProgress(std::atomic<bool>& flag, const bool& armed, const bool& mid_file)
+      : flag_(flag), armed_(armed), mid_file_(mid_file) {}
   void notice(const std::string_view line) override {
     if (armed_ && line == "verifying") flag_.store(true);
+  }
+  // Final fix F1: the flag is raised after the first chunk of a file that has more to come.
+  void file_bytes(const std::string_view, const std::uint64_t done, const std::uint64_t total) override {
+    if (mid_file_ && done < total) flag_.store(true);
   }
 
  private:
   std::atomic<bool>& flag_;
   const bool& armed_;
+  const bool& mid_file_;
 };
 
 class FakeConfirmer final : public secure_frontend::Confirmer {
@@ -166,7 +172,8 @@ struct PullHarness final {
   fx::FakeLoaded loaded;
   std::atomic<bool> interrupted{false};
   bool progress_interrupt{false};  // dl04_interrupt_during_verification: interrupt at the "verifying" notice
-  InterruptingProgress progress{interrupted, progress_interrupt};
+  bool mid_file_interrupt{false};  // final fix F1: interrupt after the first chunk of a multi-chunk file
+  InterruptingProgress progress{interrupted, progress_interrupt, mid_file_interrupt};
   secure_frontend::PullSettings settings;
   int manifests{0};
 };
