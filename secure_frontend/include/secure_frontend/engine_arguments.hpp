@@ -1,8 +1,10 @@
 #pragma once
 
+#include "secure_frontend/canonical_path.hpp"
 #include "secure_frontend/model_inventory.hpp"
 
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <variant>
 #include <vector>
@@ -25,7 +27,8 @@ using EngineArgumentsResult = std::variant<std::vector<std::string>, EngineArgum
 // Builds the engine argv tail (everything after `--serve`).
 //
 // strata_0143: the user's pass-through arguments, validated, followed by
-// `--native <models_root/relative_artifact_path>` for the selected manifest.
+// `--native <models_root/relative_artifact_path>` for the selected manifest,
+// where models_root is the canonical root the inventory used (defect e).
 // Rejects any user argument that names a flag the frontend owns (--native,
 // --serve) or a mode whose protocol the frontend does not speak (--batch,
 // --slots, --vision), in both `--flag value` and `--flag=value` spellings.
@@ -41,7 +44,13 @@ using EngineArgumentsResult = std::variant<std::vector<std::string>, EngineArgum
 // In both profiles, values containing NUL are rejected.
 [[nodiscard]] EngineArgumentsResult build_engine_arguments(EngineArgumentsProfile profile,
                                                            const ModelManifest& selected,
-                                                           const std::filesystem::path& models_root,
+                                                           const CanonicalRoot& models_root,
                                                            const std::vector<std::string>& user_arguments);
+
+// Checks only the operator's pass-through arguments (no model needed): NUL,
+// frontend-owned flags and unsupported modes for `profile`. build_engine_arguments
+// calls it; the config validator calls it so a bad engine.args fails before startup.
+[[nodiscard]] std::optional<EngineArgumentsError> validate_engine_user_arguments(
+    EngineArgumentsProfile profile, const std::vector<std::string>& user_arguments);
 
 }  // namespace secure_frontend

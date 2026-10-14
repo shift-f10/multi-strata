@@ -1,10 +1,13 @@
 #include "secure_frontend/api_router.hpp"
+#include "secure_frontend/token_verifier.hpp"
 #include "support/test_support.hpp"
 
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -135,6 +138,47 @@ void health_carries_recovery_only_with_failed() {
   expect(with("ready", "restarting", true).body == "{\"status\":\"unavailable\"}\n", "recovery with a non-failed state fails closed");
   expect(with("failed", "/secret", false).body == "{\"status\":\"unavailable\"}\n", "an unknown recovery literal fails closed");
 }
+
+void auth01_every_route_rejects_missing_malformed_wrong_token() {
+  secure_frontend::SecretBytes secret;
+  (void)secret.assign("auth01-token-0123456789abcdefghijklmnopq");
+  const auto validator = secure_frontend::make_bearer_validator(
+      std::make_shared<const secure_frontend::TokenVerifier>(std::move(secret)));
+  const auto routes_under_test = router();
+  const secure_frontend::RequestDispatcher dispatch = [&routes_under_test](std::string_view method, std::string_view target,
+                                                                           std::string_view) {
+    return routes_under_test.dispatch(method, target);
+  };
+  const secure_frontend::HttpPolicy policy{.allowed_hosts = {"127.0.0.1:8080"},
+                                           .same_origin_origins = {"http://127.0.0.1:8080"},
+                                           .cors_allowed_origins = {}, .cors_enabled = false};
+  const std::string token = "auth01-token-0123456789abcdefghijklmnopq";
+  const std::pair<std::string, int> variants[] = {
+      {"", 401},                                                           // missing
+      {"Authorization: bearer " + token + "\r\n", 401},                    // lowercase scheme
+      {"Authorization: Bearer \r\n", 401},                                 // Bearer + empty
+      {"Authorization: Bearer\t" + token + "\r\n", 401},                   // tab separator
+      {"Authorization: Basic " + token + "\r\n", 401},                     // other scheme
+      {"Authorization: Bearer " + token + "\r\nAuthorization: Bearer " + token + "\r\n", 400},  // duplicate
+      {"Authorization: Bearer wrong-token-0123456789abcdefghijklmn\r\n", 401}};
+  const std::pair<const char*, const char*> routes[] = {
+      {"GET", "/health"}, {"GET", "/v1/models"}, {"POST", "/v1/chat/completions"}, {"GET", "/does-not-exist"}};
+  for (const auto& [method, target] : routes) {
+    for (const auto& [headers, status] : variants) {
+      std::string request = std::string{method} + " " + target + " HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n" + headers;
+      request += std::string{method} == "POST" ? "Content-Length: 2\r\n\r\n{}" : "\r\n";
+      const auto response = secure_frontend::handle_http_request(request, policy, validator, dispatch);
+      expect(response.status == status, std::string{method} + " " + target + " must answer " + std::to_string(status));
+      expect(response.body.find("local-model") == std::string::npos && response.body.find("status") == std::string::npos,
+             "a rejected request carries no route or model data");
+    }
+  }
+  const auto allowed = secure_frontend::handle_http_request(
+      "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nAuthorization: Bearer " + token + "\r\n\r\n", policy, validator,
+      dispatch);
+  expect(allowed.status == 200 && allowed.body.find("local-model") != std::string::npos,
+         "the same route answers with the right token (the negatives are not vacuous)");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -147,5 +191,6 @@ int main(int argc, char** argv) {
       {"dispatches_models_with_json_escaping", dispatches_models_with_json_escaping},
       {"rejects_non_exact_routes", rejects_non_exact_routes},
       {"fails_closed_when_provider_throws_or_returns_invalid_model", fails_closed_when_provider_throws_or_returns_invalid_model},
+      {"auth01_every_route_rejects_missing_malformed_wrong_token", auth01_every_route_rejects_missing_malformed_wrong_token},
   }, failures);
 }

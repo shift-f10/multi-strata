@@ -3,14 +3,14 @@
 ## Baseline
 
 Upstream [Niko1221/Strata][strata] is the git submodule `upstream/`, pinned by
-its gitlink at the annotated release tag `v0.1.43`.
+its gitlink at the annotated release tag `v0.1.44.1`.
 
 - Submodule (`.gitmodules`): path `upstream`, URL
   `https://github.com/Niko1221/Strata.git`, no branch tracking.
-- Pinned commit (the gitlink): `7695859aa13afb248bdb4d36f9b2e95707db079d`
-- Tag object: `16374b3e6dfe452a163c3a961ae5faa3b4aec84b`
+- Pinned commit (the gitlink): `296b59d2f73c8f04a805df29c2fa97655adace78`
+- Tag object: `9791ea335ba2001c87b5f783146d6eb08fdd9e5e`
 - Check: `git submodule status` prints
-  ` 7695859aa13afb248bdb4d36f9b2e95707db079d upstream (v0.1.43)`.
+  ` 296b59d2f73c8f04a805df29c2fa97655adace78 upstream (v0.1.44.1)`.
 
 The gitlink is the baseline record. Nothing under `upstream/` is edited and no
 upstream file exists outside it; the repository root holds only our code (see
@@ -20,7 +20,7 @@ different behavior we wrap upstream from our own tree
 none. `git -C upstream status --porcelain` is empty.
 
 Everything under `upstream/` is under upstream's license
-([`LICENSE` at `v0.1.43`](https://github.com/Niko1221/Strata/blob/v0.1.43/LICENSE);
+([`LICENSE` at `v0.1.44.1`](https://github.com/Niko1221/Strata/blob/v0.1.44.1/LICENSE);
 offline: `upstream/LICENSE` in a checkout with the submodule initialized). The
 root [`LICENSE`](../LICENSE)
 is the MIT text with the retained "Copyright (c) 2026 Niko1221 and the Strata
@@ -40,79 +40,130 @@ wrapper `tools/secure/secure_tokenizer.py`; and the root `pytest.ini` and
 
 An upstream update moves the gitlink; it is never a merge into our tree.
 
-This is the canonical order (the single source of truth); the runbooks in
-[`AGENT_HANDOFF.md`](AGENT_HANDOFF.md) ("Update upstream") and
-[`secure-frontend-ci.md`](secure-frontend-ci.md) ("Updating upstream") follow it.
-`<old tag>` / `<old short sha>` are the current pin (today `v0.1.43` /
-`7695859a`), `<new tag>` the target.
+This is the only copy of the runbook; [`AGENT_HANDOFF.md`](AGENT_HANDOFF.md)
+and [`secure-frontend-ci.md`](secure-frontend-ci.md) link here instead of
+repeating it. `<old tag>` / `<old short sha>` / `<old tag object>` are the
+current pin (today `v0.1.44.1` / `296b59d2` / `9791ea33`), `<new tag>` the
+target. `<L>` is a label unique to the run (for example `old-<old tag>` and
+`new-<new tag>`): build directories and venvs are never reused or deleted
+between runs, so every run uses its own `out/<name>-<L>`.
 
-1. `git -C upstream fetch --tags origin && git -C upstream checkout --detach <new tag>`
-2. Gates, each with its working directory:
+Shell: `export PATH="$(git rev-parse --show-toplevel)/.venv-dev/bin:$PATH"`.
+For direct wine calls (not the test preset, which sets it) prefix
+`WINEPREFIX=$PWD/out/wineprefix WINEDLLOVERRIDES=mscoree,mshtml=` from
+`secure_frontend/`.
+
+1. **Gates at the old pin first** (the gate list in step 3, with
+   `<L>` = `old-<old tag>`), and record every count. Without this baseline a
+   changed count cannot be attributed to the bump.
+2. `git -C upstream fetch --tags origin && git -C upstream checkout --detach <new tag>`
+3. Gates at the new pin (`<L>` = `new-<new tag>`), each with its working
+   directory:
    - `pytest -q` (repo root): our `tools/secure/` tests.
-   - `ctest --preset linux-gcc` (in `secure_frontend/`, after
-     `cmake --preset linux-gcc && cmake --build --preset linux-gcc`), and the
-     `windows-llvm-mingw-cross` build (in `secure_frontend/`).
+   - In `secure_frontend/`: `cmake --preset linux-gcc && cmake --build
+     --preset linux-gcc && ctest --preset linux-gcc`, and the same three
+     commands with the `windows-llvm-mingw-cross` preset (build with
+     `-Werror`, then the wine `ctest`).
    - Root configure, build and `ctest` (repo root), from a fresh build
      directory, then confirm nothing was fetched:
 
-         cmake -S . -B out/root -G Ninja && cmake --build out/root && ctest --test-dir out/root
-         test ! -e out/root/_deps
+         cmake -S . -B out/root-<L> -G Ninja && cmake --build out/root-<L> && ctest --test-dir out/root-<L>
+         test ! -e out/root-<L>/_deps
 
    - Upstream's own suites in a separate venv (upstream's pins win there).
      `python3 -m venv` may lack `ensurepip`, so create the venv without pip
      and install into it with the dev venv's pip (repo root):
 
-         python3 -m venv --without-pip out/venv-upstream
-         .venv-dev/bin/pip --python out/venv-upstream/bin/python install \
+         python3 -m venv --without-pip out/venv-upstream-<L>
+         .venv-dev/bin/pip --python out/venv-upstream-<L>/bin/python install \
            -r scripts/dev/requirements-dev.txt -r upstream/requirements.txt
 
      Then run them **from `upstream/`** (four `tools/` tests resolve
      `tools/...` against the working directory). Our root `pytest.ini` stays
      the rootdir, so `--deselect` ids keep the `upstream/tools/` prefix:
 
-         cd upstream && ../out/venv-upstream/bin/pytest -q tools \
+         ( cd upstream && ../out/venv-upstream-<L>/bin/pytest -q tools \
            --ignore=tools/test_iq_pack.py --ignore=tools/test_setup_engine_hash.py \
            --deselect upstream/tools/test_setup_choices.py::HipVision::test_the_cpu_encoder_is_built_once \
            --deselect upstream/tools/test_setup_choices.py::HipVision::test_without_images_nothing_changes \
            --deselect upstream/tools/test_setup_choices.py::CudaVision::test_the_encoder_is_built_native \
-           && ../out/venv-upstream/bin/pytest -q serve
+           --deselect upstream/tools/test_setup_golden.py::Golden::test_yes \
+           --deselect upstream/tools/test_setup_golden.py::Golden::test_enter_for_every_question \
+           && ../out/venv-upstream-<L>/bin/pytest -q serve )
 
-     At `v0.1.43`: `616 passed, 2 skipped, 3 deselected` and `695 passed,
-     11 skipped`. The two ignores need llama.cpp's `gguf` module and GitHub
-     respectively; the three deselects are recorded upstream drift against its
-     `setup.py`. Drop an exclusion once the new tag no longer needs it.
+     The subshell keeps the shell at the repo root for the later steps.
+
+     At `v0.1.44.1`: `760 passed, 2 skipped, 5 deselected` and `774 passed,
+     11 skipped` (at `v0.1.43`, with the first three deselects only: 616/2/3
+     and 695/11). Why each exclusion exists:
+     - `test_iq_pack.py`: needs llama.cpp's `gguf` module.
+     - `test_setup_engine_hash.py`: needs GitHub.
+     - the three `test_setup_choices.py` ids: upstream drift against its
+       `setup.py` (recorded at `v0.1.43`).
+     - the two `test_setup_golden.py` ids: upstream `12be1059` re-recorded the
+       golden configs on Windows; the `unsloth UD-Q4_K_XL` cases expect
+       `strata-vision.exe`, which only matches on Windows.
+
+     **When the new tag adds a failing upstream test:** it is a finding, not
+     something to force green. If it is in quarantined Python (`setup.py`,
+     `serve/`, `tools/`) and the cause is upstream drift or the host, add a
+     `--deselect` here with a one-line reason naming the upstream commit,
+     record the new counts in this paragraph, and name it in the bump
+     commit's body. A failure in anything we build or ship (engine, CMake,
+     `strata_tokenizer.py`) stops the bump. Drop an exclusion once the new
+     tag no longer needs it (run the excluded ids alone to check).
    - Re-audit upstream's top-level CMake assumptions (the table in
      [layout spec §3](superpowers/specs/2026-10-13-upstream-submodule-layout-design.md)):
-     new `FetchContent`, changed option defaults, a `tests/CMakeLists.txt`
-     that would flip `STRATA_BUILD_TESTS` on (and fetch Catch2).
-   - Re-check the SP5 pass-through table against the new engine's flags and
-     protocol, and the upstream internals `tools/secure/secure_tokenizer.py`
-     couples to (listed in its module docstring).
-3. `git -C upstream status --porcelain` is empty and `git submodule status`
-   shows no `-`/`U` (`+` is expected until the pointer is staged).
-4. Update "Baseline" above (commit, tag object, tag), then find every other
-   pin site and update each hit:
+     new `FetchContent`, changed option defaults, new options or targets, a
+     `tests/CMakeLists.txt` that would flip `STRATA_BUILD_TESTS` on (and fetch
+     Catch2), and that our root cache seeds (`STRATA_ENABLE_CUDA/HIP=OFF`,
+     `STRATA_NATIVE_EXPERTS=OFF`) still land before the options they seed.
+   - Re-check the engine's CLI flags and `--serve` protocol against
+     `secure_frontend/src/engine_arguments.cpp` (deny list),
+     `secure_frontend/src/engine_protocol_client.cpp` and
+     [`security/engine-protocol-limits.md`](security/engine-protocol-limits.md)
+     (`git -C upstream diff <old tag> <new tag> -- src/program/generate.cpp`),
+     and the upstream internals `tools/secure/secure_tokenizer.py` couples to
+     (listed in its module docstring).
+4. `git -C upstream status --porcelain` is empty and `git submodule status`
+   shows no `-`/`U` (`+` is expected until the pointer is staged). Worktrees
+   share `.git/config`: a `git submodule deinit` in any worktree turns this
+   into `-` everywhere; repair with `git submodule init` in the main checkout.
+   Inspect the pointer with `git diff -- upstream` (a bare `upstream` is
+   ambiguous with `upstream/...` branch names).
+5. Update "Baseline" above (commit, tag object, tag), then find every other
+   pin site:
 
-       git grep -n '<old tag>\|<old short sha>' -- ':!docs/superpowers' ':!upstream'
+       git grep -n '<old tag>\|<old short sha>\|<old tag object>' -- ':!docs/superpowers' ':!upstream'
 
-   Known pin sites: `README.md` (the revision column and the pinned
-   `blob/<tag>/...` links), the header comment of
-   `.github/workflows/secure-frontend.yml`, [`AGENT_HANDOFF.md`](AGENT_HANDOFF.md)
-   (owner decision 6, the "Repository layout" table header, "Current
-   baseline"), [`secure-frontend-ci.md`](secure-frontend-ci.md) (the "Root
-   build" note on `STRATA_BUILD_TESTS` and the offline-bundle commands), this
-   file (the `[strata]` reference, the pinned `blob/<tag>/...` license links,
-   and the ggml commit and `upstream/CMakeLists.txt` line numbers below), and
-   the `docs/security/` pages that name the baseline version.
-5. `git add upstream docs/PROVENANCE.md` plus every file touched in step 4
+   (escape the dots of `<old tag>`). Update each hit that states the
+   **current** pin; leave verification-history rows (tables of past
+   commands and results, dated sections) as they are. Known pin sites:
+   `README.md` (the revision column and the pinned `blob/<tag>/...` links),
+   the header comment of `.github/workflows/secure-frontend.yml`,
+   [`AGENT_HANDOFF.md`](AGENT_HANDOFF.md) (owner decision 6, the "Repository
+   layout" table header, "Current baseline"),
+   [`secure-frontend-ci.md`](secure-frontend-ci.md) (the "Root build" note on
+   `STRATA_BUILD_TESTS` and the offline-bundle commands, which carry the tag
+   object), this file (the `[strata]` reference, the pinned `blob/<tag>/...`
+   license links, the counts in step 3, and the ggml commit and
+   `upstream/CMakeLists.txt` line numbers below — not found by the grep:
+   re-derive them with `grep -n FetchContent_Declare -A3
+   upstream/CMakeLists.txt`), and the `docs/security/` pages that name the
+   baseline version. Changing the version on a `docs/security/` page asserts
+   its facts hold for the new tag: re-check each row against the new source
+   first and add rows for new behavior.
+6. `git add upstream docs/PROVENANCE.md` plus every file touched in step 5
    (at least `README.md`, `.github/workflows/secure-frontend.yml`,
    `docs/AGENT_HANDOFF.md`, `docs/secure-frontend-ci.md`); one commit:
-   `upstream: bump to <new tag>`.
+   `upstream: bump to <new tag>`, whose body lists each gate with its counts
+   (old → new), any exclusion added, and the upstream changes that matter to
+   the frontend.
 
 After a `git pull` that moves the gitlink, run `git submodule update --init`
 (or set `git config submodule.recurse true` once). A `+` in front of the line
-`git submodule status` prints means the checked-out `upstream/` is behind (or
-otherwise differs from) the recorded gitlink.
+`git submodule status` prints means the checked-out `upstream/` commit differs
+from the recorded gitlink (behind, ahead or elsewhere).
 
 ## Security reference
 
@@ -154,6 +205,29 @@ queried 2026-10-13, default branch) returns SPDX id `MIT`, name `MIT License`.
 The `LICENSE` file on branch `glm53f` (via the contents API, same date) carries
 the copyright line "Copyright (c) 2026 Niko1221 and the Strata contributors".
 
+## Project Maya (second GLM-5.3 reference, planned for SP6)
+
+[mw00/project-maya][maya] was named by the owner on 2026-10-14 as a second
+source for the GLM-5.3 engine work, beside the lighttransport branch above.
+Resolved on 2026-10-14 (`gh api repos/mw00/project-maya/commits/main`) at tag
+`v1.1.8`, commit `5c970a863ce2fdd87b6e23ffb4822f6d76522b1c`. It is a Strata
+derivative (its README: "Maya's engine started from Strata's and was rewritten
+for GLM-5.3-Flash"), covering NVIDIA (1–16 GPUs) and AMD HIP, Linux and
+experimental Windows (VS 2022 + CUDA 12.8), MTP decoding, an OpenAI- and
+Anthropic-compatible server, and its own quantization tooling. Its
+`docs/GLM5-FLASH.md` is a component-by-component port study against Strata.
+**No code, kernel, model or quant has been taken from it yet.** When SP6 uses
+it, this section records the exact files or contracts used, as the sections
+above do, and the README sources table is updated in the same commit.
+
+License: the GitHub API (`gh api repos/mw00/project-maya`, queried 2026-10-14,
+default branch) returns SPDX id `MIT`. Its `LICENSE` file carries the copyright
+line "Copyright (c) 2026 Niko1221 and the Strata contributors". It bundles
+`third_party/ggml` (MIT), `third_party/exllamav3` (MIT, Turboderp) and
+`third_party/beellama.cpp` (MIT); any SP6 import from those paths carries their
+notices. Its optional DFlash2 drafter weights are CC BY-NC-ND 4.0 and are never
+bundled or fetched by this project.
+
 ## ggml / llama.cpp (bundled with upstream)
 
 [ggml-org/llama.cpp][llamacpp] / ggml comes with the upstream baseline and is
@@ -164,12 +238,12 @@ forms:
   `upstream/third_party/ggml/VERSION.txt` records commit
   `3cf03257f219afbe7334045ff7c6a06ac68c627d`.
 - The llama.cpp checkout fetched by `upstream/CMakeLists.txt`
-  (`FetchContent_Declare(strata_llamacpp ...)`, lines 1255–1258) when
+  (`FetchContent_Declare(strata_llamacpp ...)`, lines 1307–1310) when
   `STRATA_NATIVE_EXPERTS=ON` and `STRATA_GGML_DIR` is unset, pinned to
   `GIT_TAG 3cf03257f219afbe7334045ff7c6a06ac68c627d`.
 
 License: MIT, "Copyright (c) 2023-2026 The ggml authors"
-([`third_party/ggml/LICENSE` at `v0.1.43`](https://github.com/Niko1221/Strata/blob/v0.1.43/third_party/ggml/LICENSE);
+([`third_party/ggml/LICENSE` at `v0.1.44.1`](https://github.com/Niko1221/Strata/blob/v0.1.44.1/third_party/ggml/LICENSE);
 offline: `upstream/third_party/ggml/LICENSE`).
 Our root `CMakeLists.txt` seeds `STRATA_NATIVE_EXPERTS=OFF` and our CI
 (`.github/workflows/secure-frontend.yml`) configures with
@@ -192,8 +266,9 @@ licensed under the ISC license and that this covers only components provided
 by llvm-mingw directly (the bundled LLVM, mingw-w64 and other components keep
 their own licenses).
 
-[strata]: https://github.com/Niko1221/Strata/tree/v0.1.43
+[strata]: https://github.com/Niko1221/Strata/tree/v0.1.44.1
 [unbiased]: https://github.com/robertkarl/UnbiasedStrata/tree/46c46ecfc11d2315512f21f7549b0a7792ccd2ae
 [lighttransport]: https://github.com/lighttransport/Strata/tree/glm53f
+[maya]: https://github.com/mw00/project-maya/tree/5c970a863ce2fdd87b6e23ffb4822f6d76522b1c
 [llamacpp]: https://github.com/ggml-org/llama.cpp/tree/3cf03257f219afbe7334045ff7c6a06ac68c627d
 [llvmmingw]: https://github.com/mstorsjo/llvm-mingw/releases/tag/20261006

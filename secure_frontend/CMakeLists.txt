@@ -112,6 +112,12 @@ add_library(secure_frontend_http_socket_server
     src/process_defaults.cpp
 )
 
+add_library(secure_frontend_paths src/canonical_path_common.cpp)
+target_sources(secure_frontend_paths PRIVATE src/canonical_path_posix.cpp src/canonical_path_windows.cpp src/windows_security.cpp)
+target_compile_features(secure_frontend_paths PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_paths PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+
 add_library(secure_frontend_model_inventory
     src/model_inventory.cpp
 )
@@ -119,6 +125,26 @@ add_library(secure_frontend_model_inventory
 add_library(secure_frontend_engine_arguments
     src/engine_arguments.cpp
 )
+
+add_library(secure_frontend_json
+    src/json.cpp
+)
+
+add_library(secure_frontend_typed_config src/frontend_config.cpp src/config_file.cpp)
+target_compile_features(secure_frontend_typed_config PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_typed_config PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_config secure_frontend_json
+    secure_frontend_model_inventory secure_frontend_engine_arguments)
+target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_paths)
+
+add_library(secure_frontend_server_cli src/server_cli.cpp)
+target_sources(secure_frontend_server_cli PRIVATE src/frontend_init.cpp)
+target_compile_features(secure_frontend_server_cli PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_server_cli PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_link_libraries(secure_frontend_server_cli PUBLIC secure_frontend_typed_config)
+target_link_libraries(secure_frontend_server_cli PUBLIC secure_frontend_token_store)
 
 add_library(secure_frontend_chat_schema
     src/chat_schema.cpp
@@ -150,6 +176,24 @@ add_library(secure_frontend_engine_supervisor
     src/restart_policy.cpp
     src/supervisor_wake.cpp
 )
+add_library(secure_frontend_secrets src/secret_bytes.cpp src/token_generator.cpp src/token_verifier.cpp)
+target_compile_features(secure_frontend_secrets PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_secrets PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+
+add_library(secure_frontend_token_store src/token_store.cpp)
+target_compile_features(secure_frontend_token_store PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_token_store PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_link_libraries(secure_frontend_token_store PUBLIC secure_frontend_paths secure_frontend_secrets)
+target_link_libraries(secure_frontend_token_store PUBLIC secure_frontend_token_reader)
+
+add_library(secure_frontend_subsystem_limits src/subsystem_limits.cpp)
+target_compile_features(secure_frontend_subsystem_limits PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_subsystem_limits PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_link_libraries(secure_frontend_subsystem_limits PUBLIC secure_frontend_typed_config
+    secure_frontend_http_socket_server secure_frontend_chat_execution secure_frontend_chat_schema)
 
 add_executable(secure-frontend-smoke src/smoke_main.cpp)
 
@@ -178,7 +222,7 @@ target_include_directories(secure_frontend_http_request_handler
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(secure_frontend_http_request_handler PUBLIC secure_frontend_http_policy)
+target_link_libraries(secure_frontend_http_request_handler PUBLIC secure_frontend_http_policy secure_frontend_secrets)
 
 target_compile_features(secure_frontend_http_socket_server PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_http_socket_server
@@ -231,6 +275,12 @@ target_include_directories(secure_frontend_engine_arguments
         $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(secure_frontend_engine_arguments PUBLIC secure_frontend_model_inventory)
+target_link_libraries(secure_frontend_engine_arguments PUBLIC secure_frontend_paths)
+target_compile_features(secure_frontend_json PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_json PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_link_libraries(secure_frontend_chat_schema PUBLIC secure_frontend_json)
+target_link_libraries(secure_frontend_tokenizer_pack PUBLIC secure_frontend_json secure_frontend_paths)
 target_compile_features(secure_frontend_chat_schema PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_chat_schema
     PUBLIC
@@ -294,7 +344,12 @@ target_link_libraries(strata-secure-server PRIVATE secure_frontend_config secure
     secure_frontend_api_router secure_frontend_model_inventory secure_frontend_tokenizer_pack
     secure_frontend_engine_protocol_client secure_frontend_engine_stdio_process secure_frontend_chat_schema
     secure_frontend_chat_generation_plan secure_frontend_chat_execution secure_frontend_engine_arguments)
+target_link_libraries(strata-secure-server PRIVATE secure_frontend_server_cli secure_frontend_typed_config)
+target_link_libraries(strata-secure-server PRIVATE secure_frontend_subsystem_limits)
 target_compile_features(strata-secure-server PRIVATE cxx_std_20)
+
+target_link_libraries(secure_frontend_config PUBLIC secure_frontend_paths)
+target_link_libraries(secure_frontend_model_inventory PUBLIC secure_frontend_paths)
 
 target_compile_features(secure_frontend_config PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_config
@@ -310,22 +365,29 @@ target_include_directories(secure_frontend_token_reader
         $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(secure_frontend_token_reader PUBLIC secure_frontend_config)
+target_link_libraries(secure_frontend_token_reader PUBLIC secure_frontend_paths)
+target_link_libraries(secure_frontend_token_reader PUBLIC secure_frontend_secrets)
 
 if(WIN32)
     target_link_libraries(secure_frontend_config PUBLIC ws2_32)
     target_link_libraries(secure_frontend_http_socket_server PUBLIC ws2_32)
     target_link_libraries(secure_frontend_token_reader PUBLIC advapi32)
     target_link_libraries(secure_frontend_engine_stdio_process PUBLIC advapi32 bcrypt)
+    target_link_libraries(secure_frontend_paths PUBLIC advapi32)
+    target_link_libraries(secure_frontend_secrets PUBLIC bcrypt)
+    target_link_libraries(secure_frontend_token_reader PUBLIC crypt32)
+    target_link_libraries(secure_frontend_token_store PUBLIC crypt32 advapi32)
 endif()
 
 foreach(_target IN ITEMS
-        secure_frontend_config secure_frontend_token_reader secure_frontend_http_policy
+        secure_frontend_paths secure_frontend_config secure_frontend_token_reader secure_frontend_http_policy
         secure_frontend_http_request_handler secure_frontend_api_router secure_frontend_engine_process
         secure_frontend_engine_protocol_client secure_frontend_engine_stdio_process
         secure_frontend_http_socket_server secure_frontend_model_inventory secure_frontend_engine_arguments
-        secure_frontend_chat_schema
+        secure_frontend_json secure_frontend_typed_config secure_frontend_server_cli secure_frontend_chat_schema
         secure_frontend_tokenizer_pack secure_frontend_qwen_prompt_renderer secure_frontend_glm_prompt_renderer
         secure_frontend_chat_generation_plan secure_frontend_chat_execution secure_frontend_engine_supervisor
+        secure_frontend_subsystem_limits secure_frontend_secrets secure_frontend_token_store
         secure-frontend-smoke strata-secure-smoke-server strata-secure-server)
     secure_frontend_set_warnings(${_target})
 endforeach()
@@ -333,11 +395,66 @@ endforeach()
 if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     enable_testing()
 
+    secure_frontend_add_test_executable(secure_frontend_paths_tests tests/paths_test.cpp secure_frontend_paths)
+    secure_frontend_add_cases(secure_frontend_paths_tests
+        relative_path_accepts_portable_forms cfg02_rejects_traversal_and_absolute cfg02_rejects_nul_and_control_bytes
+        cfg04_rejects_reserved_and_device_names cfg04_rejects_trailing_dot_space_and_8dot3 cfg04_rejects_ads_and_drive_forms)
+    secure_frontend_add_cases(secure_frontend_paths_tests
+        cfg02_rejects_relative_root cfg02_sibling_prefix_root_rejected cfg04_rejects_unc_device_and_extended_roots
+        cfg04_final_path_on_network_share_is_actionable)
+    target_link_libraries(secure_frontend_paths_tests PRIVATE secure_frontend_token_reader)
+    secure_frontend_add_cases(secure_frontend_paths_tests paths_handle_non_ascii_and_long_names
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    secure_frontend_add_cases(secure_frontend_paths_tests cfg02_create_within_root_writes_nothing_outside
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    if(WIN32)
+        secure_frontend_add_cases(secure_frontend_paths_tests
+            auth02_windows_token_file_reads_with_private_dacl cfg03_rejects_junction_below_root
+            cfg03_rejects_symlink_below_root
+            LABELS windows-runtime)
+        set_tests_properties(secure_frontend_paths_tests.cfg03_rejects_symlink_below_root PROPERTIES
+            SKIP_REGULAR_EXPRESSION "SKIPPED:")
+    endif()
+    if(NOT WIN32)
+        secure_frontend_add_cases(secure_frontend_paths_tests
+            cfg02_rejects_shared_writable_root cfg02_root_may_traverse_symlink
+            cfg02_engine_executable_must_be_private_regular_file)
+        secure_frontend_add_cases(secure_frontend_paths_tests
+            cfg03_rejects_symlinked_intermediate_directory cfg03_rejects_symlinked_final_file
+            cfg03_fallback_walk_matches_openat2 cfg03_rejects_mount_crossing)
+        set_tests_properties(secure_frontend_paths_tests.cfg03_rejects_mount_crossing PROPERTIES
+            SKIP_REGULAR_EXPRESSION "SKIPPED:")
+    endif()
+
+    secure_frontend_add_test_executable(secure_frontend_secrets_tests tests/secrets_test.cpp secure_frontend_secrets)
+    secure_frontend_add_cases(secure_frontend_secrets_tests
+        base64url_known_vectors token_generate_is_43_base64url_chars token_generate_differs_across_calls
+        secret_bytes_wiped_on_destroy_and_move secret_bytes_rejects_over_capacity
+        auth03_compare_touches_fixed_window auth03_prefix_and_suffix_variants_rejected)
+
+    secure_frontend_add_test_executable(secure_frontend_token_store_tests tests/token_store_test.cpp
+        secure_frontend_token_store)
+    if(NOT WIN32)
+        secure_frontend_add_cases(secure_frontend_token_store_tests
+            token_store_creates_0600_file_in_0700_dir token_store_rotate_is_atomic token_store_refuses_symlinked_target
+            token_store_round_trips_through_reader)
+    endif()
+    target_link_libraries(secure_frontend_token_store_tests PRIVATE secure_frontend_token_reader)
+    if(WIN32)
+        secure_frontend_add_cases(secure_frontend_token_store_tests
+            token_store_windows_round_trips_through_dpapi token_store_windows_file_has_private_dacl
+            token_reader_windows_accepts_plaintext_under_private_dacl
+            LABELS windows-runtime)
+    endif()
+
     secure_frontend_add_test_executable(secure_frontend_config_tests tests/config_test.cpp secure_frontend_config)
     secure_frontend_add_cases(secure_frontend_config_tests
         defaults_to_loopback requires_key_for_loopback requires_explicit_opt_in_for_remote_host
         requires_key_after_remote_opt_in accepts_remote_host_with_opt_in_and_key
-        requires_separate_opt_in_for_wildcard_host rejects_invalid_ports rejects_invalid_hosts_and_blank_remote_keys)
+        requires_separate_opt_in_for_wildcard_host rejects_invalid_ports rejects_invalid_hosts_and_blank_remote_keys
+        net03_wildcard_spellings_need_wildcard_opt_in net03_remote_opt_in_alone_rejects_wildcard
+        net01_loopback_spellings_classified_from_bytes net02_hostname_rejected_before_bind
+        net01_localhost_maps_to_ipv4_loopback)
 
     secure_frontend_add_test_executable(secure_frontend_secret_source_tests tests/secret_source_test.cpp secure_frontend_config)
     secure_frontend_add_cases(secure_frontend_secret_source_tests
@@ -345,14 +462,24 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         rejects_unsafe_environment_variable_names rejects_blank_or_control_containing_file_paths
         rejects_paths_that_escape_or_trigger_platform_special_handling)
 
-    if(UNIX)
-        # POSIX-only until SP1 Task 18 un-gates it for the windows-msys2-clang job.
-        secure_frontend_add_test_executable(secure_frontend_token_reader_tests tests/token_reader_test.cpp
-            secure_frontend_token_reader)
+    # Built and run on every platform (SP1 K4). Protected-file cases need real
+    # Windows ACL semantics: windows-runtime there, run by the windows-msys2-clang
+    # job and excluded under wine.
+    secure_frontend_add_test_executable(secure_frontend_token_reader_tests tests/token_reader_test.cpp
+        secure_frontend_token_reader)
+    secure_frontend_add_cases(secure_frontend_token_reader_tests
+        reads_the_named_environment_variable rejects_control_characters_in_environment_token
+        auth02_short_operator_token_rejected)
+    secure_frontend_add_cases(secure_frontend_token_reader_tests
+        reads_an_owner_only_regular_file_below_the_root rejects_control_characters_in_file_token
+        auth02_token_file_with_trailing_lf_accepted auth02_token_file_with_trailing_crlf_accepted
+        auth02_token_file_with_two_newlines_rejected auth02_token_file_with_bom_rejected
+        auth02_token_file_over_4k_rejected auth02_notepad_edits_rejected_with_reason
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    if(NOT WIN32)
         secure_frontend_add_cases(secure_frontend_token_reader_tests
-            reads_an_owner_only_regular_file_below_the_root reads_the_named_environment_variable
-            rejects_control_characters_in_resolved_tokens rejects_a_group_or_world_accessible_file
-            rejects_a_symlink_that_escapes_the_root rejects_a_non_regular_file)
+            rejects_a_group_or_world_accessible_file rejects_a_symlink_that_escapes_the_root rejects_a_non_regular_file
+            cfg03_rejects_hardlinked_token_file cfg05_env_token_absent_from_proc_environ)
     endif()
 
     secure_frontend_add_test_executable(secure_frontend_engine_stdio_process_tests tests/engine_stdio_process_test.cpp
@@ -487,7 +614,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         accepts_authorized_request passes_the_bounded_raw_body_to_an_authorized_dispatcher
         rejects_malformed_and_ambiguous_messages requires_one_well_formed_bearer_token
         fails_closed_before_calling_validator_for_untrusted_origin emits_cors_only_for_policy_approved_origin
-        handles_policy_approved_preflight_without_exposing_an_endpoint constant_time_helper_matches_only_equal_tokens)
+        handles_policy_approved_preflight_without_exposing_an_endpoint constant_time_helper_matches_only_equal_tokens
+        auth03_router_uses_verifier)
 
     secure_frontend_add_test_executable(secure_frontend_http_socket_server_tests tests/http_socket_server_test.cpp
         secure_frontend_http_socket_server)
@@ -497,6 +625,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         socket_server_rejects_oversize_request_over_tcp socket_server_accept_waits_without_timeout
         socket_server_ipv6_bind_is_v6only socket_server_response_is_complete
         socket_server_survives_reset_before_accept socket_server_responds_after_client_half_close
+        parser_honors_configured_max_request_bytes
         TIMEOUT 300)
 
     secure_frontend_add_test_executable(secure_frontend_api_router_tests tests/api_router_test.cpp secure_frontend_api_router)
@@ -504,7 +633,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         health_samples_status_before_state_once_each health_includes_engine_state_when_provided
         health_is_503_with_engine_state_when_unavailable dispatches_exact_health_route
         dispatches_models_with_json_escaping rejects_non_exact_routes
-        fails_closed_when_provider_throws_or_returns_invalid_model health_carries_recovery_only_with_failed)
+        fails_closed_when_provider_throws_or_returns_invalid_model health_carries_recovery_only_with_failed
+        auth01_every_route_rejects_missing_malformed_wrong_token)
+    target_link_libraries(secure_frontend_api_router_tests PRIVATE secure_frontend_secrets)
 
     secure_frontend_add_test_executable(secure_frontend_engine_process_tests tests/engine_process_test.cpp
         secure_frontend_engine_process)
@@ -524,29 +655,78 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_test_executable(secure_frontend_model_inventory_tests tests/model_inventory_test.cpp
         secure_frontend_model_inventory)
     secure_frontend_add_cases(secure_frontend_model_inventory_tests
-        validates_portable_model_ids validates_portable_artifact_paths inventories_only_local_gguf_artifacts
-        rejects_duplicate_ids_and_symlinks)
+        validates_portable_model_ids validates_portable_artifact_paths)
+    set(_inventory_root_cases inventories_only_local_gguf_artifacts rejects_duplicate_ids)
+    if(WIN32)
+        list(APPEND _inventory_root_cases cfg03_inventory_rejects_junction_entry)
+    else()
+        list(APPEND _inventory_root_cases cfg03_inventory_rejects_symlink_entry inventory_symlink_error_names_entry
+            inventory_duplicate_detection_is_case_insensitive inventory_ignores_non_portable_non_model_names
+            inventory_rejects_non_portable_directory)
+    endif()
+    secure_frontend_add_cases(secure_frontend_model_inventory_tests ${_inventory_root_cases}
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     secure_frontend_add_test_executable(secure_frontend_engine_arguments_tests tests/engine_arguments_test.cpp
         secure_frontend_engine_arguments)
     secure_frontend_add_cases(secure_frontend_engine_arguments_tests
-        engine_receives_model_path_from_inventory engine_args_reject_owned_and_network_flags
+        engine_receives_model_path_from_inventory engine_native_path_is_utf8_for_non_ascii_root
+        engine_args_reject_owned_and_network_flags
         strata_profile_passes_pack_and_weight_flags_through rejects_invalid_relative_artifact_path
-        glm_profile_passes_arguments_through_without_native)
+        glm_profile_passes_arguments_through_without_native
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     secure_frontend_add_test_executable(secure_frontend_chat_schema_tests tests/chat_schema_test.cpp secure_frontend_chat_schema)
     secure_frontend_add_cases(secure_frontend_chat_schema_tests
         parses_minimal_text_request rejects_unsupported_and_unsafe_features rejects_duplicate_and_malformed_json
         renders_escaped_minimal_response)
 
+    secure_frontend_add_test_executable(secure_frontend_json_tests tests/json_test.cpp secure_frontend_json)
+    secure_frontend_add_cases(secure_frontend_json_tests
+        json_accepts_strict_document json_rejects_duplicate_keys json_rejects_depth_over_limit
+        json_rejects_non_integer_numbers json_rejects_bom_trailing_data_and_comments
+        json_enforces_size_entry_and_string_limits json_string_escaper_round_trips)
+
+    secure_frontend_add_test_executable(secure_frontend_typed_config_tests tests/typed_config_test.cpp
+        secure_frontend_typed_config)
+    secure_frontend_add_cases(secure_frontend_typed_config_tests
+        typed_config_accepts_minimal_file_and_applies_defaults cfg01_unknown_key_rejected cfg01_duplicate_key_rejected
+        cfg01_type_confusion_rejected cfg01_missing_required_rejected cfg01_out_of_range_rejected
+        cfg01_chat_ranges_match_enforced_caps typed_config_cross_field_rules typed_config_errors_never_contain_values
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    secure_frontend_add_cases(secure_frontend_typed_config_tests cfg02_logs_and_cache_roots_are_created_private
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    if(NOT WIN32)
+        # chmod-based: the config folder's mode decides the roots.secret default.
+        secure_frontend_add_cases(secure_frontend_typed_config_tests
+            cfg02_env_token_ignores_config_folder_permissions cfg02_file_token_default_secret_root_reports_one_issue)
+    endif()
+    # CFG-06: the second case reads the token through the production reader first.
+    target_link_libraries(secure_frontend_typed_config_tests PRIVATE secure_frontend_secrets secure_frontend_token_reader)
+    secure_frontend_add_cases(secure_frontend_typed_config_tests cfg06_config_has_no_secret_typed_member)
+    secure_frontend_add_cases(secure_frontend_typed_config_tests cfg06_validated_config_bytes_do_not_contain_token
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # D3: the README key table equals render_config_schema_markdown().
+    secure_frontend_add_cases(secure_frontend_typed_config_tests readme_config_table_matches_schema
+        ARGS ${CMAKE_CURRENT_SOURCE_DIR}/README.md)
+    if(WIN32)
+        secure_frontend_add_cases(secure_frontend_typed_config_tests cfg01_config_with_everyone_write_ace_rejected
+            LABELS windows-runtime)
+    else()
+        secure_frontend_add_cases(secure_frontend_typed_config_tests cfg01_group_writable_config_rejected)
+    endif()
+
     secure_frontend_add_test_executable(secure_frontend_tokenizer_pack_tests tests/tokenizer_pack_test.cpp
         secure_frontend_tokenizer_pack)
     set(_tokenizer_cases loads_validates_and_decodes_offline_pack rejects_ambiguous_or_incompatible_pack_assets
         rejects_malformed_json_and_special_literals_for_decode encoding_fails_closed_for_special_invalid_and_missing_tokens)
-    if(NOT WIN32)
-        list(APPEND _tokenizer_cases rejects_symlinked_assets)
+    if(WIN32)
+        list(APPEND _tokenizer_cases cfg03_tokenizer_file_swapped_to_junction_rejected)
+    else()
+        list(APPEND _tokenizer_cases rejects_symlinked_assets cfg03_tokenizer_file_swapped_to_symlink_rejected)
     endif()
-    secure_frontend_add_cases(secure_frontend_tokenizer_pack_tests ${_tokenizer_cases})
+    secure_frontend_add_cases(secure_frontend_tokenizer_pack_tests ${_tokenizer_cases}
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     secure_frontend_add_test_executable(secure_frontend_qwen_prompt_renderer_tests tests/qwen_prompt_renderer_test.cpp
         secure_frontend_qwen_prompt_renderer)
@@ -573,6 +753,59 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         chat_rejects_nonfinite_done_and_stays_ready health_reflects_protocol_state
         health_is_failed_after_engine_closed_mid_generation health_is_failed_when_engine_closes_before_ready
         chat_applies_engine_context_rule_with_eight_token_margin chat_uses_adopted_ready_without_waiting)
+
+    secure_frontend_add_test_executable(secure_frontend_subsystem_limits_tests tests/subsystem_limits_test.cpp
+        secure_frontend_subsystem_limits)
+    secure_frontend_add_cases(secure_frontend_subsystem_limits_tests
+        ready_timeout_defaults_to_900_seconds subsystem_limits_follow_config
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+
+    add_executable(secure_frontend_fake_engine tests/fake_engine_main.cpp)
+    target_compile_features(secure_frontend_fake_engine PRIVATE cxx_std_20)
+    secure_frontend_set_warnings(secure_frontend_fake_engine)
+    set(SECURE_FRONTEND_SERVER_ARGS ARGS $<TARGET_FILE:strata-secure-server> $<TARGET_FILE:secure_frontend_fake_engine>)
+
+    secure_frontend_add_test_executable(secure_frontend_server_cli_tests tests/server_cli_test.cpp
+        secure_frontend_typed_config)
+    add_dependencies(secure_frontend_server_cli_tests strata-secure-server secure_frontend_fake_engine)
+    secure_frontend_add_cases(secure_frontend_server_cli_tests
+        cli_config_file_and_flags_share_validator cli_flag_overrides_file_and_is_reported cli_check_prints_no_token
+        cli_check_unreadable_token_is_not_reported_valid
+        cli_unknown_option_does_not_echo_value
+        auth04_empty_token_rejected_on_loopback auth04_no_switch_disables_auth
+        ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+    secure_frontend_add_cases(secure_frontend_server_cli_tests cli_check_has_no_side_effects
+        ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+    target_link_libraries(secure_frontend_server_cli_tests PRIVATE secure_frontend_token_reader secure_frontend_server_cli)
+    secure_frontend_add_cases(secure_frontend_server_cli_tests
+        init_writes_config_and_token_then_server_starts init_refuses_to_overwrite_without_force
+        init_force_refuses_a_non_regular_config_target init_failure_creates_nothing
+        ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+
+    secure_frontend_add_test_executable(secure_frontend_server_e2e_tests tests/server_e2e_test.cpp
+        secure_frontend_typed_config)
+    add_dependencies(secure_frontend_server_e2e_tests strata-secure-server secure_frontend_fake_engine)
+    if(WIN32)
+        target_link_libraries(secure_frontend_server_e2e_tests PRIVATE iphlpapi ws2_32)
+    endif()
+    secure_frontend_add_cases(secure_frontend_server_e2e_tests
+        cfg01_invalid_config_fails_before_listener_and_child net02_remote_addresses_need_opt_in
+        net02_error_is_non_secret_and_exits_before_bind ready_timeout_is_configurable
+        cfg05_token_absent_from_child_argv_env_and_outputs
+        auth01_socket_rejects_missing_and_wrong_token_on_every_route auth02_valid_token_succeeds_and_is_not_echoed
+        serve_reports_why_the_token_and_tokenizer_pack_are_unusable
+        ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+    # GetExtendedTcpTable is not faithful under wine.
+    secure_frontend_add_cases(secure_frontend_server_e2e_tests net01_default_listener_is_loopback_only
+        ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+    if(NOT WIN32)
+        secure_frontend_add_cases(secure_frontend_server_e2e_tests serve_reports_symlinked_model_entry
+            ${SECURE_FRONTEND_SERVER_ARGS} TIMEOUT 120)
+        secure_frontend_add_cases(secure_frontend_server_e2e_tests cfg03_engine_receives_canonical_models_root
+            ${SECURE_FRONTEND_SERVER_ARGS} TIMEOUT 120)
+        secure_frontend_add_cases(secure_frontend_server_e2e_tests server_process_is_not_dumpable
+            ${SECURE_FRONTEND_SERVER_ARGS} TIMEOUT 120)
+    endif()
 
     add_test(NAME strata_secure_server_help COMMAND strata-secure-server --help)
     # The GLM runner takes positional arguments: glm53 without any --engine-arg is a usage error.

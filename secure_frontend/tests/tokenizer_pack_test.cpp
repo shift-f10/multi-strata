@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <system_error>
 #include <variant>
 
 namespace {
@@ -138,6 +139,44 @@ void rejects_symlinked_assets() {
          "loader must reject symlinked tokenizer files");
   std::filesystem::remove_all(root);
 }
+
+void cfg03_tokenizer_file_swapped_to_symlink_rejected() {
+  const auto root = temporary_pack();
+  const auto outside = temporary_pack();
+  write(outside / "vocab.json", R"({"a":0})");
+  write(root / "merges.txt", "");
+  write(root / "token_type.json", "[0]");
+  write(root / "vocab.json", R"({"a":0})");
+  expect(std::holds_alternative<secure_frontend::TokenizerPack>(secure_frontend::load_local_tokenizer_pack(root)),
+         "the regular pack loads");
+  std::filesystem::remove(root / "vocab.json");
+  std::filesystem::create_symlink(outside / "vocab.json", root / "vocab.json");
+  expect(has_error(secure_frontend::load_local_tokenizer_pack(root), secure_frontend::TokenizerPackErrorCode::symbolic_link_not_allowed),
+         "after the swap the file is opened by handle with O_NOFOLLOW and rejected");
+  std::filesystem::remove_all(root);  // removes the link, not its target
+  std::filesystem::remove_all(outside);
+}
+#endif
+
+#if defined(_WIN32)
+void cfg03_tokenizer_file_swapped_to_junction_rejected() {
+  const auto root = temporary_pack();
+  const auto outside = temporary_pack();
+  write(outside / "vocab.json", R"({"a":0})");
+  write(root / "merges.txt", "");
+  write(root / "token_type.json", "[0]");
+  write(root / "vocab.json", R"({"a":0})");
+  expect(std::holds_alternative<secure_frontend::TokenizerPack>(secure_frontend::load_local_tokenizer_pack(root)),
+         "the regular pack loads");
+  std::filesystem::remove(root / "vocab.json");
+  expect(secure_frontend_test::create_junction(root / "vocab.json", outside), "junction created without privilege");
+  expect(has_error(secure_frontend::load_local_tokenizer_pack(root), secure_frontend::TokenizerPackErrorCode::symbolic_link_not_allowed),
+         "a junction swapped in for vocab.json is opened with FILE_FLAG_OPEN_REPARSE_POINT and rejected");
+  std::error_code ignored;
+  std::filesystem::remove(root / "vocab.json", ignored);  // the junction itself first, never its target's contents
+  std::filesystem::remove_all(root, ignored);
+  std::filesystem::remove_all(outside, ignored);
+}
 #endif
 }  // namespace
 
@@ -149,6 +188,10 @@ int main(int argc, char** argv) {
       {"encoding_fails_closed_for_special_invalid_and_missing_tokens", encoding_fails_closed_for_special_invalid_and_missing_tokens},
 #ifndef _WIN32
       {"rejects_symlinked_assets", rejects_symlinked_assets},
+      {"cfg03_tokenizer_file_swapped_to_symlink_rejected", cfg03_tokenizer_file_swapped_to_symlink_rejected},
+#endif
+#if defined(_WIN32)
+      {"cfg03_tokenizer_file_swapped_to_junction_rejected", cfg03_tokenizer_file_swapped_to_junction_rejected},
 #endif
   }, failures);
 }

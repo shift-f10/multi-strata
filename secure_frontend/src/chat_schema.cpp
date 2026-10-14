@@ -1,20 +1,18 @@
 #include "secure_frontend/chat_schema.hpp"
 
+#include "secure_frontend/json.hpp"
+
 #include <array>
 #include <cctype>
 #include <cstdint>
 #include <limits>
 #include <utility>
+#include <variant>
 
 namespace secure_frontend {
 namespace {
 
-constexpr std::size_t kMaximumRequestBytes = 256U * 1024U;
-constexpr std::size_t kMaximumMessages = 128U;
-constexpr std::size_t kMaximumModelBytes = 256U;
-constexpr std::size_t kMaximumMessageBytes = 64U * 1024U;
-constexpr std::size_t kMaximumGeneratedBytes = 1024U * 1024U;
-constexpr std::size_t kMaximumTokens = 16384U;
+constexpr std::size_t kMaximumModelBytes = 256U;  // model-id format bound, not a tuning limit
 
 bool is_continuation(unsigned char byte) { return (byte & 0xc0U) == 0x80U; }
 
@@ -83,255 +81,85 @@ bool valid_model(std::string_view value) {
   return true;
 }
 
-bool valid_content(std::string_view value) {
-  if (value.empty() || value.size() > kMaximumMessageBytes || !valid_utf8(value) || contains_remote_scheme(value)) return false;
+bool valid_content(std::string_view value, const std::size_t max_message_bytes) {
+  if (value.empty() || value.size() > max_message_bytes || !valid_utf8(value) || contains_remote_scheme(value)) return false;
   for (const unsigned char byte : value) {
     if (byte < 0x20U && byte != '\n' && byte != '\r' && byte != '\t') return false;
   }
   return true;
 }
 
-void append_utf8(std::string* output, std::uint32_t point) {
-  if (point <= 0x7fU) {
-    output->push_back(static_cast<char>(point));
-  } else if (point <= 0x7ffU) {
-    output->push_back(static_cast<char>(0xc0U | (point >> 6U)));
-    output->push_back(static_cast<char>(0x80U | (point & 0x3fU)));
-  } else if (point <= 0xffffU) {
-    output->push_back(static_cast<char>(0xe0U | (point >> 12U)));
-    output->push_back(static_cast<char>(0x80U | ((point >> 6U) & 0x3fU)));
-    output->push_back(static_cast<char>(0x80U | (point & 0x3fU)));
-  } else {
-    output->push_back(static_cast<char>(0xf0U | (point >> 18U)));
-    output->push_back(static_cast<char>(0x80U | ((point >> 12U) & 0x3fU)));
-    output->push_back(static_cast<char>(0x80U | ((point >> 6U) & 0x3fU)));
-    output->push_back(static_cast<char>(0x80U | (point & 0x3fU)));
-  }
-}
-
-class Parser final {
- public:
-  explicit Parser(std::string_view input) : input_(input) {}
-
-  std::optional<ChatCompletionRequest> parse() {
-    if (input_.empty() || input_.size() > kMaximumRequestBytes || !consume('{')) return std::nullopt;
-    ChatCompletionRequest request;
-    bool model_seen = false;
-    bool messages_seen = false;
-    bool max_tokens_seen = false;
-    bool stream_seen = false;
-    skip_ws();
-    if (consume('}')) return std::nullopt;
-    while (true) {
-      const auto key = string();
-      if (!key || !consume(':')) return std::nullopt;
-      if (*key == "model" && !model_seen) {
-        const auto value = string();
-        if (!value || !valid_model(*value)) return std::nullopt;
-        request.model = *value;
-        model_seen = true;
-      } else if (*key == "messages" && !messages_seen) {
-        const auto values = messages();
-        if (!values) return std::nullopt;
-        request.messages = *values;
-        messages_seen = true;
-      } else if (*key == "max_tokens" && !max_tokens_seen) {
-        const auto value = unsigned_integer();
-        if (!value || *value > kMaximumTokens) return std::nullopt;
-        request.max_tokens = *value;
-        max_tokens_seen = true;
-      } else if (*key == "stream" && !stream_seen) {
-        if (!literal("false")) return std::nullopt;
-        stream_seen = true;
-      } else {
-        return std::nullopt;
-      }
-      skip_ws();
-      if (consume('}')) break;
-      if (!consume(',')) return std::nullopt;
-    }
-    skip_ws();
-    if (position_ != input_.size() || !model_seen || !messages_seen || request.messages.empty()) return std::nullopt;
-    return request;
-  }
-
- private:
-  void skip_ws() {
-    while (position_ < input_.size() && (input_[position_] == ' ' || input_[position_] == '\n' ||
-                                         input_[position_] == '\r' || input_[position_] == '\t')) ++position_;
-  }
-
-  bool consume(char expected) {
-    skip_ws();
-    if (position_ == input_.size() || input_[position_] != expected) return false;
-    ++position_;
-    return true;
-  }
-
-  bool literal(std::string_view expected) {
-    skip_ws();
-    if (input_.substr(position_, expected.size()) != expected) return false;
-    position_ += expected.size();
-    return true;
-  }
-
-  static std::optional<unsigned int> hex(char value) {
-    if (value >= '0' && value <= '9') return static_cast<unsigned int>(value - '0');
-    if (value >= 'a' && value <= 'f') return static_cast<unsigned int>(value - 'a' + 10);
-    if (value >= 'A' && value <= 'F') return static_cast<unsigned int>(value - 'A' + 10);
-    return std::nullopt;
-  }
-
-  std::optional<std::uint32_t> unicode_escape() {
-    if (position_ + 4U > input_.size()) return std::nullopt;
-    std::uint32_t point = 0;
-    for (unsigned int count = 0; count < 4U; ++count) {
-      const auto digit = hex(input_[position_++]);
-      if (!digit) return std::nullopt;
-      point = (point << 4U) | *digit;
-    }
-    if (point >= 0xd800U && point <= 0xdbffU) {
-      if (position_ + 6U > input_.size() || input_[position_] != '\\' || input_[position_ + 1U] != 'u') return std::nullopt;
-      position_ += 2U;
-      const auto low = unicode_escape();
-      if (!low || *low < 0xdc00U || *low > 0xdfffU) return std::nullopt;
-      return 0x10000U + ((point - 0xd800U) << 10U) + (*low - 0xdc00U);
-    }
-    if (point >= 0xdc00U && point <= 0xdfffU) return std::nullopt;
-    return point;
-  }
-
-  std::optional<std::string> string() {
-    if (!consume('"')) return std::nullopt;
-    std::string output;
-    while (position_ < input_.size()) {
-      const unsigned char byte = static_cast<unsigned char>(input_[position_++]);
-      if (byte == '"') return valid_utf8(output) ? std::optional<std::string>{std::move(output)} : std::nullopt;
-      if (byte < 0x20U) return std::nullopt;
-      if (byte != '\\') {
-        output.push_back(static_cast<char>(byte));
-        continue;
-      }
-      if (position_ == input_.size()) return std::nullopt;
-      switch (input_[position_++]) {
-        case '"': output.push_back('"'); break;
-        case '\\': output.push_back('\\'); break;
-        case '/': output.push_back('/'); break;
-        case 'b': output.push_back('\b'); break;
-        case 'f': output.push_back('\f'); break;
-        case 'n': output.push_back('\n'); break;
-        case 'r': output.push_back('\r'); break;
-        case 't': output.push_back('\t'); break;
-        case 'u': {
-          const auto point = unicode_escape();
-          if (!point) return std::nullopt;
-          append_utf8(&output, *point);
-          break;
-        }
-        default: return std::nullopt;
-      }
-      if (output.size() > kMaximumRequestBytes) return std::nullopt;
-    }
-    return std::nullopt;
-  }
-
-  std::optional<std::size_t> unsigned_integer() {
-    skip_ws();
-    if (position_ == input_.size() || input_[position_] < '0' || input_[position_] > '9') return std::nullopt;
-    if (input_[position_] == '0' && position_ + 1U < input_.size() && std::isdigit(static_cast<unsigned char>(input_[position_ + 1U]))) return std::nullopt;
-    std::size_t value = 0;
-    do {
-      const std::size_t digit = static_cast<std::size_t>(input_[position_++] - '0');
-      if (value > (std::numeric_limits<std::size_t>::max() - digit) / 10U) return std::nullopt;
-      value = value * 10U + digit;
-    } while (position_ < input_.size() && input_[position_] >= '0' && input_[position_] <= '9');
-    return value;
-  }
-
-  std::optional<std::vector<ChatMessage>> messages() {
-    if (!consume('[')) return std::nullopt;
-    std::vector<ChatMessage> output;
-    skip_ws();
-    if (consume(']')) return output;
-    while (true) {
-      const auto message = message_object();
-      if (!message || output.size() == kMaximumMessages) return std::nullopt;
-      output.push_back(*message);
-      skip_ws();
-      if (consume(']')) return output;
-      if (!consume(',')) return std::nullopt;
-    }
-  }
-
-  std::optional<ChatMessage> message_object() {
-    if (!consume('{')) return std::nullopt;
-    ChatMessage message;
-    bool role_seen = false;
-    bool content_seen = false;
-    skip_ws();
-    if (consume('}')) return std::nullopt;
-    while (true) {
-      const auto key = string();
-      if (!key || !consume(':')) return std::nullopt;
-      if (*key == "role" && !role_seen) {
-        const auto value = string();
-        if (!value || (*value != "system" && *value != "user" && *value != "assistant")) return std::nullopt;
-        message.role = *value;
-        role_seen = true;
-      } else if (*key == "content" && !content_seen) {
-        const auto value = string();
-        if (!value || !valid_content(*value)) return std::nullopt;
-        message.content = *value;
-        content_seen = true;
-      } else {
-        return std::nullopt;
-      }
-      skip_ws();
-      if (consume('}')) break;
-      if (!consume(',')) return std::nullopt;
-    }
-    if (!role_seen || !content_seen) return std::nullopt;
-    return message;
-  }
-
-  std::string_view input_;
-  std::size_t position_ = 0;
-};
-
-void append_json_string(std::string* output, std::string_view value) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  output->push_back('"');
-  for (const unsigned char byte : value) {
-    switch (byte) {
-      case '"': output->append("\\\""); break;
-      case '\\': output->append("\\\\"); break;
-      case '\b': output->append("\\b"); break;
-      case '\f': output->append("\\f"); break;
-      case '\n': output->append("\\n"); break;
-      case '\r': output->append("\\r"); break;
-      case '\t': output->append("\\t"); break;
-      default:
-        if (byte < 0x20U) {
-          output->append("\\u00");
-          output->push_back(kHex[(byte >> 4U) & 0x0fU]);
-          output->push_back(kHex[byte & 0x0fU]);
-        } else {
-          output->push_back(static_cast<char>(byte));
-        }
-    }
-  }
-  output->push_back('"');
-}
-
 }  // namespace
 
-std::optional<ChatCompletionRequest> parse_chat_completion_request(std::string_view json) {
-  return Parser(json).parse();
+std::optional<ChatCompletionRequest> parse_chat_completion_request(std::string_view json,
+                                                                   const ChatSchemaLimits& limits) {
+  if (json.empty() || json.size() > limits.max_body_bytes) return std::nullopt;
+  // Depth 3: request object -> messages array -> message object. Deeper
+  // input (content arrays, tool objects) fails closed at the reader.
+  const JsonLimits json_limits{.max_bytes = limits.max_body_bytes, .max_depth = 3U,
+                               .max_container_entries = limits.max_messages,
+                               .max_string_bytes = limits.max_body_bytes};
+  const auto parsed = parse_json(json, json_limits);
+  const auto* root = std::get_if<JsonValue>(&parsed);
+  const auto* members = root != nullptr ? root->if_object() : nullptr;
+  if (members == nullptr) return std::nullopt;
+  ChatCompletionRequest request;
+  bool model_seen = false;
+  bool messages_seen = false;
+  for (const auto& member : *members) {
+    if (member.key == "model") {
+      const auto* value = member.value.if_string();
+      if (value == nullptr || !valid_model(*value)) return std::nullopt;
+      request.model = *value;
+      model_seen = true;
+    } else if (member.key == "messages") {
+      const auto* items = member.value.if_array();
+      if (items == nullptr || items->size() > limits.max_messages) return std::nullopt;
+      for (const auto& item : *items) {
+        const auto* fields = item.if_object();
+        if (fields == nullptr) return std::nullopt;
+        ChatMessage message;
+        bool role_seen = false;
+        bool content_seen = false;
+        for (const auto& field : *fields) {
+          const auto* text = field.value.if_string();
+          if (text == nullptr) return std::nullopt;
+          if (field.key == "role" && (*text == "system" || *text == "user" || *text == "assistant")) {
+            message.role = *text;
+            role_seen = true;
+          } else if (field.key == "content" && valid_content(*text, limits.max_message_bytes)) {
+            message.content = *text;
+            content_seen = true;
+          } else {
+            return std::nullopt;
+          }
+        }
+        if (!role_seen || !content_seen) return std::nullopt;
+        request.messages.push_back(std::move(message));
+      }
+      messages_seen = true;
+    } else if (member.key == "max_tokens") {
+      const auto* value = member.value.if_integer();
+      if (value == nullptr || *value < 0 || static_cast<std::uint64_t>(*value) > limits.max_completion_tokens) {
+        return std::nullopt;
+      }
+      request.max_tokens = static_cast<std::size_t>(*value);
+    } else if (member.key == "stream") {
+      const auto* value = member.value.if_boolean();
+      if (value == nullptr || *value) return std::nullopt;
+    } else {
+      return std::nullopt;
+    }
+  }
+  if (!model_seen || !messages_seen || request.messages.empty()) return std::nullopt;
+  return request;
 }
 
 std::optional<std::string> render_chat_completion_response(const ChatCompletionRequest& request,
-                                                           std::string_view generated_text) {
-  if (!valid_model(request.model) || generated_text.size() > kMaximumGeneratedBytes || !valid_utf8(generated_text)) {
+                                                           std::string_view generated_text,
+                                                           const ChatSchemaLimits& limits) {
+  if (!valid_model(request.model) || generated_text.size() > limits.max_generated_bytes ||
+      !valid_utf8(generated_text)) {
     return std::nullopt;
   }
   std::string response{"{\"id\":\"chatcmpl-local\",\"object\":\"chat.completion\",\"created\":0,\"model\":"};

@@ -17,6 +17,11 @@ The checked-in presets (`secure_frontend/CMakePresets.json`):
 | `windows-msys2-clang` | Windows, MSYS2 CLANG64 clang | Blocking CI; the only job that runs the tests on real Windows |
 | `windows-msvc` | Windows, Visual Studio 2022/MSVC x64 | Informational, non-blocking (`continue-on-error`) |
 
+Each test case is its own CTest test (`<binary>.<case>`). Cases that need real
+Windows semantics carry the label `windows-runtime`; the
+`windows-llvm-mingw-cross` test preset excludes it under wine, and
+`windows-msys2-clang` runs everything.
+
 The Windows toolchain is open source: llvm-mingw and MSYS2 clang. MSVC is kept
 only as an informational job. Caveat: CUDA engine builds on Windows still need
 MSVC as the nvcc host compiler; that concerns the engine (`upstream/src/`), not
@@ -33,8 +38,8 @@ with "run `git submodule update --init`" when `upstream/` is empty.
 
 After a `git pull` that moves the gitlink, run `git submodule update --init`
 again (or set `git config submodule.recurse true` once). A `+` at the start of
-the `git submodule status` line means the `upstream/` checkout is behind the
-recorded gitlink.
+the `git submodule status` line means the checked-out `upstream/` commit differs
+from the recorded gitlink (behind, ahead or elsewhere).
 
 ## Building locally (Linux)
 
@@ -64,11 +69,12 @@ wine on Linux. wine does not implement Job Objects or protected-file DACLs
 faithfully; Windows runtime behavior is validated only by the `windows-msys2-clang`
 CI job on a real Windows runner. The `windows-msvc` job is informational.
 
-The cross build produces 20 `.exe` files (three executables, seventeen test
-binaries) and `ctest` registers 19 entries on Windows against 20 on Linux:
-`secure_frontend_token_reader_tests` is the only UNIX-only target, so the Windows
-protected-file reader has no runtime test even in the `windows-msys2-clang` job
-yet. `secure_frontend_http_socket_server_tests` is portable and runs the Windows
+Since SP1 every test binary, including `secure_frontend_token_reader_tests`,
+is built and run on Windows; the Windows protected-file reader's cases carry
+`windows-runtime`, so they run only in the `windows-msys2-clang` job (which has
+not yet run them: pending). Counts at the end of SP1 (Task 24): see
+`docs/AGENT_HANDOFF.md`, "Verification performed", SP1.
+`secure_frontend_http_socket_server_tests` is portable and runs the Windows
 listener in that job. `engine_process_tests` and `engine_stdio_process_tests`
 start and terminate through the Job on MSYS2; the grandchild assertion
 (`job_object_terminates_grandchild`) runs only there (it also passes under wine,
@@ -90,8 +96,9 @@ defaults `CMAKE_BUILD_TYPE` to `Release` before upstream sees it and declares
 `SECURE_FRONTEND_WERROR=ON`, so `-DSTRATA_WERROR=OFF` does not drop the
 frontend's `-Werror`. `-DSECURE_STRATA_BUILD_ENGINE=OFF` builds only the
 frontend and works with an empty `upstream/`. From clean: 94 Ninja steps, 0
-warnings, `ctest` 20/20 (the frontend's tests; upstream registers none at
-`v0.1.43` because `STRATA_BUILD_TESTS` is `OFF`).
+warnings, `ctest` 111/111 at `v0.1.44.1` before the SP1 merge (the frontend's
+tests; upstream registers none at `v0.1.44.1` because `STRATA_BUILD_TESTS` is
+`OFF`); the per-case count after SP1 is recorded in `docs/AGENT_HANDOFF.md`.
 
 ## Python tests
 
@@ -103,85 +110,26 @@ Upstream's own suites run only after a submodule bump ("Updating upstream").
 
 ## Updating upstream
 
-The order and the exact commands are in `docs/PROVENANCE.md`, "Updating the
-baseline" (the single source of truth); in short:
-
-1. `git -C upstream fetch --tags origin`, then
-   `git -C upstream checkout --detach <tag>`.
-2. Run the gates, each with its working directory:
-
-       pytest -q                                   # repo root
-       cd secure_frontend && cmake --preset linux-gcc && cmake --build --preset linux-gcc \
-         && ctest --preset linux-gcc && cd ..      # in secure_frontend/
-       # in secure_frontend/: the windows-llvm-mingw-cross build (and wine ctest), above
-       cmake -S . -B out/root -G Ninja && cmake --build out/root \
-         && ctest --test-dir out/root && test ! -e out/root/_deps   # repo root, fresh dir
-
-   Then upstream's own suites in a separate venv (upstream's pins win there).
-   `python3 -m venv` may lack `ensurepip`, so create it without pip and fill
-   it with the dev venv's pip (repo root):
-
-       python3 -m venv --without-pip out/venv-upstream
-       .venv-dev/bin/pip --python out/venv-upstream/bin/python install \
-         -r scripts/dev/requirements-dev.txt -r upstream/requirements.txt
-
-   and run them **from `upstream/`** (four `tools/` tests resolve `tools/...`
-   against the working directory; our root `pytest.ini` stays the rootdir, so
-   the `--deselect` ids keep the `upstream/tools/` prefix):
-
-       cd upstream && ../out/venv-upstream/bin/pytest -q tools \
-         --ignore=tools/test_iq_pack.py \
-         --ignore=tools/test_setup_engine_hash.py \
-         --deselect upstream/tools/test_setup_choices.py::HipVision::test_the_cpu_encoder_is_built_once \
-         --deselect upstream/tools/test_setup_choices.py::HipVision::test_without_images_nothing_changes \
-         --deselect upstream/tools/test_setup_choices.py::CudaVision::test_the_encoder_is_built_native \
-         && ../out/venv-upstream/bin/pytest -q serve   # about 4.5 minutes
-
-   At `v0.1.43`: `616 passed, 2 skipped, 3 deselected` and `695 passed, 11
-   skipped`. The two ignores need llama.cpp's `gguf` module and GitHub
-   respectively; the three deselects are recorded upstream drift against its
-   `setup.py`. Drop an exclusion once the new tag no longer needs it.
-
-   Re-audit upstream's top-level CMake assumptions (layout spec §3 table):
-   new `FetchContent`, option defaults, a `tests/CMakeLists.txt` that would
-   flip `STRATA_BUILD_TESTS`. Re-check the SP5 pass-through table against the
-   new engine's flags and protocol, and the upstream internals
-   `tools/secure/secure_tokenizer.py` relies on (listed in its module
-   docstring: `Tokenizer._re`, the `__init__` argument order, the `extract()`
-   output path `tokenizer/tokenizer.json`, which `extract()` now refuses to
-   create if upstream did not write it).
-3. `git -C upstream status --porcelain` is empty and `git submodule status`
-   shows no `-`/`U` (`+` is expected until the pointer is staged).
-4. Update `docs/PROVENANCE.md` "Baseline", then run
-   `git grep -n '<old tag>\|<old short sha>' -- ':!docs/superpowers' ':!upstream'`
-   and update every hit. Known pin sites: `README.md` (revision column and
-   the pinned `blob/<tag>/…` links), the workflow header comment,
-   `docs/AGENT_HANDOFF.md` (owner decision 6, the layout table header,
-   "Current baseline"), this file (the "Root build" note and the
-   offline-bundle commands below), `docs/PROVENANCE.md` (the `[strata]`
-   reference and pinned license links) and the `docs/security/` pages that
-   name the version.
-5. `git add upstream docs/PROVENANCE.md` plus every file touched in step 4;
-   one commit: `upstream: bump to <tag>`.
+The runbook (gates at the old pin, bump, gates incl. upstream's own suites with their recorded exclusions and expected counts, pin sites, one commit) lives only in [`PROVENANCE.md`](PROVENANCE.md), "Updating the baseline".
 
 ## Offline checkout
 
 An offline box cannot fetch the submodule. The offline kit carries a git bundle
 of the pinned upstream commit next to the bundle of our repository:
 
-    git -C upstream bundle create ../out/upstream-v0.1.43-7695859a.bundle v0.1.43
-    git bundle verify out/upstream-v0.1.43-7695859a.bundle
+    git -C upstream bundle create ../out/upstream-v0.1.44.1-296b59d2.bundle v0.1.44.1
+    git bundle verify out/upstream-v0.1.44.1-296b59d2.bundle
 
 On the offline box, after cloning our repository from its bundle:
 
     git submodule init
-    git config submodule.upstream.url /path/to/upstream-v0.1.43-7695859a.bundle
+    git config submodule.upstream.url /path/to/upstream-v0.1.44.1-296b59d2.bundle
     git -c protocol.file.allow=always submodule update
-    git submodule status   # 7695859aa13afb248bdb4d36f9b2e95707db079d upstream (v0.1.43)
+    git submodule status   # 296b59d2f73c8f04a805df29c2fa97655adace78 upstream (v0.1.44.1)
 
-The bundle holds tag `v0.1.43` (tag object
-`16374b3e6dfe452a163c3a961ae5faa3b4aec84b`, commit
-`7695859aa13afb248bdb4d36f9b2e95707db079d`).
+The bundle holds tag `v0.1.44.1` (tag object
+`9791ea335ba2001c87b5f783146d6eb08fdd9e5e`, commit
+`296b59d2f73c8f04a805df29c2fa97655adace78`).
 
 ## Workflow
 
@@ -189,11 +137,11 @@ The bundle holds tag `v0.1.43` (tag object
 
 | Job | Runs on | Submodule | Blocking |
 | --- | --- | --- | --- |
-| `linux` (matrix `linux-gcc`, `linux-clang`) | ubuntu-latest; `linux-gcc` also checks that `pytest -q` collects `tools/secure/` only and runs it | yes (pytest) | yes |
-| `windows-cross` (`windows-llvm-mingw-cross`) | ubuntu-latest; uploads the `.exe` files | no | yes |
+| `linux` (matrix `linux-gcc`, `linux-clang`) | ubuntu-24.04 (pinned; `ubuntu-latest` becomes Ubuntu 26 on 2026-10-19); `linux-gcc` also checks that `pytest -q` collects `tools/secure/` only and runs it | yes (pytest) | yes |
+| `windows-cross` (`windows-llvm-mingw-cross`) | ubuntu-24.04 (pinned; `ubuntu-latest` becomes Ubuntu 26 on 2026-10-19); uploads the `.exe` files | no | yes |
 | `windows-msys2` (`windows-msys2-clang`) | windows-latest, MSYS2 CLANG64; runs `ctest` | no | yes |
 | `windows-msvc` | windows-latest | no | no |
-| `top-level-integration` | ubuntu-latest; first configures **our** root with no `-D` flags (`out/root-defaults`, configure only) and asserts `STRATA_NATIVE_EXPERTS`/`STRATA_ENABLE_CUDA`/`STRATA_ENABLE_HIP` `OFF`, `CMAKE_BUILD_TYPE=Release` and no `_deps`; then configures it with CUDA/HIP/native experts off, builds `strata-secure-server`, `secure_frontend_config_tests`, `strata-plan`, runs `ctest -R secure_frontend_config_tests`, checks no `out/root/_deps` | yes | yes |
+| `top-level-integration` | ubuntu-24.04 (pinned; `ubuntu-latest` becomes Ubuntu 26 on 2026-10-19); first configures **our** root with no `-D` flags (`out/root-defaults`, configure only) and asserts `STRATA_NATIVE_EXPERTS`/`STRATA_ENABLE_CUDA`/`STRATA_ENABLE_HIP` `OFF`, `CMAKE_BUILD_TYPE=Release` and no `_deps`; then configures it with CUDA/HIP/native experts off, builds `strata-secure-server`, `secure_frontend_config_tests`, `strata-plan`, runs `ctest -R secure_frontend_config_tests`, checks no `out/root/_deps` | yes | yes |
 
 The jobs that check out the submodule end with the step "upstream submodule
 pinned and unmodified": `git submodule status` must show no `+`/`-`/`U` prefix

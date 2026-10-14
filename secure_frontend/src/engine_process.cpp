@@ -36,11 +36,17 @@ bool contains_nul(const std::string& value) {
   return value.find('\0') != std::string::npos;
 }
 
+// Checks the native form: path::string() narrows through the ANSI code page on
+// Windows and can throw or mangle a non-ASCII path.
+bool path_contains_nul(const std::filesystem::path& value) {
+  return value.native().find(std::filesystem::path::value_type{}) != std::filesystem::path::string_type::npos;
+}
+
 std::optional<ProcessError> validate_command(const EngineCommand& command) {
   if (command.executable.empty()) {
     return ProcessError{ProcessErrorCode::invalid_command, "engine executable must not be empty"};
   }
-  if (contains_nul(command.executable.string())) {
+  if (path_contains_nul(command.executable)) {
     return ProcessError{ProcessErrorCode::invalid_command, "engine executable path must not contain NUL bytes"};
   }
   for (const auto& argument : command.arguments) {

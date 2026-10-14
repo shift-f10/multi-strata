@@ -2,6 +2,7 @@
 
 #include "secure_frontend/config.hpp"
 #include "secure_frontend/http_request_handler.hpp"
+#include "secure_frontend/config_defaults.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -12,12 +13,17 @@
 
 namespace secure_frontend {
 
-// Listener bounds. request_deadline covers reading the whole request (header
-// and body) from accept(); the response send gets the remaining budget, but
-// never less than one second. SP1 replaces this with typed configuration.
+// Listener and parser bounds. request_deadline covers reading the whole
+// request (header and body) from accept(); the response send gets the
+// remaining budget, but never less than one second. Derived from
+// FrontendConfig by http_socket_server_limits().
 struct HttpSocketServerLimits final {
-  std::chrono::milliseconds request_deadline{std::chrono::seconds(30)};  // header+body, total
-  std::size_t max_request_bytes{64U * 1024U};
+  std::chrono::milliseconds request_deadline{config_defaults::kRequestDeadlineMs};  // header+body, total
+  std::size_t max_request_bytes{static_cast<std::size_t>(config_defaults::kMaxRequestBytes)};
+  std::size_t max_header_bytes{static_cast<std::size_t>(config_defaults::kMaxHeaderBytes)};
+  std::size_t max_headers{static_cast<std::size_t>(config_defaults::kMaxHeaders)};
+  std::size_t max_request_line_bytes{static_cast<std::size_t>(config_defaults::kMaxRequestLineBytes)};
+  int backlog{static_cast<int>(config_defaults::kListenerBacklog)};
 };
 
 // A deliberately small, synchronous listener for the authenticated HTTP
