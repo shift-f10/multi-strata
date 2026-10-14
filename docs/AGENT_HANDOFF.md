@@ -948,9 +948,14 @@ D4) and the stale "MSVC/Windows runtime coverage" CMake comment (Task 18).
    changed only what the engine inherits (N5 descriptors/handles, N6 the
    stdin pipe). Still an accepted same-user risk; open, no sub-project named
    yet (owner/controller to assign).
-2. On Windows `strata-secure-server` takes `char** argv` in the ANSI code page,
-   so non-ASCII paths belong in the config file until the product `strata` CLI
-   uses `wmain`. The engine's argv is UTF-8 end to end since the SP1 final fix
+2. Fixed on the winfix branch (pending the next MSYS2 run): on Windows
+   `strata-secure-server` now reads its command line as UTF-8 through
+   `CommandLineToArgvW(GetCommandLineW())` (invalid UTF-16 exits 1 with a
+   fixed message) and `--config` goes through `path_from_utf8`, so a
+   non-ASCII value (A2's `✓`, a non-ASCII root) is no longer turned into `?`
+   by the ANSI code page; CI run `38601830802` showed exactly that in
+   `proc01_server_passes_literal_argv`. Before: `char** argv` in the ANSI code
+   page, so non-ASCII paths belonged in the config file. The engine's argv is UTF-8 end to end since the SP1 final fix
    wave: `--native` is built with `path_to_utf8` (not `path::string()`, which
    narrowed through the ANSI code page and failed the launcher's strict UTF-8
    decode for a root such as `C:\Users\José\models`), and the executable's NUL

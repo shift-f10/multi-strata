@@ -21,14 +21,21 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cwchar>
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
+
+#if defined(_WIN32)
+#include "secure_frontend/win32_prelude.hpp"
+#include <shellapi.h>
+#endif
 
 namespace {
 
@@ -264,11 +271,53 @@ int run(const FrontendConfig& config) {
   return supervisor.engine_left_unreaped() ? EXIT_FAILURE : EXIT_SUCCESS;
 }
 
+#if defined(_WIN32)
+// The command line as UTF-8 (spec A2: every value arrives literally). The
+// CRT's char** argv is in the ANSI code page, which turns any character
+// outside it into '?'; the config layer reads every value as UTF-8
+// (path_from_utf8). nullopt: the command line is not valid UTF-16.
+std::optional<std::vector<std::string>> utf8_command_line() {
+  int count = 0;
+  wchar_t** wide = CommandLineToArgvW(GetCommandLineW(), &count);
+  if (wide == nullptr) return std::nullopt;
+  std::vector<std::string> arguments;
+  bool valid = true;
+  for (int index = 0; index < count && valid; ++index) {
+    const int length = static_cast<int>(std::wcslen(wide[index]));
+    if (length == 0) {
+      arguments.emplace_back();
+      continue;
+    }
+    const int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide[index], length, nullptr, 0, nullptr, nullptr);
+    std::string text(static_cast<std::size_t>(std::max(size, 0)), '\0');
+    valid = size > 0 && WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide[index], length, text.data(), size, nullptr, nullptr) == size;
+    arguments.push_back(std::move(text));
+  }
+  LocalFree(wide);
+  if (!valid) return std::nullopt;
+  return arguments;
+}
+#endif
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
   secure_frontend::install_process_defaults();
+#if defined(_WIN32)
+  const auto utf8_arguments = utf8_command_line();
+  if (!utf8_arguments) {
+    std::cerr << "Error: the command line is not valid Unicode\nRun strata-secure-server --help for usage.\n";
+    return EXIT_FAILURE;
+  }
+  std::vector<const char*> utf8_argv;
+  for (const auto& argument : *utf8_arguments) utf8_argv.push_back(argument.c_str());
+  utf8_argv.push_back(nullptr);
+  (void)argc;
+  (void)argv;
+  const auto parsed = secure_frontend::parse_server_command_line(static_cast<int>(utf8_arguments->size()), utf8_argv.data());
+#else
   const auto parsed = secure_frontend::parse_server_command_line(argc, argv);
+#endif
   if (const auto* error = std::get_if<secure_frontend::CliError>(&parsed)) {
     std::cerr << "Error: " << error->message << "\nRun strata-secure-server --help for usage.\n";
     return EXIT_FAILURE;

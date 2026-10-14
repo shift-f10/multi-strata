@@ -1,5 +1,6 @@
 #include "secure_frontend/server_cli.hpp"
 
+#include "secure_frontend/canonical_path.hpp"
 #include "secure_frontend/config_file.hpp"
 
 #include <algorithm>
@@ -91,7 +92,7 @@ std::variant<ServerInvocation, CliError> parse_server_command_line(const int arg
       if (invocation.config_file.has_value()) return CliError{"duplicate --config"};
       const std::string value{argv[++index]};
       if (value.empty()) return CliError{"empty value for --config"};
-      invocation.config_file = std::filesystem::path{value};
+      invocation.config_file = path_from_utf8(value);  // argv is UTF-8 on every platform (secure_server_main.cpp)
       continue;
     }
     const FlagSpec* spec = find_flag(argument);

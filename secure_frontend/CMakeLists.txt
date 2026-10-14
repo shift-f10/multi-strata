@@ -355,6 +355,9 @@ target_link_libraries(strata-secure-server PRIVATE secure_frontend_config secure
 target_link_libraries(strata-secure-server PRIVATE secure_frontend_server_cli secure_frontend_typed_config)
 target_link_libraries(strata-secure-server PRIVATE secure_frontend_subsystem_limits secure_frontend_engine_supervisor)
 target_compile_features(strata-secure-server PRIVATE cxx_std_20)
+if(WIN32)
+    target_link_libraries(strata-secure-server PRIVATE shell32)  # CommandLineToArgvW: UTF-8 argv (A2)
+endif()
 
 target_link_libraries(secure_frontend_config PUBLIC secure_frontend_paths)
 target_link_libraries(secure_frontend_model_inventory PUBLIC secure_frontend_paths)
