@@ -34,6 +34,14 @@ SupervisorWake::~SupervisorWake() {
 #endif
 }
 
+bool SupervisorWake::valid() const noexcept {
+#if defined(_WIN32)
+  return event_ != nullptr;
+#else
+  return read_fd_ >= 0 && write_fd_ >= 0;
+#endif
+}
+
 void SupervisorWake::notify() noexcept {
 #if defined(_WIN32)
   if (event_ != nullptr) (void)SetEvent(static_cast<HANDLE>(event_));

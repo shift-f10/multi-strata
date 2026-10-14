@@ -3,7 +3,7 @@
 #include "secure_frontend/chat_schema.hpp"
 #include "secure_frontend/config.hpp"
 #include "secure_frontend/engine_arguments.hpp"
-#include "secure_frontend/engine_stdio_process.hpp"
+#include "secure_frontend/engine_supervisor.hpp"
 #include "secure_frontend/frontend_config.hpp"
 #include "secure_frontend/frontend_init.hpp"
 #include "secure_frontend/http_request_handler.hpp"
@@ -114,43 +114,43 @@ int run(const FrontendConfig& config) {
   models.reserve(manifests->size());
   for (const auto& manifest : *manifests) models.push_back({.id = manifest.id, .owned_by = manifest.owned_by});
 
-  secure_frontend::EngineStdioProcess engine;
-  const secure_frontend::EngineCommand command{.executable = config.engine.executable.path(),
-                                               .arguments = std::move(*engine_arguments), .environment = {}};
-  const auto protocol_flavor = glm ? secure_frontend::EngineProtocolFlavor::lighttransport_glm53
-                                   : secure_frontend::EngineProtocolFlavor::strata_0143;
-  secure_frontend::EngineProtocolClient protocol(engine, {}, protocol_flavor);
-  const auto chat_profile = glm ? secure_frontend::NativeChatProfile::glm53 : secure_frontend::NativeChatProfile::qwen;
-  secure_frontend::ChatExecutionService chat(protocol, secure_frontend::chat_execution_limits(config), chat_profile);
+  // Profile, protocol flavor, chat limits and the READY deadline all come from
+  // the validated config (limits.engine.ready_timeout_s drives the policy).
+  const secure_frontend::SupervisorConfig supervisor_config = secure_frontend::supervisor_config(config);
+  secure_frontend::EngineLaunchPlan plan{.command = {.executable = config.engine.executable.path(),
+                                                     .arguments = std::move(*engine_arguments), .environment = {}}};
+  // The supervisor thread spawns, watches and restarts the engine (spec §3.1).
+  // Declared before the listener and the router, so it outlives both; a Lease
+  // lives only inside one execute_with_lease() call.
+  secure_frontend::EngineSupervisor supervisor(supervisor_config, secure_frontend::make_stdio_process_factory(std::move(plan)));
 
   const std::string authority = host_header(listener);
   secure_frontend::HttpPolicy policy{.allowed_hosts = {authority}, .same_origin_origins = {"http://" + authority},
                                      .cors_allowed_origins = {}, .cors_enabled = false};
-  const auto engine_state = [&engine, &chat]() -> std::string_view {
-    if (!engine.running()) return "failed";
-    switch (chat.health()) {
-      case secure_frontend::EngineHealth::starting: return "starting";
-      case secure_frontend::EngineHealth::ready: return "ready";
-      case secure_frontend::EngineHealth::generating: return "generating";
-      case secure_frontend::EngineHealth::failed: return "failed";
-    }
-    return "failed";
-  };
-  std::string_view health_snapshot{"failed"};
+  // /health takes one supervisor snapshot per request: the router calls the
+  // bool provider first, then the engine and recovery providers, once each
+  // (api_router.hpp), and the listener is serial.
+  secure_frontend::HealthSnapshot health = secure_frontend::health_for(secure_frontend::SupervisorState::stopped);
   const secure_frontend::ApiRouter router(
-      [&engine_state, &health_snapshot] { health_snapshot = engine_state(); return health_snapshot != "failed"; },
-      [models] { return models; }, [&health_snapshot] { return health_snapshot; });
+      [&supervisor, &health] {
+        health = supervisor.snapshot();
+        return health.healthy;
+      },
+      [models] { return models; }, [&health] { return health.engine; }, [&health] { return health.recovery; });
   auto server = secure_frontend::HttpSocketServer::bind(
       listener, std::move(policy), secure_frontend::make_bearer_validator(verifier),
-      [&router, &chat, &engine, &tokenizer, &model_id, &schema_limits](
+      [&router, &supervisor, &tokenizer, &model_id, &schema_limits](
           const std::string_view method, const std::string_view target, const std::string_view body) {
         if (method == "GET") return router.dispatch(method, target);
         if (method != "POST" || target != "/v1/chat/completions") return json_error(404, "Not Found");
-        if (!engine.running()) return json_error(503, "Service Unavailable");
+        // Parse first: a request the frontend refuses (tools, functions, MCP,
+        // stream, unknown fields) is answered with no engine or process action (EXT-01).
         const auto request = secure_frontend::parse_chat_completion_request(body, schema_limits);
         if (!request || request->model != model_id) return json_error(400, "Bad Request");
-        const auto result = chat.execute(*request, *tokenizer);
-        const auto* completion = std::get_if<secure_frontend::ChatExecutionResult>(&result);
+        // Outside `ready` there is no lease: an immediate generic 503, never a wait (spec §3.4).
+        const auto outcome = secure_frontend::execute_with_lease(supervisor, *request, *tokenizer);
+        if (!outcome) return json_error(503, "Service Unavailable");
+        const auto* completion = std::get_if<secure_frontend::ChatExecutionResult>(&*outcome);
         if (completion == nullptr) return json_error(503, "Service Unavailable");
         const auto response =
             secure_frontend::render_chat_completion_response(*request, completion->text, schema_limits);
@@ -163,8 +163,8 @@ int run(const FrontendConfig& config) {
       nullptr, listener_limits);
   if (!server) { std::cerr << "Unable to bind secure listener.\n"; return EXIT_FAILURE; }
   // Bound first, spawned second: a listener that cannot bind never leaves an
-  // engine child behind (CFG-01).
-  if (engine.start(command).has_value()) { std::cerr << "Unable to start local engine.\n"; return EXIT_FAILURE; }
+  // engine child behind (CFG-01). The token was read above, before any spawn.
+  if (!supervisor.start()) { std::cerr << "Unable to start the engine supervisor.\n"; return EXIT_FAILURE; }
   std::cout << "Secure server listening on http://" << authority << " (authenticated; Ctrl-C to stop)\n";
   std::cout.flush();
   for (;;) {

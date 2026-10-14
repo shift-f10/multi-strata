@@ -5,10 +5,12 @@
 #include "support/test_support.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <map>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #if !defined(_WIN32)
@@ -142,6 +144,19 @@ class ServerFixture final {
     return http_exchange(port, text + "\r\n" + body);
   }
   [[nodiscard]] std::string bearer() const { return "Bearer " + std::string{kTestToken}; }
+  // SP2: READY is consumed eagerly; until then /health is 503 and a chat is a
+  // 503. Poll /health until the engine is ready before a case sends a chat or
+  // expects a 200 /health. `authorization` defaults to bearer().
+  [[nodiscard]] bool wait_engine_ready(const std::chrono::milliseconds timeout = std::chrono::seconds(10),
+                                       const std::string& authorization = {}) const {
+    const std::string credential = authorization.empty() ? bearer() : authorization;
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (contains(request("GET", "/health", credential), "\"engine\":\"ready\"")) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return false;
+  }
 };
 
 }  // namespace secure_frontend_test

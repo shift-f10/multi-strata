@@ -103,7 +103,8 @@ class EngineSupervisor final {
   EngineSupervisor& operator=(const EngineSupervisor&) = delete;
 
   // Starts the supervisor thread, which spawns generation 1. Call once.
-  void start();
+  // false = refused (no wake to reach the thread, or no thread): nothing runs.
+  [[nodiscard]] bool start();
   // Only in `ready`; anywhere else nullopt (the caller answers a generic 503 at once).
   [[nodiscard]] std::optional<Lease> acquire();
   // The leased generation is unusable (fatal line, drain failure, write timeout,
@@ -122,7 +123,9 @@ class EngineSupervisor final {
  private:
   friend class Lease;
   void release(std::shared_ptr<EngineInstance> instance) noexcept;
+  void run_guarded() noexcept;
   void run();
+  void fail_closed() noexcept;
   std::shared_ptr<EngineInstance> spawn_generation();
   KillReason supervise(EngineInstance& instance, std::chrono::milliseconds& healthy_for);
   std::optional<KillReason> await_ready(EngineInstance& instance, EngineReady& ready);

@@ -6,6 +6,7 @@
 #include "support/test_paths.hpp"
 #include "support/test_tokenizer.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -13,6 +14,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -24,6 +26,7 @@
 #include "secure_frontend/win32_prelude.hpp"
 #else
 #include <cerrno>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -79,7 +82,7 @@ void proc04_restart_backoff_then_circuit_open() {
     std::lock_guard lock(seen_mutex);
     recovery_in_backoff.push_back(supervisor.snapshot().recovery);
   });
-  supervisor.start();
+  expect(supervisor.start(), "the supervisor starts");
   expect(supervisor.wait_for_state(SupervisorState::circuit_open, 5s), "the 3rd consecutive failure opens the circuit");
   expect(clock->delays() == std::vector<std::chrono::milliseconds>{1000ms, 2000ms}, "backoff is exactly 1 s, then 2 s");
   expect(fakes.spawned() == 3U, "exactly three generations");
@@ -103,7 +106,7 @@ void proc04_healthy_window_resets_failure_count() {
     if (lease) supervisor.report_fatal(*lease, secure_frontend::KillReason::protocol_failed);
     return lease.has_value();
   };
-  supervisor.start();
+  expect(supervisor.start(), "the supervisor starts");
   expect(test_support::wait_generation_ready(supervisor, 1U, 5s), "generation 1 ready");
   clock->advance(301s);  // healthy for longer than the 300 s window
   expect(fail_now(), "lease on generation 1");
@@ -126,7 +129,7 @@ void proc04_recovers_after_transient_crash() {
   secure_frontend::EngineSupervisor supervisor(
       config, secure_frontend::make_stdio_process_factory(fake_plan({"--fail-first=1", "--counter-file=" + test_support::utf8_path(dir / "count")})),
       std::make_shared<secure_frontend::SteadySupervisorClock>(), log.sink());
-  supervisor.start();
+  expect(supervisor.start(), "the supervisor starts");
   expect(test_support::wait_generation_ready(supervisor, 2U, 10s), "a one-off failure is recovered by generation 2");
   expect(log.contains("engine generation 1 ended: error_exit"), "generation 1's exit 1 is logged as error_exit");
   supervisor.shutdown(5s);
@@ -138,7 +141,7 @@ void proc04_missing_engine_opens_circuit_without_spinning() {
   test_support::LogCapture log;
   const secure_frontend::EngineLaunchPlan plan{.command = {.executable = dir / "no-such-engine", .arguments = {}, .environment = {}}};
   secure_frontend::EngineSupervisor supervisor({}, secure_frontend::make_stdio_process_factory(plan), clock, log.sink());
-  supervisor.start();
+  expect(supervisor.start(), "the supervisor starts");
   expect(supervisor.wait_for_state(SupervisorState::circuit_open, 5s), "three spawn failures open the circuit");
   expect(supervisor.generations_started() == 3U, "exactly three attempts: no tight loop");
   expect(clock->delays() == std::vector<std::chrono::milliseconds>{1000ms, 2000ms}, "spawn failures back off like any failure");
@@ -160,7 +163,7 @@ void proc04_client_err_lines_open_circuit_until_restart() {
   auto clock = std::make_shared<test_support::ManualClock>();
   test_support::LogCapture log;
   secure_frontend::EngineSupervisor supervisor({}, fakes.factory(), clock, log.sink());
-  supervisor.start();
+  expect(supervisor.start(), "the supervisor starts");
   const auto tokenizer = test_support::byte_tokenizer();
   const secure_frontend::ChatCompletionRequest request{"fake-model", {{"user", "Hi"}}, 2U};
   for (std::uint64_t generation = 1U; generation <= 3U; ++generation) {
@@ -185,7 +188,7 @@ void supervisor_retires_ended_generation_on_its_own_thread() {
   test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.push_line("READY 4096 stop"); });
   auto clock = std::make_shared<test_support::ManualClock>();
   secure_frontend::EngineSupervisor supervisor({}, fakes.factory(), clock, test_support::LogCapture{}.sink());
-  supervisor.start();
+  expect(supervisor.start(), "the supervisor starts");
   expect(test_support::wait_generation_ready(supervisor, 1U, 5s), "generation 1 ready");
   auto lease = supervisor.acquire();
   expect(lease.has_value(), "lease on generation 1");
@@ -224,7 +227,7 @@ void proc04_monitor_detects_idle_crash() {
   secure_frontend::EngineSupervisor supervisor(
       config, secure_frontend::make_stdio_process_factory(fake_plan({"--crash-after-ready=KILL", "--crash-delay-ms=300"})),
       std::make_shared<secure_frontend::SteadySupervisorClock>(), log.sink());
-  supervisor.start();
+  expect(supervisor.start(), "the supervisor starts");
   expect(supervisor.wait_for_state(SupervisorState::ready, 10s), "ready");
   const auto ready_seen = std::chrono::steady_clock::now();
   expect(supervisor.wait_for_state(SupervisorState::circuit_open, 3s), "an idle death is noticed with no request");
@@ -244,7 +247,7 @@ void proc04_monitor_fallback_without_pidfd() {
   config.policy.max_consecutive_failures = 1U;
   config.monitor_poll = 20ms;
   secure_frontend::EngineSupervisor supervisor(config, fakes.factory());
-  supervisor.start();
+  expect(supervisor.start(), "the supervisor starts");
   expect(supervisor.wait_for_state(SupervisorState::ready, 5s), "ready");
   const auto started = std::chrono::steady_clock::now();
   fakes.child(1U)->end({false, 0U});  // no monitor handle: only the fallback poll can see this
@@ -260,7 +263,7 @@ void proc04_backoff_survives_stale_wake() {
   test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.push_line("READY 4096 stop"); });
   secure_frontend::EngineSupervisor supervisor({}, fakes.factory(), std::make_shared<secure_frontend::SteadySupervisorClock>(),
                                                test_support::LogCapture{}.sink());
-  supervisor.start();
+  expect(supervisor.start(), "the supervisor starts");
   expect(test_support::wait_generation_ready(supervisor, 1U, 5s), "generation 1 ready");
   auto lease = supervisor.acquire();
   expect(lease.has_value(), "lease on generation 1");
@@ -321,7 +324,7 @@ void proc04_fatal_prefix_kills_engine() {
     secure_frontend::EngineSupervisor supervisor(
         config, secure_frontend::make_stdio_process_factory(fake_plan({"--fatal-line=" + std::to_string(index)})),
         std::make_shared<secure_frontend::SteadySupervisorClock>(), log.sink());
-    supervisor.start();
+    expect(supervisor.start(), "the supervisor starts");
     expect(test_support::wait_generation_ready(supervisor, 1U, 10s), "generation 1 ready");
     const auto outcome = secure_frontend::execute_with_lease(supervisor, request, tokenizer);
     expect(outcome && std::holds_alternative<secure_frontend::ChatExecutionError>(*outcome), "the request fails; no result after a fatal line");
@@ -341,7 +344,7 @@ void proc04_fatal_line_before_ready_kills_as_fatal_line() {
   config.policy.max_consecutive_failures = 1U;  // one end opens the circuit: nothing respawns
   test_support::LogCapture log;
   secure_frontend::EngineSupervisor supervisor(config, fakes.factory(), std::make_shared<test_support::ManualClock>(), log.sink());
-  supervisor.start();
+  expect(supervisor.start(), "the supervisor starts");
   expect(supervisor.wait_for_state(SupervisorState::circuit_open, 5s), "the generation ends before READY");
   expect(log.contains("engine generation 1 ended: killed_by_supervisor(fatal_line)"), "killed as fatal_line, not protocol_failed");
   supervisor.shutdown(5s);
@@ -355,7 +358,7 @@ void proc04_ready_timeout_kills_and_counts() {
   test_support::LogCapture log;
   secure_frontend::EngineSupervisor supervisor(config, secure_frontend::make_stdio_process_factory(fake_plan({"--hang-before-ready"})),
                                                std::make_shared<secure_frontend::SteadySupervisorClock>(), log.sink());
-  supervisor.start();
+  expect(supervisor.start(), "the supervisor starts");
   expect(supervisor.wait_for_state(SupervisorState::circuit_open, 5s), "two READY timeouts open the circuit: each one counts");
   expect(supervisor.generations_started() == 2U, "two generations");
   expect(log.contains("engine generation 1 ended: killed_by_supervisor(ready_timeout)"), "killed as ready_timeout");
@@ -370,7 +373,7 @@ void proc04_drain_failure_kills_and_restarts() {
   test_support::LogCapture log;
   secure_frontend::EngineSupervisor supervisor(config, secure_frontend::make_stdio_process_factory(fake_plan({"--hang-in-gen"})),
                                                std::make_shared<secure_frontend::SteadySupervisorClock>(), log.sink());
-  supervisor.start();
+  expect(supervisor.start(), "the supervisor starts");
   expect(test_support::wait_generation_ready(supervisor, 1U, 10s), "generation 1 ready");
   const auto tokenizer = test_support::byte_tokenizer();
   const secure_frontend::ChatCompletionRequest request{"fake-model", {{"user", "Hi"}}, 2U};
@@ -403,7 +406,7 @@ void proc04_no_leak_across_restarts() {
   config.policy.backoff_initial = 1ms;
   config.policy.backoff_max = 1ms;
   secure_frontend::EngineSupervisor supervisor(config, secure_frontend::make_stdio_process_factory(fake_plan({})));
-  supervisor.start();
+  expect(supervisor.start(), "the supervisor starts");
   std::optional<std::size_t> baseline;
   for (std::uint64_t generation = 1U; generation <= 11U; ++generation) {  // 10 forced restarts
     expect(test_support::wait_generation_ready(supervisor, generation, 10s), "generation " + std::to_string(generation) + " ready");
@@ -435,7 +438,7 @@ void proc04_unreaped_child_opens_circuit() {
   config.policy.reap_timeout = 100ms;
   test_support::LogCapture log;
   secure_frontend::EngineSupervisor supervisor(config, fakes.factory(), std::make_shared<test_support::ManualClock>(), log.sink());
-  supervisor.start();
+  expect(supervisor.start(), "the supervisor starts");
   expect(supervisor.wait_for_state(SupervisorState::ready, 5s), "ready");
   {
     auto lease = supervisor.acquire();
@@ -470,7 +473,7 @@ void proc05_setsid_grandchild_is_reaped() {
   secure_frontend::EngineSupervisor supervisor(
       config, secure_frontend::make_stdio_process_factory(
                   fake_plan({"--spawn-grandchild", "--grandchild-setsid", "--grandchild-pidfile=" + test_support::utf8_path(pidfile)})));
-  supervisor.start();
+  expect(supervisor.start(), "the supervisor starts");
   expect(test_support::wait_generation_ready(supervisor, 1U, 10s), "ready");
   const auto grandchild = test_support::read_pidfile(pidfile, 5s);
   expect(grandchild.has_value(), "the escaping grandchild started");
@@ -491,7 +494,7 @@ void proc05_setsid_grandchild_is_reaped_at_shutdown() {
   secure_frontend::EngineSupervisor supervisor(
       {}, secure_frontend::make_stdio_process_factory(
               fake_plan({"--spawn-grandchild", "--grandchild-setsid", "--grandchild-pidfile=" + test_support::utf8_path(pidfile)})));
-  supervisor.start();
+  expect(supervisor.start(), "the supervisor starts");
   expect(test_support::wait_generation_ready(supervisor, 1U, 10s), "ready");
   const auto grandchild = test_support::read_pidfile(pidfile, 5s);
   expect(grandchild.has_value(), "the escaping grandchild started");
@@ -515,7 +518,7 @@ void proc04_windows_abort_does_not_stall() {
   secure_frontend::EngineSupervisor supervisor(config,
                                                secure_frontend::make_stdio_process_factory(fake_plan({"--abort-in-gen", "--default-error-mode"})),
                                                std::make_shared<secure_frontend::SteadySupervisorClock>(), log.sink());
-  supervisor.start();
+  expect(supervisor.start(), "the supervisor starts");
   expect(test_support::wait_generation_ready(supervisor, 1U, 10s), "ready");
   const auto tokenizer = test_support::byte_tokenizer();
   const auto started = std::chrono::steady_clock::now();
@@ -535,7 +538,7 @@ void proc04_windows_crash_does_not_stall() {
       config,
       secure_frontend::make_stdio_process_factory(fake_plan({"--crash-after-ready=SEGV", "--crash-delay-ms=300", "--default-error-mode"})),
       std::make_shared<secure_frontend::SteadySupervisorClock>(), log.sink());
-  supervisor.start();
+  expect(supervisor.start(), "the supervisor starts");
   expect(test_support::wait_generation_ready(supervisor, 1U, 10s), "ready");
   const auto started = std::chrono::steady_clock::now();
   expect(log.wait_for("engine generation 1 ended: crashed", 5s), "the crash is observed and classified crashed, not stalled on WER");
@@ -558,7 +561,7 @@ void proc04_windows_write_timeout_kills_engine() {
   secure_frontend::EngineSupervisor supervisor(
       config, secure_frontend::make_stdio_process_factory(fake_plan({"--stall-stdin", "--ready-context=131072"})),
       std::make_shared<secure_frontend::SteadySupervisorClock>(), log.sink());
-  supervisor.start();
+  expect(supervisor.start(), "the supervisor starts");
   expect(test_support::wait_generation_ready(supervisor, 1U, 10s), "ready");
   const auto tokenizer = test_support::byte_tokenizer();
   // 60,000 '0' bytes are 60,000 prompt tokens of id 239 (three digits plus a
@@ -573,6 +576,89 @@ void proc04_windows_write_timeout_kills_engine() {
   expect(std::chrono::steady_clock::now() - started < 5s, "the blocked write is cancelled at its deadline");
   expect(log.wait_for("engine generation 1 ended: killed_by_supervisor(write_timeout)", 5s), "killed as write_timeout");
   supervisor.shutdown(5s);
+}
+#endif
+
+// RF4: an exception that escapes the supervisor thread (the factory, the log
+// sink, the clock) opens the circuit instead of reaching std::terminate, and
+// a generation still alive at that point is killed and reaped first.
+class ThrowingClock final : public secure_frontend::SupervisorClock {
+ public:
+  [[nodiscard]] time_point now() const override {
+    if (armed_.load()) throw std::runtime_error("clock");
+    return std::chrono::steady_clock::now();
+  }
+  [[nodiscard]] bool sleep_backoff(const std::chrono::milliseconds delay, secure_frontend::SupervisorWake& wake) override {
+    return wake.wait(secure_frontend::kNoMonitorHandle, delay) == secure_frontend::SupervisorWake::Event::timeout;
+  }
+  void arm() { armed_.store(true); }
+
+ private:
+  std::atomic<bool> armed_{false};
+};
+
+void expect_exhausted_then_stopped(secure_frontend::EngineSupervisor& supervisor, const std::string& what) {
+  expect(supervisor.wait_for_state(SupervisorState::circuit_open, 5s), what + " opens the circuit");
+  const auto health = supervisor.snapshot();
+  expect(!health.healthy && health.engine == "failed" && health.recovery == "exhausted", what + ": /health is failed/exhausted");
+  expect(!supervisor.acquire().has_value(), what + ": no lease");
+  supervisor.shutdown(5s);
+  expect(supervisor.snapshot().state == SupervisorState::stopped, what + ": the shutdown still completes");
+}
+
+void supervisor_exception_opens_circuit() {
+  {
+    secure_frontend::EngineSupervisor supervisor(
+        {}, [](std::uint64_t) -> secure_frontend::SpawnResult { throw std::runtime_error("factory"); },
+        std::make_shared<test_support::ManualClock>(), [](std::string_view) {});
+    expect(supervisor.start(), "the supervisor starts");
+    expect_exhausted_then_stopped(supervisor, "a throwing factory");
+  }
+  {
+    test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.end({false, 1U}); });
+    secure_frontend::EngineSupervisor supervisor({}, fakes.factory(), std::make_shared<test_support::ManualClock>(),
+                                                 [](std::string_view) { throw std::runtime_error("log"); });
+    expect(supervisor.start(), "the supervisor starts");
+    expect_exhausted_then_stopped(supervisor, "a throwing log sink");
+    expect(fakes.spawned() == 1U, "no restart after the exception");
+  }
+  {
+    test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.push_line("READY 4096 stop"); });
+    auto clock = std::make_shared<ThrowingClock>();
+    secure_frontend::EngineSupervisor supervisor({}, fakes.factory(), clock, [](std::string_view) {});
+    expect(supervisor.start(), "the supervisor starts");
+    expect(test_support::wait_generation_ready(supervisor, 1U, 5s), "generation 1 ready");
+    clock->arm();
+    {
+      auto lease = supervisor.acquire();
+      expect(lease.has_value(), "lease on generation 1");
+      // The supervisor thread reads the clock as the generation ends: it throws with generation 1 still current.
+      if (lease) supervisor.report_fatal(*lease, secure_frontend::KillReason::protocol_failed);
+      expect(supervisor.wait_for_state(SupervisorState::circuit_open, 5s), "a throwing clock opens the circuit");
+    }
+    const auto child = fakes.child(1U);
+    expect(child != nullptr && child->kills >= 1, "the live generation is killed before the circuit opens");
+    expect_exhausted_then_stopped(supervisor, "a throwing clock");
+    expect(fakes.spawned() == 1U, "no restart after the exception");
+  }
+}
+
+#if !defined(_WIN32)
+// RF4: without its wake pipe the supervisor thread could never be woken for
+// shutdown, so start() refuses and spawns nothing.
+void supervisor_start_refuses_without_wake() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.push_line("READY 4096 stop"); });
+  rlimit saved{};
+  expect(getrlimit(RLIMIT_NOFILE, &saved) == 0, "read RLIMIT_NOFILE");
+  rlimit none = saved;
+  none.rlim_cur = 0;  // no new descriptor at all: pipe2 fails with EMFILE
+  expect(setrlimit(RLIMIT_NOFILE, &none) == 0, "lower RLIMIT_NOFILE");
+  auto supervisor = std::make_unique<secure_frontend::EngineSupervisor>(
+      secure_frontend::SupervisorConfig{}, fakes.factory(), std::make_shared<test_support::ManualClock>(), [](std::string_view) {});
+  expect(setrlimit(RLIMIT_NOFILE, &saved) == 0, "restore RLIMIT_NOFILE");
+  expect(!supervisor->start(), "start() refuses when the wake could not be created");
+  expect(supervisor->snapshot().state == SupervisorState::stopped && fakes.spawned() == 0U, "nothing is spawned");
+  supervisor.reset();
 }
 #endif
 
@@ -595,7 +681,9 @@ int main(int argc, char* argv[]) {
                                                 {"proc04_drain_failure_kills_and_restarts", proc04_drain_failure_kills_and_restarts},
                                                 {"proc04_no_leak_across_restarts", proc04_no_leak_across_restarts},
                                                 {"proc04_unreaped_child_opens_circuit", proc04_unreaped_child_opens_circuit},
+                                                {"supervisor_exception_opens_circuit", supervisor_exception_opens_circuit},
 #if !defined(_WIN32)
+                                                {"supervisor_start_refuses_without_wake", supervisor_start_refuses_without_wake},
                                                 {"proc05_setsid_grandchild_is_reaped", proc05_setsid_grandchild_is_reaped},
                                                 {"proc05_setsid_grandchild_is_reaped_at_shutdown", proc05_setsid_grandchild_is_reaped_at_shutdown},
 #endif

@@ -144,6 +144,8 @@ void init_writes_config_and_token_then_server_starts() {
   expect(!contains(init.out, value->view()) && !contains(init.err, value->view()), "init never prints the token");
   secure_frontend_test::ChildProcess server;
   expect(f.start(server, {"--config", config.string()}), "the server starts from the written config alone: " + server.stderr_text());
+  expect(f.wait_engine_ready(std::chrono::seconds(10), "Bearer " + std::string{value->view()}),
+         "engine ready: /health is 503 while it starts");
   const auto response = f.request("GET", "/health", "Bearer " + std::string{value->view()});
   expect(response.rfind("HTTP/1.1 200", 0) == 0, "the generated token authenticates: " + response.substr(0, 16));
 }

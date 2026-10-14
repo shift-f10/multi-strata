@@ -9,6 +9,7 @@
 #include <iostream>
 #include <iterator>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <variant>
 
@@ -93,14 +94,23 @@ EngineSupervisor::~EngineSupervisor() {
   if (thread_.joinable()) shutdown(config_defaults::kShutdownBound);
 }
 
-void EngineSupervisor::start() {
+bool EngineSupervisor::start() {
+  // Without the wake, shutdown() and report_fatal() could never reach the
+  // supervisor thread: refuse rather than run a thread nothing can stop (RF4).
+  if (!wake_.valid()) return false;
   {
     std::lock_guard lock(mutex_);
-    if (thread_.joinable()) return;
+    if (thread_.joinable()) return true;
     state_ = SupervisorState::starting;
     changed_.notify_all();
   }
-  thread_ = std::thread([this] { run(); });
+  try {
+    thread_ = std::thread([this] { run_guarded(); });
+  } catch (const std::system_error&) {
+    set_state(SupervisorState::stopped, nullptr);
+    return false;
+  }
+  return true;
 }
 
 std::optional<Lease> EngineSupervisor::acquire() {
@@ -163,6 +173,54 @@ void EngineSupervisor::shutdown(const std::chrono::milliseconds bound) {
     }
   }
   thread_.join();
+}
+
+// The supervisor thread's entry: nothing may escape it into std::terminate
+// (RF4). An exception from the factory, the log sink, the clock or an
+// allocation fails closed instead.
+void EngineSupervisor::run_guarded() noexcept {
+  try {
+    run();
+    return;
+  } catch (...) {
+  }
+  fail_closed();
+}
+
+// After an escaped exception: kill and reap the generation still current, open
+// the circuit (no restart until the frontend is restarted) and wait for
+// shutdown, so shutdown() still ends in `stopped` within its bound.
+void EngineSupervisor::fail_closed() noexcept {
+  try {
+    std::shared_ptr<EngineInstance> instance;
+    {
+      std::lock_guard lock(mutex_);
+      instance = current_;
+    }
+    if (instance && instance->process) {
+      SupervisedProcess& process = *instance->process;
+      process.kill_group();
+      const auto deadline = deadline_after(config_.policy.reap_timeout);
+      bool reaped = process.try_reap().has_value();
+      while (!reaped && remaining_until(deadline).count() > 0) {
+        std::this_thread::sleep_for(kReapPoll);
+        reaped = process.try_reap().has_value();
+      }
+      retire(instance, reaped);
+    }
+    set_state(SupervisorState::circuit_open, nullptr);
+    try {
+      log_("engine supervisor failed: circuit open");
+    } catch (...) {
+    }
+    wait_in_circuit_open();
+  } catch (...) {
+  }
+  try {
+    finish();
+  } catch (...) {
+    // Nothing left to try: shutdown() exits 1 past its bound (spec §3.7).
+  }
 }
 
 void EngineSupervisor::run() {

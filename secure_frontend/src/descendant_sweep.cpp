@@ -30,9 +30,11 @@ bool become_child_subreaper() noexcept {
 std::vector<long> list_own_children() {
   std::vector<long> children;
 #if defined(__linux__)
+  // increment(error), never the throwing operator++: this runs on the
+  // supervisor thread, where an escaped exception would open the circuit (RF4).
   std::error_code error;
-  for (const auto& task : std::filesystem::directory_iterator("/proc/self/task", error)) {
-    std::ifstream input(task.path() / "children");
+  for (std::filesystem::directory_iterator task("/proc/self/task", error), end; !error && task != end; task.increment(error)) {
+    std::ifstream input(task->path() / "children");
     long child = 0;
     while (input >> child) children.push_back(child);
   }

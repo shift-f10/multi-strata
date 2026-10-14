@@ -21,6 +21,9 @@ class SupervisorWake final {
   SupervisorWake(const SupervisorWake&) = delete;
   SupervisorWake& operator=(const SupervisorWake&) = delete;
 
+  // false when the pipe / event could not be created: nothing could wake the
+  // supervisor thread, so EngineSupervisor::start() refuses (RF4).
+  [[nodiscard]] bool valid() const noexcept;
   // Async-signal-safe on POSIX (a single write(2)); SetEvent on Windows.
   void notify() noexcept;
   // Waits for notify(), for `monitored` to become signalled (pidfd readable /

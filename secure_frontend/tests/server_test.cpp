@@ -67,6 +67,47 @@ void proc01_server_passes_literal_argv() {
 #endif
 }
 
+void proc04_ready_is_eager_and_health_starting_is_503() {
+  test_support::ServerOptions options;
+  options.engine_args = {"--split-ready", "--ready-delay-ms=1500"};
+  auto server = ServerProcess::start(options);
+  expect(server != nullptr && server->wait_until_listening(10s), "the server must listen");
+  if (!server) return;
+  const auto starting = server->get("/health");
+  expect(starting && starting->status == 503 && starting->body == test_support::kHealthStarting,
+         "while the model loads /health is 503 with engine=starting, saw: " + describe(starting));
+  expect(server->wait_for_health(test_support::kHealthReady, 10s), "READY is consumed with no request: /health becomes 200 ready");
+  const auto ready = server->get("/health");
+  expect(ready && ready->status == 200, "ready is 200: " + describe(ready));
+}
+
+void proc04_chat_during_restart_is_generic_503() {
+  test_support::ServerOptions options;
+  options.engine_args = {"--hang-before-ready"};
+  auto server = ServerProcess::start(options);
+  expect(server != nullptr && server->wait_until_listening(10s), "the server must listen");
+  if (!server) return;
+  const auto started = std::chrono::steady_clock::now();
+  const auto chat = server->post_chat(test_support::kChatBody, 5s);
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  expect(chat && chat->status == 503 && chat->body == test_support::kGeneric503, "a chat while starting is a generic 503: " + describe(chat));
+  expect(elapsed < 1s, "it is answered at once, never after a READY wait");
+}
+
+// V8 (spec "Fix: —"): moved here from Task 10 because it needs the wired supervisor.
+void proc04_abort_in_generation_is_generic_503() {
+  test_support::ServerOptions options;
+  options.engine_args = {"--abort-in-gen"};
+  auto server = ServerProcess::start(options);
+  expect(server != nullptr && server->wait_until_listening(10s) && server->wait_for_health(test_support::kHealthReady, 10s), "ready");
+  if (!server) return;
+  const auto chat = server->post_chat(test_support::kChatBody, 10s);
+  expect(chat && chat->status == 503 && chat->body == test_support::kGeneric503,
+         "an engine abort mid-generation is a generic 503 with no exit code: " + describe(chat));
+  expect(server->wait_for_health(test_support::kHealthReady, 15s), "the supervisor recovers with a new generation");
+  expect(server->stderr_text().find("engine generation 1 ended: abort") != std::string::npos, "only the frontend's own log names the abort");
+}
+
 #if !defined(_WIN32)
 void proc05_frontend_sigkill_kills_engine() {
   const auto dir = test_support::make_temp_dir("c3");
@@ -78,7 +119,7 @@ void proc05_frontend_sigkill_kills_engine() {
   expect(server != nullptr && server->wait_until_listening(10s), "the server listens");
   if (!server) return;
   // The fake writes the grandchild's pidfile after READY: the engine is up
-  // whether or not the server has consumed READY yet (SP0 waits lazily).
+  // whether or not the supervisor has consumed READY yet.
   const auto grandchild = test_support::read_pidfile(pidfile, 10s);
   expect(grandchild.has_value(), "the engine is past READY");
   const auto children = test_support::children_of(server->pid());
@@ -104,6 +145,9 @@ int main(int argc, char* argv[]) {
                                          {
                                              {"harness_server_lifecycle_selftest", harness_server_lifecycle_selftest},
                                              {"proc01_server_passes_literal_argv", proc01_server_passes_literal_argv},
+                                             {"proc04_ready_is_eager_and_health_starting_is_503", proc04_ready_is_eager_and_health_starting_is_503},
+                                             {"proc04_chat_during_restart_is_generic_503", proc04_chat_during_restart_is_generic_503},
+                                             {"proc04_abort_in_generation_is_generic_503", proc04_abort_in_generation_is_generic_503},
 #if !defined(_WIN32)
                                              {"proc05_frontend_sigkill_kills_engine", proc05_frontend_sigkill_kills_engine},
 #endif
