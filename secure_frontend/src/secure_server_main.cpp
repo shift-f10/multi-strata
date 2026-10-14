@@ -141,7 +141,8 @@ int run(const FrontendConfig& config) {
   const auto arguments_profile = glm ? secure_frontend::EngineArgumentsProfile::lighttransport_glm53
                                      : secure_frontend::EngineArgumentsProfile::strata_0143;
   auto engine_arguments_result =
-      secure_frontend::build_engine_arguments(arguments_profile, *selected, config.roots.models, config.engine.args);
+      secure_frontend::build_engine_arguments(arguments_profile, *selected, config.roots.models, config.engine.args,
+                                              config.engine.gpus);
   auto* engine_arguments = std::get_if<std::vector<std::string>>(&engine_arguments_result);
   if (engine_arguments == nullptr) { std::cerr << "Engine arguments rejected.\n"; return EXIT_FAILURE; }
   std::vector<secure_frontend::ApiModel> models;

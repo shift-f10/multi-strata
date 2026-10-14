@@ -143,6 +143,7 @@ struct EngineLaunch final {
   ModelId model_id;
   std::vector<std::string> args;
   std::vector<std::filesystem::path> lib_dirs{};  // engine.lib_dirs, each absolute
+  std::vector<unsigned> gpus{};                   // engine.gpu, parsed by parse_gpu_list (empty: unset)
 };
 
 class ValidatedConfig;

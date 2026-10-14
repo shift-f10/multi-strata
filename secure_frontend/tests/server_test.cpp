@@ -65,6 +65,7 @@ void proc01_server_passes_literal_argv() {
   const std::string weird = "--weird=a b;$(touch x)|&`\"q\"'\\ \xE2\x9C\x93";
   test_support::ServerOptions options;
   options.engine_args = {"--dump-file=" + test_support::utf8_path(dump_file), weird, "--max-context", "8192"};
+  options.extra_args = {"--gpu", "0,1"};  // spec §3.9: the typed list becomes the engine's own --gpu
   auto server = ServerProcess::start(options);
   expect(server != nullptr && server->wait_until_listening(10s), "the server must listen");
   if (!server) return;
@@ -75,7 +76,7 @@ void proc01_server_passes_literal_argv() {
     model.make_preferred();
     const std::vector<std::string> expected{test_support::utf8_path(server->engine_path()), "--serve",
                                             "--dump-file=" + test_support::utf8_path(dump_file), weird, "--max-context", "8192",
-                                            "--native", test_support::utf8_path(model)};
+                                            "--gpu", "0,1", "--native", test_support::utf8_path(model)};
     expect(dump->argv == expected, "every value arrives literally as one argv entry, in order, with no shell");
   }
 #if !defined(_WIN32)

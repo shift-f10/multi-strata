@@ -685,8 +685,10 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         engine_receives_model_path_from_inventory engine_native_path_is_utf8_for_non_ascii_root
         engine_args_reject_owned_and_network_flags
         strata_profile_passes_pack_and_weight_flags_through rejects_invalid_relative_artifact_path
-        glm_profile_passes_arguments_through_without_native
+        glm_profile_passes_arguments_through_without_native engine_args_render_typed_gpu_and_deny_gpu_passthrough
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # Pure parsing, no canonical root: runs under wine too.
+    secure_frontend_add_cases(secure_frontend_engine_arguments_tests gpu_list_rejects_malformed_values)
 
     secure_frontend_add_test_executable(secure_frontend_chat_schema_tests tests/chat_schema_test.cpp secure_frontend_chat_schema)
     secure_frontend_add_cases(secure_frontend_chat_schema_tests
@@ -827,4 +829,11 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
                 --engine engine --model-id glm-local --token-env STRATA_UNUSED_TOKEN)
     set_tests_properties(strata_secure_server_glm_requires_engine_arg PROPERTIES
         PASS_REGULAR_EXPRESSION "glm53 requires at least one --engine-arg")
+    # Review Focus 4: a malformed --gpu is a startup error with a fixed message (never the value).
+    add_test(NAME strata_secure_server_rejects_malformed_gpu
+        COMMAND strata-secure-server --models-root models --tokenizer-pack tok --engine engine
+                --model-id m --token-env STRATA_UNUSED_TOKEN --gpu 0,0)
+    set_tests_properties(strata_secure_server_rejects_malformed_gpu PROPERTIES
+        PASS_REGULAR_EXPRESSION "engine.gpu: must be a comma-separated list of distinct device indices"
+        FAIL_REGULAR_EXPRESSION "0,0")
 endif()

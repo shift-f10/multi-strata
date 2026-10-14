@@ -20,7 +20,7 @@ struct FlagSpec final {
   FlagKind kind;
 };
 
-constexpr std::array<FlagSpec, 15> kFlags{{
+constexpr std::array<FlagSpec, 16> kFlags{{
     {"--host", "listener.host", FlagKind::string},
     {"--port", "listener.port", FlagKind::integer},
     {"--allow-remote", "listener.allow_remote", FlagKind::boolean},
@@ -36,6 +36,7 @@ constexpr std::array<FlagSpec, 15> kFlags{{
     {"--secret-root", "roots.secret", FlagKind::string},
     {"--state-dir", "roots.state", FlagKind::string},
     {"--engine-lib-dir", "engine.lib_dirs", FlagKind::append},
+    {"--gpu", "engine.gpu", FlagKind::string},
 }};
 
 const FlagSpec* find_flag(const std::string_view argument) {
@@ -183,7 +184,10 @@ std::string server_usage() {
       "non-streaming text-only POST /v1/chat/completions.\n"
       "Streaming, tools, downloads, remote URLs, telemetry and MCP are disabled. With\n"
       "the qwen profile the frontend supplies --native from engine.model_id; the\n"
-      "operator passes --pack and other weight flags with --engine-arg.\n";
+      "operator passes --pack and other weight flags with --engine-arg. --engine-arg\n"
+      "refuses the frontend-owned --native, --serve and --gpu: GPUs are chosen only\n"
+      "with --gpu, passed as the engine's own --gpu argument (strata family: no GPU\n"
+      "variable in the engine environment).\n";
   return text;
 }
 
