@@ -169,6 +169,7 @@ Plan: `docs/superpowers/plans/2026-10-14-sp4-acquire.md`. One line per task.
 - Task 8: manifest model and §2 struct rules, engine version grammar; manifest.* (13 cases, 1 release-only, 1 hooks-only).
 - Task 9: index model (render/install/retire), staging plan, key and version-dir names; model_index.* (3), acquire.version_dir_name_unique_for_same_version_label, staging_plan_classifies_partials, abandoned_keys_match_same_model_only, fetch.staging_cwd_not_treated_as_key.
 - Task 10: SHA256SUMS/MISSING/marker formats and §6.1 manifest diff (url/notice/per-file license shown old -> new, F-21); bundle.* (4), acquire.update_diff_lists_changed_files_and_license.
+- Task 11: Landlock rights/dirs planning, readable-root rule, confinement labels, CRT descriptor block; fetch.landlock_rights_per_abi, confinement_plan_detects_readable_roots, confinement_label_texts, crt_fd_block_layout.
 
 ### Upstream bump to `v0.1.44.1` (2026-10-14, branch `upstream/bump-v0.1.44.1`)
 

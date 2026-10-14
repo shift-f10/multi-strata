@@ -1,15 +1,18 @@
 #include "secure_frontend/acquire_url.hpp"
 #include "secure_frontend/address_policy.hpp"
+#include "secure_frontend/confinement_plan.hpp"
 #include "secure_frontend/download_response.hpp"
 #include "secure_frontend/downloader_command.hpp"
 #include "secure_frontend/fetch_schedule.hpp"
 #include "secure_frontend/model_index_model.hpp"
 #include "support/test_support.hpp"
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <iostream>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -364,6 +367,65 @@ void staging_cwd_not_treated_as_key() {
   expect(!secure_frontend::is_staging_key_name(std::string(31, 'f')), "31 characters");
 }
 
+void landlock_rights_per_abi() {
+  namespace la = secure_frontend::landlock_access;
+  const auto abi1 = secure_frontend::landlock_rights_for_abi(1);
+  expect(abi1.handled_fs == 0x1FFFU, "ABI 1 handles bits 0-12");
+  expect(abi1.handled_net == 0, "no network rights before ABI 4");
+  expect(abi1.directory_rule == (la::kFsExecute | la::kFsReadFile | la::kFsReadDir), "read and execute below system dirs");
+  expect(abi1.file_rule == la::kFsReadFile, "READ_FILE on /dev/null and /dev/urandom");
+  expect(secure_frontend::landlock_rights_for_abi(2).handled_fs == 0x3FFFU, "ABI 2 adds REFER");
+  expect(secure_frontend::landlock_rights_for_abi(3).handled_fs == 0x7FFFU, "ABI 3 adds TRUNCATE");
+  const auto abi4 = secure_frontend::landlock_rights_for_abi(4);
+  expect(abi4.handled_fs == 0x7FFFU && abi4.handled_net == (la::kNetBindTcp | la::kNetConnectTcp), "ABI 4 adds TCP rights");
+  expect(secure_frontend::landlock_rights_for_abi(5).handled_fs == 0xFFFFU, "ABI 5 adds IOCTL_DEV");
+  expect(secure_frontend::landlock_rights_for_abi(7).handled_fs == 0xFFFFU, "later ABIs use the ABI 5 set (note 14)");
+  expect((abi1.directory_rule & la::kFsWriteFile) == 0 && (abi4.directory_rule & la::kFsMakeReg) == 0, "no write right anywhere");
+}
+
+void confinement_plan_detects_readable_roots() {
+  const std::set<std::string> existing{"/usr", "/lib", "/bin", "/etc", "/home/u/tools"};
+  const auto exists = [&](const std::string_view d) { return existing.contains(std::string{d}); };
+  const std::vector<secure_frontend::ProtectedPath> clean{
+      {"config file", "/home/u/.config/strata/config.json"}, {"roots.models", "/home/u/.local/share/strata/models"}};
+  const auto plan = secure_frontend::plan_linux_confinement("/usr/bin/curl", clean, exists);
+  expect((plan.read_dirs == std::vector<std::string>{"/usr", "/lib", "/bin", "/etc"}), "existing system dirs; /usr/bin covered by /usr");
+  expect(!plan.readable_key.has_value(), "nothing protected is readable");
+  const std::vector<secure_frontend::ProtectedPath> etc_config{{"config file", "/etc/strata/config.json"}};
+  expect(secure_frontend::plan_linux_confinement("/usr/bin/curl", etc_config, exists).readable_key == "config file",
+         "a config under /etc is readable");
+  const std::vector<secure_frontend::ProtectedPath> home_root{{"roots.models", "/home/u/tools/models"}};
+  const auto home = secure_frontend::plan_linux_confinement("/home/u/tools/curl", home_root, exists);
+  expect(home.readable_key == "roots.models", "a downloader parent covering a root reduces confinement");
+  expect(home.read_dirs.back() == "/home/u/tools", "the downloader's parent is read-allowed");
+  expect(!secure_frontend::path_is_beneath("/usr", "/usrlocal/x") && secure_frontend::path_is_beneath("/usr", "/usr"),
+         "separator-boundary prefix test");
+}
+
+void confinement_label_texts() {
+  expect(secure_frontend::confinement_label(true, std::nullopt) == "full", "full");
+  expect(secure_frontend::confinement_label(false, std::nullopt) == "reduced:no_landlock", "no Landlock");
+  expect(secure_frontend::confinement_label(true, std::string{"roots.secret"}) == "reduced:readable:roots.secret", "readable");
+  expect(secure_frontend::confinement_label(false, std::string{"roots.secret"}) == "reduced:no_landlock",
+         "missing Landlock is the stronger cause");
+}
+
+void crt_fd_block_layout() {
+  namespace cf = secure_frontend::crt_flags;
+  const std::array<std::uint64_t, 5> handles{0x11, 0x22, 0x33, secure_frontend::kInvalidHandleBits, 0x55};
+  const std::array<std::uint8_t, 5> flags{cf::kOpen | cf::kPipe, cf::kOpen | cf::kPipe, cf::kOpen | cf::kDevice, 0, cf::kOpen};
+  const auto block = secure_frontend::build_crt_fd_block(handles, flags, 8);
+  expect(block.size() == 49, "4 + 5 * (1 + 8) = 49 bytes on x64");
+  expect(block[0] == 5 && block[1] == 0 && block[2] == 0 && block[3] == 0, "little-endian int count n = 5");
+  expect(block[4] == 0x09 && block[5] == 0x09 && block[6] == 0x41 && block[7] == 0 && block[8] == 0x01, "flag bytes, packed");
+  expect(block[9] == 0x11 && block[17] == 0x22 && block[25] == 0x33, "handles follow the flags, no padding");
+  bool all_ff = true;
+  for (std::size_t i = 33; i < 41; ++i) all_ff = all_ff && block[i] == 0xFF;
+  expect(all_ff, "entry 3 is INVALID_HANDLE_VALUE");
+  expect(block[41] == 0x55, "entry 4 is the record handle");
+  expect(secure_frontend::build_crt_fd_block(handles, flags, 4).size() == 29, "x86 layout: 4 + 5 * 5");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -390,5 +452,9 @@ int main(int argc, char** argv) {
       {"exhausted_class_follows_last_source_reason", exhausted_class_follows_last_source_reason},
       {"run_budget_remaining_seconds", run_budget_remaining_seconds},
       {"staging_cwd_not_treated_as_key", staging_cwd_not_treated_as_key},
+      {"landlock_rights_per_abi", landlock_rights_per_abi},
+      {"confinement_plan_detects_readable_roots", confinement_plan_detects_readable_roots},
+      {"confinement_label_texts", confinement_label_texts},
+      {"crt_fd_block_layout", crt_fd_block_layout},
   }, failures);
 }

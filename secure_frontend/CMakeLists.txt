@@ -402,7 +402,8 @@ target_link_libraries(secure_frontend_manifest_core PUBLIC secure_frontend_model
 secure_frontend_set_warnings(secure_frontend_manifest_core)
 
 add_library(secure_frontend_acquire_core src/address_policy.cpp src/download_response.cpp src/downloader_command.cpp
-    src/fetch_schedule.cpp src/staging_plan.cpp src/bundle_text.cpp src/manifest_diff.cpp)
+    src/fetch_schedule.cpp src/staging_plan.cpp src/bundle_text.cpp src/manifest_diff.cpp
+    src/confinement_plan.cpp)
 target_compile_features(secure_frontend_acquire_core PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_acquire_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
@@ -760,7 +761,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         status_table_decisions
         retry_backoff_follows_schedule non_transient_moves_to_next_source
         exhausted_class_follows_last_source_reason run_budget_remaining_seconds
-        staging_cwd_not_treated_as_key)
+        staging_cwd_not_treated_as_key landlock_rights_per_abi confinement_plan_detects_readable_roots
+        confinement_label_texts crt_fd_block_layout)
 
     add_test(NAME strata_secure_server_help COMMAND strata-secure-server --help)
     # The GLM runner takes positional arguments: glm53 without any --engine-arg is a usage error.
