@@ -87,6 +87,7 @@ int main(int argc, char** argv) {
 #else
       {"bundle_rejects_symlink_entry", bundle_cases::bundle_rejects_symlink_entry},
       {"bundle_walk_fails_closed_on_overlong_or_odd_names", bundle_cases::bundle_walk_fails_closed_on_overlong_or_odd_names},
+      {"bundle_at_mount_root_is_read_but_never_written", bundle_cases::bundle_at_mount_root_is_read_but_never_written},
 #endif
   }, secure_frontend_test::failures);
 }

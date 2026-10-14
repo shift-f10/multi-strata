@@ -16,7 +16,8 @@ struct OpenedBundle final {
   TrustedManifest manifest;
 };
 
-// §5.1-§5.2: canonicalized once (RootPolicy::external), never a drive or mount root;
+// §5.1-§5.2: canonicalized once (RootPolicy::external), never a drive root ("/", "X:\";
+// a mount point is fine: a USB stick's or ISO's root);
 // marker exact; manifest trusted by catalog digest or the typed digest; SHA256SUMS
 // agrees (never a trust source); files/ holds exactly the manifest's files, no
 // link/junction/hard link/device/FIFO. Reads only.
@@ -37,7 +38,7 @@ struct BundleTarget final {
 };
 // §5.3: license first (license_forbids_bundle, nothing written), then the target must
 // not exist, be empty, or (allow_resume) hold only this manifest's interrupted pull --bundle;
-// never a drive or mount root; FAT refused for files above env.fat_max_file_bytes(); free space checked.
+// never a drive root nor (POSIX) a mount point; FAT refused for files above env.fat_max_file_bytes(); free space checked.
 [[nodiscard]] std::variant<BundleTarget, AcquireError> prepare_bundle_target(const std::filesystem::path& dir,
                                                                              const TrustedManifest& manifest, bool allow_resume,
                                                                              const StoreEnvironment& env);

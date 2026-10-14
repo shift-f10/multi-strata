@@ -8,7 +8,12 @@
 #include <map>
 
 #if !defined(_WIN32)
+#include <iostream>
+#include <sched.h>
+#include <sys/mount.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #endif
 
 namespace bundle_cases {
@@ -205,6 +210,65 @@ void bundle_rejects_symlink_entry() {
   std::filesystem::rename(bundle / "manifest.json", bundle.parent_path() / "manifest.real");
   std::filesystem::create_symlink(bundle.parent_path() / "manifest.real", bundle / "manifest.json");
   expect(reason_of(open(bundle, digest_of(source))) == AcquireReason::bundle_layout, "a symlinked manifest.json");
+}
+
+// Fix round 1 (I1): a bundle directory that is itself a mount point (a USB stick's
+// mount root, a loop/ISO mount) is read like any other directory; only writing a
+// bundle onto a mount root is refused. Simulated with a tmpfs in a user+mount namespace.
+void bundle_at_mount_root_is_read_but_never_written() {
+  const auto source = install(fx::qwen_payload());
+  const auto bundle = exported(source);
+  const auto scratch = secure_frontend_test::make_scratch_directory();
+  const auto usb = scratch / "usb";
+  const auto empty_mount = scratch / "empty";
+  secure_frontend_test::make_private_directory(usb);
+  secure_frontend_test::make_private_directory(empty_mount);
+  const auto models_path = secure_frontend_test::make_scratch_directory();
+  const auto digest = digest_of(source);
+  const auto manifest = source.model.manifest;
+  const auto origin = source.model.entry.origin;
+  const uid_t uid = ::geteuid();
+  const gid_t gid = ::getegid();
+  const pid_t child = ::fork();
+  if (child == 0) {
+    if (::unshare(CLONE_NEWUSER | CLONE_NEWNS) != 0) ::_exit(77);
+    std::ofstream("/proc/self/setgroups") << "deny";
+    std::ofstream("/proc/self/uid_map") << uid << ' ' << uid << " 1";
+    std::ofstream("/proc/self/gid_map") << gid << ' ' << gid << " 1";
+    if (::mount("none", usb.c_str(), "tmpfs", 0, "mode=0700") != 0) ::_exit(77);
+    if (::mount("none", empty_mount.c_str(), "tmpfs", 0, "mode=0700") != 0) ::_exit(77);
+    std::error_code ec;
+    std::filesystem::copy(bundle, usb, std::filesystem::copy_options::recursive, ec);
+    if (ec) ::_exit(2);
+    const auto opened = open(usb, digest);
+    if (!std::holds_alternative<secure_frontend::OpenedBundle>(opened)) ::_exit(3);
+    secure_frontend::ProgressSink quiet;
+    if (secure_frontend::verify_bundle_files(std::get<secure_frontend::OpenedBundle>(opened), quiet)) ::_exit(4);
+    auto models = secure_frontend::open_root(models_path);
+    if (!std::holds_alternative<secure_frontend::CanonicalRoot>(models)) ::_exit(5);
+    fx::FakeLoaded loaded;
+    const Roomy env;
+    if (!std::holds_alternative<secure_frontend::InstallOutcome>(secure_frontend::import_bundle(
+            std::get<secure_frontend::OpenedBundle>(opened), std::get<secure_frontend::CanonicalRoot>(models), false, loaded, env, quiet))) {
+      ::_exit(6);
+    }
+    const auto prepared = secure_frontend::prepare_bundle_target(empty_mount, secure_frontend::TrustedManifest{manifest, origin}, false, env);
+    const auto* refused = std::get_if<secure_frontend::AcquireError>(&prepared);
+    if (refused == nullptr || refused->reason != AcquireReason::bundle_target_not_empty ||
+        refused->detail != "the bundle directory is a drive or mount root") {
+      ::_exit(7);
+    }
+    ::_exit(0);
+  }
+  int status = 0;
+  ::waitpid(child, &status, 0);
+  if (WIFEXITED(status) && WEXITSTATUS(status) == 77) {
+    std::cout << "SKIPPED: no unprivileged mount namespace on this host\n";
+    return;
+  }
+  expect(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+         "a bundle at a mount root opens, verifies and imports; an empty mount root is refused as an export target (child exit " +
+             std::to_string(WIFEXITED(status) ? WEXITSTATUS(status) : -1) + ")");
 }
 
 void bundle_walk_fails_closed_on_overlong_or_odd_names() {

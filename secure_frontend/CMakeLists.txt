@@ -863,6 +863,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     else()
         secure_frontend_add_cases(secure_frontend_bundle_tests bundle_rejects_symlink_entry
             bundle_walk_fails_closed_on_overlong_or_odd_names)
+        secure_frontend_add_cases(secure_frontend_bundle_tests bundle_at_mount_root_is_read_but_never_written)
+        set_tests_properties(secure_frontend_bundle_tests.bundle_at_mount_root_is_read_but_never_written PROPERTIES
+            SKIP_REGULAR_EXPRESSION "SKIPPED:")
     endif()
     secure_frontend_add_test_executable(secure_frontend_model_index_tests tests/model_index_test.cpp secure_frontend_model_store)
     secure_frontend_add_cases(secure_frontend_model_index_tests index_render_is_deterministic

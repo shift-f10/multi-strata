@@ -51,11 +51,16 @@ Created create_target_directory(const std::filesystem::path& dir) {
 #endif
 }
 
-// §5.1 "not a drive root": X:\ on Windows; / or a mount point on POSIX (the
-// directory's parent is on another device). Fails closed when it cannot tell.
-bool is_volume_root(const CanonicalRoot& root) {
-  if (!root.path().has_relative_path()) return true;
+// §5.1 "not a drive root", lexically: "/" or "X:\". The only refusal on the read side:
+// a bundle whose directory is a mount point (USB stick, loop/ISO, NFS) is read normally.
+bool is_drive_root(const std::filesystem::path& path) { return !path.has_relative_path(); }
+
+// Write side only (export, pull --bundle): also refuse a POSIX mount point (the
+// directory's parent is on another device), so a bundle never takes over a whole
+// volume. Fails closed when it cannot tell.
+bool is_mount_root(const CanonicalRoot& root) {
 #if defined(_WIN32)
+  (void)root;
   return false;
 #else
   struct stat parent {};
@@ -63,6 +68,8 @@ bool is_volume_root(const CanonicalRoot& root) {
   return static_cast<std::uint64_t>(parent.st_dev) != root.device_id();
 #endif
 }
+
+constexpr std::string_view kVolumeRootDetail = "the bundle directory is a drive or mount root";
 
 }  // namespace
 
@@ -123,7 +130,7 @@ std::variant<OpenedBundle, AcquireError> open_bundle(const std::filesystem::path
   auto opened = open_root(dir, RootPolicy::external);
   if (std::holds_alternative<PathError>(opened)) return err(AcquireReason::bundle_layout, "the bundle directory cannot be opened");
   auto root = std::get<CanonicalRoot>(std::move(opened));
-  if (is_volume_root(root)) return err(AcquireReason::bundle_layout, "the bundle directory is a drive or mount root");
+  if (is_drive_root(root.path())) return err(AcquireReason::bundle_layout, std::string{kVolumeRootDetail});
   auto top = list_directory(root);
   if (std::holds_alternative<PathError>(top)) return err(AcquireReason::bundle_layout, "the bundle directory cannot be listed");
   std::set<std::string, std::less<>> names;
@@ -235,13 +242,20 @@ std::variant<BundleTarget, AcquireError> prepare_bundle_target(const std::filesy
   const auto& m = manifest.parsed.manifest;
   // Effective per-file license (§5.3), before any byte is written.
   if (!bundle_allowed(m)) return err(AcquireReason::license_forbids_bundle, model_ref_text(m.name, m.tag));
-  if (create_target_directory(dir) == Created::failed) {
+  // Before anything is created: CreateDirectoryW on an existing drive root fails with
+  // ERROR_ACCESS_DENIED, not ERROR_ALREADY_EXISTS (fix round 1, I2).
+  std::error_code ec;
+  const auto absolute = std::filesystem::absolute(dir, ec);
+  if (!ec && is_drive_root(absolute.lexically_normal())) return err(AcquireReason::bundle_target_not_empty, std::string{kVolumeRootDetail});
+  if (create_target_directory(dir) == Created::failed && !std::filesystem::is_directory(dir, ec)) {
     return err(AcquireReason::bundle_target_not_empty, "the bundle directory cannot be created");
   }
   auto opened = open_root(dir, RootPolicy::external);
   if (std::holds_alternative<PathError>(opened)) return err(AcquireReason::bundle_target_not_empty, "the bundle directory cannot be opened");
   BundleTarget target{std::get<CanonicalRoot>(std::move(opened)), false};
-  if (is_volume_root(target.root)) return err(AcquireReason::bundle_target_not_empty, "the bundle directory is a drive or mount root");
+  if (is_drive_root(target.root.path()) || is_mount_root(target.root)) {  // canonical: also catches a link to a root
+    return err(AcquireReason::bundle_target_not_empty, std::string{kVolumeRootDetail});
+  }
   auto listed = list_directory(target.root);
   if (std::holds_alternative<PathError>(listed)) return err(AcquireReason::bundle_target_not_empty, "the bundle directory cannot be listed");
   const auto& entries = std::get<std::vector<DirectoryEntry>>(listed);

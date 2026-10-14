@@ -27,6 +27,8 @@ void bundle_rejects_junction_entry_windows();
 void bundle_rejects_symlink_entry();
 // F-6 consumer: over-long joined paths and non-portable names on bundle media fail closed.
 void bundle_walk_fails_closed_on_overlong_or_odd_names();
+// Fix round 1 (I1): read side accepts a mount-root bundle; write side refuses a mount root.
+void bundle_at_mount_root_is_read_but_never_written();
 #endif
 
 }  // namespace bundle_cases
