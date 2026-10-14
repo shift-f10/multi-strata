@@ -28,9 +28,11 @@ void downgrade_adopts_retired_version_keeping_one_live();
 void rm_refuses_held_version_and_removes_read_only_tree();
 #if !defined(_WIN32)
 void rm_reports_unreachable_version_as_failure();
+void rm_failed_delete_stays_retired();
 #endif
 #if defined(_WIN32)
 void replace_loaded_model_retires_old_version_windows();
+void rm_open_version_stays_retired_windows();
 #endif
 #if defined(_WIN32)
 // acquire_store_windows_test.cpp (Task 17)
@@ -53,6 +55,7 @@ void dl03_sequence_conflict_rejected();
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
 void dl03_third_party_cannot_shadow_catalog();
 void pull_test_cacert_reaches_argv_in_hook_builds();
+void publish_failure_after_step_2_resumes_without_download();
 #endif
 void dl04_interrupt_during_download_never_indexed();
 void dl04_interrupt_during_verification();

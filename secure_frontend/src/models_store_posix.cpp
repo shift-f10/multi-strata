@@ -216,8 +216,8 @@ std::optional<AcquireError> rename_within(const CanonicalRoot& root, const Relat
   if (!env.force_rename_fallback()) {
     if (rename_noreplace(from_dir.get(), from_name, to_dir.get(), to_name) == 0) return std::nullopt;
     if (errno == EEXIST) return error(AcquireReason::publish_failed, to.generic() + ": target exists");
-    // EINVAL / ENOSYS: the file system (some FUSE / NFS) or kernel lacks RENAME_NOREPLACE.
-    if (errno != EINVAL && errno != ENOSYS) return io_error(errno, to.generic());
+    // EINVAL / ENOSYS / EOPNOTSUPP: the file system (some FUSE / NFS) or kernel lacks RENAME_NOREPLACE.
+    if (errno != EINVAL && errno != ENOSYS && errno != EOPNOTSUPP) return io_error(errno, to.generic());
   }
   // Fallback (§4.5 step 4): only under .lock, only when the target is absent.
   struct stat info {};

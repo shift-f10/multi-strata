@@ -123,9 +123,10 @@ void dl04_orphan_adopted_after_rehash_by_digest() {
   fx::FakeLoaded loaded;
   const secure_frontend::StoreEnvironment env;
   const auto corrupt = secure_frontend::adopt_orphan(root, manifest, loaded, env);
-  expect(corrupt.has_value() && std::holds_alternative<secure_frontend::AcquireError>(*corrupt) &&
-             std::get<secure_frontend::AcquireError>(*corrupt).reason == AcquireReason::digest_mismatch,
-         "an orphan is re-hashed before adoption; a corrupt one is not adopted");
+  // Final review I2: a corrupt orphan is "not adoptable" (publish then reports target exists),
+  // never a verb failure with digest_mismatch.
+  expect(!corrupt.has_value(), "an orphan is re-hashed before adoption; a corrupt one is not adoptable");
+  expect(index_of(root).models.empty(), "and nothing is indexed");
   secure_frontend_test::write_file(root.join(secure_frontend::must_rel(dir + "/pack/dense.bin")), payload[3].bytes);
   const auto good = secure_frontend::adopt_orphan(root, manifest, loaded, env);
   expect(good.has_value() && std::holds_alternative<secure_frontend::PublishResult>(*good), "an intact orphan is adopted");
@@ -364,9 +365,52 @@ void rm_reports_unreachable_version_as_failure() {
   std::error_code ignored;
   expect(std::filesystem::exists(path / "m" / "elsewhere" / first.dir / "manifest.json", ignored), "the link target is untouched");
 }
+
+// Final review I2 / Controller note 5: rm moves the entry to retired before deleting, so a
+// delete that fails part-way leaves a retired version that rm --retired removes later.
+void rm_failed_delete_stays_retired() {
+  const auto path = secure_frontend_test::make_scratch_directory();
+  const auto root = fx::models_root(path);
+  const secure_frontend::StoreEnvironment env;
+  fx::FakeLoaded loaded;
+  const auto v1 = fx::trusted(fx::manifest_text("m", "t", 1, fx::qwen_payload("1")), secure_frontend::ModelOrigin::third_party);
+  const auto first = publish(root, v1, fx::qwen_payload("1"), loaded);
+  std::filesystem::rename(path / "m" / "t", path / "m" / "elsewhere");
+  std::filesystem::create_directory_symlink("elsewhere", path / "m" / "t");
+  const auto removed = secure_frontend::remove_installed(root, "m", "t", loaded, false, env);
+  expect(std::holds_alternative<secure_frontend::AcquireError>(removed), "the delete fails");
+  const auto after = index_of(root);
+  expect(after.models.empty() && after.retired.size() == 1 && after.retired.front().dir == first.dir &&
+             after.retired.front().manifest_sha256 == first.manifest_sha256,
+         "the version is not live and stays retired (never an unmanaged orphan)");
+  std::filesystem::remove(path / "m" / "t");
+  std::filesystem::rename(path / "m" / "elsewhere", path / "m" / "t");
+  expect(!secure_frontend::delete_unheld_retired(root, loaded, env), "rm --retired");
+  expect(index_of(root).retired.empty() && !secure_frontend::exists_within(root, secure_frontend::must_rel("m/t/" + first.dir)),
+         "a later rm --retired removes it");
+}
 #endif
 
 #if defined(_WIN32)
+// Final review I2 on Windows: the engine holds a file open; rm leaves the version retired.
+void rm_open_version_stays_retired_windows() {
+  const auto path = secure_frontend_test::make_scratch_directory();
+  const auto root = fx::models_root(path);
+  const secure_frontend::StoreEnvironment env;
+  secure_frontend::NoServerDiscovery nobody;  // production answer today (Controller note 5)
+  const auto v1 = fx::trusted(fx::manifest_text("m", "t", 1, fx::qwen_payload("1")), secure_frontend::ModelOrigin::third_party);
+  const auto first = publish(root, v1, fx::qwen_payload("1"), nobody);
+  const auto shard = root.join(secure_frontend::must_rel("m/t/" + first.dir + "/weights/fx-00001-of-00002.gguf"));
+  HANDLE held = CreateFileW(shard.wstring().c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+  const auto removed = secure_frontend::remove_installed(root, "m", "t", nobody, false, env);
+  expect(std::holds_alternative<secure_frontend::AcquireError>(removed), "the delete fails on the open file");
+  expect(index_of(root).models.empty() && index_of(root).retired.size() == 1, "the version stays retired");
+  CloseHandle(held);
+  expect(!secure_frontend::delete_unheld_retired(root, nobody, env) && index_of(root).retired.empty() &&
+             !secure_frontend::exists_within(root, secure_frontend::must_rel("m/t/" + first.dir)),
+         "removed once released");
+}
+
 void replace_loaded_model_retires_old_version_windows() {
   const auto path = secure_frontend_test::make_scratch_directory();
   const auto root = fx::models_root(path);

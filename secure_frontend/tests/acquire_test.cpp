@@ -311,15 +311,18 @@ int main(int argc, char** argv) {
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
       {"dl03_third_party_cannot_shadow_catalog", acquire_cases::dl03_third_party_cannot_shadow_catalog},
       {"pull_test_cacert_reaches_argv_in_hook_builds", acquire_cases::pull_test_cacert_reaches_argv_in_hook_builds},
+      {"publish_failure_after_step_2_resumes_without_download", acquire_cases::publish_failure_after_step_2_resumes_without_download},
 #endif
 #if defined(_WIN32)
       {"dl02_published_files_have_private_dacl_windows", acquire_cases::dl02_published_files_have_private_dacl_windows},
 #endif
 #if !defined(_WIN32)
       {"rm_reports_unreachable_version_as_failure", acquire_cases::rm_reports_unreachable_version_as_failure},
+      {"rm_failed_delete_stays_retired", acquire_cases::rm_failed_delete_stays_retired},
 #endif
 #if defined(_WIN32)
       {"replace_loaded_model_retires_old_version_windows", acquire_cases::replace_loaded_model_retires_old_version_windows},
+      {"rm_open_version_stays_retired_windows", acquire_cases::rm_open_version_stays_retired_windows},
       {"store_primitives_windows", acquire_cases::store_primitives_windows},
       {"store_adopts_only_private_files_windows", acquire_cases::store_adopts_only_private_files_windows},
 #endif

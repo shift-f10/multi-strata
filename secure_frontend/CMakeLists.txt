@@ -888,9 +888,11 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
             LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     endif()
     if(WIN32)
-        secure_frontend_add_cases(secure_frontend_acquire_tests replace_loaded_model_retires_old_version_windows LABELS windows-runtime)
+        secure_frontend_add_cases(secure_frontend_acquire_tests replace_loaded_model_retires_old_version_windows
+            rm_open_version_stays_retired_windows LABELS windows-runtime)
     else()
-        secure_frontend_add_cases(secure_frontend_acquire_tests rm_reports_unreachable_version_as_failure)
+        secure_frontend_add_cases(secure_frontend_acquire_tests rm_reports_unreachable_version_as_failure
+            rm_failed_delete_stays_retired)
     endif()
     # SP4 Task 22 (spec §1.3, §3.7, §4.6, §4.7, §6.1): run_pull; these write a models store.
     target_sources(secure_frontend_acquire_tests PRIVATE tests/acquire_pull_test.cpp)
@@ -916,6 +918,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     if(SECURE_FRONTEND_TEST_HOOKS)
         secure_frontend_add_cases(secure_frontend_acquire_tests dl03_third_party_cannot_shadow_catalog
             pull_test_cacert_reaches_argv_in_hook_builds list_outdated_uses_catalog_sequence
+            publish_failure_after_step_2_resumes_without_download
             LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     endif()
     if(WIN32)
@@ -949,6 +952,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     target_link_libraries(secure_frontend_bundle_tests PRIVATE secure_frontend_strata_cli)
     secure_frontend_add_cases(secure_frontend_bundle_tests import_works_without_downloader cli_verify_export_import_round_trip
         failed_export_says_to_remove_target import_blocked_by_orphan_says_how_to_clear_it
+        import_license_change_needs_interactive_yes import_with_unreadable_installed_version_needs_interactive_yes
+        import_over_corrupt_orphan_reports_target_exists
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     if(WIN32)
         secure_frontend_add_cases(secure_frontend_bundle_tests bundle_rejects_junction_entry_windows LABELS windows-runtime)
@@ -988,7 +993,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         engine_version_parsed_with_fourth_component)
     secure_frontend_add_cases(secure_frontend_manifest_tests raw_profile_rejected_in_release_build LABELS release-only)
     if(SECURE_FRONTEND_TEST_HOOKS)
-        secure_frontend_add_cases(secure_frontend_manifest_tests raw_profile_accepted_with_test_hooks)
+        secure_frontend_add_cases(secure_frontend_manifest_tests raw_profile_accepted_with_test_hooks
+            typed_digest_must_match_catalog_bytes_too)
     endif()
     secure_frontend_add_cases(secure_frontend_manifest_tests base_manifest_parses dl03_invalid_manifest_matrix
         dl03_http_url_rejected manifest_identity_is_sha256_of_exact_bytes trust_rules_catalog_digest_or_typed_digest)

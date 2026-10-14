@@ -68,7 +68,8 @@ struct PublishResult final {
                                                                        const PublishOptions& options = {});
 // §4.5 crash recovery: a version directory named for this manifest, not the live
 // one of its name:tag (absent from the index, or retired — a downgrade), whose
-// manifest.json has this digest, is re-hashed and adopted.
+// manifest.json has this digest, is re-hashed and adopted. nullopt when there is none, or when
+// its files do not verify (not adoptable: publish then reports "target exists").
 [[nodiscard]] std::optional<std::variant<PublishResult, AcquireError>> adopt_orphan(const CanonicalRoot& models,
                                                                                     const TrustedManifest& manifest,
                                                                                     LoadedVersions& loaded,
@@ -77,7 +78,9 @@ struct PublishResult final {
 // A retired row naming a live directory is dropped without touching the directory.
 [[nodiscard]] std::optional<AcquireError> delete_unheld_retired(const CanonicalRoot& models, LoadedVersions& loaded,
                                                                 const StoreEnvironment& env);
-// §4.8 rm: refuses a held version unless force; writes the index first, then deletes bottom-up.
+// §4.8 rm: refuses a held version unless force; writes the index first (the entry moved to
+// `retired`), then deletes bottom-up and drops the retired row. A failed delete stays retired
+// (Controller note 5) for a later pull/import/rm --retired.
 [[nodiscard]] std::variant<IndexEntry, AcquireError> remove_installed(const CanonicalRoot& models, std::string_view name,
                                                                       std::string_view tag, LoadedVersions& loaded, bool force,
                                                                       const StoreEnvironment& env);

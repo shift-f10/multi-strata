@@ -26,11 +26,15 @@ struct OpenedBundle final {
                                                                    const ManifestRules& rules, ProgressSink& progress);
 // Reads and hashes every file; writes nothing (strata verify).
 [[nodiscard]] std::optional<AcquireError> verify_bundle_files(const OpenedBundle& bundle, ProgressSink& progress);
-// Copies each file into .staging/<k>/ while hashing it, then publishes exactly as pull does.
-// Takes roots.models/.lock; never writes into the bundle.
+// Takes roots.models/.lock and decides first: "already installed" asks nothing. Then, under
+// the lock, §6.1 as pull: on an update the manifest diff (console only) and the license
+// questions --yes never answers; then "Import …? [y/N]" (answered by `yes`); declined is
+// AcquireReason::declined. Copies each file into .staging/<k>/ while hashing it and publishes
+// exactly as pull does; never writes into the bundle.
 [[nodiscard]] std::variant<InstallOutcome, AcquireError> import_bundle(const OpenedBundle& bundle, const CanonicalRoot& models,
                                                                        bool allow_downgrade, LoadedVersions& loaded,
-                                                                       const StoreEnvironment& env, ProgressSink& progress);
+                                                                       const StoreEnvironment& env, ProgressSink& progress,
+                                                                       Confirmer& ui, bool yes);
 
 struct BundleTarget final {
   CanonicalRoot root;

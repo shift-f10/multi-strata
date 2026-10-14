@@ -32,6 +32,20 @@ class Roomy : public secure_frontend::StoreEnvironment {
   }
 };
 
+// Answers exactly what --yes answers (C1: import now asks under the lock).
+class YesOnly final : public secure_frontend::Confirmer {
+ public:
+  void say(std::string_view) override {}
+  bool confirm(std::string_view, const bool yes_applies) override { return yes_applies; }
+};
+
+std::variant<secure_frontend::InstallOutcome, secure_frontend::AcquireError> import_yes(
+    const secure_frontend::OpenedBundle& bundle, const secure_frontend::CanonicalRoot& models, const bool allow_downgrade,
+    secure_frontend::LoadedVersions& loaded, const secure_frontend::StoreEnvironment& env, secure_frontend::ProgressSink& progress) {
+  YesOnly ui;
+  return secure_frontend::import_bundle(bundle, models, allow_downgrade, loaded, env, progress, ui, true);
+}
+
 struct Installed final {
   std::filesystem::path models_path;
   secure_frontend::CanonicalRoot models;
@@ -102,13 +116,13 @@ void dl02_import_bundle_publishes_same_as_pull() {
   fx::FakeLoaded loaded;
   secure_frontend::ProgressSink quiet;
   const Roomy env;
-  const auto outcome = secure_frontend::import_bundle(std::get<secure_frontend::OpenedBundle>(opened), target, false, loaded, env, quiet);
+  const auto outcome = import_yes(std::get<secure_frontend::OpenedBundle>(opened), target, false, loaded, env, quiet);
   expect(std::holds_alternative<secure_frontend::InstallOutcome>(outcome), "import publishes");
   const auto index = std::get<secure_frontend::ModelIndex>(secure_frontend::read_model_index(target));
   expect(index.models.size() == 1 && index.models.front().dir == source.model.entry.dir &&
              index.models.front().manifest_sha256 == source.model.entry.manifest_sha256,
          "same version directory and digest as the original publish");
-  const auto again = secure_frontend::import_bundle(std::get<secure_frontend::OpenedBundle>(opened), target, false, loaded, env, quiet);
+  const auto again = import_yes(std::get<secure_frontend::OpenedBundle>(opened), target, false, loaded, env, quiet);
   expect(std::get<secure_frontend::InstallOutcome>(again).already_installed, "re-import: already installed");
   expect(snapshot(source.models_path / "m" / "t" / source.model.entry.dir) == snapshot(target_path / "m" / "t" / source.model.entry.dir),
          "byte-identical version directories");
@@ -128,14 +142,14 @@ void dl03_bundle_digest_mismatch_publishes_nothing() {
   const auto target = fx::models_root(target_path);
   fx::FakeLoaded loaded;
   const Roomy env;
-  const auto outcome = secure_frontend::import_bundle(std::get<secure_frontend::OpenedBundle>(opened), target, false, loaded, env, quiet);
+  const auto outcome = import_yes(std::get<secure_frontend::OpenedBundle>(opened), target, false, loaded, env, quiet);
   expect(std::holds_alternative<secure_frontend::AcquireError>(outcome) &&
              std::get<secure_frontend::AcquireError>(outcome).reason == AcquireReason::bundle_invalid, "import refuses");
   expect(std::get<secure_frontend::ModelIndex>(secure_frontend::read_model_index(target)).models.empty(), "nothing published");
   expect(!std::filesystem::exists(target_path / "m"), "no version directory");
   // Same size, other bytes: caught by the digest, not the size.
   secure_frontend_test::write_file(bundle / "files" / "pack" / "dense.bin", "dense!");
-  const auto same_size = secure_frontend::import_bundle(std::get<secure_frontend::OpenedBundle>(opened), target, false, loaded, env, quiet);
+  const auto same_size = import_yes(std::get<secure_frontend::OpenedBundle>(opened), target, false, loaded, env, quiet);
   expect(std::holds_alternative<secure_frontend::AcquireError>(same_size) &&
              std::get<secure_frontend::AcquireError>(same_size).reason == AcquireReason::bundle_invalid, "same-size corruption refused");
   expect(!std::filesystem::exists(target_path / "m"), "still no version directory");
@@ -248,7 +262,7 @@ void bundle_at_mount_root_is_read_but_never_written() {
     if (!std::holds_alternative<secure_frontend::CanonicalRoot>(models)) ::_exit(5);
     fx::FakeLoaded loaded;
     const Roomy env;
-    if (!std::holds_alternative<secure_frontend::InstallOutcome>(secure_frontend::import_bundle(
+    if (!std::holds_alternative<secure_frontend::InstallOutcome>(import_yes(
             std::get<secure_frontend::OpenedBundle>(opened), std::get<secure_frontend::CanonicalRoot>(models), false, loaded, env, quiet))) {
       ::_exit(6);
     }
@@ -430,7 +444,7 @@ void import_from_read_only_bundle_directory() {
   const auto target = fx::models_root(secure_frontend_test::make_scratch_directory());
   fx::FakeLoaded loaded;
   const Roomy env;
-  const auto outcome = secure_frontend::import_bundle(std::get<secure_frontend::OpenedBundle>(opened), target, false, loaded, env, quiet);
+  const auto outcome = import_yes(std::get<secure_frontend::OpenedBundle>(opened), target, false, loaded, env, quiet);
   expect(std::holds_alternative<secure_frontend::InstallOutcome>(outcome),
          "import from read-only media: " + (std::holds_alternative<secure_frontend::AcquireError>(outcome)
                                                 ? secure_frontend::format_error(std::get<secure_frontend::AcquireError>(outcome))
@@ -485,7 +499,7 @@ void make_bundle_tool_output_opens_verifies_and_imports() {
   const auto target = fx::models_root(secure_frontend_test::make_scratch_directory());
   fx::FakeLoaded loaded;
   const Roomy env;
-  const auto outcome = secure_frontend::import_bundle(b, target, false, loaded, env, quiet);
+  const auto outcome = import_yes(b, target, false, loaded, env, quiet);
   expect(std::holds_alternative<secure_frontend::InstallOutcome>(outcome),
          "imports: " + (std::holds_alternative<secure_frontend::AcquireError>(outcome)
                             ? secure_frontend::format_error(std::get<secure_frontend::AcquireError>(outcome))

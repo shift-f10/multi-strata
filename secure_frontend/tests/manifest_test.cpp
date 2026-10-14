@@ -296,9 +296,22 @@ void file_and_directory_prefix_collision_rejected() {
   file_is_dir.files.push_back(file("pack/tokenizer", FileRole::pack));
   expect_issue(file_is_dir, "files[10].path", "a file path that is another file's directory");
   auto folded = valid_qwen_manifest();
-  folded.files.push_back(file("Pack/Extra.bin", FileRole::pack));
   folded.files.push_back(file("PACK", FileRole::pack));
-  expect_issue(folded, "files[11].path", "case-folded file/directory collision");
+  expect_issue(folded, "files[10].path", "case-folded file/directory collision");
+  // Final review I3 (Review Focus 2): directory components that differ only in case are one
+  // directory on Windows; the second spelling is manifest_invalid, never a publish-time collision.
+  auto spelled = valid_qwen_manifest();
+  spelled.files.push_back(file("Pack/x", FileRole::pack));
+  spelled.files.push_back(file("pack/y", FileRole::pack));
+  expect_issue(spelled, "files[10].path", "Pack/x beside pack/y");
+  auto nested = valid_qwen_manifest();
+  nested.files.push_back(file("extra/Sub/a", FileRole::pack));
+  nested.files.push_back(file("extra/sub/b", FileRole::pack));
+  expect_issue(nested, "files[11].path", "a deeper directory spelled two ways");
+  auto same = valid_qwen_manifest();
+  same.files.push_back(file("extra/Sub/a", FileRole::pack));
+  same.files.push_back(file("extra/Sub/b", FileRole::pack));
+  expect(!secure_frontend::validate_manifest(same, rules()).has_value(), "one spelling of a mixed-case directory is fine");
 }
 
 void shard_set_must_be_complete_in_one_directory() {
@@ -556,6 +569,24 @@ void trust_rules_catalog_digest_or_typed_digest() {
 #endif
 }
 
+#if defined(SECURE_FRONTEND_TEST_HOOKS)
+// Final review M1 (§2.5 rule 2): a typed digest must equal the file's digest, even when the
+// bytes are a catalog manifest (a typo or the wrong file never goes unnoticed).
+void typed_digest_must_match_catalog_bytes_too() {
+  using secure_frontend::AcquireReason;
+  const auto* fixture = secure_frontend::find_catalog_entry("fixture-qwen", "t1");
+  expect(fixture != nullptr, "catalog fixture");
+  const auto wrong = secure_frontend::trust_manifest_bytes(fixture->bytes, std::string(64, '0'), {});
+  expect(std::holds_alternative<secure_frontend::AcquireError>(wrong) &&
+             std::get<secure_frontend::AcquireError>(wrong).reason == AcquireReason::manifest_untrusted,
+         "a typed digest that differs from catalog bytes: manifest_untrusted");
+  const auto exact = secure_frontend::trust_manifest_bytes(fixture->bytes, secure_frontend::to_hex(secure_frontend::sha256(fixture->bytes)), {});
+  expect(std::holds_alternative<secure_frontend::TrustedManifest>(exact) &&
+             std::get<secure_frontend::TrustedManifest>(exact).origin == secure_frontend::ModelOrigin::catalog,
+         "the exact digest of catalog bytes keeps catalog trust");
+}
+#endif
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -586,5 +617,8 @@ int main(int argc, char** argv) {
       {"dl05_catalog_pins_match_committed_list", dl05_catalog_pins_match_committed_list},
       {"engine_version_read_from_upstream_version_file", engine_version_read_from_upstream_version_file},
       {"trust_rules_catalog_digest_or_typed_digest", trust_rules_catalog_digest_or_typed_digest},
+#if defined(SECURE_FRONTEND_TEST_HOOKS)
+      {"typed_digest_must_match_catalog_bytes_too", typed_digest_must_match_catalog_bytes_too},
+#endif
   }, failures);
 }

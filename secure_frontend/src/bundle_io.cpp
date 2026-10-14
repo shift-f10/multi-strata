@@ -1,5 +1,6 @@
 #include "secure_frontend/bundle_io.hpp"
 
+#include "secure_frontend/acquire_pull.hpp"
 #include "secure_frontend/bundle_text.hpp"
 #include "secure_frontend/model_index_write.hpp"
 
@@ -193,7 +194,8 @@ std::optional<AcquireError> verify_bundle_files(const OpenedBundle& bundle, Prog
 }
 
 std::variant<InstallOutcome, AcquireError> import_bundle(const OpenedBundle& bundle, const CanonicalRoot& models, const bool allow_downgrade,
-                                                         LoadedVersions& loaded, const StoreEnvironment& env, ProgressSink& progress) {
+                                                         LoadedVersions& loaded, const StoreEnvironment& env, ProgressSink& progress,
+                                                         Confirmer& ui, const bool yes) {
   auto lock = lock_models_root(models);
   if (auto* failure = std::get_if<AcquireError>(&lock)) return *failure;
   auto read = read_model_index(models);
@@ -202,9 +204,16 @@ std::variant<InstallOutcome, AcquireError> import_bundle(const OpenedBundle& bun
   const auto& manifest = bundle.manifest;
   auto decision = decide_install(index, manifest, allow_downgrade);
   if (auto* failure = std::get_if<AcquireError>(&decision)) return *failure;
-  if (std::get<InstallDecision>(decision).kind == InstallDecisionKind::already_installed) {
-    return InstallOutcome{*std::get<InstallDecision>(decision).installed, true, false, {}};
+  const auto& d = std::get<InstallDecision>(decision);
+  if (d.kind == InstallDecisionKind::already_installed) return InstallOutcome{*d.installed, true, false, {}};  // §8.3: asks nothing
+  // Final review C1: §6.1's --yes limits hold for import as for pull (Task 22 fix 1), decided
+  // under the lock before anything is copied.
+  const auto& m = manifest.parsed.manifest;
+  const std::string ref = model_ref_text(m.name, m.tag);
+  if (d.kind == InstallDecisionKind::update && !confirm_license_change(review_update(models, *d.installed, m, ui), m, ui)) {
+    return err(AcquireReason::declined, ref);
   }
+  if (!ui.confirm("Import " + ref + " into roots.models? [y/N]", yes)) return err(AcquireReason::declined, ref);
   if (auto adopted = adopt_orphan(models, manifest, loaded, env)) {
     if (auto* failure = std::get_if<AcquireError>(&*adopted)) return *failure;
     auto& result = std::get<PublishResult>(*adopted);

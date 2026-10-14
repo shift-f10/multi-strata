@@ -168,6 +168,9 @@ std::variant<PublishResult, AcquireError> publish_staged(const CanonicalRoot& mo
   const std::string dir = version_directory_name(m.sequence, manifest.parsed.sha256);
   const auto parent = must_rel(m.name + "/" + m.tag);
   if (auto failure = ensure_directory(models, parent)) return *failure;
+#if defined(SECURE_FRONTEND_TEST_HOOKS)
+  if (env.fail_version_rename()) return AcquireError{AcquireReason::publish_failed, "fault injected at publish step 4"};
+#endif
   if (auto failure = rename_within(models, staging, version_dir_path(m.name, m.tag, dir), env)) return *failure;
   // A failure from here to step 5 leaves an orphan that adopt_orphan recovers (§4.5).
   if (auto failure = sync_directory(models, parent)) return AcquireError{AcquireReason::publish_failed, failure->detail};
@@ -207,7 +210,9 @@ std::optional<std::variant<PublishResult, AcquireError>> adopt_orphan(const Cano
   if (auto* failure = std::get_if<AcquireError>(&read)) return Outcome{*failure};
   auto index = std::get<ModelIndex>(std::move(read));
   if (const auto* current = find_model(index, m.name, m.tag); current != nullptr && current->dir == dir) return std::nullopt;
-  if (auto failure = verify_tree(models, path, manifest, kVersionManifestName, true)) return Outcome{*failure};
+  // Final review I2: a tree that does not verify is not adoptable; publish then reports
+  // "target exists" (the orphan hint), never a verb failure with digest_mismatch.
+  if (verify_tree(models, path, manifest, kVersionManifestName, true)) return std::nullopt;
   PublishResult result = entry_result(manifest, dir, true);
   // with_installed drops a retired row naming `dir` (a downgrade to a retired version): one live directory.
   index = with_installed(std::move(index), result.entry);
@@ -237,13 +242,20 @@ std::variant<IndexEntry, AcquireError> remove_installed(const CanonicalRoot& mod
   if (loaded.is_held(removed.name, removed.tag, removed.dir) && !force) {
     return AcquireError{AcquireReason::models_busy, model_ref_text(name, tag) + " is loaded by the running server; stop it first"};
   }
+  // Controller note 5 / final review I2: the entry moves to `retired` before anything is deleted,
+  // so a delete that fails part-way (Windows: the engine has a file open) leaves a retired
+  // version that the next pull/import/rm --retired removes, never an unmanaged orphan.
   index = without_model(std::move(index), name, tag);
+  const bool listed = std::any_of(index.retired.begin(), index.retired.end(), [&](const RetiredEntry& r) {
+    return r.name == removed.name && r.tag == removed.tag && r.dir == removed.dir;
+  });
+  if (!listed) index.retired.push_back(RetiredEntry{removed.name, removed.tag, removed.dir, removed.manifest_sha256});
   if (auto failure = write_model_index(models, index)) return *failure;
   // Restores owner write access on read-only directories; an unreachable directory is an error, not "absent".
-  if (auto failure = remove_tree_within(models, version_dir_path(removed.name, removed.tag, removed.dir))) {
-    // Not indexed any more, so never loaded; doctor/list --all report it as orphaned.
-    return *failure;
-  }
+  if (auto failure = remove_tree_within(models, version_dir_path(removed.name, removed.tag, removed.dir))) return *failure;
+  // Deleted: drop the retired row, as retire_unheld does (§4.5 step 6).
+  index = without_retired(std::move(index), removed.name, removed.tag, removed.dir);
+  if (auto failure = write_model_index(models, index)) return *failure;
   return removed;
 }
 

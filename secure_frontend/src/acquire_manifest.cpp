@@ -265,12 +265,20 @@ std::optional<ManifestIssue> validate_manifest(const AcquireManifest& m, const M
   }
   if (m.files.empty() || m.files.size() > kManifestMaxFiles) return bad("files", "must list 1..4096 files");
   std::set<std::string> folded_files;
+  std::map<std::string, std::string> directory_spellings;  // case-folded directory prefix -> its exact spelling
   const std::size_t overhead = stored_path_overhead(m);
   for (std::size_t i = 0; i < m.files.size(); ++i) {
     const auto& f = m.files[i];
     const std::string at = "files[" + std::to_string(i) + "]";
     if (const auto why = path_problem(f.path)) return bad(at + ".path", *why);
     if (!folded_files.insert(ascii_lower(f.path)).second) return bad(at + ".path", "must be unique after case folding");
+    // Review Focus 2: every directory prefix has one exact spelling ("Pack/x" beside "pack/y"
+    // is one directory on Windows and would fail only at publish there).
+    for (auto slash = f.path.find('/'); slash != std::string::npos; slash = f.path.find('/', slash + 1)) {
+      const std::string prefix = f.path.substr(0, slash);
+      const auto [it, inserted] = directory_spellings.emplace(ascii_lower(prefix), prefix);
+      if (!inserted && it->second != prefix) return bad(at + ".path", "has a directory that differs from another file's only in case");
+    }
     if (f.path.size() > kRelativePathMaxBytes - overhead) {
       return bad(at + ".path", "is too long once stored below <name>/<tag>/<version dir>, .staging or files/ (P1: 1024 bytes)");
     }

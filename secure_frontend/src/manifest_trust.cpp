@@ -29,8 +29,10 @@ std::variant<TrustedManifest, AcquireError> trust_manifest_bytes(const std::stri
                                                                  const std::optional<std::string>& trusted_digest,
                                                                  const ManifestRules& rules) {
   const std::string digest = to_hex(sha256(bytes));
+  // §2.5 rule 2: a typed digest must equal the file's, also for catalog bytes (a typo or the wrong file).
+  if (trusted_digest && *trusted_digest != digest) return AcquireError{AcquireReason::manifest_untrusted, "manifest sha256 " + digest};
   if (find_catalog_by_digest(digest) != nullptr) return parse_trusted(bytes, rules, ModelOrigin::catalog);
-  if (!trusted_digest || *trusted_digest != digest) {
+  if (!trusted_digest) {
     return AcquireError{AcquireReason::manifest_untrusted, "manifest sha256 " + digest};
   }
   auto trusted = parse_trusted(bytes, rules, ModelOrigin::third_party);

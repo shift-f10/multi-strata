@@ -5,6 +5,8 @@
 #include "support/expect.hpp"
 #include "support/pull_harness.hpp"
 
+#include <utility>
+
 #if defined(_WIN32)
 #include "secure_frontend/win32_prelude.hpp"
 
@@ -440,6 +442,39 @@ void unreadable_installed_license_requires_interactive_yes() {
 }
 
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
+namespace {
+class FailVersionRenameOnce final : public secure_frontend::StoreEnvironment {
+ public:
+  [[nodiscard]] bool fail_version_rename() const override { return !std::exchange(failed_, true); }
+
+ private:
+  mutable bool failed_{false};
+};
+}  // namespace
+
+// Final review I1 (§8.2 publish_failed: rerun resumes): a publish that fails after step 2
+// leaves .staging/<k>/manifest.json, not MANIFEST; the rerun still trusts the key (its digest
+// equals the key) and publishes without a single transfer.
+void publish_failure_after_step_2_resumes_without_download() {
+  PullHarness h;
+  h.serve(fx::qwen_payload());
+  const auto request = h.third_party(manifest());
+  const FailVersionRenameOnce once;
+  const auto first = h.pull(request, &once);
+  expect(first.error && first.error->reason == AcquireReason::publish_failed, "step 4 fails once: publish_failed");
+  const auto key = secure_frontend::staging_key(secure_frontend::to_hex(secure_frontend::sha256(manifest())));
+  expect(secure_frontend::exists_within(h.models, secure_frontend::must_rel(".staging/" + key + "/manifest.json")) &&
+             !secure_frontend::exists_within(h.models, secure_frontend::must_rel(".staging/" + key + "/MANIFEST")),
+         "step 2 ran: the staged manifest is manifest.json");
+  const auto transfers = h.transport->argvs.size();
+  const auto probes = h.probe.calls;
+  const auto second = h.pull(request);
+  expect(second.exit == ExitCode::success && h.index().models.size() == 1, "the rerun publishes: " + h.ui.text());
+  expect(h.transport->argvs.size() == transfers && h.probe.calls == probes, "with zero transfers");
+  expect(h.ui.text().find("stale_staging_discarded") == std::string::npos, "the staged download is never discarded as stale");
+  expect(!secure_frontend::exists_within(h.models, secure_frontend::must_rel(".staging/" + key)), "the key was published");
+}
+
 // F-51: the hooks-only CA bundle reaches every hop's argv through run_pull.
 void pull_test_cacert_reaches_argv_in_hook_builds() {
   PullHarness h;

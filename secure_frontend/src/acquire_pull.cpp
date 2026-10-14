@@ -99,9 +99,15 @@ std::uint64_t tree_bytes(const CanonicalRoot& root, const RelativePath& dir) {
   return total;
 }
 
-// The parsed manifest of a staging key whose MANIFEST hashes to the key; else nullopt (stale).
+// A publish that failed after §4.5 step 2 leaves manifest.json, not MANIFEST, in the key: the
+// staged manifest's name is MANIFEST when present, else manifest.json (final review I1).
+std::string_view staged_manifest_name(const CanonicalRoot& root, const RelativePath& dir) {
+  return exists_within(root, join_rel(dir, kStagingManifestName)) ? kStagingManifestName : kVersionManifestName;
+}
+
+// The parsed manifest of a staging key whose staged manifest hashes to the key; else nullopt (stale).
 std::optional<AcquireManifest> staged_manifest(const CanonicalRoot& root, const RelativePath& dir, const std::string_view key) {
-  auto bytes = read_small_file(root, join_rel(dir, kStagingManifestName), kManifestMaxBytes);
+  auto bytes = read_small_file(root, join_rel(dir, staged_manifest_name(root, dir)), kManifestMaxBytes);
   if (!std::holds_alternative<std::string>(bytes)) return std::nullopt;
   const auto& text = std::get<std::string>(bytes);
   if (staging_key(to_hex(sha256(text))) != key) return std::nullopt;
@@ -243,6 +249,34 @@ char lower(const char c) noexcept { return c >= 'A' && c <= 'Z' ? static_cast<ch
 
 }  // namespace
 
+UpdateReview review_update(const CanonicalRoot& models, const IndexEntry& installed, const AcquireManifest& candidate, Confirmer& ui) {
+  UpdateReview review;
+  auto loaded_model = load_installed(models, installed);
+  if (auto* model = std::get_if<InstalledModel>(&loaded_model)) {
+    review.installed.emplace(std::move(*model));
+    review.diff = diff_manifests(review.installed->manifest.manifest, candidate);
+    // §6.1 on the console only: the lines carry license URLs, never written to acquire.log (§8.1).
+    for (const auto& line : review.diff->lines) ui.say(line);
+  } else {
+    // Fail closed: the installed license is UNKNOWN, so §6.1's license question is asked
+    // (never answered by --yes). Fixed text plus the reason name only (§8.1).
+    ui.say("the installed version of " + model_ref_text(candidate.name, candidate.tag) + " cannot be read (" +
+           std::string{reason_name(std::get<AcquireError>(loaded_model).reason)} + "); its license is unknown");
+  }
+  return review;
+}
+
+bool confirm_license_change(const UpdateReview& review, const AcquireManifest& candidate, Confirmer& ui) {
+  const std::string ref = model_ref_text(candidate.name, candidate.tag);
+  if (!review.installed) {
+    return ui.confirm("The license of the installed version of " + ref + " is unknown; install " + candidate.license.id + "? [y/N]", false);
+  }
+  if (!review.diff || !review.diff->license_changed) return true;
+  return ui.confirm("The license of " + ref + " changes (" + review.installed->manifest.manifest.license.id + " -> " +
+                        candidate.license.id + "). Continue? [y/N]",
+                    false);
+}
+
 bool parse_confirmation(std::string_view answer) noexcept {
   while (!answer.empty() && is_space(answer.front())) answer.remove_prefix(1);
   while (!answer.empty() && is_space(answer.back())) answer.remove_suffix(1);
@@ -292,9 +326,7 @@ PullOutcome run_pull(const PullRequest& request, const CanonicalRoot& models, co
   // Destination: roots.models (under .lock for the whole run, §4.8), or the bundle directory.
   std::optional<ModelsLock> lock;
   std::optional<BundleTarget> bundle;
-  std::optional<InstalledModel> installed;
-  std::optional<ManifestDiff> diff;
-  bool installed_license_unknown = false;  // fix round 1: an update whose installed version cannot be loaded
+  std::optional<UpdateReview> review;  // an update: the installed version (if readable) and the diff
   if (to_bundle) {
     auto prepared = prepare_bundle_target(*request.bundle_dir, tm, true, s.store);
     if (auto* failure = std::get_if<AcquireError>(&prepared)) return failed(*failure);
@@ -330,21 +362,7 @@ PullOutcome run_pull(const PullRequest& request, const CanonicalRoot& models, co
       s.ui.say("adopted an earlier, interrupted publish of " + ref);
       return PullOutcome{ExitCode::success, std::nullopt, std::get<PublishResult>(*adopted).entry, false, false};
     }
-    if (d.kind == InstallDecisionKind::update) {
-      auto loaded_model = load_installed(models, *current);
-      if (auto* model = std::get_if<InstalledModel>(&loaded_model)) {
-        installed.emplace(std::move(*model));
-        diff = diff_manifests(installed->manifest.manifest, m);
-        // §6.1 on the console only: the lines carry license URLs, never written to acquire.log (§8.1).
-        for (const auto& line : diff->lines) s.ui.say(line);
-      } else {
-        // Fail closed: the installed license is UNKNOWN, so §6.1's license question is asked
-        // (never answered by --yes). Fixed text plus the reason name only (§8.1).
-        installed_license_unknown = true;
-        s.ui.say("the installed version of " + ref + " cannot be read (" +
-                 std::string{reason_name(std::get<AcquireError>(loaded_model).reason)} + "); its license is unknown");
-      }
-    }
+    if (d.kind == InstallDecisionKind::update) review = review_update(models, *current, m, s.ui);
   }
   const CanonicalRoot& root = bundle ? bundle->root : models;
 
@@ -361,7 +379,7 @@ PullOutcome run_pull(const PullRequest& request, const CanonicalRoot& models, co
   }
   const auto plan = plan_staging(m, staged);
   std::set<std::size_t> reusable;
-  if (diff) reusable.insert(diff->reusable_files.begin(), diff->reusable_files.end());
+  if (review && review->diff) reusable.insert(review->diff->reusable_files.begin(), review->diff->reusable_files.end());
   std::vector<Work> work;
   std::vector<RelativePath> stale_bundle_files;  // files/<path> from an earlier run that no longer verify
   std::uint64_t to_fetch = 0;
@@ -398,16 +416,7 @@ PullOutcome run_pull(const PullRequest& request, const CanonicalRoot& models, co
     return failed(AcquireError{AcquireReason::disk_space, "need " + format_gb(needed) + " plus 1 GiB, have " + format_gb(free_bytes)});
   }
   print_summary(s.ui, tm, free_bytes, to_fetch, s.probe.confinement(), bundle ? "the bundle volume" : "roots.models");
-  if (diff && diff->license_changed &&
-      !s.ui.confirm("The license of " + ref + " changes (" + installed->manifest.manifest.license.id + " -> " + m.license.id +
-                        "). Continue? [y/N]",
-                    false)) {
-    return failed(AcquireError{AcquireReason::declined, ref});
-  }
-  if (installed_license_unknown &&
-      !s.ui.confirm("The license of the installed version of " + ref + " is unknown; install " + m.license.id + "? [y/N]", false)) {
-    return failed(AcquireError{AcquireReason::declined, ref});
-  }
+  if (review && !confirm_license_change(*review, m, s.ui)) return failed(AcquireError{AcquireReason::declined, ref});
   if (!work.empty() && !s.ui.confirm("Download " + format_gb(to_fetch) + " from " + hosts_text(m) + "? [y/N]", request.yes)) {
     return failed(AcquireError{AcquireReason::declined, ref});
   }
@@ -423,6 +432,14 @@ PullOutcome run_pull(const PullRequest& request, const CanonicalRoot& models, co
     if (auto failure = remove_tree_within(root, staging)) return failed(*failure);
   }
   if (auto failure = tidy_staging(root, staging_root, tm, s)) return failed(*failure);
+  // Final review I1: the key survived tidy_staging, so its manifest.json hashes to the key; undo
+  // step 2 (same directory, no replace) before the plan removes names that are not the manifest's.
+  if (exists_within(root, staging) && staged_manifest_name(root, staging) == kVersionManifestName &&
+      exists_within(root, join_rel(staging, kVersionManifestName))) {
+    if (auto failure = rename_within(root, join_rel(staging, kVersionManifestName), join_rel(staging, kStagingManifestName), s.store)) {
+      return failed(*failure);
+    }
+  }
   if (!request.discard_partial) {
     for (const auto& path : plan.remove) {
       if (auto failure = remove_file_within(root, join_rel(staging, path))) return failed(*failure);
@@ -444,6 +461,8 @@ PullOutcome run_pull(const PullRequest& request, const CanonicalRoot& models, co
 #endif
   FetchContext context{s.transport, s.resolver, s.clock, budget, fetch, s.interrupted, s.progress, s.store, root};
   ProbeOnce probe(s.probe);
+  const std::optional<InstalledModel> none;
+  const auto& installed = review ? review->installed : none;
   for (const auto& w : work) {
     if (s.interrupted.load()) return fail_with_hint(request, m, s, AcquireError{AcquireReason::interrupted, ref});
     if (auto failure = acquire_file(root, staging, tm, w, installed, models, context, probe, s)) {

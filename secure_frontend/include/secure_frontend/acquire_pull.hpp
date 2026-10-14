@@ -4,6 +4,8 @@
 #include "secure_frontend/acquire_publish.hpp"
 #include "secure_frontend/fetch_file.hpp"
 #include "secure_frontend/frontend_config.hpp"
+#include "secure_frontend/manifest_diff.hpp"
+#include "secure_frontend/model_index_store.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -26,15 +28,6 @@ struct PullRequest final {
   // F-51: copied into FetchSettings::test_cacert in SECURE_FRONTEND_TEST_HOOKS builds only;
   // a release build never reads it.
   std::string test_cacert;
-};
-
-class Confirmer {
- public:
-  virtual ~Confirmer() = default;
-  virtual void say(std::string_view line) = 0;
-  // yes_applies: --yes was given and answers this question. Otherwise a
-  // non-interactive run answers No; an interactive one reads [y/N] (parse_confirmation).
-  [[nodiscard]] virtual bool confirm(std::string_view question, bool yes_applies) = 0;
 };
 
 class DownloaderProbe {
@@ -71,6 +64,18 @@ struct PullOutcome final {
 // bundle_dir, fill a bundle directory instead of roots.models.
 [[nodiscard]] PullOutcome run_pull(const PullRequest& request, const CanonicalRoot& models, const PullSettings& settings,
                                    PullServices& services);
+// §6.1 update consent, shared by pull and import (the caller holds .lock).
+struct UpdateReview final {
+  std::optional<InstalledModel> installed;  // nullopt: the installed version cannot be read (license unknown)
+  std::optional<ManifestDiff> diff;         // set exactly when `installed` is
+};
+// Loads the installed version and prints the manifest diff through `ui` (the console only,
+// never acquire.log, §8.1), or a fixed line with the reason name when it cannot be read.
+[[nodiscard]] UpdateReview review_update(const CanonicalRoot& models, const IndexEntry& installed, const AcquireManifest& candidate,
+                                         Confirmer& ui);
+// §6.1: a license change, or an installed license that is unknown, needs an interactive y
+// even with --yes (yes_applies=false). false: declined.
+[[nodiscard]] bool confirm_license_change(const UpdateReview& review, const AcquireManifest& candidate, Confirmer& ui);
 // Trimmed (space, tab, CR, LF), ASCII case-insensitive "y" or "yes"; anything else is No.
 [[nodiscard]] bool parse_confirmation(std::string_view answer) noexcept;
 // Decimal gigabytes with one digit: 68'000'000'000 -> "68.0 GB".

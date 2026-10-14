@@ -89,6 +89,10 @@ int main(int argc, char** argv) {
       {"cli_verify_export_import_round_trip", bundle_cases::cli_verify_export_import_round_trip},
       {"failed_export_says_to_remove_target", bundle_cases::failed_export_says_to_remove_target},
       {"import_blocked_by_orphan_says_how_to_clear_it", bundle_cases::import_blocked_by_orphan_says_how_to_clear_it},
+      {"import_license_change_needs_interactive_yes", bundle_cases::import_license_change_needs_interactive_yes},
+      {"import_with_unreadable_installed_version_needs_interactive_yes",
+       bundle_cases::import_with_unreadable_installed_version_needs_interactive_yes},
+      {"import_over_corrupt_orphan_reports_target_exists", bundle_cases::import_over_corrupt_orphan_reports_target_exists},
 #if defined(_WIN32)
       {"bundle_rejects_junction_entry_windows", bundle_cases::bundle_rejects_junction_entry_windows},
 #else

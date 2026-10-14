@@ -18,4 +18,14 @@ class ProgressSink {
   virtual void file_finished(std::string_view, std::uint64_t, std::string_view, std::string_view, std::string_view) {}
 };
 
+// [y/N] questions and the console lines around them (pull, import).
+class Confirmer {
+ public:
+  virtual ~Confirmer() = default;
+  virtual void say(std::string_view line) = 0;
+  // yes_applies: --yes was given and answers this question. Otherwise a
+  // non-interactive run answers No; an interactive one reads [y/N] (parse_confirmation).
+  [[nodiscard]] virtual bool confirm(std::string_view question, bool yes_applies) = 0;
+};
+
 }  // namespace secure_frontend

@@ -30,6 +30,10 @@ void import_works_without_downloader();
 void cli_verify_export_import_round_trip();
 void failed_export_says_to_remove_target();
 void import_blocked_by_orphan_says_how_to_clear_it();
+// Final review C1 / I2.
+void import_license_change_needs_interactive_yes();
+void import_with_unreadable_installed_version_needs_interactive_yes();
+void import_over_corrupt_orphan_reports_target_exists();
 #if defined(_WIN32)
 void bundle_rejects_junction_entry_windows();
 #else

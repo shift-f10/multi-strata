@@ -128,11 +128,11 @@ int verb_import(const FrontendConfig& config, const Args& args, CliStreams& io, 
   ui.say("files: " + std::to_string(m.files.size()) + ", total " + format_gb(total_bytes(m)));
   // §2.3: accepted and recorded, but said before anything is copied.
   if (engine_gate(m)) ui.say("note: this release cannot run it (" + engine_state_text(m) + ")");
-  if (!ui.confirm("Import " + ref + " into roots.models? [y/N]", args.flags.contains("--yes"))) {
-    return report(io, AcquireError{AcquireReason::declined, ref});
-  }
+  // Final review C1: import_bundle decides under .lock first ("already installed" asks nothing),
+  // then prints the manifest diff and asks the §6.1 questions as pull does.
   auto loaded = loaded_for(config, services);
-  auto outcome = import_bundle(bundle, config.roots.models, args.flags.contains("--allow-downgrade"), *loaded, store_for(services), progress);
+  auto outcome = import_bundle(bundle, config.roots.models, args.flags.contains("--allow-downgrade"), *loaded, store_for(services), progress,
+                               ui, args.flags.contains("--yes"));
   if (auto* failure = std::get_if<AcquireError>(&outcome)) return report(io, *failure);
   const auto& result = std::get<InstallOutcome>(outcome);
   ui.say(result.already_installed ? "already installed: " + ref : "installed " + ref + "; start it with: strata run " + ref);

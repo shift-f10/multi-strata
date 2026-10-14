@@ -29,6 +29,9 @@ class StoreEnvironment {
   [[nodiscard]] virtual std::variant<FileSystemKind, AcquireError> file_system_kind(const CanonicalRoot& root) const;
   [[nodiscard]] virtual bool force_rename_fallback() const { return false; }
   [[nodiscard]] virtual std::optional<std::uint64_t> fail_writes_after_bytes() const { return std::nullopt; }
+  // SECURE_FRONTEND_TEST_HOOKS builds only (publish_staged never asks otherwise): true fails
+  // §4.5 step 4 (.staging/<k> -> version directory) with publish_failed.
+  [[nodiscard]] virtual bool fail_version_rename() const { return false; }
   [[nodiscard]] virtual std::uint64_t fat_max_file_bytes() const { return 0xFFFFFFFFULL; }
   // §4.6: free space is re-checked against kFreeSpaceMarginBytes every this many bytes written.
   [[nodiscard]] virtual std::uint64_t recheck_interval_bytes() const { return kFreeSpaceRecheckBytes; }
