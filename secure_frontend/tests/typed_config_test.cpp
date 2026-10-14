@@ -107,6 +107,46 @@ void cfg01_duplicate_key_rejected() {
     const auto result = validate_text(render_config_json(literals, path), f.dir);
     expect(has_issue(result, "config file", ConfigIssueCode::duplicate_key), "duplicate must be rejected: " + path);
   }
+  // A member name containing '.' never aliases a nested key: the nested form
+  // plus the flat dotted spelling of the same key must not be "last wins".
+  const auto with_extra_member = [](std::string document, const std::string& member) {
+    document.insert(document.size() - 1U, "," + member);
+    return document;
+  };
+  for (const auto& key : secure_frontend::config_schema()) {
+    auto literals = f.literals;
+    const std::string path{key.path};
+    if (!literals.contains(path)) literals[path] = valid_sample(key);
+    const auto text = with_extra_member(render_config_json(literals),
+                                        secure_frontend_test::json_literal(path) + ":" + valid_sample(key));
+    const auto result = validate_text(text, f.dir);
+    const bool rejected = path.find('.') == std::string::npos
+                              ? has_issue(result, "config file", ConfigIssueCode::duplicate_key)
+                              : has_issue(result, path, ConfigIssueCode::unknown_key);
+    expect(rejected && std::holds_alternative<secure_frontend::ConfigErrors>(result),
+           "nested plus dotted spelling must be rejected: " + path);
+  }
+  // A flat dotted top-level key alone is not a nested key either.
+  {
+    auto literals = f.literals;
+    literals.erase("engine.model_id");
+    const auto result = validate_text(with_extra_member(render_config_json(literals), "\"engine.model_id\":\"qwen-local\""), f.dir);
+    expect(has_issue(result, "engine.model_id", ConfigIssueCode::unknown_key), "flat dotted top-level key rejected");
+  }
+  {
+    const auto result = validate_text(with_extra_member(f.document(), "\"listener.port\":9000"), f.dir);
+    expect(has_issue(result, "listener.port", ConfigIssueCode::unknown_key), "flat dotted listener.port rejected");
+  }
+  // Dotted section names and empty names, at any depth.
+  for (const auto& [member, issue_path] :
+       std::vector<std::pair<std::string, std::string>>{
+           {"\"limits\":{\"http\":{\"max_headers\":10}},\"limits.http\":{\"max_headers\":20}", "limits.http"},
+           {"\"limits\":{\"http.max_headers\":20}", "limits.http.max_headers"},
+           {"\"\":1", ""},
+           {"\"listener\":{\"\":1}", "listener."}}) {
+    const auto result = validate_text(with_extra_member(f.document(), member), f.dir);
+    expect(has_issue(result, issue_path, ConfigIssueCode::unknown_key), "dotted or empty member name rejected: " + member);
+  }
 }
 
 void cfg01_type_confusion_rejected() {

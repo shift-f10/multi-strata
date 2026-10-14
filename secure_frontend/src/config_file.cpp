@@ -31,9 +31,17 @@ void collect(const std::vector<JsonMember>& members, const std::string& prefix, 
              ConfigErrors& errors) {
   for (const auto& member : members) {
     const std::string path = prefix.empty() ? member.key : prefix + "." + member.key;
+    // A member name is one path segment: an empty or dotted name never aliases
+    // a nested key ({"listener.port":1} is not {"listener":{"port":1}}).
+    if (member.key.empty() || member.key.find('.') != std::string::npos) {
+      errors.push_back(ConfigIssue{path, ConfigIssueCode::unknown_key, "unknown key"});
+      continue;
+    }
     if (const ConfigKey* key = find_config_key(path)) {
-      if (auto value = draft_value(member.value)) {
-        draft.entries[path] = ConfigDraftEntry{std::move(*value), ConfigSource::file};
+      if (draft.entries.contains(path)) {
+        errors.push_back(ConfigIssue{path, ConfigIssueCode::duplicate_key, "is set more than once"});
+      } else if (auto value = draft_value(member.value)) {
+        draft.entries.emplace(path, ConfigDraftEntry{std::move(*value), ConfigSource::file});
       } else {
         errors.push_back(ConfigIssue{path, ConfigIssueCode::wrong_type, std::string{type_reason(key->type)}});
       }
