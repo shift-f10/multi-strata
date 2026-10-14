@@ -3,10 +3,13 @@
 #include "secure_frontend/canonical_path.hpp"
 #include "secure_frontend/json.hpp"
 
+#include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 namespace secure_frontend {
 namespace {
@@ -123,6 +126,58 @@ FrontendConfigDraft merge_drafts(FrontendConfigDraft file, const FrontendConfigD
     file.entries[key] = entry;
   }
   return file;
+}
+
+std::string render_config_document(const FrontendConfigDraft& draft) {
+  struct Node {
+    std::vector<std::string> names;
+    std::vector<Node> children;
+    std::string literal;
+  };
+  Node root;
+  for (const auto& [path, entry] : draft.entries) {
+    std::string literal;
+    if (const auto* b = std::get_if<bool>(&entry.value)) literal = *b ? "true" : "false";
+    else if (const auto* i = std::get_if<std::int64_t>(&entry.value)) literal = std::to_string(*i);
+    else if (const auto* s = std::get_if<std::string>(&entry.value)) append_json_string(&literal, *s);
+    else {
+      literal = "[";
+      for (const auto& item : std::get<std::vector<std::string>>(entry.value)) {
+        if (literal.size() > 1U) literal += ", ";
+        append_json_string(&literal, item);
+      }
+      literal += "]";
+    }
+    Node* node = &root;
+    std::size_t start = 0;
+    while (true) {
+      const auto dot = path.find('.', start);
+      const std::string name = path.substr(start, dot == std::string::npos ? std::string::npos : dot - start);
+      std::size_t index = 0;
+      while (index < node->names.size() && node->names[index] != name) ++index;
+      if (index == node->names.size()) { node->names.push_back(name); node->children.emplace_back(); }
+      node = &node->children[index];
+      if (dot == std::string::npos) break;
+      start = dot + 1;
+    }
+    node->literal = literal;
+  }
+  std::string out;
+  const std::function<void(const Node&, std::size_t)> emit = [&](const Node& node, const std::size_t depth) {
+    out += "{\n";
+    for (std::size_t i = 0; i < node.names.size(); ++i) {
+      out.append(2U * (depth + 1U), ' ');
+      append_json_string(&out, node.names[i]);
+      out += ": ";
+      if (node.children[i].names.empty()) out += node.children[i].literal;
+      else emit(node.children[i], depth + 1U);
+      out += i + 1U < node.names.size() ? ",\n" : "\n";
+    }
+    out.append(2U * depth, ' ');
+    out += "}";
+  };
+  emit(root, 0U);
+  return out + "\n";
 }
 
 }  // namespace secure_frontend

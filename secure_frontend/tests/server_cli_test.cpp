@@ -1,3 +1,4 @@
+#include "secure_frontend/token_reader.hpp"
 #include "support/server_fixture.hpp"
 #include "support/test_support.hpp"
 
@@ -97,6 +98,46 @@ void cli_check_has_no_side_effects() {
   expect((st.st_mode & 0777) == 0700, "serve creates them 0700");
 #endif
 }
+
+std::vector<std::string> init_flags(const ServerFixture& f, const std::filesystem::path& config) {
+  return {"init", "--config", config.string(), "--models-root", f.models.string(), "--tokenizer-pack",
+          f.tokenizer.string(), "--engine", f.engine.string(), "--model-id", "qwen-local", "--port", std::to_string(f.port)};
+}
+
+void init_writes_config_and_token_then_server_starts() {
+  ServerFixture f;
+  const auto config = f.dir / "fresh" / "config.json";
+  const auto init = f.run(init_flags(f, config));
+  expect(init.exit_code == 0, "init succeeds: " + init.err);
+  expect(std::filesystem::exists(config) && std::filesystem::exists(f.dir / "fresh" / "token"), "config and token written");
+  const auto source = std::get<secure_frontend::SecretSource>(secure_frontend::make_protected_file_secret_source("token"));
+  auto token = secure_frontend::read_token(source, f.dir / "fresh");
+  const auto* value = std::get_if<secure_frontend::SecretBytes>(&token);
+  expect(value != nullptr && value->size() == 43U, "a generated 43-character token is readable");
+  if (value == nullptr) return;
+  expect(!contains(init.out, value->view()) && !contains(init.err, value->view()), "init never prints the token");
+  secure_frontend_test::ChildProcess server;
+  expect(f.start(server, {"--config", config.string()}), "the server starts from the written config alone: " + server.stderr_text());
+  const auto response = f.request("GET", "/health", "Bearer " + std::string{value->view()});
+  expect(response.rfind("HTTP/1.1 200", 0) == 0, "the generated token authenticates: " + response.substr(0, 16));
+}
+
+void init_refuses_to_overwrite_without_force() {
+  ServerFixture f;
+  const auto config = f.dir / "fresh" / "config.json";
+  expect(f.run(init_flags(f, config)).exit_code == 0, "first init");
+  const std::string config_before = secure_frontend_test::read_file(config);
+  const std::string token_before = secure_frontend_test::read_file(f.dir / "fresh" / "token");
+  const auto again = f.run(init_flags(f, config));
+  expect(again.exit_code != 0 && contains(again.err, "already exists"), "a second init without --force fails: " + again.err);
+  expect(secure_frontend_test::read_file(config) == config_before &&
+             secure_frontend_test::read_file(f.dir / "fresh" / "token") == token_before,
+         "nothing was changed");
+  auto forced = init_flags(f, config);
+  forced.insert(forced.begin() + 1, "--force");
+  expect(f.run(forced).exit_code == 0, "--force succeeds");
+  expect(secure_frontend_test::read_file(f.dir / "fresh" / "token") != token_before, "--force rotates the token");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -106,5 +147,7 @@ int main(int argc, char** argv) {
       {"cli_check_prints_no_token", cli_check_prints_no_token},
       {"cli_check_has_no_side_effects", cli_check_has_no_side_effects},
       {"cli_unknown_option_does_not_echo_value", cli_unknown_option_does_not_echo_value},
+      {"init_writes_config_and_token_then_server_starts", init_writes_config_and_token_then_server_starts},
+      {"init_refuses_to_overwrite_without_force", init_refuses_to_overwrite_without_force},
   }, failures);
 }

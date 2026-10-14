@@ -62,12 +62,24 @@ std::string safe_option_name(const std::string_view argument) {
 std::variant<ServerInvocation, CliError> parse_server_command_line(const int argc, const char* const* argv) {
   ServerInvocation invocation;
   auto& entries = invocation.flags.entries;
-  for (int index = 1; index < argc; ++index) {
+  int first = 1;
+  if (argc > 1 && std::string_view{argv[1]} == "init") {
+    invocation.command = ServerCommand::init;
+    first = 2;
+  }
+  for (int index = first; index < argc; ++index) {
     const std::string_view argument{argv[index]};
     if (argument == "--help") { invocation.command = ServerCommand::help; return invocation; }
     if (argument == "--check") {
+      if (invocation.command == ServerCommand::init) return CliError{"--check cannot be combined with init"};
       if (invocation.command == ServerCommand::check) return CliError{"duplicate --check"};
       invocation.command = ServerCommand::check;
+      continue;
+    }
+    if (argument == "--force") {
+      if (invocation.command != ServerCommand::init) return CliError{"--force is only valid with init"};
+      if (invocation.force) return CliError{"duplicate --force"};
+      invocation.force = true;
       continue;
     }
     if (argument == "--config") {
@@ -121,6 +133,9 @@ std::variant<ServerInvocation, CliError> parse_server_command_line(const int arg
         break;
     }
   }
+  if (invocation.command == ServerCommand::init && !invocation.config_file.has_value()) {
+    return CliError{"init requires --config FILE"};
+  }
   return invocation;
 }
 
@@ -128,6 +143,7 @@ std::string server_usage() {
   std::string text =
       "Usage: strata-secure-server [--config FILE] [options]\n"
       "       strata-secure-server --check [--config FILE] [options]\n"
+      "       strata-secure-server init --config FILE [--force] [options]\n"
       "\n"
       "Configuration comes from built-in defaults, then FILE (strict JSON; see the\n"
       "README's key table), then the options below. An option wins over the file and\n"
@@ -137,6 +153,11 @@ std::string server_usage() {
       "  --check                  Validate everything, print the effective configuration\n"
       "                           (never the token) and exit\n"
       "  --help                   Print this help\n"
+      "\n"
+      "init writes FILE (owner-only, atomic) from the options given and generates a\n"
+      "43-character token at token.source below roots.secret (default: FILE's\n"
+      "directory). It refuses to replace either without --force. The token is never\n"
+      "printed; the product's `strata key show` will display it.\n"
       "\n"
       "Options (each sets one configuration key):\n";
   for (const auto& spec : kFlags) {

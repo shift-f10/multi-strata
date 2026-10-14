@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <string>
 #include <string_view>
 #include <variant>
 
@@ -24,5 +25,9 @@ inline constexpr std::size_t kMaxConfigFileBytes = 64U * 1024U;
 // Overlays command-line entries on a file draft: flags win, and every key set
 // in both is listed in overridden_by_command_line.
 [[nodiscard]] FrontendConfigDraft merge_drafts(FrontendConfigDraft file, const FrontendConfigDraft& flags);
+
+// Strict JSON, two-space indent, keys nested by section; values exactly as in
+// the draft. The inverse of parse_config_text for the draft's entries.
+[[nodiscard]] std::string render_config_document(const FrontendConfigDraft& draft);
 
 }  // namespace secure_frontend

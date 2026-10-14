@@ -138,10 +138,12 @@ target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_config
 target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_paths)
 
 add_library(secure_frontend_server_cli src/server_cli.cpp)
+target_sources(secure_frontend_server_cli PRIVATE src/frontend_init.cpp)
 target_compile_features(secure_frontend_server_cli PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_server_cli PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
 target_link_libraries(secure_frontend_server_cli PUBLIC secure_frontend_typed_config)
+target_link_libraries(secure_frontend_server_cli PUBLIC secure_frontend_token_store)
 
 add_library(secure_frontend_chat_schema
     src/chat_schema.cpp
@@ -634,6 +636,10 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         cli_unknown_option_does_not_echo_value
         ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
     secure_frontend_add_cases(secure_frontend_server_cli_tests cli_check_has_no_side_effects
+        ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+    target_link_libraries(secure_frontend_server_cli_tests PRIVATE secure_frontend_token_reader)
+    secure_frontend_add_cases(secure_frontend_server_cli_tests
+        init_writes_config_and_token_then_server_starts init_refuses_to_overwrite_without_force
         ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
 
     secure_frontend_add_test_executable(secure_frontend_server_e2e_tests tests/server_e2e_test.cpp

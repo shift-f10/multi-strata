@@ -5,6 +5,7 @@
 #include "secure_frontend/engine_arguments.hpp"
 #include "secure_frontend/engine_stdio_process.hpp"
 #include "secure_frontend/frontend_config.hpp"
+#include "secure_frontend/frontend_init.hpp"
 #include "secure_frontend/http_request_handler.hpp"
 #include "secure_frontend/http_socket_server.hpp"
 #include "secure_frontend/model_inventory.hpp"
@@ -170,6 +171,16 @@ int main(int argc, char* argv[]) {
   const auto& invocation = std::get<secure_frontend::ServerInvocation>(parsed);
   if (invocation.command == secure_frontend::ServerCommand::help) {
     std::cout << secure_frontend::server_usage();
+    return EXIT_SUCCESS;
+  }
+  if (invocation.command == secure_frontend::ServerCommand::init) {
+    const auto failure = secure_frontend::init_frontend(*invocation.config_file, invocation.flags, invocation.force);
+    if (failure.has_value()) {
+      std::cerr << "init: " << failure->message << '\n';
+      for (const auto& issue : failure->issues) std::cerr << "Configuration error: " << secure_frontend::format_issue(issue) << '\n';
+      return EXIT_FAILURE;
+    }
+    std::cout << "init: wrote the configuration file and, for a file token source, a new token (not shown).\n";
     return EXIT_SUCCESS;
   }
   std::vector<std::string> overridden;
