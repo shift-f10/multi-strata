@@ -119,6 +119,10 @@ add_library(secure_frontend_engine_arguments
     src/engine_arguments.cpp
 )
 
+add_library(secure_frontend_json
+    src/json.cpp
+)
+
 add_library(secure_frontend_chat_schema
     src/chat_schema.cpp
 )
@@ -223,6 +227,11 @@ target_include_directories(secure_frontend_engine_arguments
         $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(secure_frontend_engine_arguments PUBLIC secure_frontend_model_inventory)
+target_compile_features(secure_frontend_json PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_json PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_link_libraries(secure_frontend_chat_schema PUBLIC secure_frontend_json)
+target_link_libraries(secure_frontend_tokenizer_pack PUBLIC secure_frontend_json)
 target_compile_features(secure_frontend_chat_schema PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_chat_schema
     PUBLIC
@@ -306,7 +315,7 @@ foreach(_target IN ITEMS
         secure_frontend_http_request_handler secure_frontend_api_router secure_frontend_engine_process
         secure_frontend_engine_protocol_client secure_frontend_engine_stdio_process
         secure_frontend_http_socket_server secure_frontend_model_inventory secure_frontend_engine_arguments
-        secure_frontend_chat_schema
+        secure_frontend_json secure_frontend_chat_schema
         secure_frontend_tokenizer_pack secure_frontend_qwen_prompt_renderer secure_frontend_glm_prompt_renderer
         secure_frontend_chat_generation_plan secure_frontend_chat_execution
         secure-frontend-smoke strata-secure-smoke-server strata-secure-server)
@@ -414,6 +423,12 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_chat_schema_tests
         parses_minimal_text_request rejects_unsupported_and_unsafe_features rejects_duplicate_and_malformed_json
         renders_escaped_minimal_response)
+
+    secure_frontend_add_test_executable(secure_frontend_json_tests tests/json_test.cpp secure_frontend_json)
+    secure_frontend_add_cases(secure_frontend_json_tests
+        json_accepts_strict_document json_rejects_duplicate_keys json_rejects_depth_over_limit
+        json_rejects_non_integer_numbers json_rejects_bom_trailing_data_and_comments
+        json_enforces_size_entry_and_string_limits json_string_escaper_round_trips)
 
     secure_frontend_add_test_executable(secure_frontend_tokenizer_pack_tests tests/tokenizer_pack_test.cpp
         secure_frontend_tokenizer_pack)

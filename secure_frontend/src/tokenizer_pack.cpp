@@ -1,5 +1,7 @@
 #include "secure_frontend/tokenizer_pack.hpp"
 
+#include "secure_frontend/json.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -10,6 +12,7 @@
 #include <set>
 #include <string_view>
 #include <system_error>
+#include <variant>
 
 namespace secure_frontend {
 namespace {
@@ -63,99 +66,6 @@ void append_utf8(std::string* out, const std::uint32_t point) {
   else if (point <= 0xffffU) { out->push_back(static_cast<char>(0xe0U | (point >> 12U))); out->push_back(static_cast<char>(0x80U | ((point >> 6U) & 0x3fU))); out->push_back(static_cast<char>(0x80U | (point & 0x3fU))); }
   else { out->push_back(static_cast<char>(0xf0U | (point >> 18U))); out->push_back(static_cast<char>(0x80U | ((point >> 12U) & 0x3fU))); out->push_back(static_cast<char>(0x80U | ((point >> 6U) & 0x3fU))); out->push_back(static_cast<char>(0x80U | (point & 0x3fU))); }
 }
-
-class Json final {
- public:
-  explicit Json(const std::string_view text) : text_(text) {}
-  std::optional<std::map<std::string, std::size_t>> object_of_unsigned() {
-    if (!consume('{')) return std::nullopt;
-    std::map<std::string, std::size_t> result;
-    if (consume('}')) return result;
-    while (true) {
-      const auto key = string();
-      if (!key || !consume(':')) return std::nullopt;
-      const auto value = unsigned_number();
-      if (!value || !result.emplace(*key, *value).second) return std::nullopt;
-      if (consume('}')) break;
-      if (!consume(',')) return std::nullopt;
-    }
-    skip();
-    return position_ == text_.size() ? std::optional{std::move(result)} : std::nullopt;
-  }
-  std::optional<std::vector<int>> array_of_ints() {
-    if (!consume('[')) return std::nullopt;
-    std::vector<int> result;
-    if (consume(']')) return result;
-    while (true) {
-      const auto value = signed_number();
-      if (!value || result.size() >= kMaximumVocabularyEntries) return std::nullopt;
-      result.push_back(*value);
-      if (consume(']')) break;
-      if (!consume(',')) return std::nullopt;
-    }
-    skip();
-    return position_ == text_.size() ? std::optional{std::move(result)} : std::nullopt;
-  }
- private:
-  void skip() { while (position_ < text_.size() && (text_[position_] == ' ' || text_[position_] == '\n' || text_[position_] == '\r' || text_[position_] == '\t')) ++position_; }
-  bool consume(const char expected) { skip(); if (position_ == text_.size() || text_[position_] != expected) return false; ++position_; return true; }
-  std::optional<unsigned int> hex(const char value) {
-    if (value >= '0' && value <= '9') return static_cast<unsigned int>(value - '0');
-    if (value >= 'a' && value <= 'f') return static_cast<unsigned int>(value - 'a' + 10);
-    if (value >= 'A' && value <= 'F') return static_cast<unsigned int>(value - 'A' + 10);
-    return std::nullopt;
-  }
-  std::optional<std::uint32_t> unicode() {
-    if (position_ + 4U > text_.size()) return std::nullopt;
-    std::uint32_t value = 0U;
-    for (unsigned int n = 0U; n < 4U; ++n) { const auto digit = hex(text_[position_++]); if (!digit) return std::nullopt; value = (value << 4U) | *digit; }
-    if (value >= 0xd800U && value <= 0xdbffU) {
-      if (position_ + 6U > text_.size() || text_[position_++] != '\\' || text_[position_++] != 'u') return std::nullopt;
-      const auto low = unicode();
-      if (!low || *low < 0xdc00U || *low > 0xdfffU) return std::nullopt;
-      return 0x10000U + ((value - 0xd800U) << 10U) + (*low - 0xdc00U);
-    }
-    if (value >= 0xdc00U && value <= 0xdfffU) return std::nullopt;
-    return value;
-  }
-  std::optional<std::string> string() {
-    if (!consume('"')) return std::nullopt;
-    std::string out;
-    while (position_ < text_.size()) {
-      const unsigned char current = static_cast<unsigned char>(text_[position_++]);
-      if (current == '"') return valid_utf8(out) ? std::optional{std::move(out)} : std::nullopt;
-      if (current < 0x20U) return std::nullopt;
-      if (current != '\\') { out.push_back(static_cast<char>(current)); continue; }
-      if (position_ == text_.size()) return std::nullopt;
-      const char escaped = text_[position_++];
-      switch (escaped) {
-        case '"': out.push_back('"'); break; case '\\': out.push_back('\\'); break; case '/': out.push_back('/'); break;
-        case 'b': out.push_back('\b'); break; case 'f': out.push_back('\f'); break; case 'n': out.push_back('\n'); break;
-        case 'r': out.push_back('\r'); break; case 't': out.push_back('\t'); break;
-        case 'u': { const auto point = unicode(); if (!point) return std::nullopt; append_utf8(&out, *point); break; }
-        default: return std::nullopt;
-      }
-      if (out.size() > kMaximumTokenBytes) return std::nullopt;
-    }
-    return std::nullopt;
-  }
-  std::optional<std::size_t> unsigned_number() {
-    skip(); const std::size_t start = position_;
-    if (position_ == text_.size() || text_[position_] < '0' || text_[position_] > '9') return std::nullopt;
-    if (text_[position_] == '0') ++position_; else while (position_ < text_.size() && text_[position_] >= '0' && text_[position_] <= '9') ++position_;
-    if (position_ < text_.size() && (text_[position_] == '.' || text_[position_] == 'e' || text_[position_] == 'E')) return std::nullopt;
-    std::size_t value = 0U;
-    for (std::size_t i = start; i < position_; ++i) { const std::size_t digit = static_cast<std::size_t>(text_[i] - '0'); if (value > (std::numeric_limits<std::size_t>::max() - digit) / 10U) return std::nullopt; value = value * 10U + digit; }
-    return value;
-  }
-  std::optional<int> signed_number() {
-    skip(); bool negative = false; if (position_ < text_.size() && text_[position_] == '-') { negative = true; ++position_; }
-    const auto number = unsigned_number(); if (!number || *number > static_cast<std::size_t>(std::numeric_limits<int>::max()) + (negative ? 1U : 0U)) return std::nullopt;
-    if (negative) return *number == static_cast<std::size_t>(std::numeric_limits<int>::max()) + 1U ? std::numeric_limits<int>::min() : -static_cast<int>(*number);
-    return static_cast<int>(*number);
-  }
-  std::string_view text_; std::size_t position_{0U};
-};
 
 std::variant<std::string, TokenizerPackError> read_required(const std::filesystem::path& root, const std::string_view name) {
   const auto path = root / std::string{name};
@@ -244,6 +154,41 @@ TokenizerEncodeResult encode_piece(const TokenizerPack& pack, const std::string_
   return encoded;
 }
 
+// One extra entry so an oversized vocabulary still reaches the
+// invalid_vocabulary check below with its own error code.
+constexpr JsonLimits kPackJsonLimits{.max_bytes = kMaximumFileBytes, .max_depth = 1U,
+                                     .max_container_entries = kMaximumVocabularyEntries + 1U,
+                                     .max_string_bytes = kMaximumTokenBytes};
+
+std::optional<std::map<std::string, std::size_t>> vocabulary_from(const JsonParseResult& parsed) {
+  const auto* root = std::get_if<JsonValue>(&parsed);
+  const auto* members = root != nullptr ? root->if_object() : nullptr;
+  if (members == nullptr) return std::nullopt;
+  std::map<std::string, std::size_t> result;
+  for (const auto& member : *members) {
+    const auto* id = member.value.if_integer();
+    if (id == nullptr || *id < 0) return std::nullopt;
+    result.emplace(member.key, static_cast<std::size_t>(*id));
+  }
+  return result;
+}
+
+std::optional<std::vector<int>> token_types_from(const JsonParseResult& parsed) {
+  const auto* root = std::get_if<JsonValue>(&parsed);
+  const auto* items = root != nullptr ? root->if_array() : nullptr;
+  if (items == nullptr || items->size() > kMaximumVocabularyEntries) return std::nullopt;
+  std::vector<int> result;
+  result.reserve(items->size());
+  for (const auto& item : *items) {
+    const auto* value = item.if_integer();
+    if (value == nullptr || *value < std::numeric_limits<int>::min() || *value > std::numeric_limits<int>::max()) {
+      return std::nullopt;
+    }
+    result.push_back(static_cast<int>(*value));
+  }
+  return result;
+}
+
 }  // namespace
 
 TokenizerPackLoadResult load_local_tokenizer_pack(const std::filesystem::path& pack_root) {
@@ -255,8 +200,8 @@ TokenizerPackLoadResult load_local_tokenizer_pack(const std::filesystem::path& p
   if (const auto* e = std::get_if<TokenizerPackError>(&vocab_text)) return *e;
   if (const auto* e = std::get_if<TokenizerPackError>(&merges_text)) return *e;
   if (const auto* e = std::get_if<TokenizerPackError>(&types_text)) return *e;
-  const auto vocabulary = Json(std::get<std::string>(vocab_text)).object_of_unsigned();
-  const auto types = Json(std::get<std::string>(types_text)).array_of_ints();
+  const auto vocabulary = vocabulary_from(parse_json(std::get<std::string>(vocab_text), kPackJsonLimits));
+  const auto types = token_types_from(parse_json(std::get<std::string>(types_text), kPackJsonLimits));
   if (!vocabulary) return error(TokenizerPackErrorCode::invalid_json, "vocab.json must be a JSON object of token IDs");
   if (!types) return error(TokenizerPackErrorCode::invalid_json, "token_type.json must be a JSON array of integers");
   if (vocabulary->empty() || vocabulary->size() > kMaximumVocabularyEntries) return error(TokenizerPackErrorCode::invalid_vocabulary, "vocabulary size is outside fixed bounds");
