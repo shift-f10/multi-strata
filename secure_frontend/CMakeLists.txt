@@ -860,7 +860,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         socket_server_shutdown_listener_wakes_idle_client
         send_retries_on_eintr accept_backs_off_on_transient_failure send_some_slices_to_max_send_chunk
         send_all_bounded_stops_at_stall_on_a_stalled_reader send_all_bounded_meets_deadline_and_completes
-        socket_io_poll_probe_and_recv set_no_inherit_marks_the_socket
+        send_all_bounded_stall_restarts_on_progress socket_io_poll_probe_and_recv set_no_inherit_marks_the_socket
         TIMEOUT 300)
     target_link_libraries(secure_frontend_http_socket_server_tests PRIVATE secure_frontend_socket_io)
 

@@ -479,7 +479,7 @@ struct LoopbackPair final {
   secure_frontend::Socket client;
 };
 
-std::optional<LoopbackPair> make_loopback_pair(const int client_receive_buffer = 0) {
+std::optional<LoopbackPair> make_loopback_pair(const int client_receive_buffer = 0, const int server_send_buffer = 0) {
   secure_frontend::Socket listener{socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)};
   if (!listener.valid()) return std::nullopt;
   sockaddr_in address{};
@@ -500,6 +500,10 @@ std::optional<LoopbackPair> make_loopback_pair(const int client_receive_buffer =
   if (connect(pair.client.get(), reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0) return std::nullopt;
   pair.server = secure_frontend::Socket{accept(listener.get(), nullptr, nullptr)};
   if (!pair.server.valid() || !secure_frontend::set_non_blocking(pair.server.get())) return std::nullopt;
+  if (server_send_buffer > 0) {
+    (void)setsockopt(pair.server.get(), SOL_SOCKET, SO_SNDBUF, reinterpret_cast<const char*>(&server_send_buffer),
+                     sizeof(server_send_buffer));
+  }
   return pair;
 }
 
@@ -513,7 +517,6 @@ void send_all_bounded_stops_at_stall_on_a_stalled_reader() {
   const auto start = std::chrono::steady_clock::now();
   const auto outcome = secure_frontend::send_all_bounded(pair->server.get(), payload, stall, start + std::chrono::seconds(30));
   const auto elapsed = std::chrono::steady_clock::now() - start;
-  std::cerr << "stall elapsed ms: " << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() << '\n';
   expect(outcome == secure_frontend::WriteOutcome::stalled, "a stalled reader yields WriteOutcome::stalled");
   expect(elapsed >= stall && elapsed < std::chrono::seconds(3), "the stall bound is honoured, not the deadline");
 }
@@ -558,6 +561,34 @@ void send_all_bounded_meets_deadline_and_completes() {
     reader.join();
     expect(outcome == secure_frontend::WriteOutcome::complete && received == payload.size(), "a draining reader gets every byte");
   }
+}
+
+// Spec §2.7 / E4: the stall clock restarts on every bit of progress. A reader
+// that drains slowly but steadily for well past the stall bound completes; a
+// stall measured from the call (or per call return) would report `stalled`.
+void send_all_bounded_stall_restarts_on_progress() {
+  auto pair = make_loopback_pair(1, 4096);
+  if (!pair) { expect(false, "loopback pair"); return; }
+  const std::string payload(1024U * 1024U, 's');
+  std::size_t received = 0;
+  std::thread reader([&] {
+    char chunk[2048];
+    for (;;) {
+      const int n = recv_bytes(pair->client.get(), chunk, sizeof(chunk));
+      if (n <= 0) break;
+      received += static_cast<std::size_t>(n);
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+  });
+  const auto stall = std::chrono::milliseconds(200);
+  const auto start = std::chrono::steady_clock::now();
+  const auto outcome = secure_frontend::send_all_bounded(pair->server.get(), payload, stall, start + std::chrono::seconds(10));
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  secure_frontend::half_close_and_drain(pair->server.get());
+  reader.join();
+  expect(outcome == secure_frontend::WriteOutcome::complete, "steady progress never counts as a stall");
+  expect(elapsed > stall, "the write outlasted the stall bound, so the bound restarted on progress");
+  expect(received == payload.size(), "the reader got every byte");
 }
 
 // poll_sockets, recv_some, probe_peer and bytes_pending on a live pair.
@@ -632,6 +663,7 @@ int main(int argc, char** argv) {
       {"send_some_slices_to_max_send_chunk", send_some_slices_to_max_send_chunk},
       {"send_all_bounded_stops_at_stall_on_a_stalled_reader", send_all_bounded_stops_at_stall_on_a_stalled_reader},
       {"send_all_bounded_meets_deadline_and_completes", send_all_bounded_meets_deadline_and_completes},
+      {"send_all_bounded_stall_restarts_on_progress", send_all_bounded_stall_restarts_on_progress},
       {"socket_io_poll_probe_and_recv", socket_io_poll_probe_and_recv},
       {"set_no_inherit_marks_the_socket", set_no_inherit_marks_the_socket},
   }, failures);

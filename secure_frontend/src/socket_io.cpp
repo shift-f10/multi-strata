@@ -46,11 +46,13 @@ bool would_block(const int code) noexcept {
 #endif
 }
 
-// One-entry poll: true when the socket is ready (or reports an error, which the
-// following send/recv then surfaces).
-bool wait_one(const NativeSocket socket, const bool read, const std::chrono::milliseconds timeout) noexcept {
+// One-entry poll: > 0 when the socket is ready (or reports an error, which the
+// following send/recv then surfaces), 0 on timeout OR a POSIX EINTR, -1 on a
+// poll error. A 0 is never proof that the timeout elapsed: callers re-check
+// their own clock.
+int wait_one(const NativeSocket socket, const bool read, const std::chrono::milliseconds timeout) noexcept {
   PollEntry entry{socket, read, !read};
-  return poll_sockets(std::span<PollEntry>{&entry, 1U}, timeout) > 0;
+  return poll_sockets(std::span<PollEntry>{&entry, 1U}, timeout);
 }
 
 std::chrono::milliseconds ceil_ms(const Clock::duration d) noexcept {
@@ -158,6 +160,9 @@ IoResult send_some(const NativeSocket socket, const std::string_view bytes) noex
 
 WriteOutcome send_all_bounded(const NativeSocket socket, std::string_view bytes, const std::chrono::milliseconds stall,
                               const Clock::time_point deadline) noexcept {
+  // A non-positive `stall` reports `stalled` before the first send (callers pass
+  // write_stall_ms, which the schema keeps >= 1). The stall clock restarts on
+  // every send that moves at least one byte (spec §2.7, E4).
   auto last_progress = Clock::now();
   while (!bytes.empty()) {
     const auto now = Clock::now();
@@ -172,7 +177,7 @@ WriteOutcome send_all_bounded(const NativeSocket socket, std::string_view bytes,
     if (result.status != IoStatus::would_block) return WriteOutcome::failed;
     // Wait for writability, never past the stall bound or the deadline.
     const auto wait = std::min({ceil_ms(deadline - now), ceil_ms(last_progress + stall - now), api_constants::kStreamPollSlice});
-    (void)wait_one(socket, false, wait);
+    (void)wait_one(socket, false, wait);  // 0 (timeout or EINTR) loops back to the clock checks
   }
   return WriteOutcome::complete;
 }
@@ -196,7 +201,10 @@ void half_close_and_drain(const NativeSocket socket) noexcept {
   std::size_t drained = 0;
   while (drained < api_constants::kDrainBytes) {
     const auto now = Clock::now();
-    if (now >= deadline || !wait_one(socket, true, ceil_ms(deadline - now))) return;
+    if (now >= deadline) return;
+    const int ready = wait_one(socket, true, ceil_ms(deadline - now));
+    if (ready < 0) return;
+    if (ready == 0) continue;  // timeout or EINTR: the clock check above decides
     const IoResult r = recv_some(socket, sink.data(), sink.size());
     if (r.status == IoStatus::would_block) continue;  // spurious readiness
     if (r.status != IoStatus::done) return;           // EOF or error
