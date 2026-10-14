@@ -48,7 +48,7 @@ KillReason kill_reason_for(const EngineProtocolClient& protocol) noexcept {
   switch (*code) {
     case EngineProtocolErrorCode::transport_write_failed: return KillReason::write_timeout;
     case EngineProtocolErrorCode::fatal_engine_line: return KillReason::fatal_line;
-    // SP3 D-2: an ignored STOP sent for a client that went away is not the engine's failure.
+    // An ignored STOP sent for a client that went away: not counted (SP3 D-2, risk R4).
     case EngineProtocolErrorCode::abandoned:
       return protocol.stop_cause() == EngineStopCause::client_cancelled ? KillReason::client_stop_drain_failed : KillReason::drain_failed;
     default: return KillReason::protocol_failed;
@@ -388,7 +388,8 @@ KillReason EngineSupervisor::watch(EngineInstance& instance) {
 
 // `stopping` (spec §3.8): kill the whole group/Job, reap within reap_timeout,
 // classify and log. `uncounted` only for our own client_stop_drain_failed
-// kill (SP3 D-2); an engine that ended by itself counts whatever was reported.
+// kill (SP3 D-2) while the streak is under kMaxConsecutiveUncountedRestarts;
+// an engine that ended by itself counts whatever was reported.
 EngineSupervisor::GenerationEnd EngineSupervisor::end_generation(const std::shared_ptr<EngineInstance>& instance, const KillReason reason) {
   set_state(SupervisorState::stopping);
   SupervisedProcess& process = *instance->process;
@@ -416,8 +417,13 @@ EngineSupervisor::GenerationEnd EngineSupervisor::end_generation(const std::shar
     nnp_hint_logged_ = true;
     log_(kNoNewPrivilegesHint);
   }
+  // The streak of uncounted restarts ends at any successful DONE; a counted
+  // failure does not end it (controller ruling, SP3 D-2 bound).
+  if (instance->protocol && instance->protocol->completed_generations() > 0U) uncounted_streak_ = 0U;
   const bool client_stop = classified.kind == ExitKind::killed_by_supervisor && classified.reason == KillReason::client_stop_drain_failed;
-  return client_stop ? GenerationEnd::uncounted : GenerationEnd::counted;
+  if (!client_stop || uncounted_streak_ >= config_defaults::kMaxConsecutiveUncountedRestarts) return GenerationEnd::counted;
+  ++uncounted_streak_;
+  return GenerationEnd::uncounted;
 }
 
 bool EngineSupervisor::schedule_restart(const std::chrono::milliseconds healthy_for, const GenerationEnd ended) {
@@ -431,6 +437,8 @@ bool EngineSupervisor::schedule_restart(const std::chrono::milliseconds healthy_
     // SP3 D-2 (risk R4): a client that went away during a long prefill must
     // not open the circuit. No failure is recorded, so neither the count nor
     // the backoff grows; `backoff` lasts zero time and the next spawn follows.
+    // The healthy-window reset (spec §3.3) still applies.
+    tracker_.note_healthy(healthy_for);
     set_state(SupervisorState::backoff, nullptr);
     return true;
   }

@@ -36,6 +36,9 @@ class RestartTracker final {
   // (zero for spawn failures and generations that never became ready);
   // reaching healthy_window first resets the count to 0.
   [[nodiscard]] RestartDecision record_failure(std::chrono::milliseconds healthy_for) noexcept;
+  // An end that is not counted (SP3 D-2) still applies the healthy-window
+  // reset: `healthy_for` >= healthy_window resets the count to 0; nothing is added.
+  void note_healthy(std::chrono::milliseconds healthy_for) noexcept;
   [[nodiscard]] std::uint32_t consecutive_failures() const noexcept { return failures_; }
 
  private:

@@ -5,8 +5,12 @@
 
 namespace secure_frontend {
 
-RestartDecision RestartTracker::record_failure(const std::chrono::milliseconds healthy_for) noexcept {
+void RestartTracker::note_healthy(const std::chrono::milliseconds healthy_for) noexcept {
   if (healthy_for >= policy_.healthy_window) failures_ = 0U;
+}
+
+RestartDecision RestartTracker::record_failure(const std::chrono::milliseconds healthy_for) noexcept {
+  note_healthy(healthy_for);
   if (failures_ < std::numeric_limits<std::uint32_t>::max()) ++failures_;
   const std::uint32_t limit = std::max<std::uint32_t>(policy_.max_consecutive_failures, 1U);
   if (failures_ >= limit) return {true, std::chrono::milliseconds::zero(), failures_};

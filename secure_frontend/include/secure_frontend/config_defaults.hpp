@@ -31,6 +31,9 @@ inline constexpr std::int64_t kMaxConcurrentRequests = 1;
 // Supervision (SP2). Restart policy (spec §3.3, owner decision 2026-10-13);
 // the READY timeout is kEngineReadyTimeoutS above, not a second copy.
 inline constexpr std::uint32_t kMaxConsecutiveFailures = 3U;
+// SP3 D-2 bound (controller ruling): at most this many consecutive uncounted
+// client-STOP restarts with no successful DONE between them; later ones count.
+inline constexpr std::uint32_t kMaxConsecutiveUncountedRestarts = 3U;
 inline constexpr std::chrono::milliseconds kBackoffInitial{1'000};
 inline constexpr std::uint32_t kBackoffFactor = 2U;
 inline constexpr std::chrono::milliseconds kBackoffMax{60'000};

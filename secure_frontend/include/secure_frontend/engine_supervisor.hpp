@@ -148,8 +148,17 @@ class EngineSupervisor final {
   // KillReason::client_stop_drain_failed (SP3 D-2: the drain after a STOP sent
   // for a client that went away failed) kills and restarts the same way but
   // counts no failure: the restart follows at once (zero-length `backoff`) and
-  // the failure count is unchanged. If the engine had already ended by itself,
-  // its end counts as usual.
+  // the failure count is unchanged, except that a generation healthy for
+  // healthy_window still resets it to 0. If the engine had already ended by
+  // itself, its end counts as usual.
+  // Bound (controller ruling): at most config_defaults::
+  // kMaxConsecutiveUncountedRestarts (3) such restarts in a row with no
+  // successful DONE on any generation between them; later ones count like
+  // drain_failed, so an engine that always ignores STOP still reaches
+  // circuit_open. A successful DONE ends the streak; a counted failure does not.
+  // Production code derives this reason only through kill_reason_for(protocol)
+  // (abandoned + a STOP sent with EngineStopCause::client_cancelled); passing
+  // it here directly is for tests only.
   void report_fatal(const Lease& lease, KillReason reason);
   // One sample per /health request (SP0's sample-once rule).
   [[nodiscard]] HealthSnapshot snapshot() const;
@@ -213,6 +222,8 @@ class EngineSupervisor final {
   SupervisorState state_{SupervisorState::stopped};
   std::shared_ptr<EngineInstance> current_;
   KillReason pending_kill_{KillReason::none};
+  // Supervisor thread only: consecutive uncounted client-STOP restarts (SP3 D-2 bound).
+  std::uint32_t uncounted_streak_{0};
   // Ended generations still borrowed by a Lease: destroyed by sweep_retired()
   // on the supervisor thread once the Lease lets go (spec §3.1; on Windows the
   // destructor terminates the Job and waits).
@@ -232,7 +243,8 @@ class EngineSupervisor final {
 
 // Maps the protocol's terminal failure to the §3.5 kill reason. An abandoned
 // protocol (ignored STOP) is drain_failed, or client_stop_drain_failed when
-// that STOP was sent with EngineStopCause::client_cancelled (SP3 D-2).
+// that STOP was sent with EngineStopCause::client_cancelled (SP3 D-2). This is
+// the only production source of client_stop_drain_failed.
 [[nodiscard]] KillReason kill_reason_for(const EngineProtocolClient& protocol) noexcept;
 
 // The serving thread's one call per chat request: borrows the current

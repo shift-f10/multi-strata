@@ -176,6 +176,29 @@ void generation_total_deadline_is_enforced() {
   expect(client.generating() && !client.idle(), "a timeout leaves the generation active for STOP/drain");
 }
 
+// SP3 D-2: the STOP cause belongs to one generation request; every
+// begin_generation() forgets it, even one that is refused. Successful DONE
+// records are counted (the supervisor's uncounted-restart streak resets on one).
+void stop_cause_and_completed_generations() {
+  FakeTransport transport;
+  transport.reads = {line("READY 1024 stop"), line("DONE 0 1 1 1 cancel"), line("DONE 0 1 1 1 nonfinite")};
+  EngineProtocolClient client(transport);
+  secure_frontend::EngineReady ready{};
+  (void)client.await_ready(std::chrono::seconds(1), ready);
+  expect(!client.stop_cause().has_value() && client.completed_generations() == 0U, "nothing recorded before any GEN");
+  (void)client.begin_generation(2, {9});
+  expect(!client.stop(secure_frontend::EngineStopCause::client_cancelled).has_value(), "client STOP accepted");
+  expect(client.stop_cause() == secure_frontend::EngineStopCause::client_cancelled, "the cause is recorded");
+  secure_frontend::EngineGeneration generation;
+  expect(!client.read_generation(std::chrono::seconds(1), generation).has_value(), "the STOP drained to DONE");
+  expect(client.completed_generations() == 1U, "a successful DONE is counted");
+  expect(client.begin_generation(2, {}).has_value(), "an empty prompt is refused");
+  expect(!client.stop_cause().has_value(), "a refused GEN still forgets the previous request's cause");
+  (void)client.begin_generation(2, {9});
+  expect(client.read_generation(std::chrono::seconds(1), generation).has_value(), "a nonfinite DONE fails the request");
+  expect(client.completed_generations() == 1U, "a nonfinite DONE is not a successful one");
+}
+
 }  // namespace
 
 // E4: a prompt at the engine's advertised context must fit the GEN line.
@@ -215,5 +238,6 @@ int main(int argc, char** argv) {
       {"generation_total_deadline_is_enforced", generation_total_deadline_is_enforced},
       {"gen_line_fits_max_prompt_tokens", gen_line_fits_max_prompt_tokens},
       {"derived_line_cap_is_clamped_to_protocol_max", derived_line_cap_is_clamped_to_protocol_max},
+      {"stop_cause_and_completed_generations", stop_cause_and_completed_generations},
   }, failures);
 }

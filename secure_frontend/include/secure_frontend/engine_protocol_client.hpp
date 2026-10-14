@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -126,7 +127,7 @@ class EngineProtocolClient final {
   [[nodiscard]] std::optional<EngineProtocolError> read_generation(
       std::chrono::milliseconds timeout, EngineGeneration& generation);
   // Sends STOP once per generation; `cause` is recorded only when STOP was
-  // written and is forgotten by the next begin_generation().
+  // written and is forgotten by the next begin_generation() call, even a refused one.
   [[nodiscard]] std::optional<EngineProtocolError> stop(EngineStopCause cause = EngineStopCause::generation_timeout);
   [[nodiscard]] std::optional<EngineProtocolError> quit();
   // Marks the protocol failed without writing anything, e.g. when the engine
@@ -142,6 +143,10 @@ class EngineProtocolClient final {
   [[nodiscard]] std::optional<EngineProtocolErrorCode> failure_code() const noexcept { return failure_code_; }
   // Why STOP was sent for the current (or last) generation; nullopt if none was.
   [[nodiscard]] std::optional<EngineStopCause> stop_cause() const noexcept { return stop_cause_; }
+  // Generations that ended with a successful DONE (a `nonfinite` DONE is not
+  // one). Atomic: the supervisor thread reads it while a Lease holder may use
+  // the client (SP3 D-2 streak reset); everything else here is single-threaded.
+  [[nodiscard]] std::uint64_t completed_generations() const noexcept { return completed_generations_.load(); }
 
  private:
   enum class State { waiting_ready, idle, generating, closed, failed };
@@ -154,6 +159,7 @@ class EngineProtocolClient final {
   bool supports_stop_{false};
   bool stop_requested_{false};
   std::optional<EngineStopCause> stop_cause_;
+  std::atomic<std::uint64_t> completed_generations_{0};
   std::optional<EngineProtocolErrorCode> failure_code_;
   // Outbound command cap; sized from READY when limits_.max_line_bytes == 0.
   std::size_t effective_max_line_bytes_;

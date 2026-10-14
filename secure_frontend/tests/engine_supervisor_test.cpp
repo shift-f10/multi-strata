@@ -452,39 +452,123 @@ bool client_stop_drain_fails(secure_frontend::EngineSupervisor& supervisor) {
   return true;
 }
 
+void counted_failure(secure_frontend::EngineSupervisor& supervisor, const std::uint64_t generation) {
+  expect(test_support::wait_generation_ready(supervisor, generation, 5s), "generation " + std::to_string(generation) + " ready");
+  auto lease = supervisor.acquire();
+  expect(lease.has_value(), "lease on generation " + std::to_string(generation));
+  if (lease) supervisor.report_fatal(*lease, secure_frontend::KillReason::protocol_failed);
+}
+
+void client_stop_failure(secure_frontend::EngineSupervisor& supervisor, const std::uint64_t generation) {
+  const std::string name = "generation " + std::to_string(generation);
+  expect(test_support::wait_generation_ready(supervisor, generation, 5s), name + " ready");
+  expect(client_stop_drain_fails(supervisor), name + ": the drain after a client STOP fails");
+}
+
+// One successful GEN -> DONE on the current generation, through a lease.
+void successful_done(secure_frontend::EngineSupervisor& supervisor, const test_support::FakeFactory& fakes, const std::uint64_t generation) {
+  expect(test_support::wait_generation_ready(supervisor, generation, 5s), "generation " + std::to_string(generation) + " ready");
+  auto lease = supervisor.acquire();
+  expect(lease.has_value(), "lease for the DONE");
+  if (!lease) return;
+  expect(!lease->protocol().begin_generation(2U, {1U, 2U}).has_value(), "GEN accepted");
+  fakes.child(generation)->push_line("DONE 0 2 1 1 length");
+  secure_frontend::EngineGeneration done{};
+  expect(!lease->protocol().read_generation(1s, done).has_value(), "the generation ends with a successful DONE");
+}
+
+static_assert(secure_frontend::config_defaults::kMaxConsecutiveUncountedRestarts == 3U, "the tests below assume the ruled bound of 3");
+
 // SP3 D-2 (risk R4): a client that disconnects during a long prefill must not
 // open the circuit. Each failed drain after a client STOP kills and replaces
 // the generation exactly as drain_failed does, but records no failure: no
 // backoff delay, and the count is still 0 afterwards (three counted failures
-// are then needed, with the first delays 1 s, 2 s).
+// are then needed, with the first delays 1 s, 2 s). Three in a row is the
+// ruled bound (kMaxConsecutiveUncountedRestarts).
 void sp3_d2_client_stop_drain_failure_restarts_uncounted() {
   test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.push_line("READY 4096 stop"); });
   auto clock = std::make_shared<test_support::ManualClock>();
   test_support::LogCapture log;
   secure_frontend::EngineSupervisor supervisor({}, fakes.factory(), clock, log.sink());
   expect(supervisor.start(), "the supervisor starts");
-  for (std::uint64_t generation = 1U; generation <= 4U; ++generation) {
-    const std::string name = "generation " + std::to_string(generation);
-    expect(test_support::wait_generation_ready(supervisor, generation, 5s), name + " ready");
-    expect(client_stop_drain_fails(supervisor), name + ": the drain after a client STOP fails");
-  }
-  expect(test_support::wait_generation_ready(supervisor, 5U, 5s), "generation 5 ready: four client-STOP drain failures never opened the circuit");
+  for (std::uint64_t generation = 1U; generation <= 3U; ++generation) client_stop_failure(supervisor, generation);
+  expect(test_support::wait_generation_ready(supervisor, 4U, 5s), "generation 4 ready: three client-STOP drain failures never opened the circuit");
   expect(clock->delays().empty(), "no backoff: the failures were not counted");
-  for (std::uint64_t generation = 1U; generation <= 4U; ++generation) {
+  for (std::uint64_t generation = 1U; generation <= 3U; ++generation) {
     const auto child = fakes.child(generation);
     expect(child && child->kills >= 1, "generation " + std::to_string(generation) + " was killed");
     expect(log.contains("engine generation " + std::to_string(generation) + " ended: killed_by_supervisor(client_stop_drain_failed)"),
            "generation " + std::to_string(generation) + " logged with the fixed client-STOP literal");
   }
-  for (std::uint64_t generation = 5U; generation <= 7U; ++generation) {
-    expect(test_support::wait_generation_ready(supervisor, generation, 5s), "generation " + std::to_string(generation) + " ready");
-    auto lease = supervisor.acquire();
-    expect(lease.has_value(), "lease on generation " + std::to_string(generation));
-    if (lease) supervisor.report_fatal(*lease, secure_frontend::KillReason::protocol_failed);
-  }
+  for (std::uint64_t generation = 4U; generation <= 6U; ++generation) counted_failure(supervisor, generation);
   expect(supervisor.wait_for_state(SupervisorState::circuit_open, 5s), "three counted failures open the circuit");
   expect(clock->delays() == std::vector<std::chrono::milliseconds>{1000ms, 2000ms}, "the count started from 0: 1 s, 2 s, then open");
-  expect(fakes.spawned() == 7U, "exactly seven generations");
+  expect(fakes.spawned() == 6U, "exactly six generations");
+  supervisor.shutdown(5s);
+}
+
+// Fix round 1, finding 1: an uncounted end still honours the healthy window
+// (spec §3.3/§3.8). Two counted failures, then a generation healthy past the
+// window ends by a client-STOP drain failure: the count is back to 0, so three
+// more counted failures are needed to open the circuit.
+void sp3_d2_uncounted_end_resets_count_after_healthy_window() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.push_line("READY 4096 stop"); });
+  auto clock = std::make_shared<test_support::ManualClock>();
+  secure_frontend::EngineSupervisor supervisor({}, fakes.factory(), clock);
+  expect(supervisor.start(), "the supervisor starts");
+  counted_failure(supervisor, 1U);
+  counted_failure(supervisor, 2U);
+  expect(test_support::wait_generation_ready(supervisor, 3U, 5s), "generation 3 ready");
+  clock->advance(301s);  // healthy for longer than the 300 s window
+  client_stop_failure(supervisor, 3U);
+  for (std::uint64_t generation = 4U; generation <= 5U; ++generation) counted_failure(supervisor, generation);
+  expect(test_support::wait_generation_ready(supervisor, 6U, 5s), "generation 6 ready: the healthy window reset the count");
+  counted_failure(supervisor, 6U);
+  expect(supervisor.wait_for_state(SupervisorState::circuit_open, 5s), "the third counted failure after the reset opens the circuit");
+  expect(clock->delays() == std::vector<std::chrono::milliseconds>{1000ms, 2000ms, 1000ms, 2000ms},
+         "1 s, 2 s; uncounted reset; 1 s, 2 s, then open");
+  supervisor.shutdown(5s);
+}
+
+// Fix round 1, finding 2 (controller ruling): the exemption is bounded. After
+// kMaxConsecutiveUncountedRestarts uncounted restarts with no successful DONE
+// between them, a client-STOP drain failure counts like drain_failed, so an
+// engine that always ignores STOP still reaches circuit_open.
+void sp3_d2_uncounted_streak_is_bounded() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.push_line("READY 4096 stop"); });
+  auto clock = std::make_shared<test_support::ManualClock>();
+  test_support::LogCapture log;
+  secure_frontend::EngineSupervisor supervisor({}, fakes.factory(), clock, log.sink());
+  expect(supervisor.start(), "the supervisor starts");
+  for (std::uint64_t generation = 1U; generation <= 3U; ++generation) client_stop_failure(supervisor, generation);
+  client_stop_failure(supervisor, 4U);
+  expect(test_support::wait_generation_ready(supervisor, 5U, 5s), "generation 5 ready");
+  expect(clock->delays() == std::vector<std::chrono::milliseconds>{1000ms}, "the 4th in a row counts: 1 s");
+  client_stop_failure(supervisor, 5U);
+  client_stop_failure(supervisor, 6U);
+  expect(supervisor.wait_for_state(SupervisorState::circuit_open, 5s), "an engine that keeps ignoring STOP opens the circuit");
+  expect(clock->delays() == std::vector<std::chrono::milliseconds>{1000ms, 2000ms}, "1 s, 2 s, then open");
+  expect(fakes.spawned() == 6U, "exactly six generations");
+  expect(log.contains("engine generation 6 ended: killed_by_supervisor(client_stop_drain_failed)"), "same fixed literal when counted");
+  supervisor.shutdown(5s);
+}
+
+// Fix round 1, finding 2: a successful DONE resets the streak. Two uncounted,
+// then a generation that completes a request before its client-STOP drain
+// failure, then two more: five uncounted in all, no backoff.
+void sp3_d2_done_resets_uncounted_streak() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.push_line("READY 4096 stop"); });
+  auto clock = std::make_shared<test_support::ManualClock>();
+  secure_frontend::EngineSupervisor supervisor({}, fakes.factory(), clock);
+  expect(supervisor.start(), "the supervisor starts");
+  client_stop_failure(supervisor, 1U);
+  client_stop_failure(supervisor, 2U);
+  successful_done(supervisor, fakes, 3U);
+  client_stop_failure(supervisor, 3U);
+  client_stop_failure(supervisor, 4U);
+  client_stop_failure(supervisor, 5U);
+  expect(test_support::wait_generation_ready(supervisor, 6U, 5s), "generation 6 ready");
+  expect(clock->delays().empty(), "the DONE on generation 3 reset the streak: none of the five counted");
   supervisor.shutdown(5s);
 }
 
@@ -1181,6 +1265,9 @@ int main(int argc, char* argv[]) {
                                                 {"sp3_d2_client_stop_drain_failure_restarts_uncounted", sp3_d2_client_stop_drain_failure_restarts_uncounted},
                                                 {"sp3_d2_timeout_stop_drain_failure_still_counts", sp3_d2_timeout_stop_drain_failure_still_counts},
                                                 {"sp3_d2_client_stop_counts_when_engine_ended_itself", sp3_d2_client_stop_counts_when_engine_ended_itself},
+                                                {"sp3_d2_uncounted_end_resets_count_after_healthy_window", sp3_d2_uncounted_end_resets_count_after_healthy_window},
+                                                {"sp3_d2_uncounted_streak_is_bounded", sp3_d2_uncounted_streak_is_bounded},
+                                                {"sp3_d2_done_resets_uncounted_streak", sp3_d2_done_resets_uncounted_streak},
                                                 {"proc04_unreaped_child_opens_circuit", proc04_unreaped_child_opens_circuit},
                                                 {"supervisor_exception_opens_circuit", supervisor_exception_opens_circuit},
                                                 {"supervisor_shutdown_sends_eof_first_then_kills", supervisor_shutdown_sends_eof_first_then_kills},

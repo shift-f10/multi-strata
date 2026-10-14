@@ -163,6 +163,7 @@ std::optional<EngineProtocolError> EngineProtocolClient::await_ready(const std::
 
 std::optional<EngineProtocolError> EngineProtocolClient::begin_generation(
     const std::uint32_t max_new_tokens, const std::vector<std::uint32_t>& prompt_token_ids) {
+  stop_cause_.reset();  // a cause never outlives its request, even if this GEN is refused
   if (state_ != State::idle) return EngineProtocolError{EngineProtocolErrorCode::invalid_state, "engine is not idle"};
   if (max_new_tokens == 0 || max_new_tokens > limits_.max_new_tokens || prompt_token_ids.empty() ||
       prompt_token_ids.size() > limits_.max_prompt_tokens) {
@@ -179,7 +180,6 @@ std::optional<EngineProtocolError> EngineProtocolClient::begin_generation(
   if (const auto error = write_command(command); error.has_value()) return error;
   active_generation_ = EngineGeneration{};
   stop_requested_ = false;
-  stop_cause_.reset();
   state_ = State::generating;
   return std::nullopt;
 }
@@ -250,6 +250,7 @@ std::optional<EngineProtocolError> EngineProtocolClient::read_generation(const s
       if (done_fields.size() >= 6U && done_fields[5] == "nonfinite") {
         return EngineProtocolError{EngineProtocolErrorCode::engine_error, "engine reported a non-finite result"};
       }
+      completed_generations_.fetch_add(1U);
       return std::nullopt;
     }
     if (response.line.rfind("ERR", 0) == 0 && (response.line.size() == 3 || response.line[3] == ' ')) {
