@@ -54,4 +54,12 @@ void dl03_downloader_runs_at_low_integrity_windows();
 void priv04_downloader_env_is_systemroot_only_windows();
 #endif
 #endif
+// fetch_cli_test.cpp (Task 27)
+void confinement_reduced_written_to_log_record();
+#if !defined(_WIN32)
+void doctor_downloader_probes_on_fresh_store();
+#if defined(SECURE_FRONTEND_TEST_HOOKS)
+void confinement_reduced_when_root_beneath_allowed_dir();
+#endif
+#endif
 }  // namespace fetch_cases

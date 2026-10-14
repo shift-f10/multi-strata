@@ -6,6 +6,7 @@
 #include "support/curl_scenario.hpp"
 
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
@@ -13,6 +14,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -188,14 +190,20 @@ int main(int argc, char** argv) {
   if (response != nullptr && !response->write_attempt.empty()) extras.emplace_back("write_errno", attempt_write(response->write_attempt));
   if (response != nullptr && !response->read_attempt.empty()) extras.emplace_back("read_errno", attempt_read(response->read_attempt));
   write_record(curl::record_line("transfer", args, env, input, extras));
-  std::string out;
   if (response == nullptr) {
-    out = "HTTP/1.1 404 Not Found\r\n\r\n";
-  } else {
-    const std::string file = response->body_file.empty() ? std::string{} : read_file(scenario_dir / response->body_file);
-    out = curl::render_head(*response) + curl::render_body(*response, file);
+    const std::string out = "HTTP/1.1 404 Not Found\r\n\r\n";
+    std::fwrite(out.data(), 1, out.size(), stdout);
+    std::fflush(stdout);
+    return 0;
   }
-  std::fwrite(out.data(), 1, out.size(), stdout);
+  const std::string file = response->body_file.empty() ? std::string{} : read_file(scenario_dir / response->body_file);
+  const std::string head = curl::render_head(*response);
+  std::fwrite(head.data(), 1, head.size(), stdout);
   std::fflush(stdout);
-  return response == nullptr ? 0 : response->exit_code;
+  // delay-ms: the head is out, the body waits (an interrupt lands mid-transfer).
+  if (response->delay_ms != 0) std::this_thread::sleep_for(std::chrono::milliseconds(response->delay_ms));
+  const std::string body = curl::render_body(*response, file);
+  std::fwrite(body.data(), 1, body.size(), stdout);
+  std::fflush(stdout);
+  return response->exit_code;
 }

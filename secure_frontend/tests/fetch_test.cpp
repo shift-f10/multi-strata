@@ -460,6 +460,10 @@ void fake_curl_scenario_parses_and_renders() {
   expect(resumed != nullptr && secure_frontend_test::curl::render_body(*resumed, "") == "llo", "selected by range");
   expect(secure_frontend_test::curl::select(*scenario, "https://fixture.example/f.bin", 3) == nullptr, "no match");
   expect(!secure_frontend_test::curl::parse_scenario("response x\nstatus\nend\n").has_value(), "bad status line");
+  // Task 27: delay-ms <N> (the fake sleeps after the head, before the body).
+  const auto delayed = secure_frontend_test::curl::parse_scenario("response x\nstatus 200 OK\ndelay-ms 250\nend\n");
+  expect(delayed.has_value() && delayed->responses.size() == 1 && delayed->responses[0].delay_ms == 250, "delay-ms parsed");
+  expect(!secure_frontend_test::curl::parse_scenario("response x\ndelay-ms soon\nend\n").has_value(), "delay-ms needs a number");
 }
 
 void fake_curl_argv_grammar_matches_builder() {
@@ -605,6 +609,13 @@ int main(int argc, char** argv) {
       {"range_ignored_twice_is_range_mismatch_then_restarts", fetch_cases::range_ignored_twice_is_range_mismatch_then_restarts},
       {"proxy_hop_skips_address_policy", fetch_cases::proxy_hop_skips_address_policy},
       {"dl03_wrong_digest_rejected_prior_version_intact", fetch_cases::dl03_wrong_digest_rejected_prior_version_intact},
+      {"confinement_reduced_written_to_log_record", fetch_cases::confinement_reduced_written_to_log_record},
+#if !defined(_WIN32)
+      {"doctor_downloader_probes_on_fresh_store", fetch_cases::doctor_downloader_probes_on_fresh_store},
+#if defined(SECURE_FRONTEND_TEST_HOOKS)
+      {"confinement_reduced_when_root_beneath_allowed_dir", fetch_cases::confinement_reduced_when_root_beneath_allowed_dir},
+#endif
+#endif
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
       {"test_cacert_reaches_argv_in_hook_builds", fetch_cases::test_cacert_reaches_argv_in_hook_builds},
 #endif

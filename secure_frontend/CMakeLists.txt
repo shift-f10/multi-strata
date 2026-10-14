@@ -559,6 +559,9 @@ target_include_directories(secure_frontend_strata_cli PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
 target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_acquire secure_frontend_typed_config)
 target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_launch)
+# SP4 Task 27: pull, run, update --models and doctor drive the confined downloader.
+target_sources(secure_frontend_strata_cli PRIVATE src/strata_cli_network.cpp)
+target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_downloader)
 secure_frontend_set_warnings(secure_frontend_strata_cli)
 
 # PX §2: the one user-facing binary. SP4 provides only its acquisition verbs (Controller note 1);
@@ -1126,6 +1129,21 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     if(WIN32)
         secure_frontend_add_cases(secure_frontend_acquire_tests dl02_published_files_have_private_dacl_windows LABELS windows-runtime)
     endif()
+    # SP4 Task 27 (spec §1.3, §6.1, §8.3, D6): the network verbs through CliServices seams.
+    target_sources(secure_frontend_acquire_tests PRIVATE tests/acquire_network_cli_test.cpp)
+    secure_frontend_add_cases(secure_frontend_acquire_tests pull_cli_prints_summary_and_installs run_installed_model_needs_no_network
+        run_refuses_glm53_without_engine LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    if(SECURE_FRONTEND_TEST_HOOKS)
+        secure_frontend_add_cases(secure_frontend_acquire_tests run_missing_model_prompts_and_decline_exits_2
+            run_missing_model_non_interactive_exits_2 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+        secure_frontend_add_cases(secure_frontend_acquire_tests update_models_pulls_outdated_catalog_models
+            ARGS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/payload/fixture-qwen-t1 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+        if(WIN32)
+            add_dependencies(secure_frontend_acquire_tests strata secure_frontend_fake_curl)
+            secure_frontend_add_cases(secure_frontend_acquire_tests dl04_interrupt_during_download_never_indexed_windows
+                ARGS $<TARGET_FILE:strata> $<TARGET_FILE:secure_frontend_fake_curl> LABELS windows-runtime TIMEOUT 120)
+        endif()
+    endif()
     secure_frontend_add_test_executable(secure_frontend_bundle_tests tests/bundle_test.cpp secure_frontend_acquire_core)
     secure_frontend_add_cases(secure_frontend_bundle_tests sha256sums_render_sorted_bytewise sha256sums_parse_is_strict
         sums_agreement_rules missing_list_names_sourceless_files)
@@ -1296,6 +1314,18 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
                 secure_frontend_fetch_tests.dl03_downloader_cannot_read_home
                 secure_frontend_fetch_tests.ruleset_failure_fails_closed_exit_9
                 PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED: Landlock is unavailable")
+        endif()
+    endif()
+    # SP4 Task 27 (spec §3.2, §7.3, §10.3): confinement through the strata CLI and acquire.log.
+    target_sources(secure_frontend_fetch_tests PRIVATE tests/fetch_cli_test.cpp)
+    target_link_libraries(secure_frontend_fetch_tests PRIVATE secure_frontend_strata_cli)
+    secure_frontend_add_cases(secure_frontend_fetch_tests confinement_reduced_written_to_log_record LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    if(NOT WIN32)
+        secure_frontend_add_cases(secure_frontend_fetch_tests doctor_downloader_probes_on_fresh_store
+            ARGS $<TARGET_FILE:secure_frontend_fake_curl>)
+        if(SECURE_FRONTEND_TEST_HOOKS)
+            secure_frontend_add_cases(secure_frontend_fetch_tests confinement_reduced_when_root_beneath_allowed_dir
+                ARGS $<TARGET_FILE:secure_frontend_fake_curl>)
         endif()
     endif()
 

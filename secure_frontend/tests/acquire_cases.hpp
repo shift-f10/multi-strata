@@ -83,4 +83,16 @@ void rm_partials_deletes_other_staging();
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
 void list_outdated_uses_catalog_sequence();
 #endif
+// acquire_network_cli_test.cpp (Task 27)
+void pull_cli_prints_summary_and_installs();
+void run_installed_model_needs_no_network();
+void run_refuses_glm53_without_engine();
+#if defined(SECURE_FRONTEND_TEST_HOOKS)
+void run_missing_model_non_interactive_exits_2();
+void run_missing_model_prompts_and_decline_exits_2();
+void update_models_pulls_outdated_catalog_models();
+#endif
+#if defined(_WIN32) && defined(SECURE_FRONTEND_TEST_HOOKS)
+void dl04_interrupt_during_download_never_indexed_windows();
+#endif
 }  // namespace acquire_cases

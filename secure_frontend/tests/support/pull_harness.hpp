@@ -10,8 +10,10 @@
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -30,6 +32,30 @@ class FakeProbe final : public secure_frontend::DownloaderProbe {
     return result;
   }
   std::string confinement() const override { return label; }
+};
+
+// Task 27 (ruling I13): thin forwarders, so a CliServices factory can hand the CLI an owned
+// unique_ptr while the test keeps the recording object.
+class ForwardTransport final : public secure_frontend::HopTransport {
+ public:
+  explicit ForwardTransport(secure_frontend::HopTransport& target) : target_(target) {}
+  secure_frontend::HopExit run(const secure_frontend::TransferRequest& request,
+                               const std::function<bool(std::string_view)>& on_bytes) override {
+    return target_.run(request, on_bytes);
+  }
+
+ private:
+  secure_frontend::HopTransport& target_;
+};
+
+class ForwardProbe final : public secure_frontend::DownloaderProbe {
+ public:
+  explicit ForwardProbe(secure_frontend::DownloaderProbe& target) : target_(target) {}
+  std::optional<secure_frontend::AcquireError> probe() override { return target_.probe(); }
+  std::string confinement() const override { return target_.confinement(); }
+
+ private:
+  secure_frontend::DownloaderProbe& target_;
 };
 
 class InterruptingProgress final : public secure_frontend::ProgressSink {

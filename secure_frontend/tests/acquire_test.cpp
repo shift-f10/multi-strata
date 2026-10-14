@@ -308,6 +308,17 @@ int main(int argc, char** argv) {
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
       {"list_outdated_uses_catalog_sequence", acquire_cases::list_outdated_uses_catalog_sequence},
 #endif
+      {"pull_cli_prints_summary_and_installs", acquire_cases::pull_cli_prints_summary_and_installs},
+      {"run_installed_model_needs_no_network", acquire_cases::run_installed_model_needs_no_network},
+      {"run_refuses_glm53_without_engine", acquire_cases::run_refuses_glm53_without_engine},
+#if defined(SECURE_FRONTEND_TEST_HOOKS)
+      {"run_missing_model_non_interactive_exits_2", acquire_cases::run_missing_model_non_interactive_exits_2},
+      {"run_missing_model_prompts_and_decline_exits_2", acquire_cases::run_missing_model_prompts_and_decline_exits_2},
+      {"update_models_pulls_outdated_catalog_models", acquire_cases::update_models_pulls_outdated_catalog_models},
+#endif
+#if defined(_WIN32) && defined(SECURE_FRONTEND_TEST_HOOKS)
+      {"dl04_interrupt_during_download_never_indexed_windows", acquire_cases::dl04_interrupt_during_download_never_indexed_windows},
+#endif
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
       {"dl03_third_party_cannot_shadow_catalog", acquire_cases::dl03_third_party_cannot_shadow_catalog},
       {"pull_test_cacert_reaches_argv_in_hook_builds", acquire_cases::pull_test_cacert_reaches_argv_in_hook_builds},
