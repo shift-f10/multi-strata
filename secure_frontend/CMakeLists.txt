@@ -398,6 +398,13 @@ target_include_directories(secure_frontend_manifest_core PUBLIC
 target_link_libraries(secure_frontend_manifest_core PUBLIC secure_frontend_sha256)
 secure_frontend_set_warnings(secure_frontend_manifest_core)
 
+add_library(secure_frontend_acquire_core src/address_policy.cpp)
+target_compile_features(secure_frontend_acquire_core PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_acquire_core PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_link_libraries(secure_frontend_acquire_core PUBLIC secure_frontend_manifest_core)
+secure_frontend_set_warnings(secure_frontend_acquire_core)
+
 if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     enable_testing()
 
@@ -720,9 +727,11 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
 
     secure_frontend_add_test_executable(secure_frontend_manifest_tests tests/manifest_test.cpp secure_frontend_manifest_core)
     secure_frontend_add_cases(secure_frontend_manifest_tests source_url_grammar_matrix dns_names_and_wildcards proxy_grammar)
-    secure_frontend_add_test_executable(secure_frontend_fetch_tests tests/fetch_test.cpp secure_frontend_manifest_core)
+    secure_frontend_add_test_executable(secure_frontend_fetch_tests tests/fetch_test.cpp secure_frontend_acquire_core)
     secure_frontend_add_cases(secure_frontend_fetch_tests dl03_location_with_glob_characters_rejected
-        location_resolution_and_host_normalization location_query_characters)
+        location_resolution_and_host_normalization location_query_characters
+        address_policy_denies_special_ranges address_policy_any_denied_answer_rejects_hop ipv6_only_answer_fails_closed
+        allow_private_addresses_pins_first_ipv4 resolve_argument_brackets_ipv6)
 
     add_test(NAME strata_secure_server_help COMMAND strata-secure-server --help)
     # The GLM runner takes positional arguments: glm53 without any --engine-arg is a usage error.
