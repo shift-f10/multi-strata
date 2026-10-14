@@ -87,10 +87,23 @@ void cfg01_invalid_config_fails_before_listener_and_child() {
   expect(invalid.exit_code != 0 && contains(invalid.err, "limits.http.max_headers"), "invalid config exits: " + invalid.err);
   expect(!std::filesystem::exists(marker), "the engine must not start on an invalid config");
   expect(!secure_frontend_test::can_connect(f.port), "no listener remains");
-  // (b) a valid config whose address cannot be bound (TEST-NET-1 is never local)
-  const auto unbindable = f.run(with(f.base_flags(), {"--host", "192.0.2.10", "--allow-remote", "--engine-arg",
-                                                      "--marker=" + marker.string()}));
-  expect(unbindable.exit_code != 0 && contains(unbindable.err, "Unable to bind"), "unbindable address exits");
+  // (b) a valid config whose address cannot be bound (TEST-NET-1 is never local).
+  // The engine executable is not executable as a program, so starting it fails
+  // synchronously inside start(): whichever startup error is reported shows
+  // whether the engine was spawned before the bind. (A marker written by a real
+  // child cannot prove this: the child is killed before it reaches main().)
+  const auto not_an_engine = f.dir / "bin" / "not-an-engine";
+  secure_frontend_test::write_file(not_an_engine, "this is not a program\n", 0700);
+  auto unbindable_literals = f.base_literals();
+  unbindable_literals["engine.executable"] = secure_frontend_test::json_literal(not_an_engine.string());
+  unbindable_literals["listener.host"] = secure_frontend_test::json_literal("192.0.2.10");
+  unbindable_literals["listener.allow_remote"] = "true";
+  f.write_config(unbindable_literals);
+  const auto unbindable = f.run({"--config", f.config.string()});
+  expect(unbindable.exit_code != 0 && contains(unbindable.err, "Unable to bind"),
+         "unbindable address exits with the bind error: " + unbindable.err);
+  expect(!contains(unbindable.err, "Unable to start local engine"),
+         "the engine must not be started before the listener is bound");
   expect(!std::filesystem::exists(marker), "the engine must not start when the listener cannot bind");
 }
 
