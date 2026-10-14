@@ -261,6 +261,7 @@ int main(int argc, char** argv) {
       {"overlong_joined_paths_fail_closed_without_throwing", acquire_cases::overlong_joined_paths_fail_closed_without_throwing},
 #if defined(_WIN32)
       {"store_primitives_windows", acquire_cases::store_primitives_windows},
+      {"store_adopts_only_private_files_windows", acquire_cases::store_adopts_only_private_files_windows},
 #endif
   }, secure_frontend_test::failures);
 }

@@ -6,6 +6,8 @@
 #include "windows_security.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
 #include <chrono>
 #include <filesystem>
 #include <optional>
@@ -92,6 +94,14 @@ bool with_sharing_retries(Operation operation) {
   return false;
 }
 
+// Parity with POSIX's st_uid == geteuid() checks (SP1 token_store precedent): an existing
+// .lock or .part is adopted only when the user owns it under a protected owner-only DACL.
+bool private_to_user(const HANDLE handle) {
+  std::array<std::byte, SECURITY_MAX_SID_SIZE> storage{};
+  PSID user = nullptr;
+  return ws::current_user_sid(storage, &user) && ws::has_private_owner_dacl(handle, user);
+}
+
 bool absent(const DWORD code) { return code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND; }
 
 }  // namespace
@@ -135,9 +145,9 @@ std::variant<ModelsLock, AcquireError> lock_models_root(const CanonicalRoot& roo
   if (h == INVALID_HANDLE_VALUE) return AcquireError{AcquireReason::publish_failed, lock_name + " cannot be opened"};
   BY_HANDLE_FILE_INFORMATION lock_info{};
   if (!GetFileInformationByHandle(h, &lock_info) ||
-      (lock_info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+      (lock_info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0 || !private_to_user(h)) {
     CloseHandle(h);
-    return AcquireError{AcquireReason::publish_failed, lock_name + " is not a regular file"};
+    return AcquireError{AcquireReason::publish_failed, lock_name + " is not a private regular file owned by you"};
   }
   OVERLAPPED overlapped{};
   if (!LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, MAXDWORD, MAXDWORD, &overlapped)) {
@@ -212,7 +222,7 @@ std::variant<PartFile, AcquireError> open_part_file(const CanonicalRoot& root, c
   BY_HANDLE_FILE_INFORMATION info{};
   const bool regular = GetFileInformationByHandle(h, &info) != 0 &&
                        (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) == 0 &&
-                       info.nNumberOfLinks == 1;
+                       info.nNumberOfLinks == 1 && private_to_user(h);
   const bool inside = same_path(std::filesystem::path{ws::final_path_for_handle(h)}.parent_path().wstring(), parent.final_path());
   LARGE_INTEGER end{};
   LARGE_INTEGER zero{};

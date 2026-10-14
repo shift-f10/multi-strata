@@ -13,5 +13,6 @@ void overlong_joined_paths_fail_closed_without_throwing();
 #if defined(_WIN32)
 // acquire_store_windows_test.cpp (Task 17)
 void store_primitives_windows();
+void store_adopts_only_private_files_windows();
 #endif
 }  // namespace acquire_cases

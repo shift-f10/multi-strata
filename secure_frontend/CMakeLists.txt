@@ -812,7 +812,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         store_environment_seams_report_space_and_fs_kind overlong_joined_paths_fail_closed_without_throwing
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     if(WIN32)
-        secure_frontend_add_cases(secure_frontend_acquire_tests store_primitives_windows
+        secure_frontend_add_cases(secure_frontend_acquire_tests store_primitives_windows store_adopts_only_private_files_windows
             LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     endif()
     secure_frontend_add_test_executable(secure_frontend_bundle_tests tests/bundle_test.cpp secure_frontend_acquire_core)
