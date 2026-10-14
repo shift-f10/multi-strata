@@ -41,7 +41,7 @@ bool is_blank(std::string_view value) {
 }
 
 bool is_valid_environment_variable_name(std::string_view name) {
-  if (name.empty() || !(is_ascii_letter(name.front()) || name.front() == '_')) {
+  if (name.empty() || name.size() > 128U || !(is_ascii_letter(name.front()) || name.front() == '_')) {
     return false;
   }
 

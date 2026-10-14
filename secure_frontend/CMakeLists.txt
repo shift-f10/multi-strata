@@ -123,6 +123,13 @@ add_library(secure_frontend_json
     src/json.cpp
 )
 
+add_library(secure_frontend_typed_config src/frontend_config.cpp src/config_file.cpp)
+target_compile_features(secure_frontend_typed_config PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_typed_config PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_config secure_frontend_json
+    secure_frontend_model_inventory secure_frontend_engine_arguments)
+
 add_library(secure_frontend_chat_schema
     src/chat_schema.cpp
 )
@@ -315,7 +322,7 @@ foreach(_target IN ITEMS
         secure_frontend_http_request_handler secure_frontend_api_router secure_frontend_engine_process
         secure_frontend_engine_protocol_client secure_frontend_engine_stdio_process
         secure_frontend_http_socket_server secure_frontend_model_inventory secure_frontend_engine_arguments
-        secure_frontend_json secure_frontend_chat_schema
+        secure_frontend_json secure_frontend_typed_config secure_frontend_chat_schema
         secure_frontend_tokenizer_pack secure_frontend_qwen_prompt_renderer secure_frontend_glm_prompt_renderer
         secure_frontend_chat_generation_plan secure_frontend_chat_execution
         secure-frontend-smoke strata-secure-smoke-server strata-secure-server)
@@ -429,6 +436,13 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         json_accepts_strict_document json_rejects_duplicate_keys json_rejects_depth_over_limit
         json_rejects_non_integer_numbers json_rejects_bom_trailing_data_and_comments
         json_enforces_size_entry_and_string_limits json_string_escaper_round_trips)
+
+    secure_frontend_add_test_executable(secure_frontend_typed_config_tests tests/typed_config_test.cpp
+        secure_frontend_typed_config)
+    secure_frontend_add_cases(secure_frontend_typed_config_tests
+        typed_config_accepts_minimal_file_and_applies_defaults cfg01_unknown_key_rejected cfg01_duplicate_key_rejected
+        cfg01_type_confusion_rejected cfg01_missing_required_rejected cfg01_out_of_range_rejected
+        typed_config_cross_field_rules typed_config_errors_never_contain_values)
 
     secure_frontend_add_test_executable(secure_frontend_tokenizer_pack_tests tests/tokenizer_pack_test.cpp
         secure_frontend_tokenizer_pack)

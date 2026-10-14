@@ -16,22 +16,17 @@ std::string_view flag_name(const std::string_view argument) {
 }
 }  // namespace
 
-EngineArgumentsResult build_engine_arguments(const EngineArgumentsProfile profile, const ModelManifest& selected,
-                                             const std::filesystem::path& models_root,
-                                             const std::vector<std::string>& user_arguments) {
-  std::vector<std::string> arguments;
-  arguments.reserve(user_arguments.size() + 2);
+std::optional<EngineArgumentsError> validate_engine_user_arguments(const EngineArgumentsProfile profile,
+                                                                   const std::vector<std::string>& user_arguments) {
   for (const auto& argument : user_arguments) {
     if (argument.find('\0') != std::string::npos) {
       return EngineArgumentsError{EngineArgumentsErrorCode::invalid_value, "engine argument contains NUL"};
     }
     const auto name = flag_name(argument);
     if (profile == EngineArgumentsProfile::lighttransport_glm53) {
-      // GLM CLI is not characterized: pass through unchanged; only the launcher-owned --serve is refused.
       if (name == "--serve") {
         return EngineArgumentsError{EngineArgumentsErrorCode::owned_flag, "engine argument is owned by the frontend"};
       }
-      arguments.push_back(argument);
       continue;
     }
     for (const auto owned : kOwnedFlags) {
@@ -45,8 +40,15 @@ EngineArgumentsResult build_engine_arguments(const EngineArgumentsProfile profil
                                     "engine mode is not supported by the frontend"};
       }
     }
-    arguments.push_back(argument);
   }
+  return std::nullopt;
+}
+
+EngineArgumentsResult build_engine_arguments(const EngineArgumentsProfile profile, const ModelManifest& selected,
+                                             const std::filesystem::path& models_root,
+                                             const std::vector<std::string>& user_arguments) {
+  if (auto rejected = validate_engine_user_arguments(profile, user_arguments)) return *rejected;
+  std::vector<std::string> arguments = user_arguments;
   if (profile == EngineArgumentsProfile::lighttransport_glm53) return arguments;
   const auto path = validate_local_artifact_path(selected.relative_artifact_path);
   if (!std::holds_alternative<std::string>(path)) {
