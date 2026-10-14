@@ -12,12 +12,7 @@
 namespace secure_frontend {
 namespace {
 
-constexpr std::size_t kMaximumRequestBytes = 256U * 1024U;
-constexpr std::size_t kMaximumMessages = 128U;
-constexpr std::size_t kMaximumModelBytes = 256U;
-constexpr std::size_t kMaximumMessageBytes = 64U * 1024U;
-constexpr std::size_t kMaximumGeneratedBytes = 1024U * 1024U;
-constexpr std::size_t kMaximumTokens = 16384U;
+constexpr std::size_t kMaximumModelBytes = 256U;  // model-id format bound, not a tuning limit
 
 bool is_continuation(unsigned char byte) { return (byte & 0xc0U) == 0x80U; }
 
@@ -86,8 +81,8 @@ bool valid_model(std::string_view value) {
   return true;
 }
 
-bool valid_content(std::string_view value) {
-  if (value.empty() || value.size() > kMaximumMessageBytes || !valid_utf8(value) || contains_remote_scheme(value)) return false;
+bool valid_content(std::string_view value, const std::size_t max_message_bytes) {
+  if (value.empty() || value.size() > max_message_bytes || !valid_utf8(value) || contains_remote_scheme(value)) return false;
   for (const unsigned char byte : value) {
     if (byte < 0x20U && byte != '\n' && byte != '\r' && byte != '\t') return false;
   }
@@ -96,13 +91,15 @@ bool valid_content(std::string_view value) {
 
 }  // namespace
 
-std::optional<ChatCompletionRequest> parse_chat_completion_request(std::string_view json) {
-  if (json.empty() || json.size() > kMaximumRequestBytes) return std::nullopt;
+std::optional<ChatCompletionRequest> parse_chat_completion_request(std::string_view json,
+                                                                   const ChatSchemaLimits& limits) {
+  if (json.empty() || json.size() > limits.max_body_bytes) return std::nullopt;
   // Depth 3: request object -> messages array -> message object. Deeper
   // input (content arrays, tool objects) fails closed at the reader.
-  const JsonLimits limits{.max_bytes = kMaximumRequestBytes, .max_depth = 3U,
-                          .max_container_entries = kMaximumMessages, .max_string_bytes = kMaximumRequestBytes};
-  const auto parsed = parse_json(json, limits);
+  const JsonLimits json_limits{.max_bytes = limits.max_body_bytes, .max_depth = 3U,
+                               .max_container_entries = limits.max_messages,
+                               .max_string_bytes = limits.max_body_bytes};
+  const auto parsed = parse_json(json, json_limits);
   const auto* root = std::get_if<JsonValue>(&parsed);
   const auto* members = root != nullptr ? root->if_object() : nullptr;
   if (members == nullptr) return std::nullopt;
@@ -117,7 +114,7 @@ std::optional<ChatCompletionRequest> parse_chat_completion_request(std::string_v
       model_seen = true;
     } else if (member.key == "messages") {
       const auto* items = member.value.if_array();
-      if (items == nullptr || items->size() > kMaximumMessages) return std::nullopt;
+      if (items == nullptr || items->size() > limits.max_messages) return std::nullopt;
       for (const auto& item : *items) {
         const auto* fields = item.if_object();
         if (fields == nullptr) return std::nullopt;
@@ -130,7 +127,7 @@ std::optional<ChatCompletionRequest> parse_chat_completion_request(std::string_v
           if (field.key == "role" && (*text == "system" || *text == "user" || *text == "assistant")) {
             message.role = *text;
             role_seen = true;
-          } else if (field.key == "content" && valid_content(*text)) {
+          } else if (field.key == "content" && valid_content(*text, limits.max_message_bytes)) {
             message.content = *text;
             content_seen = true;
           } else {
@@ -143,7 +140,9 @@ std::optional<ChatCompletionRequest> parse_chat_completion_request(std::string_v
       messages_seen = true;
     } else if (member.key == "max_tokens") {
       const auto* value = member.value.if_integer();
-      if (value == nullptr || *value < 0 || static_cast<std::uint64_t>(*value) > kMaximumTokens) return std::nullopt;
+      if (value == nullptr || *value < 0 || static_cast<std::uint64_t>(*value) > limits.max_completion_tokens) {
+        return std::nullopt;
+      }
       request.max_tokens = static_cast<std::size_t>(*value);
     } else if (member.key == "stream") {
       const auto* value = member.value.if_boolean();
@@ -157,8 +156,10 @@ std::optional<ChatCompletionRequest> parse_chat_completion_request(std::string_v
 }
 
 std::optional<std::string> render_chat_completion_response(const ChatCompletionRequest& request,
-                                                           std::string_view generated_text) {
-  if (!valid_model(request.model) || generated_text.size() > kMaximumGeneratedBytes || !valid_utf8(generated_text)) {
+                                                           std::string_view generated_text,
+                                                           const ChatSchemaLimits& limits) {
+  if (!valid_model(request.model) || generated_text.size() > limits.max_generated_bytes ||
+      !valid_utf8(generated_text)) {
     return std::nullopt;
   }
   std::string response{"{\"id\":\"chatcmpl-local\",\"object\":\"chat.completion\",\"created\":0,\"model\":"};

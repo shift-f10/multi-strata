@@ -1,7 +1,9 @@
 #pragma once
 
+#include "secure_frontend/config_defaults.hpp"
 #include "secure_frontend/http_policy.hpp"
 
+#include <cstddef>
 #include <functional>
 #include <optional>
 #include <string>
@@ -35,6 +37,14 @@ using RequestDispatcher = std::function<HttpResponse(std::string_view method,
 [[nodiscard]] bool constant_time_token_equals(std::string_view candidate,
                                               std::string_view expected);
 
+// Parser bounds; the listener passes the configured values (SP1 C4).
+struct HttpParserLimits final {
+  std::size_t max_request_bytes{static_cast<std::size_t>(config_defaults::kMaxRequestBytes)};
+  std::size_t max_header_bytes{static_cast<std::size_t>(config_defaults::kMaxHeaderBytes)};
+  std::size_t max_headers{static_cast<std::size_t>(config_defaults::kMaxHeaders)};
+  std::size_t max_request_line_bytes{static_cast<std::size_t>(config_defaults::kMaxRequestLineBytes)};
+};
+
 // Parses one complete, bounded HTTP/1.1 message in memory. This deliberately
 // does not open sockets, making policy enforcement portable and testable. The
 // dispatcher is reached only after Host/Origin policy and bearer
@@ -44,6 +54,7 @@ using RequestDispatcher = std::function<HttpResponse(std::string_view method,
 [[nodiscard]] HttpResponse handle_http_request(std::string_view request,
                                                 const HttpPolicy& policy,
                                                 const BearerTokenValidator& validate_bearer_token,
-                                                const RequestDispatcher& dispatch_request);
+                                                const RequestDispatcher& dispatch_request,
+                                                const HttpParserLimits& limits = {});
 
 }  // namespace secure_frontend

@@ -160,6 +160,13 @@ add_library(secure_frontend_chat_execution
     src/chat_execution.cpp
 )
 
+add_library(secure_frontend_subsystem_limits src/subsystem_limits.cpp)
+target_compile_features(secure_frontend_subsystem_limits PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_subsystem_limits PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_link_libraries(secure_frontend_subsystem_limits PUBLIC secure_frontend_typed_config
+    secure_frontend_http_socket_server secure_frontend_chat_execution secure_frontend_chat_schema)
+
 add_executable(secure-frontend-smoke src/smoke_main.cpp)
 
 # This deliberately small executable exposes only the authenticated smoke-test
@@ -301,6 +308,7 @@ target_link_libraries(strata-secure-server PRIVATE secure_frontend_config secure
     secure_frontend_engine_protocol_client secure_frontend_engine_stdio_process secure_frontend_chat_schema
     secure_frontend_chat_generation_plan secure_frontend_chat_execution secure_frontend_engine_arguments)
 target_link_libraries(strata-secure-server PRIVATE secure_frontend_server_cli secure_frontend_typed_config)
+target_link_libraries(strata-secure-server PRIVATE secure_frontend_subsystem_limits)
 target_compile_features(strata-secure-server PRIVATE cxx_std_20)
 
 target_compile_features(secure_frontend_config PUBLIC cxx_std_20)
@@ -331,7 +339,7 @@ foreach(_target IN ITEMS
         secure_frontend_http_socket_server secure_frontend_model_inventory secure_frontend_engine_arguments
         secure_frontend_json secure_frontend_typed_config secure_frontend_server_cli secure_frontend_chat_schema
         secure_frontend_tokenizer_pack secure_frontend_qwen_prompt_renderer secure_frontend_glm_prompt_renderer
-        secure_frontend_chat_generation_plan secure_frontend_chat_execution
+        secure_frontend_chat_generation_plan secure_frontend_chat_execution secure_frontend_subsystem_limits
         secure-frontend-smoke strata-secure-smoke-server strata-secure-server)
     secure_frontend_set_warnings(${_target})
 endforeach()
@@ -397,6 +405,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         socket_server_rejects_oversize_request_over_tcp socket_server_accept_waits_without_timeout
         socket_server_ipv6_bind_is_v6only socket_server_response_is_complete
         socket_server_survives_reset_before_accept socket_server_responds_after_client_half_close
+        parser_honors_configured_max_request_bytes
         TIMEOUT 300)
 
     secure_frontend_add_test_executable(secure_frontend_api_router_tests tests/api_router_test.cpp secure_frontend_api_router)
@@ -486,6 +495,11 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         health_is_failed_after_engine_closed_mid_generation health_is_failed_when_engine_closes_before_ready
         chat_applies_engine_context_rule_with_eight_token_margin)
 
+    secure_frontend_add_test_executable(secure_frontend_subsystem_limits_tests tests/subsystem_limits_test.cpp
+        secure_frontend_subsystem_limits)
+    secure_frontend_add_cases(secure_frontend_subsystem_limits_tests
+        ready_timeout_defaults_to_900_seconds subsystem_limits_follow_config)
+
     add_executable(secure_frontend_fake_engine tests/fake_engine_main.cpp)
     target_compile_features(secure_frontend_fake_engine PRIVATE cxx_std_20)
     secure_frontend_set_warnings(secure_frontend_fake_engine)
@@ -507,7 +521,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     endif()
     secure_frontend_add_cases(secure_frontend_server_e2e_tests
         cfg01_invalid_config_fails_before_listener_and_child net02_remote_addresses_need_opt_in
-        net02_error_is_non_secret_and_exits_before_bind
+        net02_error_is_non_secret_and_exits_before_bind ready_timeout_is_configurable
         ${SECURE_FRONTEND_SERVER_ARGS} TIMEOUT 120)
     # GetExtendedTcpTable is not faithful under wine.
     secure_frontend_add_cases(secure_frontend_server_e2e_tests net01_default_listener_is_loopback_only

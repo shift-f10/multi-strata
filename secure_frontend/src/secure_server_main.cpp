@@ -10,6 +10,7 @@
 #include "secure_frontend/model_inventory.hpp"
 #include "secure_frontend/process_defaults.hpp"
 #include "secure_frontend/server_cli.hpp"
+#include "secure_frontend/subsystem_limits.hpp"
 #include "secure_frontend/token_reader.hpp"
 #include "secure_frontend/tokenizer_pack.hpp"
 
@@ -78,6 +79,9 @@ int run(const FrontendConfig& config) {
   auto verifier = std::make_shared<TokenVerifier>(std::move(*token));
 
   const secure_frontend::Config listener = secure_frontend::listener_config(config);
+  // Derived once, before bind/spawn; each subsystem keeps its own const copy.
+  const auto schema_limits = secure_frontend::chat_schema_limits(config);
+  const auto listener_limits = secure_frontend::http_socket_server_limits(config);
   const auto tokenizer_result = secure_frontend::load_local_tokenizer_pack(config.roots.tokenizer_pack);
   const auto* tokenizer = std::get_if<secure_frontend::TokenizerPack>(&tokenizer_result);
   if (tokenizer == nullptr) { std::cerr << "Unable to load local tokenizer pack.\n"; return EXIT_FAILURE; }
@@ -106,7 +110,7 @@ int run(const FrontendConfig& config) {
                                    : secure_frontend::EngineProtocolFlavor::strata_0143;
   secure_frontend::EngineProtocolClient protocol(engine, {}, protocol_flavor);
   const auto chat_profile = glm ? secure_frontend::NativeChatProfile::glm53 : secure_frontend::NativeChatProfile::qwen;
-  secure_frontend::ChatExecutionService chat(protocol, {}, chat_profile);
+  secure_frontend::ChatExecutionService chat(protocol, secure_frontend::chat_execution_limits(config), chat_profile);
 
   const std::string authority = host_header(listener);
   secure_frontend::HttpPolicy policy{.allowed_hosts = {authority}, .same_origin_origins = {"http://" + authority},
@@ -127,24 +131,25 @@ int run(const FrontendConfig& config) {
       [models] { return models; }, [&health_snapshot] { return health_snapshot; });
   auto server = secure_frontend::HttpSocketServer::bind(
       listener, std::move(policy), [verifier](const std::string_view supplied) { return verifier->matches(supplied); },
-      [&router, &chat, &engine, &tokenizer, &model_id](const std::string_view method, const std::string_view target,
-                                                       const std::string_view body) {
+      [&router, &chat, &engine, &tokenizer, &model_id, &schema_limits](
+          const std::string_view method, const std::string_view target, const std::string_view body) {
         if (method == "GET") return router.dispatch(method, target);
         if (method != "POST" || target != "/v1/chat/completions") return json_error(404, "Not Found");
         if (!engine.running()) return json_error(503, "Service Unavailable");
-        const auto request = secure_frontend::parse_chat_completion_request(body);
+        const auto request = secure_frontend::parse_chat_completion_request(body, schema_limits);
         if (!request || request->model != model_id) return json_error(400, "Bad Request");
         const auto result = chat.execute(*request, *tokenizer);
         const auto* completion = std::get_if<secure_frontend::ChatExecutionResult>(&result);
         if (completion == nullptr) return json_error(503, "Service Unavailable");
-        const auto response = secure_frontend::render_chat_completion_response(*request, completion->text);
+        const auto response =
+            secure_frontend::render_chat_completion_response(*request, completion->text, schema_limits);
         if (!response) return json_error(503, "Service Unavailable");
         return secure_frontend::HttpResponse{
             .status = 200,
             .headers = {{"Content-Type", "application/json; charset=utf-8"}, {"Cache-Control", "no-store"}},
             .body = *response};
       },
-      nullptr);
+      nullptr, listener_limits);
   if (!server) { std::cerr << "Unable to bind secure listener.\n"; return EXIT_FAILURE; }
   // Bound first, spawned second: a listener that cannot bind never leaves an
   // engine child behind (CFG-01).

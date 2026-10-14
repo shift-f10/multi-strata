@@ -7,10 +7,6 @@
 namespace secure_frontend {
 namespace {
 
-constexpr std::size_t kMaximumRequestBytes = 64U * 1024U;
-constexpr std::size_t kMaximumHeaderBytes = 16U * 1024U;
-constexpr std::size_t kMaximumHeaders = 64U;
-
 struct ParsedRequest final {
   std::string_view method;
   std::string_view target;
@@ -77,14 +73,14 @@ bool parse_decimal(std::string_view value, std::size_t* result) {
   return true;
 }
 
-bool parse_request(std::string_view request, ParsedRequest* parsed) {
-  if (request.empty() || request.size() > kMaximumRequestBytes) return false;
+bool parse_request(std::string_view request, ParsedRequest* parsed, const HttpParserLimits& limits) {
+  if (request.empty() || request.size() > limits.max_request_bytes) return false;
   const std::size_t headers_end = request.find("\r\n\r\n");
-  if (headers_end == std::string_view::npos || headers_end + 4U > kMaximumHeaderBytes) return false;
+  if (headers_end == std::string_view::npos || headers_end + 4U > limits.max_header_bytes) return false;
   if (request.find('\n') != std::string_view::npos && request.find("\r\n") == std::string_view::npos) return false;
   const std::string_view header_block = request.substr(0, headers_end);
   const std::size_t line_end = header_block.find("\r\n");
-  if (line_end == std::string_view::npos || line_end > 4096U) return false;
+  if (line_end == std::string_view::npos || line_end > limits.max_request_line_bytes) return false;
   const std::string_view request_line = header_block.substr(0, line_end);
   const std::size_t first_space = request_line.find(' ');
   const std::size_t second_space = first_space == std::string_view::npos ? std::string_view::npos
@@ -111,7 +107,7 @@ bool parse_request(std::string_view request, ParsedRequest* parsed) {
     if (!is_safe_header_value(raw_value)) return false;
     const std::string_view value = trim_optional_whitespace(raw_value);
     if (value.empty()) return false;
-    if (++header_count > kMaximumHeaders) return false;
+    if (++header_count > limits.max_headers) return false;
     const std::string_view name = line.substr(0, colon);
     if (ascii_case_equal(name, "host")) parsed->hosts.push_back(value);
     if (ascii_case_equal(name, "origin")) parsed->origins.push_back(value);
@@ -178,9 +174,9 @@ bool constant_time_token_equals(std::string_view candidate, std::string_view exp
 
 HttpResponse handle_http_request(std::string_view request, const HttpPolicy& policy,
                                  const BearerTokenValidator& validate_bearer_token,
-                                 const RequestDispatcher& dispatch_request) {
+                                 const RequestDispatcher& dispatch_request, const HttpParserLimits& limits) {
   ParsedRequest parsed;
-  if (!parse_request(request, &parsed)) return bad_request();
+  if (!parse_request(request, &parsed, limits)) return bad_request();
   const HttpPolicyDecision policy_decision =
       validate_http_request_headers(policy, parsed.hosts, parsed.origins);
   if (!policy_decision.allowed) {

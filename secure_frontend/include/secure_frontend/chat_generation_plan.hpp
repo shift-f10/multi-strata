@@ -1,6 +1,7 @@
 #pragma once
 
 #include "secure_frontend/chat_schema.hpp"
+#include "secure_frontend/config_defaults.hpp"
 #include "secure_frontend/tokenizer_pack.hpp"
 
 #include <cstddef>
@@ -39,12 +40,14 @@ using ChatGenerationPlanResult = std::variant<ChatGenerationPlan, ChatGeneration
 // zero output tokens and prompt sizes beyond the supplied fixed limit.
 [[nodiscard]] ChatGenerationPlanResult make_qwen_chat_generation_plan(
     const ChatCompletionRequest& request, const TokenizerPack& tokenizer,
-    std::size_t maximum_prompt_tokens = 32768U);
+    std::size_t maximum_prompt_tokens = static_cast<std::size_t>(config_defaults::kChatMaxPromptTokens),
+    std::size_t default_max_tokens = static_cast<std::size_t>(config_defaults::kChatDefaultMaxTokens));
 
 // Converts a schema-validated text request using only the fixed GLM-5.3
 // profile. It neither interprets a model template nor contacts the network.
 [[nodiscard]] ChatGenerationPlanResult make_glm53_chat_generation_plan(
     const ChatCompletionRequest& request, const TokenizerPack& tokenizer,
-    std::size_t maximum_prompt_tokens = 32768U);
+    std::size_t maximum_prompt_tokens = static_cast<std::size_t>(config_defaults::kChatMaxPromptTokens),
+    std::size_t default_max_tokens = static_cast<std::size_t>(config_defaults::kChatDefaultMaxTokens));
 
 }  // namespace secure_frontend

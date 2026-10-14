@@ -66,7 +66,10 @@ struct Fixture final {
       server = secure_frontend::HttpSocketServer::bind(
           config, std::move(policy),
           [](std::string_view token) { return secure_frontend::constant_time_token_equals(token, "test-token"); },
-          [](std::string_view method, std::string_view target, std::string_view) {
+          [](std::string_view method, std::string_view target, std::string_view body) {
+            if (method == "POST" && target == "/sink") {
+              return secure_frontend::HttpResponse{200, {{"Content-Type", "text/plain"}}, std::to_string(body.size())};
+            }
             if (method == "GET" && target == "/health") {
               return secure_frontend::HttpResponse{200, {{"Content-Type", "application/json; charset=utf-8"}}, "{\"status\":\"ok\"}\n"};
             }
@@ -328,6 +331,42 @@ void socket_server_responds_after_client_half_close() {
   expect(response.rfind("HTTP/1.1 200 OK", 0) == 0, "half-closed client must read a 200, got: " + response.substr(0, 20));
   expect(response.find("{\"status\":\"ok\"}") != std::string::npos, "half-closed client must read the whole body");
 }
+
+// C4 / defect (d): the parser must honor a configured max_request_bytes.
+std::string post_sink(Fixture& f, const std::size_t body_bytes) {
+  std::string response;
+  bool served = false;
+  std::thread worker([&] { served = f.server->serve_one(&f.error); });
+  const NativeSocket client = f.connect_client();
+  if (client == kBad) { f.unblock_accept(); worker.join(); return {}; }
+  std::string request = "POST /sink HTTP/1.1\r\nHost: " + f.authority() +
+                        "\r\nAuthorization: Bearer test-token\r\nContent-Length: " + std::to_string(body_bytes) + "\r\n\r\n";
+  request.append(body_bytes, 'b');
+  (void)send_bytes(client, request);
+  char chunk[1024];
+  for (;;) { const int n = recv_bytes(client, chunk, sizeof(chunk)); if (n <= 0) break; response.append(chunk, static_cast<std::size_t>(n)); }
+  close_socket(client);
+  worker.join();
+  (void)served;
+  return response;
+}
+
+void parser_honors_configured_max_request_bytes() {
+  secure_frontend::HttpSocketServerLimits raised;
+  raised.max_request_bytes = 256U * 1024U;
+  Fixture big(raised);
+  if (!big.server) { expect(false, "bind failed: " + big.error); return; }
+  const auto accepted = post_sink(big, 128U * 1024U);
+  expect(accepted.rfind("HTTP/1.1 200 OK", 0) == 0 && accepted.find("\r\n\r\n131072") != std::string::npos,
+         "a 128 KiB body must pass a 256 KiB limit, got: " + accepted.substr(0, 24));
+  Fixture standard;
+  if (!standard.server) { expect(false, "bind failed: " + standard.error); return; }
+  const auto rejected = post_sink(standard, 128U * 1024U);
+  // A Content-Length beyond the bound is answered from the header alone with
+  // the parser's generic 400, without reading the body (required_message_size);
+  // 413 is reserved for bytes actually received past the bound.
+  expect(rejected.rfind("HTTP/1.1 400", 0) == 0, "the default limit still rejects it: " + rejected.substr(0, 24));
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -343,5 +382,6 @@ int main(int argc, char** argv) {
       {"socket_server_response_is_complete", socket_server_response_is_complete},
       {"socket_server_survives_reset_before_accept", socket_server_survives_reset_before_accept},
       {"socket_server_responds_after_client_half_close", socket_server_responds_after_client_half_close},
+      {"parser_honors_configured_max_request_bytes", parser_honors_configured_max_request_bytes},
   }, failures);
 }

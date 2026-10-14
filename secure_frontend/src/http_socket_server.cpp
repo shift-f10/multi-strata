@@ -326,7 +326,7 @@ std::optional<HttpSocketServer> HttpSocketServer::bind(const Config& listener_co
   // No timeout on the listening socket: accept() blocks until a client
   // arrives. Per-client bounds are applied to each accepted socket.
   if (::bind(state->socket, reinterpret_cast<const sockaddr*>(&address), address_size) != 0 ||
-      listen(state->socket, 16) != 0) {
+      listen(state->socket, std::clamp(limits.backlog, 1, 4096)) != 0) {
     if (error != nullptr) *error = "listener socket setup failed";
     return std::nullopt;
   }
@@ -410,7 +410,9 @@ bool HttpSocketServer::serve_one(std::string* error) {
     if (expected_size != 0U && request.size() >= expected_size) {
       request.resize(expected_size);
       const std::string response = serialize_response(
-          handle_http_request(request, state_->policy, state_->validator, state_->dispatcher));
+          handle_http_request(request, state_->policy, state_->validator, state_->dispatcher,
+                              HttpParserLimits{state_->limits.max_request_bytes, state_->limits.max_header_bytes,
+                                               state_->limits.max_headers, state_->limits.max_request_line_bytes}));
       if (!send_all(client, response, send_deadline())) { if (error != nullptr) *error = "response send failed"; return false; }
       finish_response(client);
       return true;

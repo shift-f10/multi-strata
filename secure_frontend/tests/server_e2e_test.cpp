@@ -140,6 +140,23 @@ void net02_error_is_non_secret_and_exits_before_bind() {
   expect(!contains(result.err, "203.0.113.5"), "the error does not echo the value");
   expect(!std::filesystem::exists(marker), "the engine was not launched");
 }
+
+void ready_timeout_is_configurable() {
+  const std::string chat = R"({"model":"qwen-local","messages":[{"role":"user","content":"Hi"}],"max_tokens":2})";
+  for (const auto& [timeout_s, expected] : {std::pair{"1", "HTTP/1.1 503"}, std::pair{"5", "HTTP/1.1 200"}}) {
+    ServerFixture f;
+    auto literals = f.base_literals();
+    literals["limits.engine.ready_timeout_s"] = timeout_s;
+    literals["engine.args"] = "[\"--ready-delay-ms=2000\"]";
+    f.write_config(literals);
+    secure_frontend_test::ChildProcess server;
+    expect(f.start(server, {"--config", f.config.string()}), "server starts: " + server.stderr_text());
+    const auto response = f.request("POST", "/v1/chat/completions", f.bearer(), chat);
+    expect(response.rfind(expected, 0) == 0,
+           std::string{"ready_timeout_s="} + timeout_s + " against a 2 s READY must give " + expected + ", got " +
+               response.substr(0, 16));
+  }
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -148,5 +165,6 @@ int main(int argc, char** argv) {
       {"net01_default_listener_is_loopback_only", net01_default_listener_is_loopback_only},
       {"net02_remote_addresses_need_opt_in", net02_remote_addresses_need_opt_in},
       {"net02_error_is_non_secret_and_exits_before_bind", net02_error_is_non_secret_and_exits_before_bind},
+      {"ready_timeout_is_configurable", ready_timeout_is_configurable},
   }, failures);
 }
