@@ -34,6 +34,9 @@ struct FakeChild final {
   std::vector<std::string> writes;
   std::optional<secure_frontend::ExitStatus> exit;
   bool reapable{true};
+  // The first this-many try_reap() calls see no status yet, like a child whose
+  // stdout closed just before its exit status became reapable.
+  int unreapable_polls{0};
   int kills{0};
   std::thread::id spawned_on{};    // the thread that ran the factory (the supervisor thread)
   std::thread::id destroyed_on{};  // the thread that destroyed this generation's process
@@ -88,6 +91,10 @@ class FakeSupervisedProcess final : public secure_frontend::SupervisedProcess {
   secure_frontend::EngineLineTransport& transport() noexcept override { return transport_; }
   std::optional<secure_frontend::ExitStatus> try_reap() override {
     std::lock_guard lock(child_->mutex);
+    if (child_->unreapable_polls > 0) {
+      --child_->unreapable_polls;
+      return std::nullopt;
+    }
     if (!child_->exit || !child_->reapable) return std::nullopt;
     return child_->exit;
   }

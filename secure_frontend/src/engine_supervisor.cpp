@@ -421,7 +421,10 @@ EngineSupervisor::GenerationEnd EngineSupervisor::end_generation(const std::shar
   const KillReason sent = ended_on_its_own ? KillReason::none : (reason == KillReason::none ? KillReason::protocol_failed : reason);
   const ExitClassification classified = classify_exit(*status, sent);
   log_end(instance->number, describe_exit(classified));
-  if (config_.no_new_privileges_hint && !nnp_hint_logged_ && !instance->chat && sent == KillReason::none) {
+  // Keyed on the classification, not on `sent`: an engine that died before
+  // READY may not be reapable yet at the first check, so a kill was "sent" to
+  // a dead child; its status still says it ended on its own (final review M1).
+  if (config_.no_new_privileges_hint && !nnp_hint_logged_ && !instance->chat && classified.kind != ExitKind::killed_by_supervisor) {
     nnp_hint_logged_ = true;
     log_(kNoNewPrivilegesHint);
   }

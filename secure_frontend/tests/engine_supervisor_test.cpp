@@ -692,6 +692,26 @@ void proc04_unreaped_child_opens_circuit() {
   expect(log.contains(secure_frontend::kEngineLeftUnreapedLine), "the fixed-literal engine-left line is logged");
 }
 
+// Final review M1: an engine that ends before READY on its own (exit 1) is
+// its own end even when its status is not yet reapable at end_generation's
+// first check, so the supervisor's kill lands on a dead child. The NNP hint
+// keys on that classification, not on whether a kill was sent.
+void proc06_nnp_hint_when_exit_status_lags() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) {
+    child.end({false, 1U});
+    child.unreapable_polls = 1;
+  });
+  secure_frontend::SupervisorConfig config;
+  config.no_new_privileges_hint = true;
+  test_support::LogCapture log;
+  secure_frontend::EngineSupervisor supervisor(config, fakes.factory(), std::make_shared<test_support::ManualClock>(), log.sink());
+  expect(supervisor.start(), "the supervisor starts");
+  expect(supervisor.wait_for_state(SupervisorState::circuit_open, 5s), "three early exits open the circuit");
+  expect(log.contains("engine generation 1 ended: error_exit"), "the engine's own exit 1 is classified error_exit");
+  expect(log.contains(secure_frontend::kNoNewPrivilegesHint), "the NNP hint is logged for an engine that ended before READY");
+  supervisor.shutdown(5s);
+}
+
 // C4 (final review I2): "exit 0 means no engine left". A generation that the
 // orderly shutdown cannot reap is reported (fixed-literal line), so main
 // returns 1 instead of 0.
@@ -1590,6 +1610,7 @@ int main(int argc, char* argv[]) {
                                                 {"sp3_d2_uncounted_streak_is_bounded", sp3_d2_uncounted_streak_is_bounded},
                                                 {"sp3_d2_done_resets_uncounted_streak", sp3_d2_done_resets_uncounted_streak},
                                                 {"proc04_unreaped_child_opens_circuit", proc04_unreaped_child_opens_circuit},
+                                                {"proc06_nnp_hint_when_exit_status_lags", proc06_nnp_hint_when_exit_status_lags},
                                                 {"supervisor_unreaped_at_shutdown_reports_engine_left", supervisor_unreaped_at_shutdown_reports_engine_left},
                                                 {"supervisor_exception_opens_circuit", supervisor_exception_opens_circuit},
                                                 {"supervisor_shutdown_sends_eof_first_then_kills", supervisor_shutdown_sends_eof_first_then_kills},
