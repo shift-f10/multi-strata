@@ -207,6 +207,12 @@ void EngineSupervisor::fail_closed() noexcept {
         reaped = process.try_reap().has_value();
       }
       retire(instance, reaped);
+      if (reaped) {
+        // Spec §3.7(b): sweep after every generation, as end_generation and
+        // shutdown_generation do; 250 ms keeps a later shutdown inside its bound.
+        if (config_.sweep_orphans) (void)sweep_orphans({}, std::chrono::milliseconds(250));
+        process.release_resources(std::chrono::milliseconds(0));
+      }
     }
     set_state(SupervisorState::circuit_open, nullptr);
     try {

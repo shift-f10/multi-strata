@@ -544,7 +544,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # Later tasks append case names to these three set() lines only. Every
     # server-level test is windows-runtime on Windows: it relies on console
     # groups, Jobs, tokens and process exit codes.
-    set(SECURE_FRONTEND_SERVER_CASES harness_server_lifecycle_selftest proc01_server_passes_literal_argv proc04_ready_is_eager_and_health_starting_is_503 proc04_chat_during_restart_is_generic_503 proc04_abort_in_generation_is_generic_503)
+    set(SECURE_FRONTEND_SERVER_CASES harness_server_lifecycle_selftest proc01_server_passes_literal_argv proc04_ready_is_eager_and_health_starting_is_503 proc04_chat_during_restart_is_generic_503 proc04_abort_in_generation_is_generic_503 proc04_health_leaves_ready_after_idle_engine_death)
     set(SECURE_FRONTEND_SERVER_LINUX_CASES proc05_frontend_sigkill_kills_engine)
     set(SECURE_FRONTEND_SERVER_WINDOWS_CASES)
     if(WIN32)

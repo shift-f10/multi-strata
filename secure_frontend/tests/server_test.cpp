@@ -4,7 +4,9 @@
 
 #include <chrono>
 #include <iostream>
+#include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -108,6 +110,30 @@ void proc04_abort_in_generation_is_generic_503() {
   expect(server->stderr_text().find("engine generation 1 ended: abort") != std::string::npos, "only the frontend's own log names the abort");
 }
 
+// V4 at server level (spec §4 V4, ruling PF11 deferred it to 6b): an engine
+// that dies between requests is noticed with no request; /health leaves
+// ready within 1 s. POSIX: SIGKILL; Windows: TerminateProcess.
+void proc04_health_leaves_ready_after_idle_engine_death() {
+  auto server = ServerProcess::start({});
+  expect(server != nullptr && server->wait_until_listening(10s) && server->wait_for_health(test_support::kHealthReady, 10s), "ready");
+  if (!server) return;
+  const auto engines = server->descendants();
+  expect(engines.size() == 1U, "exactly one engine process");
+  if (engines.size() != 1U) return;
+  test_support::kill_process(engines.front());
+  const auto killed = std::chrono::steady_clock::now();
+  std::optional<test_support::HttpResult> health;
+  while (std::chrono::steady_clock::now() - killed < 3s) {
+    health = server->get("/health", 1s);
+    if (health && health->body != test_support::kHealthReady) break;
+    std::this_thread::sleep_for(10ms);
+  }
+  const auto noticed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - killed);
+  expect(health && health->status == 503 && health->body != test_support::kHealthReady,
+         "/health leaves ready with no chat request: " + describe(health));
+  expect(noticed <= 1000ms, "within 1 s of the engine's death; took " + std::to_string(noticed.count()) + " ms");
+}
+
 #if !defined(_WIN32)
 void proc05_frontend_sigkill_kills_engine() {
   const auto dir = test_support::make_temp_dir("c3");
@@ -148,6 +174,7 @@ int main(int argc, char* argv[]) {
                                              {"proc04_ready_is_eager_and_health_starting_is_503", proc04_ready_is_eager_and_health_starting_is_503},
                                              {"proc04_chat_during_restart_is_generic_503", proc04_chat_during_restart_is_generic_503},
                                              {"proc04_abort_in_generation_is_generic_503", proc04_abort_in_generation_is_generic_503},
+                                             {"proc04_health_leaves_ready_after_idle_engine_death", proc04_health_leaves_ready_after_idle_engine_death},
 #if !defined(_WIN32)
                                              {"proc05_frontend_sigkill_kills_engine", proc05_frontend_sigkill_kills_engine},
 #endif
