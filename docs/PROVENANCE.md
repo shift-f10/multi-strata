@@ -154,6 +154,29 @@ queried 2026-10-13, default branch) returns SPDX id `MIT`, name `MIT License`.
 The `LICENSE` file on branch `glm53f` (via the contents API, same date) carries
 the copyright line "Copyright (c) 2026 Niko1221 and the Strata contributors".
 
+## Project Maya (second GLM-5.3 reference, planned for SP6)
+
+[mw00/project-maya][maya] was named by the owner on 2026-10-14 as a second
+source for the GLM-5.3 engine work, beside the lighttransport branch above.
+Resolved on 2026-10-14 (`gh api repos/mw00/project-maya/commits/main`) at tag
+`v1.1.8`, commit `5c970a863ce2fdd87b6e23ffb4822f6d76522b1c`. It is a Strata
+derivative (its README: "Maya's engine started from Strata's and was rewritten
+for GLM-5.3-Flash"), covering NVIDIA (1–16 GPUs) and AMD HIP, Linux and
+experimental Windows (VS 2022 + CUDA 12.8), MTP decoding, an OpenAI- and
+Anthropic-compatible server, and its own quantization tooling. Its
+`docs/GLM5-FLASH.md` is a component-by-component port study against Strata.
+**No code, kernel, model or quant has been taken from it yet.** When SP6 uses
+it, this section records the exact files or contracts used, as the sections
+above do, and the README sources table is updated in the same commit.
+
+License: the GitHub API (`gh api repos/mw00/project-maya`, queried 2026-10-14,
+default branch) returns SPDX id `MIT`. Its `LICENSE` file carries the copyright
+line "Copyright (c) 2026 Niko1221 and the Strata contributors". It bundles
+`third_party/ggml` (MIT), `third_party/exllamav3` (MIT, Turboderp) and
+`third_party/beellama.cpp` (MIT); any SP6 import from those paths carries their
+notices. Its optional DFlash2 drafter weights are CC BY-NC-ND 4.0 and are never
+bundled or fetched by this project.
+
 ## ggml / llama.cpp (bundled with upstream)
 
 [ggml-org/llama.cpp][llamacpp] / ggml comes with the upstream baseline and is
@@ -195,5 +218,6 @@ their own licenses).
 [strata]: https://github.com/Niko1221/Strata/tree/v0.1.43
 [unbiased]: https://github.com/robertkarl/UnbiasedStrata/tree/46c46ecfc11d2315512f21f7549b0a7792ccd2ae
 [lighttransport]: https://github.com/lighttransport/Strata/tree/glm53f
+[maya]: https://github.com/mw00/project-maya/tree/5c970a863ce2fdd87b6e23ffb4822f6d76522b1c
 [llamacpp]: https://github.com/ggml-org/llama.cpp/tree/3cf03257f219afbe7334045ff7c6a06ac68c627d
 [llvmmingw]: https://github.com/mstorsjo/llvm-mingw/releases/tag/20261006

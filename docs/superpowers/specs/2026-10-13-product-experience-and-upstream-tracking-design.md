@@ -333,7 +333,9 @@ Mechanics:
 
 - Remotes: `upstream` = `https://github.com/Niko1221/Strata.git` (exists);
   `glm-upstream` = `https://github.com/lighttransport/Strata.git`, branch
-  `glm53f` (to add in SP6).
+  `glm53f` (to add in SP6); `maya-upstream` =
+  `https://github.com/mw00/project-maya.git` (owner-added second GLM-5.3
+  source, 2026-10-14; pinned in `docs/PROVENANCE.md`, to add in SP6).
 - Pinned tag: PROVENANCE "Baseline" (today `v0.1.43` / `7695859a`); a merge
   updates it in the same commit.
 - **`scripts/dev/upstream-delta.sh`** (new, SP1 or tooling): runs `git diff

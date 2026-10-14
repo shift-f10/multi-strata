@@ -33,7 +33,8 @@ without asking the owner.
    - SP4 — the explicit `acquire` command.
    - SP5 — frontend parity with the upstream service.
    - SP6 — GLM engine port, in its own directory, tracking
-     `lighttransport/Strata` branch `glm53f`.
+     `lighttransport/Strata` branch `glm53f` and, since 2026-10-14,
+     `mw00/project-maya` (see `docs/PROVENANCE.md`).
    - SP7 — release, plus an offline GPU validation kit.
 2. **Windows toolchain is open source**: llvm-mingw (cross from Linux) and
    MSYS2 clang (native). MSVC is an informational CI job only. Caveat: CUDA
@@ -93,6 +94,10 @@ without asking the owner.
   and Python `glm4`/`chatglm-bpe` tokenizer handling were implemented against
   its observable contracts. The separate GLM engine, CUDA/HIP kernels, and
   remote tensor-parallel worker are not yet ported (SP6).
+- Second GLM-5.3 reference (owner, 2026-10-14): `mw00/project-maya` tag
+  `v1.1.8`, commit `5c970a863ce2fdd87b6e23ffb4822f6d76522b1c` (MIT, Strata
+  derivative: NVIDIA + AMD HIP, experimental Windows, MTP, quant tooling). No
+  code has been taken from it; SP6 planning weighs it against `glm53f`.
 - Supported target platforms: native Windows 10/11 and Linux. The intended
   compatibility target is every upstream-supported model profile, model
   quantization, vision option, context option, GPU backend, and multi-GPU
