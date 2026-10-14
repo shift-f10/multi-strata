@@ -165,6 +165,7 @@ Plan: `docs/superpowers/plans/2026-10-14-sp4-acquire.md`. One line per task.
 - Task 4: §3.5 address policy (`secure_frontend_acquire_core`); fetch.address_policy_* (5 cases).
 - Task 5: §3.3 argv/stdin, probe parsing, C3 floors, §3.4 curl exit map; fetch.transfer_argv_exact_order, config_line_is_single_quoted_url, probe_argv_is_version_only, probe_output_parsing_and_floor, curl_exit_codes_map_to_reasons.
 - Task 6: §3.4 header-block parser and status table; fetch.informational_header_blocks_skipped, header_block_limits_enforced, split_feed_reports_exact_body_offset, status_table_decisions.
+- Task 7: §3.6 retry schedule, run budget, clock seam; fetch.retry_backoff_follows_schedule, non_transient_moves_to_next_source, exhausted_class_follows_last_source_reason, run_budget_remaining_seconds.
 
 ### Upstream bump to `v0.1.44.1` (2026-10-14, branch `upstream/bump-v0.1.44.1`)
 

@@ -2,8 +2,10 @@
 #include "secure_frontend/address_policy.hpp"
 #include "secure_frontend/download_response.hpp"
 #include "secure_frontend/downloader_command.hpp"
+#include "secure_frontend/fetch_schedule.hpp"
 #include "support/test_support.hpp"
 
+#include <chrono>
 #include <cstddef>
 #include <iostream>
 #include <optional>
@@ -309,6 +311,51 @@ void status_table_decisions() {
          "404 is http_status, next source");
 }
 
+using namespace std::chrono_literals;
+using Kind = secure_frontend::SourceSchedule::Step::Kind;
+
+void retry_backoff_follows_schedule() {
+  secure_frontend::SourceSchedule schedule(2);
+  const std::vector<std::chrono::seconds> waits{2s, 4s, 8s, 16s};
+  for (const auto wait : waits) {
+    const auto step = schedule.record_failure(secure_frontend::AcquireReason::connect_failed, true);
+    expect(step.kind == Kind::retry_same_source && step.wait == wait && step.source == 0,
+           "retry after " + std::to_string(wait.count()) + " s");
+  }
+  expect(schedule.attempt() == 5, "fifth attempt on source 0");
+  const auto move = schedule.record_failure(secure_frontend::AcquireReason::connect_failed, true);
+  expect(move.kind == Kind::next_source && move.wait == 32s && move.source == 1, "after 5 attempts: 32 s, next source");
+  expect(schedule.attempt() == 1, "attempts restart on the new source");
+}
+
+void non_transient_moves_to_next_source() {
+  secure_frontend::SourceSchedule schedule(3);
+  const auto step = schedule.record_failure(secure_frontend::AcquireReason::tls_untrusted, false);
+  expect(step.kind == Kind::next_source && step.wait == 0s && step.source == 1, "tls_untrusted is not retried");
+  expect(secure_frontend::is_transient(secure_frontend::AcquireReason::stalled), "stalled retried");
+  expect(secure_frontend::is_transient(secure_frontend::AcquireReason::range_mismatch), "range_mismatch restarts on same source");
+  expect(!secure_frontend::is_transient(secure_frontend::AcquireReason::transport_failed), "unknown curl exit: next source");
+  expect(!secure_frontend::is_transient(secure_frontend::AcquireReason::http_status), "http_status needs the head's transient flag");
+}
+
+void exhausted_class_follows_last_source_reason() {
+  secure_frontend::SourceSchedule schedule(2);
+  (void)schedule.record_failure(secure_frontend::AcquireReason::tls_untrusted, false);
+  const auto last = schedule.record_failure(secure_frontend::AcquireReason::digest_mismatch, false);
+  expect(last.kind == Kind::exhausted && last.wait == 0s, "no more sources");
+  expect(schedule.last_reason() == secure_frontend::AcquireReason::digest_mismatch, "last reason kept");
+  expect(secure_frontend::exit_class(*schedule.last_reason()) == secure_frontend::ExitCode::verification,
+         "class follows the last source: 4");
+}
+
+void run_budget_remaining_seconds() {
+  const auto start = std::chrono::steady_clock::time_point{} + 1000s;
+  const secure_frontend::RunBudget budget(start, 60s);
+  expect(budget.remaining_seconds(start) == 60U, "full budget");
+  expect(budget.remaining_seconds(start + 59500ms) == 1U, "rounded up to whole seconds");
+  expect(!budget.remaining_seconds(start + 60s).has_value(), "used up at the deadline");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -330,5 +377,9 @@ int main(int argc, char** argv) {
       {"header_block_limits_enforced", header_block_limits_enforced},
       {"split_feed_reports_exact_body_offset", split_feed_reports_exact_body_offset},
       {"status_table_decisions", status_table_decisions},
+      {"retry_backoff_follows_schedule", retry_backoff_follows_schedule},
+      {"non_transient_moves_to_next_source", non_transient_moves_to_next_source},
+      {"exhausted_class_follows_last_source_reason", exhausted_class_follows_last_source_reason},
+      {"run_budget_remaining_seconds", run_budget_remaining_seconds},
   }, failures);
 }

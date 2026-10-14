@@ -398,7 +398,8 @@ target_include_directories(secure_frontend_manifest_core PUBLIC
 target_link_libraries(secure_frontend_manifest_core PUBLIC secure_frontend_sha256)
 secure_frontend_set_warnings(secure_frontend_manifest_core)
 
-add_library(secure_frontend_acquire_core src/address_policy.cpp src/download_response.cpp src/downloader_command.cpp)
+add_library(secure_frontend_acquire_core src/address_policy.cpp src/download_response.cpp src/downloader_command.cpp
+    src/fetch_schedule.cpp)
 target_compile_features(secure_frontend_acquire_core PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_acquire_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
@@ -735,7 +736,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         transfer_argv_exact_order config_line_is_single_quoted_url probe_argv_is_version_only
         probe_output_parsing_and_floor curl_exit_codes_map_to_reasons
         informational_header_blocks_skipped header_block_limits_enforced split_feed_reports_exact_body_offset
-        status_table_decisions)
+        status_table_decisions
+        retry_backoff_follows_schedule non_transient_moves_to_next_source
+        exhausted_class_follows_last_source_reason run_budget_remaining_seconds)
 
     add_test(NAME strata_secure_server_help COMMAND strata-secure-server --help)
     # The GLM runner takes positional arguments: glm53 without any --engine-arg is a usage error.
