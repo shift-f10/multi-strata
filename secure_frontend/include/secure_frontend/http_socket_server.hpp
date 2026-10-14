@@ -55,6 +55,10 @@ class HttpSocketServer final {
   // stop serving. Client errors, peer resets, network errors and resource
   // exhaustion never set it.
   [[nodiscard]] bool listener_failed() const noexcept;
+  // Thread-safe. Makes a blocked serve_one() return and every later call fail
+  // with listener_failed(): POSIX shutdown(2) wakes accept() and stops new
+  // connections; Windows closes the socket. Used by the orderly shutdown (SP2 C4).
+  void shutdown_listener() noexcept;
 
  private:
   struct State;

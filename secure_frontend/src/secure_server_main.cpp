@@ -11,6 +11,7 @@
 #include "secure_frontend/model_inventory.hpp"
 #include "secure_frontend/process_defaults.hpp"
 #include "secure_frontend/server_cli.hpp"
+#include "secure_frontend/shutdown_signal.hpp"
 #include "secure_frontend/subsystem_limits.hpp"
 #include "secure_frontend/token_reader.hpp"
 #include "secure_frontend/token_verifier.hpp"
@@ -164,16 +165,32 @@ int run(const FrontendConfig& config) {
   if (!server) { std::cerr << "Unable to bind secure listener.\n"; return EXIT_FAILURE; }
   // Bound first, spawned second: a listener that cannot bind never leaves an
   // engine child behind (CFG-01). The token was read above, before any spawn.
+  // Spec §3.7: once every engine is gone the supervisor shuts the listener,
+  // which wakes the accept() below. Signals route to the supervisor's wake.
+  supervisor.set_on_stopped([&server] { server->shutdown_listener(); });
+  secure_frontend::install_shutdown_signals(supervisor.wake());
   if (!supervisor.start()) { std::cerr << "Unable to start the engine supervisor.\n"; return EXIT_FAILURE; }
+  // Every way out of this scope, an exception included, stops the supervisor
+  // while the listener its on-stopped hook uses still exists.
+  struct StopSupervisor final {
+    secure_frontend::EngineSupervisor& supervisor;
+    ~StopSupervisor() { supervisor.shutdown(secure_frontend::config_defaults::kShutdownBound); }
+  } stop_supervisor{supervisor};
   std::cout << "Secure server listening on http://" << authority << " (authenticated; Ctrl-C to stop)\n";
   std::cout.flush();
   for (;;) {
     std::string error;
-    if (!server->serve_one(&error) && server->listener_failed()) {
+    const bool served = server->serve_one(&error);
+    if (supervisor.stop_requested()) break;
+    if (!served && server->listener_failed()) {
       std::cerr << "listener stopped: " << error << '\n';
+      supervisor.shutdown(secure_frontend::config_defaults::kShutdownBound);
       return EXIT_FAILURE;
     }
+    // Any other failure was one client's; keep serving.
   }
+  supervisor.shutdown(secure_frontend::config_defaults::kShutdownBound);
+  return EXIT_SUCCESS;
 }
 
 }  // namespace

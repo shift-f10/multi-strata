@@ -260,6 +260,29 @@ void socket_server_accept_waits_without_timeout() {
   worker.join();
 }
 
+// SP2 C4: the orderly shutdown wakes a serve_one() blocked in accept() from
+// another thread; that call and every later one fail with listener_failed().
+void socket_server_shutdown_listener_wakes_accept() {
+  Fixture f;
+  if (!f.server) { expect(false, "bind failed: " + f.error); return; }
+  std::atomic<bool> returned{false};
+  bool served = true;
+  std::string worker_error;
+  std::thread worker([&] { served = f.server->serve_one(&worker_error); returned = true; });
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  f.server->shutdown_listener();
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!returned.load() && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  const bool woke = returned.load();
+  expect(woke, "shutdown_listener() wakes the blocked accept()");
+  if (!woke) f.unblock_accept();
+  worker.join();
+  expect(!served && f.server->listener_failed(), "the woken call fails as a listener failure: " + worker_error);
+  std::string error;
+  expect(!f.server->serve_one(&error) && f.server->listener_failed(), "every later call fails at once: " + error);
+  f.server->shutdown_listener();  // idempotent
+}
+
 // S6: an IPv6 listener must be v6-only and must serve with a bracketed Host.
 // Binds the wildcard '::' because only a wildcard IPv6 socket can receive
 // IPv4-mapped traffic; a '::1' bind would refuse IPv4 even without V6ONLY.
@@ -383,5 +406,6 @@ int main(int argc, char** argv) {
       {"socket_server_survives_reset_before_accept", socket_server_survives_reset_before_accept},
       {"socket_server_responds_after_client_half_close", socket_server_responds_after_client_half_close},
       {"parser_honors_configured_max_request_bytes", parser_honors_configured_max_request_bytes},
+      {"socket_server_shutdown_listener_wakes_accept", socket_server_shutdown_listener_wakes_accept},
   }, failures);
 }

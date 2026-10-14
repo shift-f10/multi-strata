@@ -1,5 +1,6 @@
 #include "secure_frontend/engine_supervisor.hpp"
 #include "secure_frontend/engine_stdio_process.hpp"
+#include "secure_frontend/shutdown_signal.hpp"
 
 #include "support/fake_supervised_process.hpp"
 #include "support/server_harness.hpp"
@@ -9,7 +10,9 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
+#include <new>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -26,6 +29,7 @@
 #include "secure_frontend/win32_prelude.hpp"
 #else
 #include <cerrno>
+#include <csignal>
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -643,7 +647,75 @@ void supervisor_exception_opens_circuit() {
   }
 }
 
+// Spec §3.7: with no Lease out, shutdown closes engine stdin first (the engine
+// exits 0 on EOF), then always kills the group; the end is logged as the
+// supervisor's own shutdown, not as a clean exit.
+void supervisor_shutdown_sends_eof_first_then_kills() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.push_line("READY 4096 stop"); });
+  test_support::LogCapture log;
+  secure_frontend::EngineSupervisor supervisor({}, fakes.factory(), std::make_shared<test_support::ManualClock>(), log.sink());
+  expect(supervisor.start(), "the supervisor starts");
+  expect(test_support::wait_generation_ready(supervisor, 1U, 5s), "generation 1 ready");
+  const auto started = std::chrono::steady_clock::now();
+  supervisor.shutdown(5s);
+  expect(std::chrono::steady_clock::now() - started < 1s, "an engine that exits on EOF is not waited on for the 2 s budget");
+  expect(supervisor.snapshot().state == SupervisorState::stopped, "stopped");
+  const auto child = fakes.child(1U);
+  expect(child != nullptr, "generation 1 exists");
+  if (!child) return;
+  std::lock_guard lock(child->mutex);
+  expect(child->exit.has_value() && !child->exit->signaled && child->exit->value == 0U, "the engine ended on stdin EOF (exit 0)");
+  expect(child->kills == 1, "the group is SIGKILLed anyway (spec §3.7: always), saw " + std::to_string(child->kills));
+  expect(log.contains("engine generation 1 ended: killed_by_supervisor(shutdown)"), "logged as the supervisor's shutdown");
+}
+
+// RF4 / spec §3.7: a Lease still out at shutdown keeps engine stdin (no EOF
+// under a request), and it must not outlive shutdown() pointing at the
+// supervisor: destroying it after the supervisor is gone touches nothing.
+void supervisor_lease_outliving_shutdown_is_safe() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.push_line("READY 4096 stop"); });
+  test_support::LogCapture log;
+  alignas(secure_frontend::EngineSupervisor) unsigned char storage[sizeof(secure_frontend::EngineSupervisor)];
+  auto* supervisor = new (storage) secure_frontend::EngineSupervisor({}, fakes.factory(), std::make_shared<test_support::ManualClock>(), log.sink());
+  expect(supervisor->start(), "the supervisor starts");
+  expect(test_support::wait_generation_ready(*supervisor, 1U, 5s), "generation 1 ready");
+  std::optional<secure_frontend::Lease> lease = supervisor->acquire();
+  expect(lease.has_value(), "lease on generation 1");
+  supervisor->shutdown(5s);
+  expect(supervisor->snapshot().state == SupervisorState::stopped, "shutdown completes with the Lease still out");
+  if (const auto child = fakes.child(1U)) {
+    std::lock_guard lock(child->mutex);
+    expect(child->exit.has_value() && child->exit->signaled == test_support::fake_kill_status().signaled &&
+               child->exit->value == test_support::fake_kill_status().value,
+           "no EOF under a leased request: the engine is killed, not closed");
+  }
+  expect(log.contains("engine generation 1 ended: killed_by_supervisor(shutdown)"), "logged as the supervisor's shutdown");
+  supervisor->~EngineSupervisor();
+  // Poison the supervisor's memory: a Lease that still pointed at it would lock
+  // a garbage mutex and write to a garbage descriptor.
+  std::memset(storage, 0xA5, sizeof(storage));
+  lease.reset();
+  expect(true, "the Lease outlived the supervisor without touching it");
+}
+
 #if !defined(_WIN32)
+// RF4: the shutdown signal handler preserves errno, also when its wake write
+// fails (a full self-pipe gives EAGAIN).
+void shutdown_signal_preserves_errno() {
+  secure_frontend::SupervisorWake wake;
+  expect(wake.valid(), "wake pipe");
+  for (int i = 0; i < 200000; ++i) wake.notify();  // fill the non-blocking pipe: the next write fails
+  secure_frontend::install_shutdown_signals(wake);
+  expect(!secure_frontend::shutdown_signalled(), "not signalled before SIGTERM");
+  errno = EDOM;
+  (void)std::raise(SIGTERM);
+  const int after = errno;
+  expect(after == EDOM, "errno survives the handler, saw " + std::to_string(after));
+  expect(secure_frontend::shutdown_signalled(), "SIGTERM sets the shutdown flag");
+  expect(wake.wait(secure_frontend::kNoMonitorHandle, 0ms) == secure_frontend::SupervisorWake::Event::woken, "the wake is readable");
+  secure_frontend::release_shutdown_signals(wake);
+}
+
 // RF4: without its wake pipe the supervisor thread could never be woken for
 // shutdown, so start() refuses and spawns nothing.
 void supervisor_start_refuses_without_wake() {
@@ -682,7 +754,10 @@ int main(int argc, char* argv[]) {
                                                 {"proc04_no_leak_across_restarts", proc04_no_leak_across_restarts},
                                                 {"proc04_unreaped_child_opens_circuit", proc04_unreaped_child_opens_circuit},
                                                 {"supervisor_exception_opens_circuit", supervisor_exception_opens_circuit},
+                                                {"supervisor_shutdown_sends_eof_first_then_kills", supervisor_shutdown_sends_eof_first_then_kills},
+                                                {"supervisor_lease_outliving_shutdown_is_safe", supervisor_lease_outliving_shutdown_is_safe},
 #if !defined(_WIN32)
+                                                {"shutdown_signal_preserves_errno", shutdown_signal_preserves_errno},
                                                 {"supervisor_start_refuses_without_wake", supervisor_start_refuses_without_wake},
                                                 {"proc05_setsid_grandchild_is_reaped", proc05_setsid_grandchild_is_reaped},
                                                 {"proc05_setsid_grandchild_is_reaped_at_shutdown", proc05_setsid_grandchild_is_reaped_at_shutdown},

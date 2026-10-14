@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <cerrno>
 #include <chrono>
@@ -238,13 +239,17 @@ struct HttpSocketServer::State final {
   RequestDispatcher dispatcher;
   HttpSocketServerLimits limits;
   bool listener_failed{false};
+  // Set by shutdown_listener() from another thread (SP2 C4).
+  std::atomic<bool> listener_closed{false};
 #ifdef _WIN32
   bool winsock_started{false};
 #endif
   ~State() {
-    close_socket(socket);
 #ifdef _WIN32
+    if (!listener_closed.exchange(true)) close_socket(socket);
     if (winsock_started) WSACleanup();
+#else
+    close_socket(socket);
 #endif
   }
 };
@@ -344,8 +349,20 @@ std::optional<HttpSocketServer> HttpSocketServer::bind(const Config& listener_co
 bool HttpSocketServer::serve_one(std::string* error) {
   if (error != nullptr) error->clear();
   if (!state_) { if (error != nullptr) *error = "listener is not initialized"; return false; }
+  if (state_->listener_closed.load()) {
+    state_->listener_failed = true;
+    if (error != nullptr) *error = "listener shut down";
+    return false;
+  }
   const NativeSocket client = accept(state_->socket, nullptr, nullptr);
   if (client == kInvalidSocket) {
+    // shutdown_listener() woke this accept(): Windows may report the closed
+    // socket as WSAEINTR, which would otherwise read as transient.
+    if (state_->listener_closed.load()) {
+      state_->listener_failed = true;
+      if (error != nullptr) *error = "listener shut down";
+      return false;
+    }
     // Inverted on purpose: only errors that mean the listening socket itself
     // is broken stop serving. Anything a peer or the network can cause (resets,
     // pending protocol errors, resource pressure) is transient, so no client
@@ -427,5 +444,15 @@ bool HttpSocketServer::serve_one(std::string* error) {
 
 std::uint16_t HttpSocketServer::port() const { return state_ ? state_->port : 0U; }
 bool HttpSocketServer::listener_failed() const noexcept { return state_ && state_->listener_failed; }
+
+void HttpSocketServer::shutdown_listener() noexcept {
+  if (!state_) return;
+#ifdef _WIN32
+  if (!state_->listener_closed.exchange(true)) (void)closesocket(state_->socket);
+#else
+  state_->listener_closed.store(true);
+  (void)::shutdown(state_->socket, SHUT_RDWR);
+#endif
+}
 
 }  // namespace secure_frontend

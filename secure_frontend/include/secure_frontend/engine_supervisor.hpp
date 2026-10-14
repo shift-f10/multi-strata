@@ -49,9 +49,14 @@ struct EngineInstance final {
 };
 
 class EngineSupervisor;
+// What a Lease reaches its supervisor through; shutdown() detaches it.
+struct LeaseLink;
 
 // The serving thread's borrow of the current generation, taken in `ready`.
-// Releasing it returns the supervisor from `generating` to `ready`.
+// Releasing it returns the supervisor from `generating` to `ready`. A Lease
+// may outlive shutdown() and even the supervisor (RF4): once shutdown() has
+// returned it no longer refers to the supervisor, and destroying it only drops
+// its own reference to the generation.
 class Lease final {
  public:
   Lease(Lease&& other) noexcept;
@@ -67,8 +72,8 @@ class Lease final {
 
  private:
   friend class EngineSupervisor;
-  Lease(EngineSupervisor& owner, std::shared_ptr<EngineInstance> instance) noexcept;
-  EngineSupervisor* owner_;
+  Lease(std::shared_ptr<LeaseLink> link, std::shared_ptr<EngineInstance> instance) noexcept;
+  std::shared_ptr<LeaseLink> link_;
   std::shared_ptr<EngineInstance> instance_;
 };
 
@@ -112,9 +117,16 @@ class EngineSupervisor final {
   void report_fatal(const Lease& lease, KillReason reason);
   // One sample per /health request (SP0's sample-once rule).
   [[nodiscard]] HealthSnapshot snapshot() const;
-  // Requests the orderly shutdown and waits for it; past `bound` the process exits 1.
+  // Requests the orderly shutdown (spec §3.7) and waits for it; past `bound`
+  // the process exits 1. Idempotent.
   void shutdown(std::chrono::milliseconds bound);
+  // True once shutdown() was called or a shutdown signal arrived.
   [[nodiscard]] bool stop_requested() const noexcept;
+  // The wake object install_shutdown_signals() fires.
+  [[nodiscard]] SupervisorWake& wake() noexcept { return wake_; }
+  // Called on the supervisor thread after every engine process is gone (main
+  // passes HttpSocketServer::shutdown_listener). Set before start().
+  void set_on_stopped(std::function<void()> on_stopped);
 
   // Test seams.
   [[nodiscard]] bool wait_for_state(SupervisorState state, std::chrono::milliseconds timeout) const;
@@ -137,6 +149,8 @@ class EngineSupervisor final {
   void retire(const std::shared_ptr<EngineInstance>& instance, bool reaped);
   void sweep_retired();
   void finish();
+  void note_shutdown_started() noexcept;
+  void detach_leases() noexcept;
   void set_state(SupervisorState state);
   void set_state(SupervisorState state, std::shared_ptr<EngineInstance> current);
   void log_end(std::uint64_t generation, std::string_view kind);
@@ -159,6 +173,12 @@ class EngineSupervisor final {
   std::vector<std::shared_ptr<EngineInstance>> abandoned_;
   std::atomic<std::uint64_t> generations_started_{0};
   std::atomic<bool> shutdown_requested_{false};
+  std::shared_ptr<LeaseLink> lease_link_;
+  std::function<void()> on_stopped_;
+  // Spec §3.7 bound: set when the supervisor thread starts the orderly
+  // shutdown; finish() waits for main's shutdown() until then, else exits 1.
+  std::chrono::steady_clock::time_point shutdown_deadline_{};
+  bool main_acknowledged_{false};
   std::thread thread_;
 };
 

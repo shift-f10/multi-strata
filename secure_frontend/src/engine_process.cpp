@@ -192,13 +192,16 @@ std::optional<ProcessError> EngineProcess::start(const EngineCommand& command) {
   (void)previous_error_mode;
   // Start suspended so the child is inside the Job before it runs a single
   // instruction: no early descendant can escape the kill-on-close Job (PROC-05).
-  // A new console process group: Ctrl-C is disabled in the engine's group;
-  // group-targeted Ctrl-Break reaches only the frontend; a console-wide
-  // Ctrl-Break still reaches the engine (open item for SP2 Task 15:
-  // CREATE_NO_WINDOW or accept the race).
+  // CREATE_NEW_PROCESS_GROUP: Ctrl-C is disabled in the engine's group and
+  // group-targeted Ctrl-Break reaches only the frontend. CREATE_NO_WINDOW
+  // (SP2 Task 15 ruling): the engine runs without the frontend's console, so a
+  // console-wide Ctrl-Break or a closed console window reaches only the
+  // frontend, whose console handler stops the engine in order (spec §3.7).
+  // Same flags as the production twin (engine_stdio_process.cpp); this
+  // test-only class (RF12) speaks no stdio protocol. Authoritative in MSYS2.
   if (!CreateProcessW(command.executable.c_str(), command_line.data(), nullptr, nullptr, FALSE,
-                      CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP, environment.data(), nullptr,
-                      &startup, &info)) {
+                      CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
+                      environment.data(), nullptr, &startup, &info)) {
     CloseHandle(job);
     return ProcessError{ProcessErrorCode::spawn_failed, "CreateProcessW failed"};
   }
