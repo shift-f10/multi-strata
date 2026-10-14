@@ -23,6 +23,7 @@
 #if defined(_WIN32)
 #include "secure_frontend/win32_prelude.hpp"
 #else
+#include <cerrno>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -449,6 +450,18 @@ void proc04_unreaped_child_opens_circuit() {
 }
 
 #if !defined(_WIN32)
+// The sweep reaped `pid` (not merely killed it): it is no longer our child,
+// not even as a zombie. Hygiene: this process is the subreaper, so a
+// grandchild the sweep missed is ours; kill it only while it is alive (a
+// recycled pid is never signalled) and collect it.
+void expect_swept_and_reaped(const long pid) {
+  int status = 0;
+  const pid_t waited = waitpid(static_cast<pid_t>(pid), &status, WNOHANG);
+  expect(waited == -1 && errno == ECHILD, "the swept grandchild was reaped, not left a zombie");
+  if (waited == 0 && test_support::process_alive(pid)) test_support::kill_process(pid);
+  if (waited == 0) (void)waitpid(static_cast<pid_t>(pid), &status, 0);
+}
+
 void proc05_setsid_grandchild_is_reaped() {
   const auto dir = test_support::make_temp_dir("c2");
   const auto pidfile = dir / "grandchild.pid";
@@ -468,12 +481,25 @@ void proc05_setsid_grandchild_is_reaped() {
   }
   expect(supervisor.wait_for_state(SupervisorState::circuit_open, 5s), "the generation ended");
   expect(test_support::wait_until_gone(*grandchild, 2s), "a setsid grandchild outside the engine's group is swept");
-  test_support::kill_process(*grandchild);
-  // Hygiene: this process is the subreaper, so a grandchild the sweep missed
-  // is our child; collect it (ECHILD at once when it is not ours).
-  int status = 0;
-  (void)waitpid(static_cast<pid_t>(*grandchild), &status, 0);
+  expect_swept_and_reaped(*grandchild);
   supervisor.shutdown(5s);
+}
+
+void proc05_setsid_grandchild_is_reaped_at_shutdown() {
+  const auto dir = test_support::make_temp_dir("c2-shutdown");
+  const auto pidfile = dir / "grandchild.pid";
+  secure_frontend::EngineSupervisor supervisor(
+      {}, secure_frontend::make_stdio_process_factory(
+              fake_plan({"--spawn-grandchild", "--grandchild-setsid", "--grandchild-pidfile=" + test_support::utf8_path(pidfile)})));
+  supervisor.start();
+  expect(test_support::wait_generation_ready(supervisor, 1U, 10s), "ready");
+  const auto grandchild = test_support::read_pidfile(pidfile, 5s);
+  expect(grandchild.has_value(), "the escaping grandchild started");
+  if (!grandchild) return;
+  expect(test_support::process_alive(*grandchild), "precondition: the grandchild is alive before shutdown");
+  supervisor.shutdown(5s);
+  expect(test_support::wait_until_gone(*grandchild, 2s), "a setsid grandchild alive at shutdown is swept");
+  expect_swept_and_reaped(*grandchild);
 }
 #endif
 
@@ -498,6 +524,7 @@ int main(int argc, char* argv[]) {
                                                 {"proc04_unreaped_child_opens_circuit", proc04_unreaped_child_opens_circuit},
 #if !defined(_WIN32)
                                                 {"proc05_setsid_grandchild_is_reaped", proc05_setsid_grandchild_is_reaped},
+                                                {"proc05_setsid_grandchild_is_reaped_at_shutdown", proc05_setsid_grandchild_is_reaped_at_shutdown},
 #endif
                                                }, failures);
 }

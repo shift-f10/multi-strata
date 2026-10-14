@@ -315,7 +315,12 @@ void EngineSupervisor::shutdown_generation(const std::shared_ptr<EngineInstance>
   const auto deadline = deadline_after(config_.shutdown_term_wait);
   while (!instance->process->try_reap() && remaining_until(deadline).count() > 0) std::this_thread::sleep_for(kReapPoll);
   const bool reaped = instance->process->try_reap().has_value();
-  if (reaped) instance->process->release_resources(std::chrono::milliseconds(0));
+  if (reaped) {
+    // Spec §3.7 / §3.7(b): shutdown sweeps too, so an escape alive at shutdown
+    // dies with the frontend; 250 ms fits the shutdown bound.
+    if (config_.sweep_orphans) (void)sweep_orphans({}, std::chrono::milliseconds(250));
+    instance->process->release_resources(std::chrono::milliseconds(0));
+  }
   retire(instance, reaped);
 }
 
