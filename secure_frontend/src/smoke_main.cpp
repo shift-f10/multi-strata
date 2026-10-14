@@ -50,6 +50,9 @@ void usage() { std::cerr << "usage: secure-frontend-smoke --api-key-env NAME --m
 
 int main(int argc, char** argv) {
   secure_frontend::install_process_defaults();
+  // Spec §10: Winsock is initialized once per process (bind() no longer calls WSAStartup).
+  const secure_frontend::WinsockGuard winsock;
+  if (!winsock.ok()) { std::cerr << "networking initialization failed\n"; return EXIT_FAILURE; }
   const auto options = parse(argc, argv);
   if (!options.has_value()) { usage(); return EXIT_FAILURE; }
   const auto source_result = secure_frontend::make_environment_secret_source(options->key_env);
@@ -69,7 +72,8 @@ int main(int argc, char** argv) {
   const auto bind_address = secure_frontend::parse_listener_address(config->host);
   if (!bind_address.has_value()) { std::cerr << "invalid listener configuration\n"; return EXIT_FAILURE; }
   // SP3 Task 6b: the router serves one model id (spec §3.6, E9); this smoke
-  // binary serves the first local model, if any. Task 8b reworks the smoke mains.
+  // binary serves the first local model, if any. Only /health and /v1/models
+  // answer; the chat route is 404 here (no engine).
   std::string model_id;
   std::string owned_by{"local"};
   const auto inventory = secure_frontend::enumerate_local_models(options->models_root);
@@ -77,6 +81,8 @@ int main(int argc, char** argv) {
     model_id = entries->front().id;
     owned_by = entries->front().owned_by;
   }
+  // Loopback only (allow_remote = false): the bound authority and localhost need
+  // no alias. No CORS.
   secure_frontend::ApiRouter router(secure_frontend::ApiRouterConfig{
       .policy = secure_frontend::make_http_policy(*bind_address, config->port, {}, {}),
       .validator = secure_frontend::make_bearer_validator(verifier),
@@ -84,21 +90,17 @@ int main(int argc, char** argv) {
       .owned_by = std::move(owned_by),
       .chat_body_limit = static_cast<std::size_t>(secure_frontend::config_defaults::kChatMaxBodyBytes),
       .health = [] { return secure_frontend::HealthView{true, "ready", ""}; },
-      .chat = {}});
+      .chat = [](std::string_view, const secure_frontend::RequestContext&) -> secure_frontend::RouteResult {
+        return secure_frontend::make_error_response(secure_frontend::ApiError::not_found);
+      }});
   std::string error;
-  // Loopback only (allow_remote = false): the bound authority and localhost need
-  // no alias. No CORS.
-  auto server = secure_frontend::HttpSocketServer::bind(*config,
-      secure_frontend::make_http_policy(*bind_address, config->port, {}, {}),
-      secure_frontend::make_bearer_validator(verifier),
-      [&router](std::string_view method, std::string_view target, std::string_view) {
-        if (method != "GET") return secure_frontend::make_error_response(secure_frontend::ApiError::not_found);
-        return secure_frontend::handle_authenticated_get(router, target);
-      }, &error);
+  auto server = secure_frontend::HttpSocketServer::bind(
+      *config, static_cast<int>(secure_frontend::config_defaults::kListenerBacklog), &error);
   if (!server.has_value()) { std::cerr << "listener setup failed: " << error << '\n'; return EXIT_FAILURE; }
+  const secure_frontend::ConnectionLimits limits{};   // SP1's schema defaults
   std::cout << "secure frontend smoke server listening on http://" << host_header << " (local models only)\n";
   for (;;) {
-    if (!server->serve_one(&error) && server->listener_failed()) {
+    if (!server->serve_one(router, limits, &error) && server->listener_failed()) {
       std::cerr << "listener stopped: " << error << '\n';
       return EXIT_FAILURE;
     }

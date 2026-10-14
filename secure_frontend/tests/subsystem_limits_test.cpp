@@ -45,10 +45,15 @@ void subsystem_limits_follow_config() {
                                    {"limits.chat.max_body_bytes", "131072"},
                                    {"limits.chat.default_max_tokens", "64"},
                                    {"limits.engine.ready_timeout_s", "7"}});
-  const auto http = secure_frontend::http_socket_server_limits(*config);
-  expect(http.max_request_bytes == 262144U && http.max_header_bytes == 8192U && http.max_headers == 32U &&
-             http.request_deadline == std::chrono::milliseconds(1500) && http.backlog == 64,
-         "listener and parser limits come from the config");
+  const auto http = secure_frontend::connection_limits(*config);
+  expect(http.head.max_request_bytes == 262144U && http.head.max_header_bytes == 8192U && http.head.max_headers == 32U &&
+             http.head.max_request_line_bytes == 4096U && http.request_deadline == std::chrono::milliseconds(1500) &&
+             http.header_deadline == std::chrono::milliseconds(1500),
+         "connection and parser limits come from the config");
+  expect(http.write_stall == std::chrono::milliseconds(10000) && http.response_write_deadline == std::chrono::milliseconds(60000),
+         "write_stall and response_write_deadline default to 10 s and 60 s");
+  // Pre-flight T8b(e)/V17: ConnectionLimits has no backlog; bind() takes it from the listener config.
+  expect(config->listener.backlog == 64U, "the listener backlog comes from the config");
   const auto schema = secure_frontend::chat_schema_limits(*config);
   expect(schema.max_body_bytes == 131072U, "chat body limit comes from the config");
   const auto chat = secure_frontend::chat_execution_limits(*config);

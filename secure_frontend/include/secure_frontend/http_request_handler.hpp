@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -14,6 +15,8 @@ namespace secure_frontend {
 
 // Defined in http_policy.hpp, which includes this header for HttpResponse.
 struct HttpPolicy;
+// Defined in request_router.hpp, which includes this header for HttpResponse.
+class RequestRouter;
 
 // The validator owns any secret material. It is called only after request
 // syntax and Host/Origin policy have been accepted, and should compare the
@@ -59,5 +62,10 @@ struct HttpParserLimits final {
                                                 const BearerTokenValidator& validate_bearer_token,
                                                 const RequestDispatcher& dispatch_request,
                                                 const HttpParserLimits& limits = {});
+
+// Legacy adapter as a RequestRouter for HttpSocketServer::serve_one (SP3 Task
+// 8b); it owns copies of all three. Deleted with the dispatcher path in Task 9.
+[[nodiscard]] std::unique_ptr<RequestRouter> make_dispatcher_router(HttpPolicy policy, BearerTokenValidator validator,
+                                                                    RequestDispatcher dispatch);
 
 }  // namespace secure_frontend

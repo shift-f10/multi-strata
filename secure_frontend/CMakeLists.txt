@@ -140,6 +140,7 @@ add_library(secure_frontend_engine_stdio_process
 
 add_library(secure_frontend_http_socket_server
     src/http_socket_server.cpp
+    src/connection_handler.cpp
     src/process_defaults.cpp
 )
 
@@ -271,7 +272,8 @@ target_include_directories(secure_frontend_http_socket_server
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(secure_frontend_http_socket_server PUBLIC secure_frontend_http_request_handler secure_frontend_config)
+target_link_libraries(secure_frontend_http_socket_server PUBLIC secure_frontend_socket_io secure_frontend_http_request_handler
+    secure_frontend_config secure_frontend_api_core)
 
 target_compile_features(secure_frontend_api_router PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_api_router
@@ -858,11 +860,22 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         socket_server_survives_reset_before_accept socket_server_responds_after_client_half_close
         parser_honors_configured_max_request_bytes socket_server_shutdown_listener_wakes_accept
         socket_server_shutdown_listener_wakes_idle_client
+        socket_server_rejects_oversize_header_with_431 head_terminator_split_across_reads
+        expect_continue_skipped_when_body_already_sent expect_continue_sent_after_authorization
+        stream_handler_dispatch_writes_head_chunks_and_terminal_chunk no_response_status_closes_without_writing
+        listener_and_accepted_sockets_are_not_inherited
         send_retries_on_eintr accept_backs_off_on_transient_failure send_some_slices_to_max_send_chunk
         send_all_bounded_stops_at_stall_on_a_stalled_reader send_all_bounded_meets_deadline_and_completes
         send_all_bounded_stall_restarts_on_progress socket_io_poll_probe_and_recv set_no_inherit_marks_the_socket
         TIMEOUT 300)
-    target_link_libraries(secure_frontend_http_socket_server_tests PRIVATE secure_frontend_socket_io)
+    target_link_libraries(secure_frontend_http_socket_server_tests PRIVATE secure_frontend_socket_io
+        secure_frontend_api_router secure_frontend_secrets secure_frontend_http_policy)
+    secure_frontend_test_paths(secure_frontend_http_socket_server_tests)
+    set_tests_properties(secure_frontend_http_socket_server_tests.socket_server_ipv6_bind_is_v6only PROPERTIES SKIP_RETURN_CODE 77)
+    if(WIN32)
+        secure_frontend_add_cases(secure_frontend_http_socket_server_tests win_send_chunks_respect_write_stall
+            LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+    endif()
 
     secure_frontend_add_test_executable(secure_frontend_api_router_tests tests/api_router_test.cpp secure_frontend_api_router)
     secure_frontend_add_cases(secure_frontend_api_router_tests

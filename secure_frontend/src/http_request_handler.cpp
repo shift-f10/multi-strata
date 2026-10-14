@@ -43,8 +43,8 @@ namespace {
 // Adapts the SP0/SP1 dispatcher to RequestRouter for the serial server until Task 9.
 class DispatcherRouter final : public RequestRouter {
  public:
-  DispatcherRouter(const HttpPolicy& policy, const BearerTokenValidator& validator, const RequestDispatcher& dispatch)
-      : policy_(policy), validator_(validator), dispatch_(dispatch) {}
+  DispatcherRouter(HttpPolicy policy, BearerTokenValidator validator, RequestDispatcher dispatch)
+      : policy_(std::move(policy)), validator_(std::move(validator)), dispatch_(std::move(dispatch)) {}
 
   RouteDecision authorize(const RequestHead& head) override {
     RouteDecision decision;
@@ -97,9 +97,9 @@ class DispatcherRouter final : public RequestRouter {
   }
 
  private:
-  const HttpPolicy& policy_;
-  const BearerTokenValidator& validator_;
-  const RequestDispatcher& dispatch_;
+  HttpPolicy policy_;
+  BearerTokenValidator validator_;
+  RequestDispatcher dispatch_;
 };
 
 }  // namespace
@@ -110,6 +110,10 @@ HttpResponse handle_http_request(const std::string_view request, const HttpPolic
   return handle_http_request(request, router,
                              HeadLimits{limits.max_request_line_bytes, limits.max_header_bytes, limits.max_headers,
                                         limits.max_request_bytes});
+}
+
+std::unique_ptr<RequestRouter> make_dispatcher_router(HttpPolicy policy, BearerTokenValidator validator, RequestDispatcher dispatch) {
+  return std::make_unique<DispatcherRouter>(std::move(policy), std::move(validator), std::move(dispatch));
 }
 
 }  // namespace secure_frontend

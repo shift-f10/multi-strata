@@ -25,9 +25,12 @@
 #if defined(_WIN32)
 #include "secure_frontend/win32_prelude.hpp"
 #include <aclapi.h>
+#include <ws2tcpip.h>
 #else
 #include <cerrno>
 #include <csignal>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -195,6 +198,28 @@ inline void kill_process(const long pid) {
 #else
   (void)kill(static_cast<pid_t>(pid), SIGKILL);
 #endif
+}
+
+// True when a TCP socket can bind ::1 (port 0). Uses only bind, never connect.
+// The caller holds a WinsockGuard on Windows.
+inline bool ipv6_loopback_available() {
+#if defined(_WIN32)
+  const SOCKET s = ::socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+  if (s == INVALID_SOCKET) return false;
+#else
+  const int s = ::socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+  if (s < 0) return false;
+#endif
+  sockaddr_in6 address{};
+  address.sin6_family = AF_INET6;
+  address.sin6_addr.s6_addr[15] = 1;   // ::1, without the in6addr_loopback symbol
+  const bool ok = ::bind(s, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0;
+#if defined(_WIN32)
+  closesocket(s);
+#else
+  ::close(s);
+#endif
+  return ok;
 }
 
 }  // namespace test_support

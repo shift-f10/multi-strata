@@ -138,7 +138,6 @@ int run(const FrontendConfig& config, const bool expert) {
   const secure_frontend::Config listener = secure_frontend::listener_config(config);
   // Derived once, before bind/spawn; each subsystem keeps its own const copy.
   const auto schema_limits = secure_frontend::chat_schema_limits(config);
-  const auto listener_limits = secure_frontend::http_socket_server_limits(config);
   // SP4 §2.3/§4.9 (Task 24b): managed models launch from the installed manifest;
   // --expert keeps SP1's operator path (inventory, roots.tokenizer_pack).
   auto composed = secure_frontend::compose_engine_launch(config, expert);
@@ -219,8 +218,10 @@ int run(const FrontendConfig& config, const bool expert) {
         return secure_frontend::HealthView{s.healthy, s.engine, s.recovery};
       },
       .chat = {}});
-  auto server = secure_frontend::HttpSocketServer::bind(
-      listener, std::move(policy), secure_frontend::make_bearer_validator(verifier),
+  // The legacy dispatcher as a RequestRouter for the header-first connection
+  // handler (SP3 Task 8b); Task 9 replaces it with the ApiRouter.
+  const auto legacy_router = secure_frontend::make_dispatcher_router(
+      std::move(policy), secure_frontend::make_bearer_validator(verifier),
       [&router, &supervisor, &tokenizer, &model_id, &schema_limits](
           const std::string_view method, const std::string_view target, const std::string_view body) {
         // The legacy adapter has already authenticated the request; Task 9 replaces this dispatcher.
@@ -242,8 +243,10 @@ int run(const FrontendConfig& config, const bool expert) {
             .status = 200,
             .headers = {{"Content-Type", "application/json; charset=utf-8"}, {"Cache-Control", "no-store"}},
             .body = *response};
-      },
-      nullptr, listener_limits);
+      });
+  const secure_frontend::ConnectionLimits connection_bounds = secure_frontend::connection_limits(config);
+  std::string bind_error;
+  auto server = secure_frontend::HttpSocketServer::bind(listener, static_cast<int>(config.listener.backlog), &bind_error);
   if (!server) { std::cerr << "Unable to bind secure listener.\n"; return EXIT_FAILURE; }
   // Bound first, spawned second: a listener that cannot bind never leaves an
   // engine child behind (CFG-01). The token was read above, before any spawn.
@@ -262,8 +265,10 @@ int run(const FrontendConfig& config, const bool expert) {
   std::cout.flush();
   for (;;) {
     std::string error;
-    const bool served = server->serve_one(&error);
+    const bool served = server->serve_one(*legacy_router, connection_bounds, &error);
     if (supervisor.stop_requested()) break;
+    // The on-stopped hook closed the listener (pre-flight P33): nothing more to accept.
+    if (server->native_handle() == secure_frontend::kInvalidNativeSocket) break;
     if (!served && server->listener_failed()) {
       std::cerr << "listener stopped: " << error << '\n';
       supervisor.shutdown(secure_frontend::config_defaults::kShutdownBound);
@@ -279,6 +284,8 @@ int run(const FrontendConfig& config, const bool expert) {
 }  // namespace
 
 int main(int argc, char* argv[]) {
+  // Spec §10: Winsock is initialized once per process (bind() no longer calls WSAStartup).
+  const secure_frontend::WinsockGuard winsock;
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
   std::cerr << "warning: test hooks compiled in (" << secure_frontend::kTestHooksMarker << "); never ship this binary\n";
 #endif

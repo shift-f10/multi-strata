@@ -203,21 +203,18 @@ int run(const Options& options) {
                                                                         : std::vector<std::string>{};
   secure_frontend::HttpPolicy policy = secure_frontend::make_http_policy(*bind_address, config->port, aliases, {});
   secure_frontend::ApiRouter router(secure_frontend::ApiRouterConfig{
-      .policy = policy,
+      .policy = std::move(policy),
       .validator = secure_frontend::make_bearer_validator(verifier),
       .model_id = std::move(model_id),
       .owned_by = std::move(owned_by),
       .chat_body_limit = static_cast<std::size_t>(secure_frontend::config_defaults::kChatMaxBodyBytes),
       .health = [] { return secure_frontend::HealthView{true, "ready", ""}; },
-      .chat = {}});
+      // No engine here: the chat route answers 404 like every other non-GET route.
+      .chat = [](std::string_view, const secure_frontend::RequestContext&) -> secure_frontend::RouteResult {
+        return secure_frontend::make_error_response(secure_frontend::ApiError::not_found);
+      }});
   auto server = secure_frontend::HttpSocketServer::bind(
-      *config, std::move(policy),
-      secure_frontend::make_bearer_validator(verifier),
-      [&router](const std::string_view method, const std::string_view target, const std::string_view) {
-        if (method != "GET") return secure_frontend::make_error_response(secure_frontend::ApiError::not_found);
-        return secure_frontend::handle_authenticated_get(router, target);
-      },
-      nullptr);
+      *config, static_cast<int>(secure_frontend::config_defaults::kListenerBacklog), nullptr);
   if (!server.has_value()) {
     std::cerr << "Unable to bind secure listener.\n";
     return EXIT_FAILURE;
@@ -225,9 +222,10 @@ int run(const Options& options) {
   std::cout << "Secure smoke server listening on http://" << authority
             << " (authenticated; Ctrl-C to stop)\n";
   std::cout.flush();
+  const secure_frontend::ConnectionLimits limits{};   // SP1's schema defaults
   for (;;) {
     std::string error;
-    if (!server->serve_one(&error) && server->listener_failed()) {
+    if (!server->serve_one(router, limits, &error) && server->listener_failed()) {
       std::cerr << "listener stopped: " << error << '\n';
       return EXIT_FAILURE;
     }
@@ -239,6 +237,12 @@ int run(const Options& options) {
 
 int main(int argc, char* argv[]) {
   secure_frontend::install_process_defaults();
+  // Spec §10: Winsock is initialized once per process (bind() no longer calls WSAStartup).
+  const secure_frontend::WinsockGuard winsock;
+  if (!winsock.ok()) {
+    std::cerr << "Networking initialization failed.\n";
+    return EXIT_FAILURE;
+  }
   Options options;
   bool help = false;
   std::string error;

@@ -71,11 +71,11 @@ inline constexpr int kLiftFloor = 10;
 // that is unknown). The fallback runs only where close_range(2) is missing or
 // fails (Linux before 5.9, headers without SYS_close_range, or a non-Linux
 // POSIX system); a sweep to an unbounded RLIMIT_NOFILE could take seconds per
-// spawn. Not every descriptor the frontend opens is close-on-exec (the
-// listening and accepted sockets are created without SOCK_CLOEXEC), so on that
-// fallback path, with RLIMIT_NOFILE above the cap, such a descriptor numbered
-// at or above kSweepCap would reach the engine. close_range covers every
-// number, so Linux 5.9+ has no such gap.
+// spawn. The listening and accepted sockets are close-on-exec since SP3 Task 8b
+// (SOCK_CLOEXEC / accept4, FD_CLOEXEC elsewhere), so the sweep is defence in
+// depth for them; a descriptor opened without O_CLOEXEC and numbered at or
+// above kSweepCap would still reach the engine on this fallback path.
+// close_range covers every number, so Linux 5.9+ has no such gap.
 inline constexpr long kSweepCap = 65536;
 inline constexpr int kSweepDefault = 1024;
 
