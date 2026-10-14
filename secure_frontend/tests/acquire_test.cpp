@@ -1,9 +1,11 @@
 #include "secure_frontend/acquire_manifest.hpp"
 #include "secure_frontend/acquire_reason.hpp"
+#include "secure_frontend/manifest_diff.hpp"
 #include "secure_frontend/model_index_model.hpp"
 #include "secure_frontend/staging_plan.hpp"
 #include "support/test_support.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <iostream>
 #include <set>
@@ -171,6 +173,57 @@ void abandoned_keys_match_same_model_only() {
 
 }  // namespace
 
+void update_diff_lists_changed_files_and_license() {
+  auto installed = staging_manifest();
+  installed.version = "2026.10.14.1";
+  installed.sequence = 1;
+  installed.license = {"Apache-2.0", "https://h.example/l", true, "n"};
+  installed.hosts = {"h.example"};
+  auto candidate = installed;
+  candidate.version = "2026.11.01.1";
+  candidate.sequence = 2;
+  candidate.license.id = "MIT";
+  candidate.hosts = {"h.example", "g.example"};
+  candidate.files[1].sha256 = std::string(64, 'e');
+  candidate.files[1].size = 12;
+  candidate.files.pop_back();
+  candidate.files.push_back(secure_frontend::ManifestFile{"pack/new.bin", secure_frontend::FileRole::pack, 7,
+                                                          std::string(64, '7'), {}, {}});
+  const auto diff = secure_frontend::diff_manifests(installed, candidate);
+  const std::vector<std::string> expected{
+      "version: 2026.10.14.1 (sequence 1) -> 2026.11.01.1 (sequence 2)",
+      "license: Apache-2.0 -> MIT",
+      "hosts: + g.example",
+      "file changed: pack/index.txt size 10 -> 12, sha256 " + std::string(64, 'b') + " -> " + std::string(64, 'e'),
+      "file removed: pack/extra.bin",
+      "file added: pack/new.bin (7 bytes, sha256 " + std::string(64, '7') + ")",
+      "bytes to download: 19"};
+  expect(diff.lines == expected, "diff lines in spec §6.1 order");
+  expect(diff.license_changed, "a license change requires an interactive y");
+  expect(diff.bytes_to_download == 19, "added + changed bytes only");
+  expect((diff.reusable_files == std::vector<std::size_t>{0, 2}), "unchanged files are reused, not downloaded");
+
+  // F-21: a url, notice or per-file license change shows old -> new, never a bare "changed".
+  auto relicensed = installed;
+  relicensed.license.url = "https://h.example/l2";
+  relicensed.license.notice = "m";
+  relicensed.files[0].license = secure_frontend::ManifestLicense{"BSD-3-Clause", "https://h.example/b", false, "x"};
+  const auto license_diff = secure_frontend::diff_manifests(installed, relicensed);
+  const std::vector<std::string> license_expected{
+      "license url: https://h.example/l -> https://h.example/l2",
+      "notice: n -> m",
+      "bytes to download: 0"};
+  const auto has = [&](const std::string& line) {
+    return std::find(license_diff.lines.begin(), license_diff.lines.end(), line) != license_diff.lines.end();
+  };
+  expect(license_diff.license_changed, "a url or per-file license change requires an interactive y");
+  expect(has(license_expected[0]) && has(license_expected[1]) && has(license_expected[2]), "license url and notice shown old -> new");
+  expect(has("file weights/a.gguf license: Apache-2.0 -> BSD-3-Clause") ||
+             has("file weights/a.gguf license: (none) -> BSD-3-Clause"),
+         "per-file license change shown");
+  expect(license_diff.reusable_files.size() == 4, "a license change does not force a re-download");
+}
+
 int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
       {"exit_classes_match_spec_table", exit_classes_match_spec_table},
@@ -179,5 +232,6 @@ int main(int argc, char** argv) {
       {"version_dir_name_unique_for_same_version_label", version_dir_name_unique_for_same_version_label},
       {"staging_plan_classifies_partials", staging_plan_classifies_partials},
       {"abandoned_keys_match_same_model_only", abandoned_keys_match_same_model_only},
+      {"update_diff_lists_changed_files_and_license", update_diff_lists_changed_files_and_license},
   }, failures);
 }

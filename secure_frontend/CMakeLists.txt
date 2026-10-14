@@ -402,7 +402,7 @@ target_link_libraries(secure_frontend_manifest_core PUBLIC secure_frontend_model
 secure_frontend_set_warnings(secure_frontend_manifest_core)
 
 add_library(secure_frontend_acquire_core src/address_policy.cpp src/download_response.cpp src/downloader_command.cpp
-    src/fetch_schedule.cpp src/staging_plan.cpp)
+    src/fetch_schedule.cpp src/staging_plan.cpp src/bundle_text.cpp src/manifest_diff.cpp)
 target_compile_features(secure_frontend_acquire_core PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_acquire_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
@@ -729,7 +729,10 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_acquire_tests exit_classes_match_spec_table
         reason_table_is_complete_and_ordered error_text_states_resumable
         version_dir_name_unique_for_same_version_label staging_plan_classifies_partials
-        abandoned_keys_match_same_model_only)
+        abandoned_keys_match_same_model_only update_diff_lists_changed_files_and_license)
+    secure_frontend_add_test_executable(secure_frontend_bundle_tests tests/bundle_test.cpp secure_frontend_acquire_core)
+    secure_frontend_add_cases(secure_frontend_bundle_tests sha256sums_render_sorted_bytewise sha256sums_parse_is_strict
+        sums_agreement_rules missing_list_names_sourceless_files)
     secure_frontend_add_test_executable(secure_frontend_model_index_tests tests/model_index_test.cpp secure_frontend_manifest_core)
     secure_frontend_add_cases(secure_frontend_model_index_tests index_render_is_deterministic
         install_retires_previous_version reinstall_same_version_does_not_retire
