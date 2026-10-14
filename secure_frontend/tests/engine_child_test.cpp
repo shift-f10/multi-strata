@@ -7,8 +7,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cerrno>
 #include <cstddef>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <optional>
 #include <sstream>
@@ -196,26 +198,52 @@ void proc02_canary_descriptors_absent() {
 #endif
 
 #if !defined(_WIN32)
+std::optional<int> run_command(const std::string& executable, const std::vector<std::string>& arguments) {
+  secure_frontend::EngineProcess process;
+  if (process.start({.executable = executable, .arguments = arguments, .environment = {}}).has_value()) return std::nullopt;
+  return process.wait_for(10s);
+}
+
 std::optional<int> run_as_nobody(const std::vector<std::string>& command) {
   std::vector<std::string> arguments{"-n", "-u", "nobody"};
   arguments.insert(arguments.end(), command.begin(), command.end());
-  secure_frontend::EngineProcess process;
-  if (process.start({.executable = "/usr/bin/sudo", .arguments = arguments, .environment = {}}).has_value()) return std::nullopt;
-  return process.wait_for(10s);
+  return run_command("/usr/bin/sudo", arguments);
 }
+
+// Exit 0: opened /proc/<pid>/fd/0 for writing. 3: /proc/<pid> not visible
+// (engine gone, or hidepid). 4: the open itself was refused. The open runs in a
+// subshell because a failed `exec` redirection exits a POSIX shell outright.
+constexpr const char* kReopenProbe = R"([ -d "/proc/$1" ] || exit 3; ( exec 3>"$0" ) 2>/dev/null || exit 4; exit 0)";
+constexpr int kProbeOpened = 0;
+constexpr int kProbeOpenDenied = 4;
 
 void proc03_other_uid_cannot_open_engine_fd() {
   const char* enabled = std::getenv("STRATA_TEST_SECOND_UID_SUDO");
   if (enabled == nullptr || std::string(enabled) != "1") {
     test_support::skip("needs a second uid: CI sets STRATA_TEST_SECOND_UID_SUDO=1 where `sudo -n -u nobody` is allowed");
   }
-  if (run_as_nobody({"/bin/true"}) != 0) test_support::skip("`sudo -n -u nobody` is not permitted on this runner");
+  // The variable is CI's demand that R2 be proven: a runner that cannot sudo fails, never skips.
+  if (run_as_nobody({"/bin/true"}) != 0) {
+    expect(false, "STRATA_TEST_SECOND_UID_SUDO=1 but `sudo -n -u nobody` failed");
+    return;
+  }
   secure_frontend::EngineStdioProcess child;
   expect(!child.start({.executable = test_support::fake_engine_path(), .arguments = {}, .environment = {}}).has_value(), "start");
   expect(child.read_line(5s).line == "READY 4096 stop", "READY");
-  const std::string target = "/proc/" + std::to_string(child.pid()) + "/fd/0";
-  const auto opened = run_as_nobody({"/bin/sh", "-c", "exec 3>\"$0\"", target});
-  expect(opened.has_value() && *opened != 0, "another uid cannot open the engine's stdin through /proc");
+  const std::string pid = std::to_string(child.pid());
+  const std::string target = "/proc/" + pid + "/fd/0";
+  // Positive control: the identical probe as our own uid reaches and opens the path.
+  const auto same_uid = run_command("/bin/sh", {"-c", kReopenProbe, target, pid});
+  expect(same_uid == kProbeOpened, "positive control: the same uid opens " + target + ", probe exit " +
+                                       (same_uid ? std::to_string(*same_uid) : std::string("none")));
+  const auto other_uid = run_as_nobody({"/bin/sh", "-c", kReopenProbe, target, pid});
+  expect(other_uid == kProbeOpenDenied, "another uid sees the engine but cannot open its stdin through /proc, probe exit " +
+                                            (other_uid ? std::to_string(*other_uid) : std::string("none")));
+  // The engine was alive throughout: it still answers on the frontend's own stdin.
+  std::string error;
+  expect(child.write_line("DUMP", error), "DUMP through the frontend's stdin: " + error);
+  const auto reply = child.read_line(5s);
+  expect(reply.kind == secure_frontend::EngineReadKind::line && reply.line.rfind("FDS ", 0) == 0, "the engine is alive after the probes");
   (void)child.terminate(250ms);
 }
 
@@ -230,7 +258,9 @@ void proc03_same_uid_reopen_is_accepted_risk() {
   // record): the upstream engine cannot be made non-dumpable and its protocol
   // has no nonce without engine changes. If this starts failing, a mitigation
   // landed: update the threat model and flip this test.
-  expect(injected >= 0, "same-uid reopen of the engine's stdin still works (accepted risk, spec 3.13)");
+  const int open_error = errno;
+  expect(injected >= 0, "same-uid reopen of the engine's stdin still works (accepted risk, spec 3.13); open failed: " +
+                            std::string(std::strerror(open_error)));
   if (injected >= 0) {
     const std::string line = "DUMP\n";
     expect(write(injected, line.data(), line.size()) == static_cast<ssize_t>(line.size()), "an injected line is accepted by the pipe");
