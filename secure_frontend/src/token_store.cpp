@@ -6,7 +6,10 @@
 #include <array>
 #include <cerrno>
 #include <cstdio>
+#include <filesystem>
+#include <optional>
 #include <string>
+#include <utility>
 
 #if defined(_WIN32)
 #include "windows_security.hpp"
@@ -120,19 +123,59 @@ std::optional<TokenStoreError> store_token(const CanonicalRoot& secret_root, con
 #if defined(_WIN32)
 namespace ws = windows_security;
 
+namespace {
+
+bool same_file(const HANDLE a, const HANDLE b) {
+  BY_HANDLE_FILE_INFORMATION x{};
+  BY_HANDLE_FILE_INFORMATION y{};
+  return GetFileInformationByHandle(a, &x) != 0 && GetFileInformationByHandle(b, &y) != 0 &&
+         x.dwVolumeSerialNumber == y.dwVolumeSerialNumber && x.nFileIndexHigh == y.nFileIndexHigh &&
+         x.nFileIndexLow == y.nFileIndexLow;
+}
+
+bool same_path(const std::wstring& a, const std::wstring& b) {
+  return !a.empty() && a.size() == b.size() &&
+         CompareStringOrdinal(a.c_str(), static_cast<int>(a.size()), b.c_str(), static_cast<int>(b.size()), TRUE) == CSTR_EQUAL;
+}
+
+}  // namespace
+
 std::optional<TokenStoreError> write_private_file(const CanonicalRoot& root, const RelativePath& file,
                                                   const std::string_view bytes, const TokenStoreMode mode) {
-  std::wstring directory = root.path().wstring();
+  // The holding directory is validated as on Linux: the root itself, or the
+  // parent opened with open_beneath (no reparse point on the way, final path
+  // inside the root). The creation path is the validated root + relative path.
   const auto& parts = file.components();
-  for (std::size_t i = 0; i + 1U < parts.size(); ++i) directory += L'\\' + path_from_utf8(parts[i]).wstring();
+  std::wstring directory = root.path().wstring();
+  std::optional<OpenedFile> validated;
+  if (parts.size() > 1U) {
+    std::string parent;
+    for (std::size_t i = 0; i + 1U < parts.size(); ++i) {
+      parent += (parent.empty() ? "" : "/") + parts[i];
+      directory += L'\\' + path_from_utf8(parts[i]).wstring();
+    }
+    auto opened = open_beneath(root, std::get<RelativePath>(parse_relative_path(parent)), OpenOptions{.kind = OpenKind::directory});
+    if (std::holds_alternative<PathError>(opened)) return fail(TokenStoreErrorCode::unsafe_location, "the directory for the file cannot be opened safely");
+    validated.emplace(std::move(std::get<OpenedFile>(opened)));
+  }
+  const HANDLE checked = validated ? validated->native() : root.handle();
+  // Pin: a handle without FILE_SHARE_DELETE, held across create and move, so the
+  // directory cannot be renamed or replaced. It must be the validated directory.
+  // (open_beneath's own handle shares only FILE_SHARE_READ, which could refuse the
+  // rename's write-access open of the target directory, so it is not the pin.)
   HANDLE dir = CreateFileW(ws::extended_path(directory).c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
                            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
   if (dir == INVALID_HANDLE_VALUE) return fail(TokenStoreErrorCode::write_failed, "the directory for the file cannot be opened");
   OwnedHandle dir_guard(dir);
+  if (ws::is_reparse_point(dir) || !same_file(dir, checked)) {
+    return fail(TokenStoreErrorCode::unsafe_location, "the directory for the file changed while it was opened");
+  }
+  validated.reset();
+  const std::wstring pinned_path = ws::final_path_for_handle(dir);
   std::array<std::byte, SECURITY_MAX_SID_SIZE> storage{};
   PSID user = nullptr;
-  if (!ws::current_user_sid(storage, &user) || ws::is_reparse_point(dir) || !ws::has_private_owner_dacl(dir, user)) {
+  if (pinned_path.empty() || !ws::current_user_sid(storage, &user) || !ws::has_private_owner_dacl(dir, user)) {
     return fail(TokenStoreErrorCode::unsafe_location, "the directory holding the file must have a protected owner-only ACL");
   }
   const std::wstring target = directory + L'\\' + path_from_utf8(parts.back()).wstring();
@@ -151,9 +194,17 @@ std::optional<TokenStoreError> write_private_file(const CanonicalRoot& root, con
   const std::wstring temp = directory + L"\\." + path_from_utf8(parts.back()).wstring() + L".tmp-" + path_from_utf8(suffix).wstring();
   ws::PrivateSecurityAttributes security(false);
   if (security.get() == nullptr) return fail(TokenStoreErrorCode::protect_failed, "a private security descriptor cannot be built");
-  HANDLE out = CreateFileW(ws::extended_path(temp).c_str(), GENERIC_WRITE, 0, security.get(), CREATE_NEW,
+  HANDLE out = CreateFileW(ws::extended_path(temp).c_str(), GENERIC_WRITE | DELETE, 0, security.get(), CREATE_NEW,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
   if (out == INVALID_HANDLE_VALUE) return fail(TokenStoreErrorCode::write_failed, "the temporary file cannot be created");
+  // The temp must have landed in the pinned directory (an ancestor swapped
+  // between the checks and the path-based create would put it elsewhere).
+  if (!same_path(std::filesystem::path{ws::final_path_for_handle(out)}.parent_path().wstring(), pinned_path)) {
+    FILE_DISPOSITION_INFO dispose{TRUE};
+    SetFileInformationByHandle(out, FileDispositionInfo, &dispose, sizeof(dispose));
+    CloseHandle(out);
+    return fail(TokenStoreErrorCode::unsafe_location, "the temporary file was not created in the checked directory");
+  }
   DWORD written = 0;
   bool ok = bytes.empty() || (WriteFile(out, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr) != 0 &&
                               written == bytes.size());

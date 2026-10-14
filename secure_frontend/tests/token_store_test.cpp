@@ -135,21 +135,53 @@ void token_store_windows_round_trips_through_dpapi() {
   const auto read = secure_frontend::read_token(source, dir);
   const auto* error = std::get_if<secure_frontend::TokenReadError>(&read);
   expect(error == nullptr, "the DPAPI file reads back: " + (error ? error->message : std::string{}));
+  const auto* value = std::get_if<std::string>(&read);
+  expect(value != nullptr && *value == std::string{token.view()}, "the value read back is the token that was stored");
 }
 
 void token_store_windows_file_has_private_dacl() {
   const auto dir = protected_secret_dir();
   expect(!secure_frontend::store_token(root_at(dir), rel("token"), fresh_token(), secure_frontend::TokenStoreMode::create_new),
          "stored");
+  // Checked independently of windows_security: owner is the current user, the
+  // DACL is protected, and it holds exactly two allow-ACEs (user and SYSTEM).
+  HANDLE file = CreateFileW((L"\\\\?\\" + std::filesystem::absolute(dir / "token").wstring()).c_str(), READ_CONTROL,
+                            FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  if (file == INVALID_HANDLE_VALUE) { expect(false, "the stored file opens for READ_CONTROL"); return; }
+  PSID owner = nullptr;
   PACL dacl = nullptr;
   PSECURITY_DESCRIPTOR descriptor = nullptr;
-  expect(GetNamedSecurityInfoW((dir / "token").c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, &dacl,
-                               nullptr, &descriptor) == ERROR_SUCCESS, "security info is readable");
+  const DWORD status = GetSecurityInfo(file, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, &owner,
+                                       nullptr, &dacl, nullptr, &descriptor);
+  CloseHandle(file);
+  if (status != ERROR_SUCCESS || descriptor == nullptr) { expect(false, "security info is readable"); return; }
+  const auto sid_text = [](PSID sid) {
+    LPWSTR text = nullptr;
+    if (sid == nullptr || ConvertSidToStringSidW(sid, &text) == 0) return std::wstring{};
+    std::wstring out{text};
+    LocalFree(text);
+    return out;
+  };
+  const std::wstring user = secure_frontend_test::current_user_sid_string();
+  expect(!user.empty() && sid_text(owner) == user, "the owner is the current user");
   SECURITY_DESCRIPTOR_CONTROL control = 0;
   DWORD revision = 0;
   GetSecurityDescriptorControl(descriptor, &control, &revision);
   expect((control & SE_DACL_PROTECTED) != 0, "the DACL is protected (nothing inherited)");
   expect(dacl != nullptr && dacl->AceCount == 2, "exactly two ACEs: the user and SYSTEM");
+  bool user_seen = false;
+  bool system_seen = false;
+  for (DWORD i = 0; dacl != nullptr && i < dacl->AceCount; ++i) {
+    void* raw = nullptr;
+    if (GetAce(dacl, i, &raw) == 0) continue;
+    const auto* header = static_cast<const ACE_HEADER*>(raw);
+    if (header->AceType != ACCESS_ALLOWED_ACE_TYPE) continue;
+    auto* ace = static_cast<ACCESS_ALLOWED_ACE*>(raw);
+    const std::wstring sid = sid_text(reinterpret_cast<PSID>(&ace->SidStart));
+    user_seen = user_seen || sid == user;
+    system_seen = system_seen || sid == L"S-1-5-18";
+  }
+  expect(user_seen && system_seen, "the allow-ACEs name the user and SYSTEM");
   LocalFree(descriptor);
 }
 
@@ -160,6 +192,8 @@ void token_reader_windows_accepts_plaintext_under_private_dacl() {
   const auto source = std::get<secure_frontend::SecretSource>(secure_frontend::make_protected_file_secret_source("token"));
   const auto read = secure_frontend::read_token(source, dir);
   expect(!std::holds_alternative<secure_frontend::TokenReadError>(read), "an operator-made plaintext file is accepted");
+  const auto* value = std::get_if<std::string>(&read);
+  expect(value != nullptr && *value == token, "the plaintext value read back is the operator's token");
 }
 #endif
 }  // namespace
