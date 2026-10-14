@@ -128,7 +128,7 @@ struct Limits final {
 };
 struct Roots final {
   CanonicalRoot models;
-  CanonicalRoot tokenizer_pack;
+  std::optional<CanonicalRoot> tokenizer_pack;  // --expert only (SP4 §4.9 d)
   std::optional<CanonicalRoot> secret;
   // Canonical paths that may not exist yet: validate() only checks them
   // (check_creatable_root); create_runtime_roots() creates them for serve/init.
@@ -136,7 +136,7 @@ struct Roots final {
   std::optional<std::filesystem::path> cache;
 };
 struct EngineLaunch final {
-  EngineProfile profile;
+  std::optional<EngineProfile> profile;  // --expert only; a managed model's manifest sets it (SP4 §4.9 c)
   CanonicalFile executable;
   ModelId model_id;
   std::vector<std::string> args;

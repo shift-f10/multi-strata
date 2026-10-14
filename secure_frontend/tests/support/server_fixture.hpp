@@ -101,7 +101,7 @@ class ServerFixture final {
   }
 
   [[nodiscard]] std::vector<std::string> base_flags() const {
-    return {"--models-root", models.string(), "--tokenizer-pack", tokenizer.string(), "--engine", engine.string(),
+    return {"--expert", "--models-root", models.string(), "--tokenizer-pack", tokenizer.string(), "--engine", engine.string(),
             "--model-id", "qwen-local", "--token-env", kTestTokenVariable, "--port", std::to_string(port)};
   }
   [[nodiscard]] std::map<std::string, std::string> base_literals() const {

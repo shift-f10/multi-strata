@@ -64,7 +64,7 @@ int check(const FrontendConfig& config, const std::vector<std::string>& overridd
   return EXIT_SUCCESS;
 }
 
-int run(const FrontendConfig& config) {
+int run(const FrontendConfig& config, const bool expert) {
   // roots.logs / roots.cache: validate() only checked them, so --check stays
   // side-effect free; serve creates a missing one here, before bind or spawn.
   if (const auto issues = secure_frontend::create_runtime_roots(config); !issues.empty()) {
@@ -85,7 +85,12 @@ int run(const FrontendConfig& config) {
   // Derived once, before bind/spawn; each subsystem keeps its own const copy.
   const auto schema_limits = secure_frontend::chat_schema_limits(config);
   const auto listener_limits = secure_frontend::http_socket_server_limits(config);
-  const auto tokenizer_result = secure_frontend::load_local_tokenizer_pack(config.roots.tokenizer_pack);
+  if (!config.roots.tokenizer_pack) {
+    std::cerr << "Unable to load local tokenizer pack (roots.tokenizer_pack): not set; managed models arrive with SP4 Task 24b\n";
+    return EXIT_FAILURE;
+  }
+  (void)expert;
+  const auto tokenizer_result = secure_frontend::load_local_tokenizer_pack(*config.roots.tokenizer_pack);
   const auto* tokenizer = std::get_if<secure_frontend::TokenizerPack>(&tokenizer_result);
   if (tokenizer == nullptr) {
     std::cerr << "Unable to load local tokenizer pack (roots.tokenizer_pack): "
@@ -103,7 +108,7 @@ int run(const FrontendConfig& config) {
   const auto selected = std::find_if(manifests->begin(), manifests->end(),
                                      [&model_id](const auto& model) { return model.id == model_id; });
   if (selected == manifests->end()) { std::cerr << "Selected model is not present in roots.models.\n"; return EXIT_FAILURE; }
-  const bool glm = config.engine.profile == EngineProfile::glm53;
+  const bool glm = config.engine.profile.value_or(EngineProfile::qwen) == EngineProfile::glm53;
   const auto arguments_profile = glm ? secure_frontend::EngineArgumentsProfile::lighttransport_glm53
                                      : secure_frontend::EngineArgumentsProfile::strata_0143;
   auto engine_arguments_result =
@@ -208,5 +213,5 @@ int main(int argc, char* argv[]) {
   }
   const auto config = std::get<secure_frontend::ValidatedConfig>(loaded).shared();
   if (invocation.command == secure_frontend::ServerCommand::check) return check(*config, overridden);
-  return run(*config);
+  return run(*config, invocation.expert);
 }

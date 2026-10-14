@@ -92,8 +92,8 @@ void typed_config_accepts_minimal_file_and_applies_defaults() {
   expect(c.limits.concurrency.max_concurrent_requests == 1U, "one request at a time until SP3");
   expect(c.token.kind() == secure_frontend::SecretSourceKind::protected_file && c.token.location() == "token",
          "token.source defaults to file:token");
-  expect(c.engine.profile == secure_frontend::EngineProfile::qwen && c.engine.model_id.value() == "qwen-local",
-         "engine defaults");
+  expect(!c.engine.profile.has_value() && c.engine.model_id.value() == "qwen-local",
+         "engine.profile has no default: a managed model's manifest sets it (SP4 §4.9 c)");
 }
 
 void cfg01_unknown_key_rejected() {
@@ -187,13 +187,25 @@ void cfg01_missing_required_rejected() {
   ConfigFixture f;
   std::vector<std::string> required{"schema_version"};
   for (const auto& key : secure_frontend::config_schema()) if (key.required) required.emplace_back(key.path);
-  expect(required.size() == 5U, "schema_version, roots.models, roots.tokenizer_pack, engine.executable, engine.model_id");
+  expect(required.size() == 4U, "schema_version, roots.models, engine.executable, engine.model_id (roots.tokenizer_pack is --expert only, SP4 §4.9 d)");
   for (const auto& path : required) {
     auto literals = f.literals;
     literals.erase(path);
     const auto result = validate_text(render_config_json(literals), f.dir);
     expect(has_issue(result, path, ConfigIssueCode::missing_required), "missing required key: " + path);
   }
+}
+
+void typed_config_model_reference_accepts_name_tag() {
+  ConfigFixture f;
+  auto literals = f.literals;
+  literals["engine.model_id"] = secure_frontend_test::json_literal("qwen3.8-flash-next:iq2_xs");
+  literals.erase("roots.tokenizer_pack");
+  const auto result = validate_text(render_config_json(literals), f.dir);
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result), "name:tag model reference, no tokenizer root");
+  literals["engine.model_id"] = secure_frontend_test::json_literal("a:b:c");
+  expect(has_issue(validate_text(render_config_json(literals), f.dir), "engine.model_id", ConfigIssueCode::invalid_value),
+         "at most one ':'");
 }
 
 void cfg01_out_of_range_rejected() {
@@ -547,6 +559,7 @@ int main(int argc, char** argv) {
       {"cfg01_duplicate_key_rejected", cfg01_duplicate_key_rejected},
       {"cfg01_type_confusion_rejected", cfg01_type_confusion_rejected},
       {"cfg01_missing_required_rejected", cfg01_missing_required_rejected},
+      {"typed_config_model_reference_accepts_name_tag", typed_config_model_reference_accepts_name_tag},
       {"cfg01_out_of_range_rejected", cfg01_out_of_range_rejected},
       {"cfg01_chat_ranges_match_enforced_caps", cfg01_chat_ranges_match_enforced_caps},
       {"typed_config_cross_field_rules", typed_config_cross_field_rules},

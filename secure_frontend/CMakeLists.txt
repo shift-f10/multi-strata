@@ -701,6 +701,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     secure_frontend_add_cases(secure_frontend_typed_config_tests cfg02_logs_and_cache_roots_are_created_private
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # SP4 §4.9 c, d: engine.model_id is name or name:tag; roots.tokenizer_pack is optional.
+    secure_frontend_add_cases(secure_frontend_typed_config_tests typed_config_model_reference_accepts_name_tag
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     if(NOT WIN32)
         # chmod-based: the config folder's mode decides the roots.secret default.
         secure_frontend_add_cases(secure_frontend_typed_config_tests
@@ -1029,7 +1032,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     add_test(NAME strata_secure_server_help COMMAND strata-secure-server --help)
     # The GLM runner takes positional arguments: glm53 without any --engine-arg is a usage error.
     add_test(NAME strata_secure_server_glm_requires_engine_arg
-        COMMAND strata-secure-server --profile glm53 --models-root models --tokenizer-pack tok
+        COMMAND strata-secure-server --expert --profile glm53 --models-root models --tokenizer-pack tok
                 --engine engine --model-id glm-local --token-env STRATA_UNUSED_TOKEN)
     set_tests_properties(strata_secure_server_glm_requires_engine_arg PROPERTIES
         PASS_REGULAR_EXPRESSION "glm53 requires at least one --engine-arg")

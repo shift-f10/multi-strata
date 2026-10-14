@@ -201,7 +201,7 @@ an environment variable (`env:NAME`) or a file below `roots.secret`
     strata-secure-server init --config ~/.config/strata/config.json \
         --models-root ~/models --tokenizer-pack ~/tok --engine ~/strata/strata --model-id qwen-local
     strata-secure-server --check --config ~/.config/strata/config.json
-    strata-secure-server --config ~/.config/strata/config.json
+    strata-secure-server --expert --config ~/.config/strata/config.json
 
 `init` writes the config (owner-only, atomic). For a file token source
 (`file:…`, the default) it also writes a 43-character token generated from the
@@ -241,14 +241,14 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `limits.engine.stop_drain_timeout_s` | integer | `5` | 1-600 | - | Time to drain to DONE after STOP before the engine is marked failed. |
 | `limits.concurrency.max_concurrent_requests` | integer | `1` | 1-1 | - | Requests served at once; only 1 until SP3. |
 | `roots.models` | string | required | - | `--models-root` | Absolute directory of .gguf files. The root itself may be a symlink; nothing below it may be. |
-| `roots.tokenizer_pack` | string | required | - | `--tokenizer-pack` | Absolute directory with vocab.json, merges.txt, token_type.json. |
+| `roots.tokenizer_pack` | string | unset | - | `--tokenizer-pack` | Absolute tokenizer directory; only with strata-secure-server --expert (a managed model brings its own). |
 | `roots.secret` | string | unset | - | `--secret-root` | Absolute directory holding the token file. Default: the config file's directory. |
 | `roots.logs` | string | unset | - | - | Absolute log directory (created 0700; unused in SP1). |
 | `roots.cache` | string | unset | - | - | Absolute cache directory (created 0700; unused in SP1). |
 | `token.source` | string | `file:token` | - | `--token-file, --token-env` | file:<relative path below roots.secret> or env:<NAME>. Metadata only; the token is never in the config. |
-| `engine.profile` | string | `qwen` | - | `--profile` | qwen or glm53. |
+| `engine.profile` | string | unset | - | `--profile` | qwen or glm53; only with --expert (a managed model's manifest sets it). |
 | `engine.executable` | string | required | - | `--engine` | Absolute path of the engine; a regular file not writable by group or others. |
-| `engine.model_id` | string | required | - | `--model-id` | Model ID from the local inventory. |
+| `engine.model_id` | string | required | - | `--model-id` | Default model reference name[:tag] from the model index (or, with --expert, an inventory ID). |
 | `engine.args` | string array | `[]` | - | `--engine-arg (repeatable)` | Extra engine arguments; frontend-owned and unsupported flags are rejected. |
 | `pull.downloader` | string | unset | - | - | Absolute path of curl for pull/update. Default /usr/bin/curl (Windows: System32\curl.exe). Validated when a transfer or doctor --downloader runs, never at serve start. |
 | `pull.proxy` | string | unset | - | - | http://host:port or https://host:port; absent = --noproxy *. No credentials. Environment proxies are never read. |
@@ -275,6 +275,11 @@ the fixed Qwen ChatML renderer; the separately selected GLM-5.3 profile is
 documented below. It deliberately rejects streaming, tools, images, URLs, MCP,
 downloads, and a request whose `model` is not the one model selected at startup.
 
+The launch described in this section is the `--expert` bring-up mode: the
+operator supplies `engine.profile`, `roots.tokenizer_pack` and the weight flags
+other than `--native` in `engine.args` (no managed model). Pass `--expert` when
+serving; `init` and `--check` accept it and ignore it.
+
 The model directory must already contain the selected `.gguf`; the tokenizer
 pack must already contain `vocab.json`, `merges.txt`, and `token_type.json`.
 The server adds `--serve` and, for this default profile, supplies shard 1 via
@@ -299,7 +304,7 @@ The flags below can equally live in the config file (see
 
 ```sh
 export STRATA_API_TOKEN='replace-with-a-long-random-token-of-32-bytes-or-more'
-./out/build/linux-gcc/strata-secure-server \
+./out/build/linux-gcc/strata-secure-server --expert \
   --models-root /absolute/path/to/models \
   --model-id local-model-name \
   --tokenizer-pack /absolute/path/to/tokenizer-pack \
@@ -344,7 +349,7 @@ tokenizer pack must match that exact engine/model build and provide the fixed
 GLM framing markers as CONTROL tokens.
 
 ```sh
-./out/build/linux-gcc/strata-secure-server \
+./out/build/linux-gcc/strata-secure-server --expert \
   --profile glm53 \
   --models-root /absolute/path/to/models \
   --model-id glm53-local \

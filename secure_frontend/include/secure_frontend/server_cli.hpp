@@ -17,6 +17,7 @@ struct ServerInvocation final {
   ServerCommand command{ServerCommand::serve};
   std::optional<std::filesystem::path> config_file;
   bool force{false};
+  bool expert{false};  // --expert: bring-up mode for serve (SP4 §4.9 d); no effect on init/--check
   FrontendConfigDraft flags;  // every entry has ConfigSource::command_line
 };
 

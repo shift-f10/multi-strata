@@ -101,7 +101,7 @@ void cfg01_invalid_config_fails_before_listener_and_child() {
   unbindable_literals["listener.host"] = secure_frontend_test::json_literal("192.0.2.10");
   unbindable_literals["listener.allow_remote"] = "true";
   f.write_config(unbindable_literals);
-  const auto unbindable = f.run({"--config", f.config.string()});
+  const auto unbindable = f.run({"--expert", "--config", f.config.string()});
   expect(unbindable.exit_code != 0 && contains(unbindable.err, "Unable to bind"),
          "unbindable address exits with the bind error: " + unbindable.err);
   expect(!contains(unbindable.err, "Unable to start local engine"),
@@ -152,7 +152,7 @@ void ready_timeout_is_configurable() {
     literals["engine.args"] = "[\"--ready-delay-ms=2000\"]";
     f.write_config(literals);
     secure_frontend_test::ChildProcess server;
-    expect(f.start(server, {"--config", f.config.string()}), "server starts: " + server.stderr_text());
+    expect(f.start(server, {"--expert", "--config", f.config.string()}), "server starts: " + server.stderr_text());
     const auto response = f.request("POST", "/v1/chat/completions", f.bearer(), chat);
     expect(response.rfind(expected, 0) == 0,
            std::string{"ready_timeout_s="} + timeout_s + " against a 2 s READY must give " + expected + ", got " +

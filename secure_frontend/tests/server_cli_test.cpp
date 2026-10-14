@@ -115,7 +115,7 @@ void cli_check_has_no_side_effects() {
   expect(secure_frontend_test::snapshot_tree(f.dir) == before, "--check created, wrote, renamed or removed nothing");
   expect(!std::filesystem::exists(f.dir / "logs") && !std::filesystem::exists(f.dir / "cache"), "--check created no root");
   secure_frontend_test::ChildProcess server;
-  expect(f.start(server, {"--config", f.config.string()}), "serve starts: " + server.stderr_text());
+  expect(f.start(server, {"--expert", "--config", f.config.string()}), "serve starts: " + server.stderr_text());
   expect(std::filesystem::is_directory(f.dir / "logs") && std::filesystem::is_directory(f.dir / "cache"),
          "serve creates both roots before it listens");
 #if !defined(_WIN32)
@@ -143,7 +143,7 @@ void init_writes_config_and_token_then_server_starts() {
   if (value == nullptr) return;
   expect(!contains(init.out, value->view()) && !contains(init.err, value->view()), "init never prints the token");
   secure_frontend_test::ChildProcess server;
-  expect(f.start(server, {"--config", config.string()}), "the server starts from the written config alone: " + server.stderr_text());
+  expect(f.start(server, {"--expert", "--config", config.string()}), "the server starts from the written config alone: " + server.stderr_text());
   const auto response = f.request("GET", "/health", "Bearer " + std::string{value->view()});
   expect(response.rfind("HTTP/1.1 200", 0) == 0, "the generated token authenticates: " + response.substr(0, 16));
 }

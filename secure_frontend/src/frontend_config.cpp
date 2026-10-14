@@ -63,18 +63,20 @@ constexpr std::array<ConfigKey, 39> kSchema{{
      "Requests served at once; only 1 until SP3."},
     {"roots.models", T::string, true, 0, 0, 0, false, "", "--models-root",
      "Absolute directory of .gguf files. The root itself may be a symlink; nothing below it may be."},
-    {"roots.tokenizer_pack", T::string, true, 0, 0, 0, false, "", "--tokenizer-pack",
-     "Absolute directory with vocab.json, merges.txt, token_type.json."},
+    {"roots.tokenizer_pack", T::string, false, 0, 0, 0, false, "", "--tokenizer-pack",
+     "Absolute tokenizer directory; only with strata-secure-server --expert (a managed model brings its own)."},
     {"roots.secret", T::string, false, 0, 0, 0, false, "", "--secret-root",
      "Absolute directory holding the token file. Default: the config file's directory."},
     {"roots.logs", T::string, false, 0, 0, 0, false, "", "", "Absolute log directory (created 0700; unused in SP1)."},
     {"roots.cache", T::string, false, 0, 0, 0, false, "", "", "Absolute cache directory (created 0700; unused in SP1)."},
     {"token.source", T::string, false, 0, 0, 0, false, "file:token", "--token-file, --token-env",
      "file:<relative path below roots.secret> or env:<NAME>. Metadata only; the token is never in the config."},
-    {"engine.profile", T::string, false, 0, 0, 0, false, "qwen", "--profile", "qwen or glm53."},
+    {"engine.profile", T::string, false, 0, 0, 0, false, "", "--profile",
+     "qwen or glm53; only with --expert (a managed model's manifest sets it)."},
     {"engine.executable", T::string, true, 0, 0, 0, false, "", "--engine",
      "Absolute path of the engine; a regular file not writable by group or others."},
-    {"engine.model_id", T::string, true, 0, 0, 0, false, "", "--model-id", "Model ID from the local inventory."},
+    {"engine.model_id", T::string, true, 0, 0, 0, false, "", "--model-id",
+     "Default model reference name[:tag] from the model index (or, with --expert, an inventory ID)."},
     {"engine.args", T::string_array, false, 0, 0, 0, false, "", "--engine-arg (repeatable)",
      "Extra engine arguments; frontend-owned and unsupported flags are rejected."},
     {"pull.downloader", T::string, false, 0, 0, 0, false, "", "",
@@ -282,7 +284,12 @@ std::string render_config_schema_markdown() {
 std::string format_issue(const ConfigIssue& issue) { return issue.key_path + ": " + issue.reason; }
 
 std::optional<ModelId> make_model_id(const std::string_view text) {
-  if (!std::holds_alternative<std::string>(validate_model_id(text))) return std::nullopt;
+  const auto colon = text.find(':');
+  const auto name = text.substr(0, colon);
+  const bool ok = std::holds_alternative<std::string>(validate_model_id(name)) &&
+                  (colon == std::string_view::npos ||
+                   std::holds_alternative<std::string>(validate_model_id(text.substr(colon + 1))));
+  if (!ok) return std::nullopt;
   return ModelId{std::string{text}};
 }
 
@@ -380,10 +387,12 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   }
 
   // engine
-  const std::string profile_text = read.string("engine.profile").value_or("qwen");
-  EngineProfile profile = EngineProfile::qwen;
-  if (profile_text == "glm53") profile = EngineProfile::glm53;
-  else if (profile_text != "qwen") add(errors, "engine.profile", ConfigIssueCode::invalid_value, "must be qwen or glm53");
+  std::optional<EngineProfile> profile;
+  if (const auto text = read.string("engine.profile")) {
+    if (*text == "qwen") profile = EngineProfile::qwen;
+    else if (*text == "glm53") profile = EngineProfile::glm53;
+    else add(errors, "engine.profile", ConfigIssueCode::invalid_value, "must be qwen or glm53");
+  }
   std::optional<CanonicalFile> executable;
   if (const auto text = read.string("engine.executable")) {
     auto opened = open_executable(path_from_utf8(*text));
@@ -397,11 +406,12 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   std::optional<ModelId> model_id = model_text ? make_model_id(*model_text) : std::nullopt;
   if (model_text.has_value() && !model_id.has_value()) {
     add(errors, "engine.model_id", ConfigIssueCode::invalid_value,
-        "must be 1-128 characters of [A-Za-z0-9._-], starting with a letter or digit");
+        "must be name or name:tag, each 1-128 characters of [A-Za-z0-9._-], starting with a letter or digit");
   }
   const auto args = read.strings("engine.args");
-  const auto arguments_profile = profile == EngineProfile::glm53 ? EngineArgumentsProfile::lighttransport_glm53
-                                                                 : EngineArgumentsProfile::strata_0143;
+  const auto arguments_profile = profile.value_or(EngineProfile::qwen) == EngineProfile::glm53
+                                     ? EngineArgumentsProfile::lighttransport_glm53
+                                     : EngineArgumentsProfile::strata_0143;
   if (const auto rejected = validate_engine_user_arguments(arguments_profile, args)) {
     add(errors, "engine.args", ConfigIssueCode::invalid_value, rejected->message);
   }
@@ -432,7 +442,7 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   const auto stall = read.integer("pull.stall_timeout_s");
   const auto connect = read.integer("pull.connect_timeout_s");
 
-  if (!errors.empty() || !host || !models || !tokenizer || !token || !executable || !model_id) {
+  if (!errors.empty() || !host || !models || !token || !executable || !model_id) {
     if (errors.empty()) add(errors, "config file", ConfigIssueCode::invalid_value, "is incomplete");
     return errors;
   }
@@ -444,7 +454,7 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
                  u32(max_generated)},
       EngineLimits{std::chrono::seconds(ready_s), std::chrono::seconds(generation_s), std::chrono::seconds(drain_s)},
       ConcurrencyLimits{u32(concurrent)}};
-  Roots roots{*models, *tokenizer, secret, logs, cache};
+  Roots roots{*models, tokenizer, secret, logs, cache};
   EngineLaunch engine{profile, *executable, std::move(*model_id), args};
   return ValidatedConfig{std::shared_ptr<const FrontendConfig>(
       new FrontendConfig(std::move(listener), limits, std::move(roots), std::move(*token), std::move(engine),
@@ -488,13 +498,15 @@ std::string describe(const FrontendConfig& c) {
   line("limits.engine.stop_drain_timeout_s", std::to_string(c.limits.engine.stop_drain_timeout.count()));
   line("limits.concurrency.max_concurrent_requests", std::to_string(c.limits.concurrency.max_concurrent_requests));
   line("roots.models", root_text(c.roots.models));
-  line("roots.tokenizer_pack", root_text(c.roots.tokenizer_pack));
+  line("roots.tokenizer_pack", root_or_unset(c.roots.tokenizer_pack));
   line("roots.secret", root_or_unset(c.roots.secret));
   line("roots.logs", path_or_unset(c.roots.logs));
   line("roots.cache", path_or_unset(c.roots.cache));
   line("token.source", json_quoted((c.token.kind() == SecretSourceKind::environment_variable ? "env:" : "file:") +
                               c.token.location()));
-  line("engine.profile", c.engine.profile == EngineProfile::glm53 ? "\"glm53\"" : "\"qwen\"");
+  line("engine.profile", !c.engine.profile                              ? std::string{"(unset)"}
+                         : *c.engine.profile == EngineProfile::glm53 ? std::string{"\"glm53\""}
+                                                                     : std::string{"\"qwen\""});
   line("engine.executable", json_quoted(path_to_utf8(c.engine.executable.path())));
   line("engine.model_id", json_quoted(c.engine.model_id.value()));
   std::string args = "[";
