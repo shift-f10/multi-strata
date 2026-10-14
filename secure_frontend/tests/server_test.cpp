@@ -452,6 +452,73 @@ void proc06_nnp_startup_hint_names_nvidia_uvm_fix() {
 
 }  // namespace
 
+void ext01_extension_fields_spawn_nothing() {
+  const auto dir = test_support::make_temp_dir("x1");
+  const auto record = dir / "record.txt";
+  test_support::ServerOptions options;
+  options.engine_args = {"--record-file=" + test_support::utf8_path(record)};
+  auto server = ServerProcess::start(options);
+  expect(server != nullptr && server->wait_until_listening(10s) && server->wait_for_health(test_support::kHealthReady, 10s), "ready");
+  if (!server) return;
+  const auto processes_before = server->active_processes();
+  const std::vector<std::string> bodies{
+      R"({"model":"fake-model","messages":[{"role":"user","content":"Hi"}],"tools":[{"type":"function","function":{"name":"x"}}]})",
+      R"({"model":"fake-model","messages":[{"role":"user","content":"Hi"}],"tool_choice":"auto"})",
+      R"({"model":"fake-model","messages":[{"role":"user","content":"Hi"}],"functions":[{"name":"x"}]})",
+      R"({"model":"fake-model","messages":[{"role":"user","content":"Hi"}],"mcp_servers":[{"url":"mcp://x"}]})",
+      R"({"model":"fake-model","messages":[{"role":"user","content":"Hi"}],"stream":true})",
+      R"({"model":"fake-model","messages":[{"role":"tool","content":"run"}]})"};
+  for (const auto& body : bodies) {
+    const auto response = server->post_chat(body);
+    expect(response && response->status == 400 && response->body == test_support::kBadRequest,
+           "refused with the fixed response: " + describe(response));
+  }
+  std::ifstream recorded(record);
+  const std::string content((std::istreambuf_iterator<char>(recorded)), std::istreambuf_iterator<char>());
+  expect(content.find("GEN") == std::string::npos, "the engine received no GEN");
+  expect(server->active_processes() == processes_before, "no process started or ended");
+}
+
+void ext02_extension_env_never_reaches_child() {
+  const auto dir = test_support::make_temp_dir("x2");
+  test_support::ServerOptions options;
+  options.engine_args = {"--dump-file=" + test_support::utf8_path(dir / "dump.txt")};
+  options.extra_env = {{"STRATA_FOO", "1"},
+                       {"STRATA_ENABLE_MCP", "1"},
+                       {"LD_PRELOAD", "/nonexistent/libstrata-test.so"},
+                       {"CUDA_LAUNCH_BLOCKING", "1"}};
+  auto server = ServerProcess::start(options);
+  expect(server != nullptr && server->wait_until_listening(10s), "the server listens");
+  const auto dump = test_support::read_dump_file(dir / "dump.txt", 10s);
+  expect(dump.has_value(), "the engine reported its environment");
+  if (!dump) return;
+  for (const auto& entry : dump->env) {
+    for (const std::string_view banned :
+         {"STRATA_FOO=", "STRATA_ENABLE_MCP=", "LD_PRELOAD=", "CUDA_LAUNCH_BLOCKING=", "STRATA_HARNESS_TOKEN="}) {
+      expect(entry.rfind(banned, 0) != 0, "never reaches the engine: " + std::string(banned));
+    }
+  }
+}
+
+void ext02_rejected_before_spawn() {
+  const auto dir = test_support::make_temp_dir("x2b");
+  const std::vector<std::pair<std::string, test_support::ServerOptions>> attempts{
+      {"--vision via --engine-arg", {.engine_args = {"--vision=/m.gguf"}, .extra_args = {}, .extra_env = {}, .engine = {}}},
+      {"--batch via --engine-arg", {.engine_args = {"--batch", "2"}, .extra_args = {}, .extra_env = {}, .engine = {}}},
+      {"--gpu via --engine-arg", {.engine_args = {"--gpu=0"}, .extra_args = {}, .extra_env = {}, .engine = {}}},
+      {"unknown option", {.engine_args = {}, .extra_args = {"--enable-mcp", "1"}, .extra_env = {}, .engine = {}}}};
+  int index = 0;
+  for (auto [name, options] : attempts) {
+    const auto record = dir / ("record-" + std::to_string(index++) + ".txt");
+    options.engine_args.push_back("--record-file=" + test_support::utf8_path(record));
+    auto server = ServerProcess::start(options);
+    expect(server != nullptr, name + ": launched");
+    if (!server) continue;
+    expect(server->wait_exit(10s) == 1, name + ": rejected at startup");
+    expect(!std::filesystem::exists(record), name + ": no engine was ever started");
+  }
+}
+
 int main(int argc, char* argv[]) {
   return secure_frontend_test::run_cases(argc, argv,
                                          {
@@ -463,6 +530,9 @@ int main(int argc, char* argv[]) {
                                              {"proc04_health_leaves_ready_after_idle_engine_death", proc04_health_leaves_ready_after_idle_engine_death},
                                              {"state_dir_must_be_owner_only", state_dir_must_be_owner_only},
                                              {"state_dir_stale_engine_tmp_is_cleared", state_dir_stale_engine_tmp_is_cleared},
+                                             {"ext01_extension_fields_spawn_nothing", ext01_extension_fields_spawn_nothing},
+                                             {"ext02_extension_env_never_reaches_child", ext02_extension_env_never_reaches_child},
+                                             {"ext02_rejected_before_spawn", ext02_rejected_before_spawn},
 #if !defined(_WIN32)
                                              {"proc05_frontend_sigkill_kills_engine", proc05_frontend_sigkill_kills_engine},
                                              {"proc05_frontend_sigterm_stops_all_descendants", proc05_frontend_sigterm_stops_all_descendants},
