@@ -391,7 +391,7 @@ target_include_directories(secure_frontend_sha256 PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
 secure_frontend_set_warnings(secure_frontend_sha256)
 
-add_library(secure_frontend_manifest_core src/acquire_reason.cpp)
+add_library(secure_frontend_manifest_core src/acquire_reason.cpp src/acquire_url.cpp)
 target_compile_features(secure_frontend_manifest_core PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_manifest_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
@@ -717,6 +717,12 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_test_executable(secure_frontend_acquire_tests tests/acquire_test.cpp secure_frontend_manifest_core)
     secure_frontend_add_cases(secure_frontend_acquire_tests exit_classes_match_spec_table
         reason_table_is_complete_and_ordered error_text_states_resumable)
+
+    secure_frontend_add_test_executable(secure_frontend_manifest_tests tests/manifest_test.cpp secure_frontend_manifest_core)
+    secure_frontend_add_cases(secure_frontend_manifest_tests source_url_grammar_matrix dns_names_and_wildcards proxy_grammar)
+    secure_frontend_add_test_executable(secure_frontend_fetch_tests tests/fetch_test.cpp secure_frontend_manifest_core)
+    secure_frontend_add_cases(secure_frontend_fetch_tests dl03_location_with_glob_characters_rejected
+        location_resolution_and_host_normalization location_query_characters)
 
     add_test(NAME strata_secure_server_help COMMAND strata-secure-server --help)
     # The GLM runner takes positional arguments: glm53 without any --engine-arg is a usage error.
