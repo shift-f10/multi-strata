@@ -26,7 +26,8 @@ anything else is read as a plaintext token under the same rules. The token may
 end in one LF or CRLF and must be at least 32 bytes. `secure_frontend_token_reader_tests`
 now builds and runs on every platform; its Windows file cases carry the
 `windows-runtime` label and are validated only by the `windows-msys2-clang` CI
-job (pending: that job has not yet run them).
+job (CI run `38540719307`: `windows-msys2-clang` 193/193 on SP1, before
+the SP2 merge).
 
 ## Security contract
 
@@ -181,7 +182,7 @@ secret root and pass `--token-file token.txt --secret-root /path/to/root`.
 The relative token-file name is validated before the secure reader opens it.
 Windows protected-file tokens require an explicitly protected owner-only DACL;
 the implementation is fail-closed, and its runtime tests (`windows-runtime`)
-are pending the `windows-msys2-clang` CI job. Tokens shorter than 32 bytes are
+passed in the `windows-msys2-clang` CI job (run `38540719307`). Tokens shorter than 32 bytes are
 rejected.
 
 Remote/wildcard binds are rejected unless the corresponding explicit flags are

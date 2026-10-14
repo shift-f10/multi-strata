@@ -421,16 +421,22 @@ Notes on the SP2 table above:
   1. The delegated-cgroup paths (C5, and the C3 delegated branch) are verified
      by compiling and reading only. A live proof needs approval to run
      `systemd-run --user --scope -p Delegate=yes ctest --preset linux-gcc -R proc05_cgroup --output-on-failure`.
-  2. C3 spec row versus mechanism: the spec asserts the grandchild "only when
+  2. SP2 spec §4.7 K4 row (`docs/superpowers/specs/2026-10-13-sp2-portable-supervision-design.md`
+     ~line 381) says "all frontend fds are `O_CLOEXEC`, so the sweep is
+     defence in depth". The code contradicts it: the listening and accepted
+     sockets are created without `SOCK_CLOEXEC` (Known small gaps, first
+     bullet). The spec text was not edited; the `kSweepCap` comment states the
+     code's truth.
+  3. C3 spec row versus mechanism: the spec asserts the grandchild "only when
      C5 active", but after a frontend SIGKILL nothing writes `cgroup.kill`. The
      controller ruled a membership assertion instead (the C3 row). This is the
      PROC-05 residual risk in the threat model and the release record.
-  3. D-2 bound: at most `config_defaults::kMaxConsecutiveUncountedRestarts` = 3
+  4. D-2 bound: at most `config_defaults::kMaxConsecutiveUncountedRestarts` = 3
      uncounted client-STOP restarts in a row. This is a controller ruling (SP3
      D-2 row); a `DONE` resets the streak, including one that finishes a cancel.
-  4. R1: the read to `DONE` gets only what is left of the generation deadline
+  5. R1: the read to `DONE` gets only what is left of the generation deadline
      the GEN write used (R1 row; judged consistent with K1/RF10 in review).
-  5. SP1 security-test edits made by SP2: `auth04_no_switch_disables_auth`'s
+  6. SP1 security-test edits made by SP2: `auth04_no_switch_disables_auth`'s
      boolean allow-list admits `engine.allow_new_privileges` (G2, G4); SP1's
      CFG-01 case gained the "no supervisor start, no engine generation"
      assertion (V2, V11); SP1's `process_runner` launches
@@ -730,7 +736,7 @@ These numbers supersede the Task 24 table below.
 | in `secure_frontend/`: `cmake --preset linux-gcc && cmake --build --preset linux-gcc && ctest --preset linux-gcc` | `100% tests passed out of 215` (210 + `cfg01_chat_ranges_match_enforced_caps`, `engine_native_path_is_utf8_for_non_ascii_root`, `serve_reports_why_the_token_and_tokenizer_pack_are_unusable`, `serve_reports_symlinked_model_entry` (POSIX only), `cli_check_unreadable_token_is_not_reported_valid`) |
 | `ctest --preset linux-gcc -N \| grep -cE '\.(net0[123]\|auth0[1234]\|cfg0[123456])_'` | `59` (58 + `cfg01_chat_ranges_match_enforced_caps`) |
 | in `secure_frontend/`: `cmake --preset windows-llvm-mingw-cross && cmake --build --preset windows-llvm-mingw-cross` | builds with `-Werror`, no diagnostics; 30 `.exe` files |
-| `ctest --preset windows-llvm-mingw-cross` (wine 6.0.3) | `100% tests passed out of 128`, 0 failed; 193 registered, the 65 `windows-runtime` cases excluded: the 61 listed below plus `secure_frontend_typed_config_tests.cfg01_chat_ranges_match_enforced_caps`, `secure_frontend_engine_arguments_tests.engine_native_path_is_utf8_for_non_ascii_root`, `secure_frontend_server_e2e_tests.serve_reports_why_the_token_and_tokenizer_pack_are_unusable`, `secure_frontend_server_cli_tests.cli_check_unreadable_token_is_not_reported_valid` (each **pending windows-msys2-clang**) |
+| `ctest --preset windows-llvm-mingw-cross` (wine 6.0.3) | `100% tests passed out of 128`, 0 failed; 193 registered, the 65 `windows-runtime` cases excluded: the 61 listed below plus `secure_frontend_typed_config_tests.cfg01_chat_ranges_match_enforced_caps`, `secure_frontend_engine_arguments_tests.engine_native_path_is_utf8_for_non_ascii_root`, `secure_frontend_server_e2e_tests.serve_reports_why_the_token_and_tokenizer_pack_are_unusable`, `secure_frontend_server_cli_tests.cli_check_unreadable_token_is_not_reported_valid` (each **verified in MSYS2, CI run `38540719307`**) |
 | direct wine runs (smoke, not evidence) | `engine_native_path_is_utf8_for_non_ascii_root`: RED before I2 (`--native` not UTF-8 under ACP 1252), pass after; `serve_reports_why_the_token_and_tokenizer_pack_are_unusable`, `cli_check_unreadable_token_is_not_reported_valid`, `cli_check_prints_no_token`: pass |
 
 ### SP1 (2026-10-14, Task 24 final verification, branch `sp1-typed-config-paths-tokens`)
@@ -910,8 +916,11 @@ spelling bypass (Task 1, defect a), the corrupt-archive bootstrap gap (Task 24,
 D4) and the stale "MSVC/Windows runtime coverage" CMake comment (Task 18).
 
 1. The engine opens model files by path after validation: a swap below a
-   user-owned, non-shared-writable root is a same-user race, accepted until
-   SP2 decides on handle passing (spec §3.4).
+   user-owned, non-shared-writable root is a same-user race (SP1 spec §3.4).
+   SP2 did not take up handle passing: its spec does not mention it, and SP2
+   changed only what the engine inherits (N5 descriptors/handles, N6 the
+   stdin pipe). Still an accepted same-user risk; open, no sub-project named
+   yet (owner/controller to assign).
 2. On Windows `strata-secure-server` takes `char** argv` in the ANSI code page,
    so non-ASCII paths belong in the config file until the product `strata` CLI
    uses `wmain`. The engine's argv is UTF-8 end to end since the SP1 final fix

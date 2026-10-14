@@ -162,7 +162,10 @@ Trust boundaries:
   (implemented; authoritative in the MSYS2 CI job — pending rflores's push).
 - Windows uses restricted handle inheritance plus a Job Object so all child
   processes terminate with the service. Linux uses close-on-exec descriptors
-  plus a descriptor sweep before `execve`, a dedicated process group, and
+  plus a descriptor sweep before `execve`; the listening and accepted sockets
+  are not close-on-exec (no `SOCK_CLOEXEC`), so the sweep is what closes them
+  in the engine child (the fallback sweep's 65536 cap is a recorded gap,
+  `docs/AGENT_HANDOFF.md`, Known small gaps), a dedicated process group, and
   reliable `waitpid`/signal cleanup. A single supervisor thread owns the
   engine: it restarts a failed engine after 1 s, 2 s, … (at most 60 s), opens
   a circuit on the third consecutive failure (closed only by restarting the
