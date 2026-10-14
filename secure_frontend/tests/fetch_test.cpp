@@ -5,11 +5,14 @@
 #include "secure_frontend/downloader_command.hpp"
 #include "secure_frontend/fetch_schedule.hpp"
 #include "secure_frontend/model_index_model.hpp"
+#include "support/curl_scenario.hpp"
+#include "support/fake_curl_support.hpp"
 #include "support/test_support.hpp"
 
 #include <array>
 #include <chrono>
 #include <cstddef>
+#include <filesystem>
 #include <iostream>
 #include <optional>
 #include <set>
@@ -17,6 +20,13 @@
 #include <string_view>
 #include <variant>
 #include <vector>
+
+#if !defined(_WIN32)
+#include <fcntl.h>
+#include <unistd.h>
+#else
+#include "secure_frontend/win32_prelude.hpp"
+#endif
 
 namespace {
 
@@ -426,6 +436,121 @@ void crt_fd_block_layout() {
   expect(secure_frontend::build_crt_fd_block(handles, flags, 4).size() == 29, "x86 layout: 4 + 5 * 5");
 }
 
+
+std::filesystem::path built_fake() { return secure_frontend_test::extra_arguments().at(0); }
+
+const char* kScenario =
+    "probe 8.4.0 OpenSSL/3.0.13\n"
+    "response https://fixture.example/f.bin\n"
+    "status 103 Early Hints\n"
+    "status 200 OK\n"
+    "header Content-Length: 5\n"
+    "body-file f.bin\n"
+    "end\n"
+    "response https://fixture.example/f.bin range 2\n"
+    "status 206 Partial Content\n"
+    "header Content-Range: bytes 2-4/5\n"
+    "body-text llo\n"
+    "end\n";
+
+void fake_curl_scenario_parses_and_renders() {
+  const auto scenario = secure_frontend_test::curl::parse_scenario(kScenario);
+  expect(scenario.has_value() && scenario->responses.size() == 2, "two responses");
+  if (!scenario) return;
+  const auto* first = secure_frontend_test::curl::select(*scenario, "https://fixture.example/f.bin", std::nullopt);
+  expect(first != nullptr && secure_frontend_test::curl::render_head(*first) ==
+                                 "HTTP/1.1 103 Early Hints\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n",
+         "head render");
+  const auto* resumed = secure_frontend_test::curl::select(*scenario, "https://fixture.example/f.bin", 2);
+  expect(resumed != nullptr && secure_frontend_test::curl::render_body(*resumed, "") == "llo", "selected by range");
+  expect(secure_frontend_test::curl::select(*scenario, "https://fixture.example/f.bin", 3) == nullptr, "no match");
+  expect(!secure_frontend_test::curl::parse_scenario("response x\nstatus\nend\n").has_value(), "bad status line");
+}
+
+void fake_curl_argv_grammar_matches_builder() {
+  secure_frontend::TransferRequest request;
+  request.url = "https://fixture.example/f.bin";
+  request.host = "fixture.example";
+  request.pin = secure_frontend::make_ipv4(93, 184, 216, 34);
+  request.range_from = 2;
+  auto argv = secure_frontend::build_transfer_argv("/x/curl", request);
+  const std::vector<std::string> args(argv.begin() + 1, argv.end());
+  const auto parsed = secure_frontend_test::curl::parse_curl_argv(args);
+  expect(parsed && !parsed->probe && parsed->range == 2U && parsed->resolve == "fixture.example:443:93.184.216.34",
+         "the fake accepts exactly what the builder emits");
+  auto with_l = args;
+  with_l.insert(with_l.begin(), "-L");
+  expect(!secure_frontend_test::curl::parse_curl_argv(with_l).has_value(), "-L is outside the grammar");
+  const std::vector<std::string> probe{"-q", "--version"};
+  const auto parsed_probe = secure_frontend_test::curl::parse_curl_argv(probe);
+  expect(parsed_probe && parsed_probe->probe, "probe argv");
+  expect(secure_frontend_test::curl::parse_config_line("url = \"https://fixture.example/f.bin\"\n") == "https://fixture.example/f.bin",
+         "config line");
+  expect(!secure_frontend_test::curl::parse_config_line("url = \"a\"\nurl = \"b\"\n").has_value(), "exactly one line");
+}
+
+#if !defined(_WIN32)
+void fake_curl_replays_scenario_and_records() {
+  const auto scratch = secure_frontend_test::make_scratch_directory();
+  const auto fake = secure_frontend_test::install_fake_curl(scratch, built_fake(), kScenario, {{"f.bin", "hello"}});
+  const auto record_path = scratch / "downloader-record.log";
+  const int record = ::open(record_path.c_str(), O_WRONLY | O_APPEND | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+  expect(record >= 0, "record file created by the parent");
+  secure_frontend::TransferRequest request;
+  request.url = "https://fixture.example/f.bin";
+  request.host = "fixture.example";
+  const auto result = secure_frontend_test::spawn_with_fd4(secure_frontend::build_transfer_argv(fake.executable.string(), request),
+                                                           secure_frontend::build_config_stdin(request), record);
+  ::close(record);
+  expect(result.exit_code == 0, "exit 0");
+  expect(result.stdout_bytes == "HTTP/1.1 103 Early Hints\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello", "replayed bytes");
+  const auto lines = secure_frontend_test::read_record_lines(record_path);
+  expect(lines.size() == 1 && lines[0].find("\"kind\":\"transfer\"") != std::string::npos, "one transfer record");
+  expect(!lines.empty() && lines[0].find("\"env\":[]") != std::string::npos, "empty environment recorded");
+  expect(!lines.empty() && lines[0].find("url = \\\"https://fixture.example/f.bin\\\"\\n") != std::string::npos, "stdin recorded");
+}
+
+void fake_curl_rejects_argv_outside_grammar() {
+  const auto scratch = secure_frontend_test::make_scratch_directory();
+  const auto fake = secure_frontend_test::install_fake_curl(scratch, built_fake(), kScenario);
+  const auto record_path = scratch / "downloader-record.log";
+  const int record = ::open(record_path.c_str(), O_WRONLY | O_APPEND | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+  // 1 MiB the child never reads: the parent must see EPIPE, not die of SIGPIPE.
+  const std::string unread(std::size_t{1} << 20U, 'x');
+  const auto result = secure_frontend_test::spawn_with_fd4({fake.executable.string(), "-L", "https://x.example/"}, unread, record);
+  ::close(record);
+  expect(result.exit_code == 98, "exit 98 outside the grammar");
+  const auto lines = secure_frontend_test::read_record_lines(record_path);
+  expect(lines.size() == 1 && lines[0].find("\"kind\":\"invalid\"") != std::string::npos, "invalid recorded");
+}
+
+void fake_curl_answers_probe() {
+  const auto scratch = secure_frontend_test::make_scratch_directory();
+  const auto fake = secure_frontend_test::install_fake_curl(scratch, built_fake(), "probe 7.80.0 GnuTLS/3.7.3\n");
+  const auto result = secure_frontend_test::spawn_with_fd4(secure_frontend::build_probe_argv(fake.executable.string()), "", -1);
+  expect(result.exit_code == 0 && result.stdout_bytes == "curl 7.80.0 (fake) libcurl/7.80.0 GnuTLS/3.7.3\n", "probe text");
+}
+#else
+void fake_curl_records_on_crt_entry_4_windows() {
+  const auto scratch = secure_frontend_test::make_scratch_directory();
+  const auto fake = secure_frontend_test::install_fake_curl(scratch, built_fake(), kScenario, {{"f.bin", "hello"}});
+  const auto record_path = scratch / "downloader-record.log";
+  SECURITY_ATTRIBUTES inherit{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+  HANDLE record = CreateFileW(record_path.wstring().c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, &inherit, CREATE_NEW,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+  expect(record != INVALID_HANDLE_VALUE, "record file created by the parent");
+  secure_frontend::TransferRequest request;
+  request.url = "https://fixture.example/f.bin";
+  request.host = "fixture.example";
+  const auto result = secure_frontend_test::spawn_with_crt_entry4(
+      secure_frontend::build_transfer_argv(fake.executable.string(), request), secure_frontend::build_config_stdin(request), record);
+  CloseHandle(record);
+  expect(result.exit_code == 0, "exit 0");
+  const auto lines = secure_frontend_test::read_record_lines(record_path);
+  expect(lines.size() == 1 && lines[0].find("\"kind\":\"transfer\"") != std::string::npos, "record written to CRT entry 4");
+}
+#endif
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -456,5 +581,14 @@ int main(int argc, char** argv) {
       {"confinement_plan_detects_readable_roots", confinement_plan_detects_readable_roots},
       {"confinement_label_texts", confinement_label_texts},
       {"crt_fd_block_layout", crt_fd_block_layout},
+      {"fake_curl_scenario_parses_and_renders", fake_curl_scenario_parses_and_renders},
+      {"fake_curl_argv_grammar_matches_builder", fake_curl_argv_grammar_matches_builder},
+#if !defined(_WIN32)
+      {"fake_curl_replays_scenario_and_records", fake_curl_replays_scenario_and_records},
+      {"fake_curl_rejects_argv_outside_grammar", fake_curl_rejects_argv_outside_grammar},
+      {"fake_curl_answers_probe", fake_curl_answers_probe},
+#else
+      {"fake_curl_records_on_crt_entry_4_windows", fake_curl_records_on_crt_entry_4_windows},
+#endif
   }, failures);
 }

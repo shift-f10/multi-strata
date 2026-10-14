@@ -763,6 +763,32 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         exhausted_class_follows_last_source_reason run_budget_remaining_seconds
         staging_cwd_not_treated_as_key landlock_rights_per_abi confinement_plan_detects_readable_roots
         confinement_label_texts crt_fd_block_layout)
+    # SP4 §10.1: the fake downloader is a test executable; it never opens a socket.
+    add_executable(secure_frontend_fake_curl tests/fake_curl_main.cpp)
+    target_include_directories(secure_frontend_fake_curl PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_features(secure_frontend_fake_curl PRIVATE cxx_std_20)
+    secure_frontend_set_warnings(secure_frontend_fake_curl)
+    if(WIN32)
+        target_link_libraries(secure_frontend_fake_curl PRIVATE advapi32)
+    endif()
+    add_dependencies(secure_frontend_fetch_tests secure_frontend_fake_curl)
+    secure_frontend_add_cases(secure_frontend_fetch_tests fake_curl_scenario_parses_and_renders
+        fake_curl_argv_grammar_matches_builder)
+    if(WIN32)
+        if(SECURE_FRONTEND_TEST_HOOKS)
+            secure_frontend_add_cases(secure_frontend_fetch_tests fake_curl_records_on_crt_entry_4_windows
+                ARGS $<TARGET_FILE:secure_frontend_fake_curl> LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+        endif()
+    else()
+        # Record-channel cases are registered only with test hooks (plan Global Constraints).
+        if(SECURE_FRONTEND_TEST_HOOKS)
+            secure_frontend_add_cases(secure_frontend_fetch_tests fake_curl_replays_scenario_and_records
+                fake_curl_rejects_argv_outside_grammar ARGS $<TARGET_FILE:secure_frontend_fake_curl>)
+        endif()
+        secure_frontend_add_cases(secure_frontend_fetch_tests fake_curl_answers_probe
+            ARGS $<TARGET_FILE:secure_frontend_fake_curl>)
+    endif()
 
     add_test(NAME strata_secure_server_help COMMAND strata-secure-server --help)
     # The GLM runner takes positional arguments: glm53 without any --engine-arg is a usage error.
