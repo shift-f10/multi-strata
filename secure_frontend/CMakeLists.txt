@@ -115,6 +115,10 @@ add_library(secure_frontend_http_request_handler
 secure_frontend_add_library(secure_frontend_api_core
     SOURCES src/api_errors.cpp src/http_wire.cpp src/http_request_head.cpp
     LINKS secure_frontend_json)
+secure_frontend_add_library(secure_frontend_socket_io SOURCES src/socket_io.cpp LINKS secure_frontend_api_core)
+if(WIN32)
+    target_link_libraries(secure_frontend_socket_io PUBLIC ws2_32)
+endif()
 
 add_library(secure_frontend_api_router
     src/api_router.cpp
@@ -854,7 +858,11 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         socket_server_survives_reset_before_accept socket_server_responds_after_client_half_close
         parser_honors_configured_max_request_bytes socket_server_shutdown_listener_wakes_accept
         socket_server_shutdown_listener_wakes_idle_client
+        send_retries_on_eintr accept_backs_off_on_transient_failure send_some_slices_to_max_send_chunk
+        send_all_bounded_stops_at_stall_on_a_stalled_reader send_all_bounded_meets_deadline_and_completes
+        socket_io_poll_probe_and_recv set_no_inherit_marks_the_socket
         TIMEOUT 300)
+    target_link_libraries(secure_frontend_http_socket_server_tests PRIVATE secure_frontend_socket_io)
 
     secure_frontend_add_test_executable(secure_frontend_api_router_tests tests/api_router_test.cpp secure_frontend_api_router)
     secure_frontend_add_cases(secure_frontend_api_router_tests

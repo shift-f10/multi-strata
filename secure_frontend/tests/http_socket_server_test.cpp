@@ -1,8 +1,12 @@
 #include "secure_frontend/http_socket_server.hpp"
+#include "secure_frontend/api_constants.hpp"
 #include "secure_frontend/process_defaults.hpp"
+#include "secure_frontend/socket_io.hpp"
 #include "support/test_support.hpp"
 
+#include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -12,11 +16,13 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #ifdef _WIN32
 #include "secure_frontend/win32_prelude.hpp"
 #else
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -419,10 +425,194 @@ void parser_honors_configured_max_request_bytes() {
   // SP0 generic 400).
   expect(rejected.rfind("HTTP/1.1 413", 0) == 0, "the default limit still rejects it: " + rejected.substr(0, 24));
 }
+
+// SP3 Task 8a: socket_io.
+
+void send_retries_on_eintr() {
+  static int calls = 0;
+  calls = 0;
+  const auto flaky = [](secure_frontend::NativeSocket, const char*, std::size_t size) noexcept -> long {
+    if (++calls == 1) { secure_frontend::detail::set_last_socket_error(secure_frontend::detail::kInterruptedCode); return -1; }
+    return static_cast<long>(size);
+  };
+  const auto result = secure_frontend::detail::send_some_with(flaky, secure_frontend::kInvalidNativeSocket, "hello");
+  expect(result.status == secure_frontend::IoStatus::done && result.bytes == 5U && calls == 2, "an interrupted send is retried, not failed");
+}
+
+void accept_backs_off_on_transient_failure() {
+#if defined(_WIN32)
+  const int transient[] = {WSAECONNRESET, WSAEMFILE, WSAENOBUFS, WSAEINTR};
+  const int fatal[] = {WSAENOTSOCK, WSAEINVAL, WSANOTINITIALISED};
+#else
+  const int transient[] = {ECONNABORTED, EMFILE, ENFILE, ENOBUFS, ENOMEM, EINTR, EPROTO, EPERM};
+  const int fatal[] = {EBADF, ENOTSOCK, EINVAL};
+#endif
+  for (const int code : transient) {
+    expect(secure_frontend::detail::accept_backoff_for(code) == std::optional<std::chrono::milliseconds>{std::chrono::milliseconds(50)},
+           "50 ms backoff for transient accept error " + std::to_string(code));
+  }
+  for (const int code : fatal) {
+    expect(!secure_frontend::detail::accept_backoff_for(code).has_value(), "fatal accept error " + std::to_string(code));
+  }
+}
+
+// SP2 carry-in: every send is sliced to kMaxSendChunk on both platforms.
+void send_some_slices_to_max_send_chunk() {
+  static std::size_t largest = 0;
+  largest = 0;
+  const auto record = [](secure_frontend::NativeSocket, const char*, std::size_t size) noexcept -> long {
+    largest = std::max(largest, size);
+    return static_cast<long>(size);
+  };
+  const std::string payload(3U * secure_frontend::api_constants::kMaxSendChunk + 7U, 'p');
+  const auto result = secure_frontend::detail::send_some_with(record, secure_frontend::kInvalidNativeSocket, payload);
+  expect(result.status == secure_frontend::IoStatus::done && result.bytes == secure_frontend::api_constants::kMaxSendChunk &&
+             largest == secure_frontend::api_constants::kMaxSendChunk,
+         "one send call carries at most kMaxSendChunk bytes");
+  const auto empty = secure_frontend::detail::send_some_with(record, secure_frontend::kInvalidNativeSocket, "");
+  expect(empty.status == secure_frontend::IoStatus::done && empty.bytes == 0U, "an empty send is a no-op");
+}
+
+// A connected loopback pair on an ephemeral port: `server` is the accepted end.
+struct LoopbackPair final {
+  secure_frontend::Socket server;
+  secure_frontend::Socket client;
+};
+
+std::optional<LoopbackPair> make_loopback_pair(const int client_receive_buffer = 0) {
+  secure_frontend::Socket listener{socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)};
+  if (!listener.valid()) return std::nullopt;
+  sockaddr_in address{};
+  address.sin_family = AF_INET;
+  address.sin_port = 0;
+  inet_pton(AF_INET, "127.0.0.1", &address.sin_addr);
+  if (bind(listener.get(), reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0) return std::nullopt;
+  if (listen(listener.get(), 1) != 0) return std::nullopt;
+  socklen_t length = sizeof(address);
+  if (getsockname(listener.get(), reinterpret_cast<sockaddr*>(&address), &length) != 0) return std::nullopt;
+  LoopbackPair pair;
+  pair.client = secure_frontend::Socket{socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)};
+  if (!pair.client.valid()) return std::nullopt;
+  if (client_receive_buffer > 0) {
+    (void)setsockopt(pair.client.get(), SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&client_receive_buffer),
+                     sizeof(client_receive_buffer));
+  }
+  if (connect(pair.client.get(), reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0) return std::nullopt;
+  pair.server = secure_frontend::Socket{accept(listener.get(), nullptr, nullptr)};
+  if (!pair.server.valid() || !secure_frontend::set_non_blocking(pair.server.get())) return std::nullopt;
+  return pair;
+}
+
+// SP2 carry-in (Winsock accepted one 32 MiB blocking send whole): a reader that
+// never reads cannot hold send_all_bounded past the stall bound, on either OS.
+void send_all_bounded_stops_at_stall_on_a_stalled_reader() {
+  auto pair = make_loopback_pair(1);
+  if (!pair) { expect(false, "loopback pair"); return; }
+  const std::string payload(32U * 1024U * 1024U, 'x');
+  const auto stall = std::chrono::milliseconds(300);
+  const auto start = std::chrono::steady_clock::now();
+  const auto outcome = secure_frontend::send_all_bounded(pair->server.get(), payload, stall, start + std::chrono::seconds(30));
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  std::cerr << "stall elapsed ms: " << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() << '\n';
+  expect(outcome == secure_frontend::WriteOutcome::stalled, "a stalled reader yields WriteOutcome::stalled");
+  expect(elapsed >= stall && elapsed < std::chrono::seconds(3), "the stall bound is honoured, not the deadline");
+}
+
+// A reader that keeps making progress is never `stalled`; the whole-write
+// deadline still bounds it, and a reader that drains everything completes.
+void send_all_bounded_meets_deadline_and_completes() {
+  {
+    auto pair = make_loopback_pair(1);
+    if (!pair) { expect(false, "loopback pair"); return; }
+    std::atomic<bool> stop{false};
+    std::thread slow_reader([&] {
+      char chunk[512];
+      while (!stop.load()) {
+        (void)recv_bytes(pair->client.get(), chunk, sizeof(chunk));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      }
+    });
+    const std::string payload(32U * 1024U * 1024U, 'd');
+    const auto start = std::chrono::steady_clock::now();
+    const auto outcome = secure_frontend::send_all_bounded(pair->server.get(), payload, std::chrono::seconds(5),
+                                                           start + std::chrono::milliseconds(400));
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    stop.store(true);
+    pair->server.reset();  // unblocks the reader's recv with EOF
+    slow_reader.join();
+    expect(outcome == secure_frontend::WriteOutcome::deadline, "a slow but progressing reader hits the deadline");
+    expect(elapsed >= std::chrono::milliseconds(400) && elapsed < std::chrono::seconds(3), "deadline honoured");
+  }
+  {
+    auto pair = make_loopback_pair();
+    if (!pair) { expect(false, "loopback pair"); return; }
+    const std::string payload(1024U * 1024U + 3U, 'c');
+    std::size_t received = 0;
+    std::thread reader([&] {
+      char chunk[16384];
+      for (;;) { const int n = recv_bytes(pair->client.get(), chunk, sizeof(chunk)); if (n <= 0) break; received += static_cast<std::size_t>(n); }
+    });
+    const auto outcome = secure_frontend::send_all_bounded(pair->server.get(), payload, std::chrono::seconds(5),
+                                                           std::chrono::steady_clock::now() + std::chrono::seconds(20));
+    secure_frontend::half_close_and_drain(pair->server.get());
+    reader.join();
+    expect(outcome == secure_frontend::WriteOutcome::complete && received == payload.size(), "a draining reader gets every byte");
+  }
+}
+
+// poll_sockets, recv_some, probe_peer and bytes_pending on a live pair.
+void socket_io_poll_probe_and_recv() {
+  auto pair = make_loopback_pair();
+  if (!pair) { expect(false, "loopback pair"); return; }
+  const secure_frontend::NativeSocket server = pair->server.get();
+  secure_frontend::PollEntry entry{server, true, false};
+  expect(secure_frontend::poll_sockets(std::span<secure_frontend::PollEntry>{&entry, 1U}, std::chrono::milliseconds(20)) == 0 &&
+             !entry.readable,
+         "an idle socket times out unreadable");
+  expect(secure_frontend::probe_peer(server) == secure_frontend::PeerState::alive && !secure_frontend::bytes_pending(server),
+         "an idle peer is alive with nothing pending");
+  char buffer[16];
+  expect(secure_frontend::recv_some(server, buffer, sizeof(buffer)).status == secure_frontend::IoStatus::would_block,
+         "an empty non-blocking recv would block");
+  (void)send_bytes(pair->client.get(), "ab");
+  entry = secure_frontend::PollEntry{server, true, false};
+  expect(secure_frontend::poll_sockets(std::span<secure_frontend::PollEntry>{&entry, 1U}, std::chrono::seconds(2)) == 1 &&
+             entry.readable,
+         "a pending byte makes the socket readable");
+  expect(secure_frontend::bytes_pending(server) && secure_frontend::probe_peer(server) == secure_frontend::PeerState::gone,
+         "any byte after the body means gone (spec 2.6)");
+  const auto got = secure_frontend::recv_some(server, buffer, sizeof(buffer));
+  expect(got.status == secure_frontend::IoStatus::done && got.bytes == 2U, "recv_some reads the bytes");
+  pair->client.reset();
+  entry = secure_frontend::PollEntry{server, true, false};
+  (void)secure_frontend::poll_sockets(std::span<secure_frontend::PollEntry>{&entry, 1U}, std::chrono::seconds(2));
+  expect(secure_frontend::probe_peer(server) == secure_frontend::PeerState::gone && !secure_frontend::bytes_pending(server),
+         "EOF means gone with nothing pending");
+  expect(secure_frontend::recv_some(server, buffer, sizeof(buffer)).status == secure_frontend::IoStatus::closed, "EOF is closed");
+  std::vector<secure_frontend::PollEntry> too_many(secure_frontend::api_constants::kMaxPollEntries + 1U,
+                                                   secure_frontend::PollEntry{server, true, false});
+  expect(secure_frontend::poll_sockets(too_many, std::chrono::milliseconds(0)) == -1, "more than kMaxPollEntries is refused");
+}
+
+// Helper for Task 8b (pre-flight V12): a socket can be marked non-inheritable.
+void set_no_inherit_marks_the_socket() {
+  secure_frontend::Socket s{socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)};
+  if (!s.valid()) { expect(false, "socket"); return; }
+  expect(secure_frontend::set_no_inherit(s.get()), "set_no_inherit succeeds");
+#if defined(_WIN32)
+  DWORD flags = 0;
+  expect(GetHandleInformation(reinterpret_cast<HANDLE>(s.get()), &flags) != 0 && (flags & HANDLE_FLAG_INHERIT) == 0,
+         "the handle is not inheritable");
+#else
+  expect((fcntl(s.get(), F_GETFD) & FD_CLOEXEC) != 0, "the descriptor is close-on-exec");
+#endif
+}
 }  // namespace
 
 int main(int argc, char** argv) {
   secure_frontend::install_process_defaults();
+  const secure_frontend::WinsockGuard winsock;
+  if (!winsock.ok()) { std::cerr << "WSAStartup failed\n"; return 1; }
   return secure_frontend_test::run_cases(argc, argv, {
       {"serves_a_loopback_request_without_outbound_connections", serves_a_loopback_request_without_outbound_connections},
       {"socket_server_survives_client_early_close", socket_server_survives_client_early_close},
@@ -437,5 +627,12 @@ int main(int argc, char** argv) {
       {"parser_honors_configured_max_request_bytes", parser_honors_configured_max_request_bytes},
       {"socket_server_shutdown_listener_wakes_accept", socket_server_shutdown_listener_wakes_accept},
       {"socket_server_shutdown_listener_wakes_idle_client", socket_server_shutdown_listener_wakes_idle_client},
+      {"send_retries_on_eintr", send_retries_on_eintr},
+      {"accept_backs_off_on_transient_failure", accept_backs_off_on_transient_failure},
+      {"send_some_slices_to_max_send_chunk", send_some_slices_to_max_send_chunk},
+      {"send_all_bounded_stops_at_stall_on_a_stalled_reader", send_all_bounded_stops_at_stall_on_a_stalled_reader},
+      {"send_all_bounded_meets_deadline_and_completes", send_all_bounded_meets_deadline_and_completes},
+      {"socket_io_poll_probe_and_recv", socket_io_poll_probe_and_recv},
+      {"set_no_inherit_marks_the_socket", set_no_inherit_marks_the_socket},
   }, failures);
 }

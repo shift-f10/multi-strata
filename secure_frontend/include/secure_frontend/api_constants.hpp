@@ -30,4 +30,5 @@ inline constexpr double kTemperatureMax = 2.0;
 inline constexpr std::uint64_t kSeedMax = 9223372036854775807ULL;
 inline constexpr std::size_t kContextMarginTokens = 8U;
 inline constexpr std::size_t kMaxModelFieldBytes = 1024U;   // /v1/models id and owned_by (pre-flight D10)
+inline constexpr std::size_t kMaxPollEntries = 128U;        // one poll_sockets call (pre-flight D10)
 }  // namespace secure_frontend::api_constants
