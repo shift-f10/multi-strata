@@ -12,6 +12,7 @@
 #include <chrono>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -183,7 +184,13 @@ void dl01_server_makes_no_outbound_connection() {
   const auto control = f.dir / "control-audit.log";
   (void)secure_frontend_test::run_to_completion(secure_frontend_test::ProcessSpec{
       args.at(3), {}, {{"LD_PRELOAD", args.at(2)}, {"SF_CONNECT_AUDIT", control.string()}, {"SF_CONNECT_AUDIT_BLOCK", "1"}}});
-  expect(contains(file_text(control), "getaddrinfo fixture.example"), "the shim records a name lookup (positive control)");
+  // Every interposed call is caught (raw syscall(SYS_connect) and io_uring are out of the shim's reach; spec §10.3 note).
+  const auto lines = file_text(control);
+  for (const auto* line : {"getaddrinfo fixture.example\n", "gethostbyname fixture.example\n", "gethostbyname_r fixture.example\n",
+                           "gethostbyaddr inet\n", "getnameinfo inet\n", "connect inet\n", "sendto datagram\n",
+                           "sendmsg datagram\n", "sendmmsg datagram\n"}) {
+    expect(contains(lines, line), std::string{"the shim records and blocks (positive control): "} + line + "saw: " + lines);
+  }
 }
 
 // PRIV-01: lifecycle including an engine crash and supervised restart makes no network use.
@@ -224,54 +231,75 @@ bool loopback_v6(const unsigned char* address) {
 
 bool zero_v6(const unsigned char* address) { return std::all_of(address, address + 16, [](unsigned char b) { return b == 0; }); }
 
+// One IP Helper table; nullopt when the API fails (the case then fails: never a vacuous pass).
 template <typename Fill>
-std::vector<unsigned char> ip_table(Fill fill) {
-  ULONG size = 0;
-  (void)fill(nullptr, &size);
-  std::vector<unsigned char> table(size + 4096U);
-  size = static_cast<ULONG>(table.size());
-  if (fill(table.data(), &size) != NO_ERROR) return {};
-  return table;
+std::optional<std::vector<unsigned char>> ip_table(Fill fill) {
+  for (int attempt = 0; attempt < 4; ++attempt) {
+    ULONG size = 0;
+    const DWORD sizing = fill(nullptr, &size);
+    if (sizing != ERROR_INSUFFICIENT_BUFFER && sizing != NO_ERROR) return std::nullopt;
+    std::vector<unsigned char> table(size + 4096U);
+    size = static_cast<ULONG>(table.size());
+    const DWORD filled = fill(table.data(), &size);
+    if (filled == NO_ERROR) return table;
+    if (filled != ERROR_INSUFFICIENT_BUFFER) return std::nullopt;  // the table grew between the calls: retry
+  }
+  return std::nullopt;
 }
+
+struct SocketScan final {
+  bool tables_read{true};       // every GetExtended{Tcp,Udp}Table call returned NO_ERROR
+  bool listener_seen{false};    // positive control: the server's own 127.0.0.1:<port> LISTEN row under its pid
+  std::vector<std::string> outbound;
+};
 
 // TCP (IPv4 and IPv6): a connection owned by `pid` whose remote end is not loopback (a listener's is 0).
 // UDP (ruling R7): any local binding owned by `pid` that is not loopback.
-std::vector<std::string> outbound_sockets(const DWORD pid) {
-  std::vector<std::string> found;
+SocketScan scan_sockets(const DWORD pid, const std::uint16_t port) {
+  SocketScan scan;
   const auto tcp4 = ip_table([](void* t, ULONG* s) { return GetExtendedTcpTable(t, s, FALSE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0); });
-  if (!tcp4.empty()) {
-    const auto* rows = reinterpret_cast<const MIB_TCPTABLE_OWNER_PID*>(tcp4.data());
-    for (DWORD i = 0; i < rows->dwNumEntries; ++i) {
-      const auto& row = rows->table[i];
-      const bool remote_loopback = (ntohl(row.dwRemoteAddr) >> 24U) == 127U || row.dwRemoteAddr == 0;
-      if (row.dwOwningPid == pid && !remote_loopback) found.emplace_back("tcp4");
-    }
-  }
   const auto tcp6 = ip_table([](void* t, ULONG* s) { return GetExtendedTcpTable(t, s, FALSE, AF_INET6, TCP_TABLE_OWNER_PID_ALL, 0); });
-  if (!tcp6.empty()) {
-    const auto* rows = reinterpret_cast<const MIB_TCP6TABLE_OWNER_PID*>(tcp6.data());
-    for (DWORD i = 0; i < rows->dwNumEntries; ++i) {
-      const auto& row = rows->table[i];
-      if (row.dwOwningPid == pid && !loopback_v6(row.ucRemoteAddr) && !zero_v6(row.ucRemoteAddr)) found.emplace_back("tcp6");
-    }
-  }
   const auto udp4 = ip_table([](void* t, ULONG* s) { return GetExtendedUdpTable(t, s, FALSE, AF_INET, UDP_TABLE_OWNER_PID, 0); });
-  if (!udp4.empty()) {
-    const auto* rows = reinterpret_cast<const MIB_UDPTABLE_OWNER_PID*>(udp4.data());
-    for (DWORD i = 0; i < rows->dwNumEntries; ++i) {
-      const auto& row = rows->table[i];
-      if (row.dwOwningPid == pid && (ntohl(row.dwLocalAddr) >> 24U) != 127U) found.emplace_back("udp4");
-    }
-  }
   const auto udp6 = ip_table([](void* t, ULONG* s) { return GetExtendedUdpTable(t, s, FALSE, AF_INET6, UDP_TABLE_OWNER_PID, 0); });
-  if (!udp6.empty()) {
-    const auto* rows = reinterpret_cast<const MIB_UDP6TABLE_OWNER_PID*>(udp6.data());
+  if (!tcp4 || !tcp6 || !udp4 || !udp6) {
+    scan.tables_read = false;
+    return scan;
+  }
+  {
+    const auto* rows = reinterpret_cast<const MIB_TCPTABLE_OWNER_PID*>(tcp4->data());
     for (DWORD i = 0; i < rows->dwNumEntries; ++i) {
       const auto& row = rows->table[i];
-      if (row.dwOwningPid == pid && !loopback_v6(row.ucLocalAddr)) found.emplace_back("udp6");
+      if (row.dwOwningPid != pid) continue;
+      if (row.dwState == MIB_TCP_STATE_LISTEN && (ntohl(row.dwLocalAddr) >> 24U) == 127U &&
+          ntohs(static_cast<u_short>(row.dwLocalPort)) == port) {
+        scan.listener_seen = true;
+      }
+      const bool remote_loopback = (ntohl(row.dwRemoteAddr) >> 24U) == 127U || row.dwRemoteAddr == 0;
+      if (!remote_loopback) scan.outbound.emplace_back("tcp4");
     }
   }
-  return found;
+  {
+    const auto* rows = reinterpret_cast<const MIB_TCP6TABLE_OWNER_PID*>(tcp6->data());
+    for (DWORD i = 0; i < rows->dwNumEntries; ++i) {
+      const auto& row = rows->table[i];
+      if (row.dwOwningPid == pid && !loopback_v6(row.ucRemoteAddr) && !zero_v6(row.ucRemoteAddr)) scan.outbound.emplace_back("tcp6");
+    }
+  }
+  {
+    const auto* rows = reinterpret_cast<const MIB_UDPTABLE_OWNER_PID*>(udp4->data());
+    for (DWORD i = 0; i < rows->dwNumEntries; ++i) {
+      const auto& row = rows->table[i];
+      if (row.dwOwningPid == pid && (ntohl(row.dwLocalAddr) >> 24U) != 127U) scan.outbound.emplace_back("udp4");
+    }
+  }
+  {
+    const auto* rows = reinterpret_cast<const MIB_UDP6TABLE_OWNER_PID*>(udp6->data());
+    for (DWORD i = 0; i < rows->dwNumEntries; ++i) {
+      const auto& row = rows->table[i];
+      if (row.dwOwningPid == pid && !loopback_v6(row.ucLocalAddr)) scan.outbound.emplace_back("udp6");
+    }
+  }
+  return scan;
 }
 
 }  // namespace
@@ -289,7 +317,12 @@ void dl01_server_makes_no_outbound_connection_windows() {
       const auto chat = f.request("POST", "/v1/chat/completions", f.bearer(), chat_body());
       expect(status_is(chat, "200"), "a chat completes with 200: " + chat.substr(0, 64));
     }
-    for (auto& kind : outbound_sockets(pid)) seen.push_back(std::move(kind));
+    auto scan = scan_sockets(pid, f.port);
+    expect(scan.tables_read, "round " + std::to_string(round) + ": every TCP/UDP table was read (NO_ERROR)");
+    // Positive control: the API call, the pid match and the row parsing find the server's own listener.
+    expect(scan.listener_seen, "round " + std::to_string(round) + ": the server's 127.0.0.1:" + std::to_string(f.port) +
+                                   " listener is found under its pid");
+    for (auto& kind : scan.outbound) seen.push_back(std::move(kind));
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
   }
   server.terminate();
@@ -408,9 +441,16 @@ void priv03_api_payloads_resembling_pull_trigger_nothing() {
          "nothing was staged or spawned");
 }
 
-// PRIV-04 supplement (§7.1): strata-secure-server does not link acquisition.
+// PRIV-04 supplement (§7.1): strata-secure-server does not link acquisition. Positive control: the
+// same closure of `strata` does contain acquisition and the downloader.
 void priv04_secure_server_does_not_link_acquisition() {
-  const auto links = file_text(secure_frontend_test::extra_arguments().at(0));
+  const auto& args = secure_frontend_test::extra_arguments();  // [0] server link set, [1] strata link set
+  const auto strata_links = file_text(args.at(1));
+  expect(contains(strata_links, "strata\n"), "the strata link set was generated");
+  for (const auto* required : {"secure_frontend_strata_cli\n", "secure_frontend_acquire\n", "secure_frontend_downloader\n"}) {
+    expect(contains(strata_links, required), std::string{"positive control, strata links "} + required);
+  }
+  const auto links = file_text(args.at(0));
   expect(contains(links, "strata-secure-server"), "the link set was generated");
   for (const auto* forbidden : {"secure_frontend_acquire\n", "secure_frontend_acquire_core\n", "secure_frontend_downloader\n",
                                 "secure_frontend_strata_cli\n"}) {

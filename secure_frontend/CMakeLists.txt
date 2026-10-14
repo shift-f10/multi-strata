@@ -1334,7 +1334,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_privacy_tests doctor_proxy_hint_is_presence_only ARGS $<TARGET_FILE:strata>
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     secure_frontend_add_cases(secure_frontend_privacy_tests priv04_secure_server_does_not_link_acquisition
-        ARGS ${CMAKE_CURRENT_BINARY_DIR}/strata-secure-server.link-set.txt LABELS release-also)
+        ARGS ${CMAKE_CURRENT_BINARY_DIR}/strata-secure-server.link-set.txt ${CMAKE_CURRENT_BINARY_DIR}/strata.link-set.txt
+        LABELS release-also)
     secure_frontend_add_cases(secure_frontend_privacy_tests release_binary_lacks_hook_marker
         ARGS $<TARGET_FILE:strata> $<TARGET_FILE:strata-secure-server> LABELS release-only)
     if(UNIX)
@@ -1348,6 +1349,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         secure_frontend_set_warnings(secure_frontend_fd_census)
         add_executable(secure_frontend_resolve_probe tests/resolve_probe_main.cpp)
         secure_frontend_set_warnings(secure_frontend_resolve_probe)
+        target_link_libraries(secure_frontend_resolve_probe PRIVATE dl)
         add_dependencies(secure_frontend_privacy_tests secure_frontend_connect_audit secure_frontend_resolve_probe)
         secure_frontend_add_cases(secure_frontend_privacy_tests dl01_server_makes_no_outbound_connection
             ARGS $<TARGET_FILE:strata-secure-server> $<TARGET_FILE:secure_frontend_fake_engine>
@@ -1431,9 +1433,11 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     endif()
 endif()
 
-# PRIV-04 supplement (SP4 §7.1): the transitive link closure of strata-secure-server,
-# read by privacy.priv04_secure_server_does_not_link_acquisition. Kept last so every
-# target_link_libraries above is already recorded.
+# PRIV-04 supplement (SP4 §7.1): the transitive link closures of strata-secure-server and
+# (its positive control) strata, read by privacy.priv04_secure_server_does_not_link_acquisition.
+# Kept last so every target_link_libraries above is already recorded. Generator
+# expressions ($<LINK_ONLY:x>, $<$<PLATFORM_ID:Windows>:x>, ...) are handled
+# conservatively: every name inside one that is a target is followed, whatever the condition.
 function(secure_frontend_link_closure target out_var)
     set(_seen "")
     set(_queue ${target})
@@ -1446,13 +1450,27 @@ function(secure_frontend_link_closure target out_var)
         get_target_property(_direct ${_item} LINK_LIBRARIES)
         get_target_property(_interface ${_item} INTERFACE_LINK_LIBRARIES)
         foreach(_lib IN LISTS _direct _interface)
-            if(_lib AND NOT _lib MATCHES "-NOTFOUND$" AND NOT _lib MATCHES "^\\$<")
+            if(NOT _lib OR _lib MATCHES "-NOTFOUND$")
+                continue()
+            endif()
+            if(_lib MATCHES "[<>]")
+                # A generator expression, or a piece of one split at a ';' inside it. Keep
+                # "ns::name" whole; every other separator splits the text into words.
+                string(REPLACE "::" "@@" _words "${_lib}")
+                string(REGEX MATCHALL "[A-Za-z0-9_.+@-]+" _words "${_words}")
+                foreach(_word IN LISTS _words)
+                    string(REPLACE "@@" "::" _word "${_word}")
+                    list(APPEND _queue ${_word})
+                endforeach()
+            else()
                 list(APPEND _queue ${_lib})
             endif()
         endforeach()
     endwhile()
     set(${out_var} ${_seen} PARENT_SCOPE)
 endfunction()
-secure_frontend_link_closure(strata-secure-server _sf_server_link_set)
-list(JOIN _sf_server_link_set "\n" _sf_server_link_text)
-file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/strata-secure-server.link-set.txt" "${_sf_server_link_text}\n")
+foreach(_sf_link_target IN ITEMS strata-secure-server strata)
+    secure_frontend_link_closure(${_sf_link_target} _sf_link_set)
+    list(JOIN _sf_link_set "\n" _sf_link_text)
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/${_sf_link_target}.link-set.txt" "${_sf_link_text}\n")
+endforeach()
