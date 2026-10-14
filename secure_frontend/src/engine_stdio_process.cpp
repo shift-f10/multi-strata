@@ -190,9 +190,13 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
   // other child.  The child's ends reach fds 0/1 through dup2, which clears it.
   int input[2]{-1, -1}; int output[2]{-1, -1}; int errors[2]{-1, -1};
   if (pipe2(input, O_CLOEXEC) != 0 || pipe2(output, O_CLOEXEC) != 0 || pipe2(errors, O_CLOEXEC) != 0) { for (int* pipe_fd : {input, output, errors}) { close_fd(pipe_fd[0]); close_fd(pipe_fd[1]); } return ProcessError{ProcessErrorCode::platform_failure, "pipe setup failed"}; }
-  const pid_t child = fork();
+  pid_t child = -1;
+  {
+    posix_launch::BlockAllSignals blocked;
+    child = fork();
+    if (child == 0) posix_launch::exec_child(prepared, input[0], output[1], /*null_stderr=*/true, errors[1]);
+  }
   if (child < 0) { for (int* pipe_fd : {input, output, errors}) { close_fd(pipe_fd[0]); close_fd(pipe_fd[1]); } return ProcessError{ProcessErrorCode::spawn_failed, "fork failed"}; }
-  if (child == 0) posix_launch::exec_child(prepared, input[0], output[1], /*null_stderr=*/true, errors[1]);
   close_fd(input[0]); close_fd(output[1]); close_fd(errors[1]); int child_errno = 0; const ssize_t count = read(errors[0], &child_errno, sizeof(child_errno)); close_fd(errors[0]);
   if (count > 0) { close_fd(input[1]); close_fd(output[0]); int ignored = 0; (void)waitpid(child, &ignored, 0); return ProcessError{ProcessErrorCode::spawn_failed, std::string("execve failed: ") + std::strerror(child_errno)}; }
   process_id_ = child; process_group_ = child; pidfd_ = open_pidfd(child); stdin_write_ = input[1]; stdout_read_ = output[0]; return std::nullopt;

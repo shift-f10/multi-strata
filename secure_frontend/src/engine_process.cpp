@@ -220,14 +220,18 @@ std::optional<ProcessError> EngineProcess::start(const EngineCommand& command) {
   posix_launch::prepare(prepared, command, /*insert_serve=*/false);
   int error_pipe[2];
   if (pipe2(error_pipe, O_CLOEXEC) != 0) return ProcessError{ProcessErrorCode::platform_failure, "pipe failed"};
-  const pid_t child = fork();
+  pid_t child = -1;
+  {
+    posix_launch::BlockAllSignals blocked;
+    child = fork();
+    if (child == 0) {
+      // Inherited stdio is kept; every other descriptor is closed before execve.
+      posix_launch::exec_child(prepared, -1, -1, /*null_stderr=*/false, error_pipe[1]);
+    }
+  }
   if (child < 0) {
     close(error_pipe[0]); close(error_pipe[1]);
     return ProcessError{ProcessErrorCode::spawn_failed, "fork failed"};
-  }
-  if (child == 0) {
-    // Inherited stdio is kept; every other descriptor is closed before execve.
-    posix_launch::exec_child(prepared, -1, -1, /*null_stderr=*/false, error_pipe[1]);
   }
   close(error_pipe[1]);
   int child_errno = 0;

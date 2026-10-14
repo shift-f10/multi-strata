@@ -5,8 +5,8 @@
 // Everything that allocates (argv, envp, the executable path, the descriptor
 // sweep limit) is prepared BEFORE fork().  The child body, exec_child(), uses
 // only async-signal-safe calls (prctl, getppid, setpgid, open, fcntl, dup2, close, syscall,
-// execve, write, _exit), so it is safe even when other parent threads held the
-// allocator lock at the moment of fork().
+// sigaction, sigprocmask, execve, write, _exit), so it is safe even when other
+// parent threads held the allocator lock at the moment of fork().
 
 #if !defined(_WIN32)
 
@@ -19,6 +19,7 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <pthread.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 #if defined(__linux__)
@@ -73,6 +74,40 @@ inline void prepare(PreparedExec& out, const EngineCommand& command, const bool 
   out.sweep_limit = open_max > 0 ? static_cast<int>(std::min(open_max, kSweepCap)) : kSweepDefault;
 }
 
+// Spec §3.12, parent side: every signal is blocked in the forking thread from
+// just before fork() until fork() returns, so no handler (the shutdown
+// self-pipe) can run in the child between fork and exec.
+class BlockAllSignals final {
+ public:
+  BlockAllSignals() noexcept {
+    sigset_t all;
+    sigfillset(&all);
+    (void)pthread_sigmask(SIG_SETMASK, &all, &previous_);
+  }
+  ~BlockAllSignals() { (void)pthread_sigmask(SIG_SETMASK, &previous_, nullptr); }
+  BlockAllSignals(const BlockAllSignals&) = delete;
+  BlockAllSignals& operator=(const BlockAllSignals&) = delete;
+
+ private:
+  sigset_t previous_{};
+};
+
+// Spec §3.12, child side (async-signal-safe): SIG_IGN survives execve, so put
+// every disposition back to SIG_DFL (the engine gets the default SIGPIPE, not
+// the frontend's ignore), then clear the mask inherited from the parent.
+inline void reset_signal_state() noexcept {
+  struct sigaction defaults {};
+  defaults.sa_handler = SIG_DFL;
+  sigemptyset(&defaults.sa_mask);
+  for (int signal_number = 1; signal_number < NSIG; ++signal_number) {
+    if (signal_number == SIGKILL || signal_number == SIGSTOP) continue;
+    (void)sigaction(signal_number, &defaults, nullptr);
+  }
+  sigset_t none;
+  sigemptyset(&none);
+  (void)sigprocmask(SIG_SETMASK, &none, nullptr);
+}
+
 [[noreturn]] inline void fail(const int report_fd) noexcept {
   const int saved_errno = errno;
   (void)!write(report_fd, &saved_errno, sizeof(saved_errno));
@@ -119,6 +154,7 @@ inline int lift(const int fd) noexcept { return fd < 0 ? -1 : fcntl(fd, F_DUPFD_
   {
     for (int fd = kReportFd + 1; fd < prepared.sweep_limit; ++fd) (void)close(fd);
   }
+  reset_signal_state();
   execve(prepared.executable.c_str(), prepared.argv.data(), prepared.envp.data());
   fail(kReportFd);
 }

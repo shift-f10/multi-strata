@@ -1,6 +1,7 @@
 #include "secure_frontend/engine_stdio_process.hpp"
 #include "secure_frontend/exit_status.hpp"
 
+#include "support/fake_engine_dump.hpp"
 #include "support/test_paths.hpp"
 
 #include <chrono>
@@ -12,6 +13,7 @@
 
 #if !defined(_WIN32)
 #include <csignal>
+#include <pthread.h>
 #include <sys/types.h>
 #endif
 
@@ -130,6 +132,31 @@ void proc05_group_killed_after_leader_reaped() {
 }
 #endif
 
+#if !defined(_WIN32)
+void proc02_child_signal_state_is_default() {
+  struct sigaction ignore {};
+  ignore.sa_handler = SIG_IGN;
+  sigemptyset(&ignore.sa_mask);
+  struct sigaction previous {};
+  (void)sigaction(SIGPIPE, &ignore, &previous);  // what install_process_defaults() does in the frontend
+  sigset_t block;
+  sigemptyset(&block);
+  sigaddset(&block, SIGUSR1);
+  sigset_t old_mask;
+  (void)pthread_sigmask(SIG_BLOCK, &block, &old_mask);
+  secure_frontend::EngineStdioProcess child;
+  const bool started = !child.start({.executable = test_support::fake_engine_path(), .arguments = {}, .environment = {}}).has_value();
+  (void)pthread_sigmask(SIG_SETMASK, &old_mask, nullptr);
+  (void)sigaction(SIGPIPE, &previous, nullptr);
+  expect(started, "start");
+  expect(child.read_line(5s).line == "READY 4096 stop", "READY");
+  const auto dump = test_support::request_dump(child, 5s);
+  expect(dump && dump->sig_blocked == "0000000000000000", "the engine starts with an empty signal mask, saw " + (dump ? dump->sig_blocked : ""));
+  expect(dump && dump->sig_ignored == "0000000000000000", "and nothing ignored (default SIGPIPE), saw " + (dump ? dump->sig_ignored : ""));
+  (void)child.terminate(250ms);
+}
+#endif
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -138,6 +165,7 @@ int main(int argc, char* argv[]) {
                                              {"proc04_exit_status_is_classified", proc04_exit_status_is_classified},
 #if !defined(_WIN32)
                                              {"proc05_group_killed_after_leader_reaped", proc05_group_killed_after_leader_reaped},
+                                             {"proc02_child_signal_state_is_default", proc02_child_signal_state_is_default},
 #endif
                                          },
                                          failures);
