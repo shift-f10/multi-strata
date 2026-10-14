@@ -1,20 +1,14 @@
+#include "bundle_cases.hpp"
 #include "secure_frontend/bundle_text.hpp"
+#include "support/expect.hpp"
 #include "support/test_support.hpp"
 
-#include <iostream>
 #include <string>
 #include <vector>
 
 namespace {
 
-int failures = 0;
-
-void expect(const bool condition, const std::string& message) {
-  if (!condition) {
-    ++failures;
-    std::cerr << "FAILED: " << message << '\n';
-  }
-}
+using secure_frontend_test::expect;
 
 secure_frontend::AcquireManifest sample() {
   secure_frontend::AcquireManifest m;
@@ -72,5 +66,27 @@ int main(int argc, char** argv) {
       {"sha256sums_parse_is_strict", sha256sums_parse_is_strict},
       {"sums_agreement_rules", sums_agreement_rules},
       {"missing_list_names_sourceless_files", missing_list_names_sourceless_files},
-  }, failures);
+      {"dl02_import_bundle_publishes_same_as_pull", bundle_cases::dl02_import_bundle_publishes_same_as_pull},
+      {"dl03_bundle_digest_mismatch_publishes_nothing", bundle_cases::dl03_bundle_digest_mismatch_publishes_nothing},
+      {"bundle_rejects_traversal_path", bundle_cases::bundle_rejects_traversal_path},
+      {"bundle_rejects_unlisted_file_in_files_dir", bundle_cases::bundle_rejects_unlisted_file_in_files_dir},
+      {"bundle_sha256sums_must_match_manifest", bundle_cases::bundle_sha256sums_must_match_manifest},
+      {"bundle_rejects_hardlinked_file", bundle_cases::bundle_rejects_hardlinked_file},
+      {"export_refuses_bundle_forbidden_license", bundle_cases::export_refuses_bundle_forbidden_license},
+      {"export_refuses_fat32_target_for_large_file", bundle_cases::export_refuses_fat32_target_for_large_file},
+      {"export_rehashes_and_rejects_bit_rot", bundle_cases::export_rehashes_and_rejects_bit_rot},
+      {"verify_writes_nothing", bundle_cases::verify_writes_nothing},
+      {"import_from_read_only_bundle_directory", bundle_cases::import_from_read_only_bundle_directory},
+      {"bundle_incomplete_and_marker_rules", bundle_cases::bundle_incomplete_and_marker_rules},
+      {"export_onto_shared_writable_target", bundle_cases::export_onto_shared_writable_target},
+      {"export_refuses_when_one_file_license_forbids_bundle", bundle_cases::export_refuses_when_one_file_license_forbids_bundle},
+      {"bundle_directory_must_not_be_a_volume_root", bundle_cases::bundle_directory_must_not_be_a_volume_root},
+      {"make_bundle_tool_output_opens_verifies_and_imports", bundle_cases::make_bundle_tool_output_opens_verifies_and_imports},
+#if defined(_WIN32)
+      {"bundle_rejects_junction_entry_windows", bundle_cases::bundle_rejects_junction_entry_windows},
+#else
+      {"bundle_rejects_symlink_entry", bundle_cases::bundle_rejects_symlink_entry},
+      {"bundle_walk_fails_closed_on_overlong_or_odd_names", bundle_cases::bundle_walk_fails_closed_on_overlong_or_odd_names},
+#endif
+  }, secure_frontend_test::failures);
 }

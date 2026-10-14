@@ -178,11 +178,13 @@ std::variant<PartFile, AcquireError> open_part_file(const CanonicalRoot& root, c
   const int fd = ::openat(dir.get(), path.components().back().c_str(), flags, 0600);
   if (fd < 0) return io_error(errno, path.generic() + ": cannot be opened");
   struct stat info {};
-  if (::fstat(fd, &info) != 0 || !S_ISREG(info.st_mode) || info.st_nlink != 1 || info.st_uid != ::geteuid()) {
+  // External roots (bundle directories, SP1 delta f): removable media report any owner.
+  if (::fstat(fd, &info) != 0 || !S_ISREG(info.st_mode) || info.st_nlink != 1 || (!root.external() && info.st_uid != ::geteuid())) {
     ::close(fd);
     return error(AcquireReason::publish_failed, path.generic() + ": not a private single-link regular file");
   }
-  if (mode == PartOpen::create_new && ::fchmod(fd, 0600) != 0) {
+  // vfat/exfat refuse mode changes they cannot store; import never relies on bundle modes (§5.3).
+  if (mode == PartOpen::create_new && ::fchmod(fd, 0600) != 0 && !(root.external() && errno == EPERM)) {
     const int code = errno;
     ::close(fd);
     return io_error(code, path.generic());

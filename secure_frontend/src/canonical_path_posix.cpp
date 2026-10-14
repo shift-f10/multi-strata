@@ -165,7 +165,7 @@ std::variant<OpenedFile, PathError> open_beneath(const CanonicalRoot& root, cons
 
 namespace detail {
 
-std::variant<CanonicalRoot, PathError> open_existing_root(const std::filesystem::path& requested) {
+std::variant<CanonicalRoot, PathError> open_existing_root(const std::filesystem::path& requested, const RootPolicy policy) {
   const std::string text = requested.string();
   if (text.empty() || text.find('\0') != std::string::npos) return path_error(PathErrorCode::empty, "the root path is empty");
   if (!requested.is_absolute()) return path_error(PathErrorCode::not_absolute, "roots must be absolute paths");
@@ -189,15 +189,17 @@ std::variant<CanonicalRoot, PathError> open_existing_root(const std::filesystem:
     ::close(fd);
     return path_error(PathErrorCode::not_directory, "the root is not a directory");
   }
-  if (st.st_uid != ::geteuid() && st.st_uid != 0) {
-    ::close(fd);
-    return path_error(PathErrorCode::untrusted_owner, "the root must be owned by the current user or root");
+  if (policy != RootPolicy::external) {
+    if (st.st_uid != ::geteuid() && st.st_uid != 0) {
+      ::close(fd);
+      return path_error(PathErrorCode::untrusted_owner, "the root must be owned by the current user or root");
+    }
+    if ((st.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+      ::close(fd);
+      return path_error(PathErrorCode::shared_writable, "the root must not be writable by group or others");
+    }
   }
-  if ((st.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
-    ::close(fd);
-    return path_error(PathErrorCode::shared_writable, "the root must not be writable by group or others");
-  }
-  return PathFactory::root(std::filesystem::path{canonical}, fd, static_cast<std::uint64_t>(st.st_dev));
+  return PathFactory::root(std::filesystem::path{canonical}, fd, static_cast<std::uint64_t>(st.st_dev), policy == RootPolicy::external);
 }
 
 }  // namespace detail
@@ -258,7 +260,7 @@ std::optional<PathError> create_directory_within(const CanonicalRoot& root, cons
       ::close(next);
       return path_error(PathErrorCode::cross_device, "the path crosses into another file system");
     }
-    if (st.st_uid != ::geteuid() || (st.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+    if (!root.external() && (st.st_uid != ::geteuid() || (st.st_mode & (S_IWGRP | S_IWOTH)) != 0)) {
       ::close(next);
       return path_error(PathErrorCode::shared_writable, "an existing directory on the way is not private");
     }

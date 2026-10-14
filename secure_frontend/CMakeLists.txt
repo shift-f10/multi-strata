@@ -419,7 +419,7 @@ else()
     set(_sf_models_store_platform src/models_store_posix.cpp)
 endif()
 add_library(secure_frontend_acquire src/models_store_common.cpp ${_sf_models_store_platform})
-target_sources(secure_frontend_acquire PRIVATE src/model_index_write.cpp src/acquire_publish.cpp)
+target_sources(secure_frontend_acquire PRIVATE src/model_index_write.cpp src/acquire_publish.cpp src/bundle_io.cpp)
 target_compile_features(secure_frontend_acquire PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_acquire PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
@@ -492,6 +492,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_paths_tests paths_handle_non_ascii_and_long_names
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     secure_frontend_add_cases(secure_frontend_paths_tests cfg02_create_within_root_writes_nothing_outside
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # SP1 delta f (SP4 §5.3): RootPolicy::external for bundle directories.
+    secure_frontend_add_cases(secure_frontend_paths_tests external_root_skips_ownership_checks
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     if(WIN32)
         secure_frontend_add_cases(secure_frontend_paths_tests
@@ -839,6 +842,28 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_test_executable(secure_frontend_bundle_tests tests/bundle_test.cpp secure_frontend_acquire_core)
     secure_frontend_add_cases(secure_frontend_bundle_tests sha256sums_render_sorted_bytewise sha256sums_parse_is_strict
         sums_agreement_rules missing_list_names_sourceless_files)
+    # SP4 Task 20 (spec §5): bundle open/verify/import/export; these write a models store or a bundle.
+    target_sources(secure_frontend_bundle_tests PRIVATE tests/bundle_io_test.cpp)
+    target_link_libraries(secure_frontend_bundle_tests PRIVATE secure_frontend_acquire)
+    secure_frontend_add_cases(secure_frontend_bundle_tests dl02_import_bundle_publishes_same_as_pull
+        dl03_bundle_digest_mismatch_publishes_nothing bundle_rejects_traversal_path bundle_rejects_unlisted_file_in_files_dir
+        bundle_sha256sums_must_match_manifest bundle_rejects_hardlinked_file export_refuses_bundle_forbidden_license
+        export_refuses_fat32_target_for_large_file export_rehashes_and_rejects_bit_rot verify_writes_nothing
+        import_from_read_only_bundle_directory bundle_incomplete_and_marker_rules export_onto_shared_writable_target
+        bundle_directory_must_not_be_a_volume_root
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # Task 13 carry: a bundle exactly as tools/secure/make_bundle.py writes it.
+    secure_frontend_add_cases(secure_frontend_bundle_tests make_bundle_tool_output_opens_verifies_and_imports
+        ARGS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bundle/make-bundle-iq2_xs
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # Refused before anything is written (no store, no target directory), so wine runs it too.
+    secure_frontend_add_cases(secure_frontend_bundle_tests export_refuses_when_one_file_license_forbids_bundle)
+    if(WIN32)
+        secure_frontend_add_cases(secure_frontend_bundle_tests bundle_rejects_junction_entry_windows LABELS windows-runtime)
+    else()
+        secure_frontend_add_cases(secure_frontend_bundle_tests bundle_rejects_symlink_entry
+            bundle_walk_fails_closed_on_overlong_or_odd_names)
+    endif()
     secure_frontend_add_test_executable(secure_frontend_model_index_tests tests/model_index_test.cpp secure_frontend_model_store)
     secure_frontend_add_cases(secure_frontend_model_index_tests index_render_is_deterministic
         install_retires_previous_version reinstall_same_version_does_not_retire

@@ -128,7 +128,7 @@ std::variant<CanonicalRoot, PathError> open_root(const std::filesystem::path& re
       if (auto failure = create_directory_within(std::get<CanonicalRoot>(parent), std::get<RelativePath>(name))) return *failure;
     }
   }
-  return detail::open_existing_root(requested);
+  return detail::open_existing_root(requested, policy == RootPolicy::external ? RootPolicy::external : RootPolicy::existing);
 }
 
 std::variant<std::filesystem::path, PathError> check_creatable_root(const std::filesystem::path& requested) {

@@ -82,4 +82,12 @@ struct PublishResult final {
                                                                       std::string_view tag, LoadedVersions& loaded, bool force,
                                                                       const StoreEnvironment& env);
 
+// What pull/import report: the active entry, or "already installed".
+struct InstallOutcome final {
+  IndexEntry entry;
+  bool already_installed{false};
+  bool adopted{false};
+  std::vector<RetiredEntry> still_retired;
+};
+
 }  // namespace secure_frontend

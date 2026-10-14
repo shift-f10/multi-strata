@@ -122,6 +122,42 @@ def test_refuses_empty_pack_file(tmp_path, capsys, empty):
     assert "empty" in capsys.readouterr().err
 
 
+# SP4 Task 20 (Task 13 carry): the C++ bundle reader is tested against a bundle this tool
+# wrote. The fake pack tool emits a tokenizer SP1's load_local_tokenizer_pack accepts
+# (the same bytes as secure_frontend/tests/support/acquire_fixtures.hpp's qwen_payload).
+CPP_FIXTURE = HERE.parent.parent / "secure_frontend" / "tests" / "fixtures" / "bundle" / "make-bundle-iq2_xs"
+CPP_FIXTURE_PACK_TOOL = '''
+import argparse, pathlib
+p = argparse.ArgumentParser(); p.add_argument("--gguf"); p.add_argument("--out"); a = p.parse_args()
+out = pathlib.Path(a.out); (out / "tokenizer").mkdir(parents=True)
+for name, text in {"index.txt": "index\\n", "dense.bin": "dense", "native_experts.txt": "experts\\n",
+                   "conversions.json": "{}\\n"}.items():
+    (out / name).write_bytes(text.encode())
+for name, text in {"vocab.json": '{"a":0,"b":1,"ab":2}', "merges.txt": "a b\\n", "token_type.json": "[1,1,1]",
+                   "tokenizer.json": "{}\\n"}.items():
+    (out / "tokenizer" / name).write_bytes(text.encode())
+'''
+
+
+def build_cpp_fixture(work: Path, out: Path) -> str:
+    args = setup_inputs(work)
+    (work / "pack_tool.py").write_text(CPP_FIXTURE_PACK_TOOL)
+    args[args.index("--out") + 1] = str(out)
+    assert mb.main(args) == 0
+    return sha((out / "manifest.json").read_bytes())
+
+
+def tree(root: Path) -> dict[str, bytes]:
+    return {p.relative_to(root).as_posix(): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def test_cpp_bundle_fixture_is_this_tools_output(tmp_path):
+    built = tmp_path / "bundle"
+    build_cpp_fixture(tmp_path, built)
+    assert tree(built) == tree(CPP_FIXTURE), (
+        "secure_frontend/tests/fixtures/bundle/make-bundle-iq2_xs drifted from make_bundle.py output; regenerate it")
+
+
 def test_pins_file_matches_spec_facts():
     pins = json.loads((HERE / "qwen_bundle_pins.json").read_text())
     gsq = pins["qwen3.8-flash-next"]

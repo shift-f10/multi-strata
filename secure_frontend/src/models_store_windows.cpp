@@ -258,7 +258,7 @@ std::variant<PartFile, AcquireError> open_part_file(const CanonicalRoot& root, c
   BY_HANDLE_FILE_INFORMATION info{};
   const bool regular = GetFileInformationByHandle(h, &info) != 0 &&
                        (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) == 0 &&
-                       info.nNumberOfLinks == 1 && private_to_user(h);
+                       info.nNumberOfLinks == 1 && (root.external() || private_to_user(h));  // FAT/exFAT: no ACLs (§5.3)
   const bool inside = same_path(std::filesystem::path{ws::final_path_for_handle(h)}.parent_path().wstring(), parent.final_path());
   LARGE_INTEGER end{};
   LARGE_INTEGER zero{};
