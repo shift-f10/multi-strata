@@ -177,6 +177,7 @@ target_compile_features(secure_frontend_token_store PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_token_store PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
 target_link_libraries(secure_frontend_token_store PUBLIC secure_frontend_paths secure_frontend_secrets)
+target_link_libraries(secure_frontend_token_store PUBLIC secure_frontend_token_reader)
 
 add_library(secure_frontend_subsystem_limits src/subsystem_limits.cpp)
 target_compile_features(secure_frontend_subsystem_limits PUBLIC cxx_std_20)
@@ -348,6 +349,7 @@ target_include_directories(secure_frontend_token_reader
 )
 target_link_libraries(secure_frontend_token_reader PUBLIC secure_frontend_config)
 target_link_libraries(secure_frontend_token_reader PUBLIC secure_frontend_paths)
+target_link_libraries(secure_frontend_token_reader PUBLIC secure_frontend_secrets)
 
 if(WIN32)
     target_link_libraries(secure_frontend_config PUBLIC ws2_32)
@@ -355,6 +357,8 @@ if(WIN32)
     target_link_libraries(secure_frontend_token_reader PUBLIC advapi32)
     target_link_libraries(secure_frontend_paths PUBLIC advapi32)
     target_link_libraries(secure_frontend_secrets PUBLIC bcrypt)
+    target_link_libraries(secure_frontend_token_reader PUBLIC crypt32)
+    target_link_libraries(secure_frontend_token_store PUBLIC crypt32 advapi32)
 endif()
 
 foreach(_target IN ITEMS
@@ -414,6 +418,13 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     if(NOT WIN32)
         secure_frontend_add_cases(secure_frontend_token_store_tests
             token_store_creates_0600_file_in_0700_dir token_store_rotate_is_atomic token_store_refuses_symlinked_target)
+    endif()
+    target_link_libraries(secure_frontend_token_store_tests PRIVATE secure_frontend_token_reader)
+    if(WIN32)
+        secure_frontend_add_cases(secure_frontend_token_store_tests
+            token_store_windows_round_trips_through_dpapi token_store_windows_file_has_private_dacl
+            token_reader_windows_accepts_plaintext_under_private_dacl
+            LABELS windows-runtime)
     endif()
 
     secure_frontend_add_test_executable(secure_frontend_config_tests tests/config_test.cpp secure_frontend_config)

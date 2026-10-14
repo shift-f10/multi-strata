@@ -1,4 +1,5 @@
 #include "secure_frontend/token_generator.hpp"
+#include "secure_frontend/token_reader.hpp"
 #include "secure_frontend/token_store.hpp"
 #include "support/test_support.hpp"
 
@@ -9,14 +10,15 @@
 #include <thread>
 #include <variant>
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#include <aclapi.h>
+#else
 #include <sys/stat.h>
 #endif
 
 namespace {
 int failures = 0;
-// The helpers are [[maybe_unused]]: on Windows this task registers no case (Task 17
-// adds the Windows ones), and -Werror would otherwise reject the unused functions.
+// The helpers are [[maybe_unused]] so either platform's case set alone compiles under -Werror.
 [[maybe_unused]] void expect(const bool condition, const std::string& message) {
   if (!condition) { ++failures; std::cerr << "FAILED: " << message << '\n'; }
 }
@@ -113,6 +115,53 @@ void token_store_refuses_symlinked_target() {
   expect(std::filesystem::is_symlink(dir / "token"), "the symlink itself is not replaced either");
 }
 #endif
+
+#if defined(_WIN32)
+std::filesystem::path protected_secret_dir() {
+  const auto dir = secure_frontend_test::make_scratch_directory() / "secret";
+  secure_frontend_test::make_protected_directory(dir);
+  return dir;
+}
+
+void token_store_windows_round_trips_through_dpapi() {
+  const auto dir = protected_secret_dir();
+  const auto token = fresh_token();
+  const auto stored = secure_frontend::store_token(root_at(dir), rel("token"), token, secure_frontend::TokenStoreMode::create_new);
+  expect(!stored.has_value(), "the token is stored: " + (stored ? stored->message : std::string{}));
+  const std::string raw = secure_frontend_test::read_file(dir / "token");
+  expect(raw.rfind("STRATAK1", 0) == 0, "the file starts with the STRATAK1 magic");
+  expect(raw.find(std::string{token.view()}) == std::string::npos, "the token is not stored in plaintext");
+  const auto source = std::get<secure_frontend::SecretSource>(secure_frontend::make_protected_file_secret_source("token"));
+  const auto read = secure_frontend::read_token(source, dir);
+  const auto* error = std::get_if<secure_frontend::TokenReadError>(&read);
+  expect(error == nullptr, "the DPAPI file reads back: " + (error ? error->message : std::string{}));
+}
+
+void token_store_windows_file_has_private_dacl() {
+  const auto dir = protected_secret_dir();
+  expect(!secure_frontend::store_token(root_at(dir), rel("token"), fresh_token(), secure_frontend::TokenStoreMode::create_new),
+         "stored");
+  PACL dacl = nullptr;
+  PSECURITY_DESCRIPTOR descriptor = nullptr;
+  expect(GetNamedSecurityInfoW((dir / "token").c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, &dacl,
+                               nullptr, &descriptor) == ERROR_SUCCESS, "security info is readable");
+  SECURITY_DESCRIPTOR_CONTROL control = 0;
+  DWORD revision = 0;
+  GetSecurityDescriptorControl(descriptor, &control, &revision);
+  expect((control & SE_DACL_PROTECTED) != 0, "the DACL is protected (nothing inherited)");
+  expect(dacl != nullptr && dacl->AceCount == 2, "exactly two ACEs: the user and SYSTEM");
+  LocalFree(descriptor);
+}
+
+void token_reader_windows_accepts_plaintext_under_private_dacl() {
+  const auto dir = protected_secret_dir();
+  const std::string token = "operator-token-0123456789abcdefghijklmnop";
+  secure_frontend_test::write_protected_file(dir / "token", token);
+  const auto source = std::get<secure_frontend::SecretSource>(secure_frontend::make_protected_file_secret_source("token"));
+  const auto read = secure_frontend::read_token(source, dir);
+  expect(!std::holds_alternative<secure_frontend::TokenReadError>(read), "an operator-made plaintext file is accepted");
+}
+#endif
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -121,6 +170,10 @@ int main(int argc, char** argv) {
       {"token_store_creates_0600_file_in_0700_dir", token_store_creates_0600_file_in_0700_dir},
       {"token_store_rotate_is_atomic", token_store_rotate_is_atomic},
       {"token_store_refuses_symlinked_target", token_store_refuses_symlinked_target},
+#else
+      {"token_store_windows_round_trips_through_dpapi", token_store_windows_round_trips_through_dpapi},
+      {"token_store_windows_file_has_private_dacl", token_store_windows_file_has_private_dacl},
+      {"token_reader_windows_accepts_plaintext_under_private_dacl", token_reader_windows_accepts_plaintext_under_private_dacl},
 #endif
   }, failures);
 }

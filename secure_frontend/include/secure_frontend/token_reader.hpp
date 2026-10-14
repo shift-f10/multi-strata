@@ -5,9 +5,15 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <variant>
 
 namespace secure_frontend {
+
+// Windows token files written by store_token: this magic followed by a
+// CryptProtectData blob (user scope). Plaintext files under a private DACL are
+// accepted too (operator-made).
+inline constexpr std::string_view kDpapiTokenMagic = "STRATAK1";
 
 enum class TokenReadErrorCode {
   environment_variable_not_set,

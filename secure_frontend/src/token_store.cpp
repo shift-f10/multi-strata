@@ -1,12 +1,19 @@
 #include "secure_frontend/token_store.hpp"
 
 #include "secure_frontend/token_generator.hpp"
+#include "secure_frontend/token_reader.hpp"
 
+#include <array>
 #include <cerrno>
 #include <cstdio>
 #include <string>
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#include "windows_security.hpp"
+
+#include <wincrypt.h>
+#include <dpapi.h>
+#else
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -15,13 +22,11 @@
 namespace secure_frontend {
 namespace {
 
-// [[maybe_unused]]: only the POSIX definitions below use these until Task 17
-// adds the Windows ones; -Werror=unused-function would otherwise fail llvm-mingw.
-[[maybe_unused]] TokenStoreError fail(const TokenStoreErrorCode code, const char* message) {
+TokenStoreError fail(const TokenStoreErrorCode code, const char* message) {
   return TokenStoreError{code, message};
 }
 
-[[maybe_unused]] std::string random_suffix() {
+std::string random_suffix() {
   unsigned char nonce[8] = {};
   if (!fill_random(nonce, sizeof(nonce))) return {};
   static constexpr char kHex[] = "0123456789abcdef";
@@ -109,6 +114,79 @@ std::optional<TokenStoreError> store_token(const CanonicalRoot& secret_root, con
   SecretBytes content;
   if (!content.assign(token.view()) || !content.append("\n")) return fail(TokenStoreErrorCode::write_failed, "the token is too long");
   return write_private_file(secret_root, file, content.view(), mode);
+}
+#endif
+
+#if defined(_WIN32)
+namespace ws = windows_security;
+
+std::optional<TokenStoreError> write_private_file(const CanonicalRoot& root, const RelativePath& file,
+                                                  const std::string_view bytes, const TokenStoreMode mode) {
+  std::wstring directory = root.path().wstring();
+  const auto& parts = file.components();
+  for (std::size_t i = 0; i + 1U < parts.size(); ++i) directory += L'\\' + path_from_utf8(parts[i]).wstring();
+  HANDLE dir = CreateFileW(ws::extended_path(directory).c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                           FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  if (dir == INVALID_HANDLE_VALUE) return fail(TokenStoreErrorCode::write_failed, "the directory for the file cannot be opened");
+  OwnedHandle dir_guard(dir);
+  std::array<std::byte, SECURITY_MAX_SID_SIZE> storage{};
+  PSID user = nullptr;
+  if (!ws::current_user_sid(storage, &user) || ws::is_reparse_point(dir) || !ws::has_private_owner_dacl(dir, user)) {
+    return fail(TokenStoreErrorCode::unsafe_location, "the directory holding the file must have a protected owner-only ACL");
+  }
+  const std::wstring target = directory + L'\\' + path_from_utf8(parts.back()).wstring();
+  const DWORD attributes = GetFileAttributesW(ws::extended_path(target).c_str());
+  if (attributes != INVALID_FILE_ATTRIBUTES) {
+    if ((attributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0U) {
+      return fail(TokenStoreErrorCode::unsafe_location, "the target exists and is not a regular file");
+    }
+    if (mode == TokenStoreMode::create_new) return fail(TokenStoreErrorCode::already_exists, "the file already exists");
+  } else if (const DWORD code = GetLastError(); code != ERROR_FILE_NOT_FOUND) {
+    // As on Linux: only "absent" lets the write go ahead; any other failure fails closed.
+    return fail(TokenStoreErrorCode::unsafe_location, "the target cannot be inspected");
+  }
+  const std::string suffix = random_suffix();
+  if (suffix.empty()) return fail(TokenStoreErrorCode::write_failed, "no randomness for the temporary file name");
+  const std::wstring temp = directory + L"\\." + path_from_utf8(parts.back()).wstring() + L".tmp-" + path_from_utf8(suffix).wstring();
+  ws::PrivateSecurityAttributes security(false);
+  if (security.get() == nullptr) return fail(TokenStoreErrorCode::protect_failed, "a private security descriptor cannot be built");
+  HANDLE out = CreateFileW(ws::extended_path(temp).c_str(), GENERIC_WRITE, 0, security.get(), CREATE_NEW,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (out == INVALID_HANDLE_VALUE) return fail(TokenStoreErrorCode::write_failed, "the temporary file cannot be created");
+  DWORD written = 0;
+  bool ok = bytes.empty() || (WriteFile(out, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr) != 0 &&
+                              written == bytes.size());
+  ok = FlushFileBuffers(out) != 0 && ok;
+  CloseHandle(out);
+  if (!ok) {
+    DeleteFileW(ws::extended_path(temp).c_str());
+    return fail(TokenStoreErrorCode::write_failed, "the file could not be written");
+  }
+  const DWORD flags = MOVEFILE_WRITE_THROUGH | (mode == TokenStoreMode::replace ? MOVEFILE_REPLACE_EXISTING : 0U);
+  if (MoveFileExW(ws::extended_path(temp).c_str(), ws::extended_path(target).c_str(), flags) == 0) {
+    const DWORD code = GetLastError();
+    DeleteFileW(ws::extended_path(temp).c_str());
+    return fail(code == ERROR_ALREADY_EXISTS || code == ERROR_FILE_EXISTS ? TokenStoreErrorCode::already_exists
+                                                                          : TokenStoreErrorCode::write_failed,
+                "the file could not be put in place");
+  }
+  return std::nullopt;
+}
+
+std::optional<TokenStoreError> store_token(const CanonicalRoot& secret_root, const RelativePath& file,
+                                           const SecretBytes& token, const TokenStoreMode mode) {
+  DATA_BLOB input{static_cast<DWORD>(token.size()),
+                  reinterpret_cast<BYTE*>(const_cast<char*>(token.view().data()))};
+  DATA_BLOB output{};
+  if (CryptProtectData(&input, L"strata token", nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &output) == 0) {
+    return fail(TokenStoreErrorCode::protect_failed, "DPAPI could not protect the token");
+  }
+  std::string content{kDpapiTokenMagic};
+  content.append(reinterpret_cast<const char*>(output.pbData), output.cbData);
+  SecureZeroMemory(output.pbData, output.cbData);
+  LocalFree(output.pbData);
+  return write_private_file(secret_root, file, content, mode);
 }
 #endif
 

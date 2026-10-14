@@ -1,10 +1,19 @@
 #include "secure_frontend/token_reader.hpp"
 
+#include "secure_frontend/secret_bytes.hpp"
+
 #include <cstdlib>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <variant>
+
+#if defined(_WIN32)
+#include "secure_frontend/win32_prelude.hpp"
+
+#include <wincrypt.h>
+#include <dpapi.h>
+#endif
 
 namespace secure_frontend {
 namespace {
@@ -35,6 +44,19 @@ TokenReadResult read_protected_file(const SecretSource& source, const CanonicalR
   auto text = file.read_all(kMaximumTokenBytes);
   if (std::holds_alternative<PathError>(text)) return error(TokenReadErrorCode::read_failed, "The protected token file could not be read.");
   std::string token = std::get<std::string>(std::move(text));
+#if defined(_WIN32)
+  if (token.rfind(kDpapiTokenMagic, 0) == 0) {
+    DATA_BLOB input{static_cast<DWORD>(token.size() - kDpapiTokenMagic.size()),
+                    reinterpret_cast<BYTE*>(token.data() + kDpapiTokenMagic.size())};
+    DATA_BLOB output{};
+    const BOOL ok = CryptUnprotectData(&input, nullptr, nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &output);
+    secure_wipe(token.data(), token.size());
+    if (ok == 0) return error(TokenReadErrorCode::invalid_token, "The token file could not be decrypted for the current user.");
+    token.assign(reinterpret_cast<const char*>(output.pbData), output.cbData);
+    SecureZeroMemory(output.pbData, output.cbData);
+    LocalFree(output.pbData);
+  }
+#endif
   if (token.empty()) return error(TokenReadErrorCode::empty_token, "The resolved token must not be empty.");
   if (contains_control_character(token)) {
     return error(TokenReadErrorCode::invalid_token, "The resolved token must not contain control characters.");
