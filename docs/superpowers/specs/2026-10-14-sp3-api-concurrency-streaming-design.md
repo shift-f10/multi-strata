@@ -121,8 +121,8 @@ land, SP3 works around them as stated.
 
 | Follow-up | Why SP3 needs it | Until then |
 | --- | --- | --- |
-| D-1. Lease-release notification, and documented thread-safety of `acquire`/`snapshot`/`report_fatal` | SP3 has many workers; SP2 was built for one serving thread | SP3's `SupervisorPort` (§2.5) holds one mutex around SP3's explicit calls (`snapshot`, `acquire`, `report_fatal`); `Lease` destruction and `shutdown()` rely on SP2's internal mutex (§2.5); the gate learns of release because the holder destroys its `Lease` and then calls `gate.release()` itself. |
-| D-2. A drain failure after a client-requested `STOP` restarts the engine but does not count toward the circuit | A client that disconnects during a long real prefill could otherwise open the circuit (risk R4) | Accepted risk R4; measured on the GPU box (§9.5). |
+| D-1. Lease-release notification, and documented thread-safety of `acquire`/`snapshot`/`report_fatal` | SP3 has many workers; SP2 was built for one serving thread | **Landed (SP2 run 2, main 8333eccf).** `acquire`/`snapshot`/`report_fatal`/`release` are documented thread-safe (one internal mutex), and `wait_for_change(from, timeout)` returns when the supervisor STATE differs from `from` (it observes states, not transitions: `wait_for_change(generating, t)` wakes on lease release → `ready`). SP3's `SupervisorPort` (§2.5) may still serialize its own calls; the gate still learns of release from the holder's `gate.release()`. |
+| D-2. A drain failure after a client-requested `STOP` restarts the engine but does not count toward the circuit | A client that disconnects during a long real prefill could otherwise open the circuit (risk R4) | **Landed (SP2 run 2, main 8333eccf).** SP3 sends the cancel as `stop(EngineStopCause::client_cancelled)`; the supervisor derives the reason through `kill_reason_for(protocol)` (`KillReason::client_stop_drain_failed`), restarts at once with a zero-length `backoff`, and leaves the failure count unchanged. Bound: at most `config_defaults::kMaxConsecutiveUncountedRestarts` (3) such restarts in a row with no successful `DONE` between them; later ones count like `drain_failed`. |
 
 ### 1.6 Global constraints (binding on both plans)
 
@@ -313,10 +313,14 @@ A chat is cancelled when its client is gone (engineering choice E5):
 
 Bytes beyond `Content-Length` that arrive together with the request are a
 `400 invalid_request` at P3. Cancel in P5: leave the queue; nothing is sent.
-Cancel in P6: send `STOP`, drain to `DONE … cancel` within
-`stop_drain_timeout_s`, destroy the lease, release the slot. A drain that fails
-is SP2's `drain_failed` (`report_fatal` through the port, kill, restart, a
-counted failure; risk R4, D-2). Nothing more is written to a gone client.
+Cancel in P6: send `STOP` with `EngineStopCause::client_cancelled`, drain to
+`DONE … cancel` within `stop_drain_timeout_s`, destroy the lease, release the
+slot. A drain that fails is reported through the port with the reason
+`kill_reason_for(protocol)` returns (`client_stop_drain_failed`): the engine is
+killed and restarted at once, and the failure is NOT counted toward the circuit
+(D-2, landed in SP2 run 2) — up to `kMaxConsecutiveUncountedRestarts` (3)
+consecutive times with no successful `DONE` in between; past that bound it
+counts like `drain_failed`. Nothing more is written to a gone client.
 
 Peer EOF is treated as "gone" only for chat requests. A client that
 half-closes after sending a `GET` still receives its answer, so SP0's
@@ -1295,7 +1299,7 @@ remote-capable client); changes to SP2's restart policy or `/health` body
 | R1 | Slow clients hold workers. | Authentication before the body (§2.2) leaves unauthenticated clients only P1, bounded by the 10 s header deadline and oldest-first eviction (§2.3); tested by `dos01_slowloris_cannot_starve_a_real_client`, `dos01_slow_body_clients_cannot_starve_a_real_client` and `dos01_eviction_over_tcp_admits_new_client`. This bound holds only with both mechanisms in place. Residual on loopback: decision 12. |
 | R2 | Thread-safety faults in the new pool, gate, port and logger. | One owner per object (§1.6 thread rule), one mutex around SP3's explicit calls (snapshot/acquire/report_fatal) in `SupervisorPort`, `std::mutex`/`condition_variable` only; load tests; a non-blocking `linux-clang` CI job with `-fsanitize=thread` is recommended in the M1 plan (no dependency). |
 | R3 | Behavior changes for existing clients and tests: JSON error bodies, `415`, `411`, `/v1/models` contents, default worker count, `max_tokens` clamping. | Listed in §9.4; each change has a test; README and handoff state them. |
-| R4 | `STOP` during a long real prefill may not reach `DONE … cancel` within `stop_drain_timeout_s` (5 s). SP2 then kills the engine and counts a failure; three client disconnects during long prompts within 300 s could open the circuit. | SP2 second-run follow-up D-2 (§1.5); until then measure on the GPU box (§9.5 item 2) and, if needed, the owner raises `limits.engine.stop_drain_timeout_s` (SP1 range allows 600 s). |
+| R4 | `STOP` during a long real prefill may not reach `DONE … cancel` within `stop_drain_timeout_s` (5 s). SP2 kills and restarts the engine; with D-2 landed (§1.5, §2.6) the first 3 consecutive such client-STOP drain failures are not counted, so client disconnects during long prompts no longer open the circuit by themselves; a 4th in a row with no `DONE` between counts like `drain_failed`. | D-2 landed in SP2 run 2; residual: measure `STOP` latency on the GPU box (§9.5 item 2) and, if needed, the owner raises `limits.engine.stop_drain_timeout_s` (SP1 range allows 600 s). |
 | R5 | Client SDK retries amplify engine-side failures: `openai-python` retries `5xx` twice by default, so one client-caused `ERR` can become three counted failures and an open circuit (SP2 plan Review Focus 6). | `engine_error` carries `x-should-retry: false` (§3.4); clients that ignore the header remain a residual risk, recorded with SP2's. |
 | R6 | No bytes are sent while a stream waits in the queue (headers come after the lease), so a client with a short read timeout may give up during a long wait. | Queue length 4 bounds the wait to about 4 generations; `queue_timeout_ms` configurable; headers-first was rejected because every early refusal would become a `200` with an error event. |
 | R7 | Proxies that buffer SSE. | `X-Accel-Buffering: no`, `Cache-Control: no-store`; loopback use has no proxy. |
