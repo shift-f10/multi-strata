@@ -32,6 +32,12 @@ bool ascii_iequal(const std::string_view a, const std::string_view b) noexcept {
   return true;
 }
 
+std::string ascii_to_lower(const std::string_view value) {
+  std::string lowered{value};
+  for (char& c : lowered) c = lower(c);
+  return lowered;
+}
+
 std::string_view trim_ows(std::string_view value) noexcept {
   while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) value.remove_prefix(1U);
   while (!value.empty() && (value.back() == ' ' || value.back() == '\t')) value.remove_suffix(1U);

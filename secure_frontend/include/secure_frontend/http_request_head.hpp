@@ -1,7 +1,6 @@
 #pragma once
 
 #include "secure_frontend/api_errors.hpp"
-#include "secure_frontend/ascii_text.hpp"
 
 #include <cstddef>
 #include <optional>
@@ -49,9 +48,9 @@ using HeadParseResult = std::variant<RequestHead, ApiError>;
 [[nodiscard]] HeadParseResult parse_request_head(std::string_view head, const HeadLimits& limits);
 
 // Shared ASCII helpers (pre-flight D6): the one copy of case folding and OWS
-// trimming for every HTTP-layer user (policy, router). `ascii_lower` comes
-// from ascii_text.hpp (included above).
+// trimming for every HTTP-layer user (policy, router).
 [[nodiscard]] bool ascii_iequal(std::string_view a, std::string_view b) noexcept;
+[[nodiscard]] std::string ascii_to_lower(std::string_view value);       // A-Z only; other bytes unchanged
 [[nodiscard]] std::string_view trim_ows(std::string_view value) noexcept; // strips leading/trailing SP and HTAB
 [[nodiscard]] bool is_http_token(std::string_view value) noexcept;
 

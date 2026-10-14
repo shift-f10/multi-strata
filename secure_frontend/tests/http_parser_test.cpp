@@ -200,6 +200,9 @@ void head_request_line_and_header_syntax() {
     expect(is_error(head_of("GET " + target + " HTTP/1.1\r\n" + kHost + "\r\n"), ApiError::invalid_request), "target " + target);
   }
   expect(is_error(head_of("G(T /health HTTP/1.1\r\n" + kHost + "\r\n"), ApiError::invalid_request), "method token");
+  expect(secure_frontend::ascii_to_lower("LocalHost:8080\xc3\x89") == "localhost:8080\xc3\x89" &&
+             secure_frontend::trim_ows(" \tv \t") == "v" && secure_frontend::ascii_iequal("Expect", "eXPECT"),
+         "shared ASCII helpers (pre-flight D6)");
   expect(is_error(head_of("GET /health HTTP/1.1\r\n" + kHost + " folded\r\n\r\n"), ApiError::invalid_request), "obs-fold");
   expect(is_error(head_of("GET /health HTTP/1.1\r\n" + kHost + "X: a\nY: b\r\n\r\n"), ApiError::invalid_request), "bare LF");
   expect(is_error(head_of("GET /health HTTP/1.1\r\n" + kHost + std::string("X: a\0b\r\n\r\n", 10)), ApiError::invalid_request), "NUL");
