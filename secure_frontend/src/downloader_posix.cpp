@@ -135,24 +135,6 @@ ssize_t write_without_sigpipe(const int fd, const char* data, const std::size_t 
   return written;
 }
 
-// Ruling I8: downloader wording for SP1's open_executable codes (fixed text, no path).
-std::string downloader_path_text(const PathErrorCode code) {
-  switch (code) {
-    case PathErrorCode::not_absolute:
-      return "pull.downloader must be an absolute path";
-    case PathErrorCode::not_found:
-      return "pull.downloader does not exist";
-    case PathErrorCode::not_regular_file:
-      return "pull.downloader must be a regular file";
-    case PathErrorCode::untrusted_owner:
-      return "pull.downloader must be owned by the current user or root";
-    case PathErrorCode::shared_writable:
-      return "pull.downloader and its directory must not be writable by group or others";
-    default:
-      return "pull.downloader cannot be used";
-  }
-}
-
 }  // namespace
 
 int landlock_abi() noexcept {
@@ -178,16 +160,6 @@ AcquireReason classify_spawn_report(const std::string_view report) noexcept {
       break;
   }
   return AcquireReason::downloader_unsupported;
-}
-
-std::variant<std::filesystem::path, AcquireError> validate_downloader(const std::filesystem::path& requested) {
-  auto opened = open_executable(requested);
-  if (auto* failure = std::get_if<PathError>(&opened)) {
-    return AcquireError{failure->code == PathErrorCode::not_found ? AcquireReason::downloader_missing
-                                                                  : AcquireReason::downloader_untrusted_path,
-                        downloader_path_text(failure->code)};
-  }
-  return std::get<CanonicalFile>(opened).path();
 }
 
 std::string ConfinedDownloader::confinement() const {

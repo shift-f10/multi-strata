@@ -85,5 +85,28 @@ void dl03_default_windows_curl_path_accepted_windows() {
          "TrustedInstaller-owned System32\\curl.exe is accepted (INHERIT_ONLY ACEs ignored)");
 }
 
+// Fix round 1: SP1's open_executable rules apply — '/' separators and '..' are
+// normalised before \\?\ is added, and the result carries no \\?\ prefix.
+void dl03_downloader_path_normalised_windows() {
+  WindowsSpawn w;
+  const auto plain = secure_frontend::validate_downloader(w.fake.executable);
+  const auto spelled = (w.fake.executable.parent_path() / "scenario" / ".." / w.fake.executable.filename()).generic_wstring();
+  expect(spelled.find(L'/') != std::wstring::npos && spelled.find(L"..") != std::wstring::npos, "the request uses '/' and '..'");
+  const auto normalised = secure_frontend::validate_downloader(std::filesystem::path(spelled));
+  const auto* a = std::get_if<std::filesystem::path>(&plain);
+  const auto* b = std::get_if<std::filesystem::path>(&normalised);
+  expect(a != nullptr && b != nullptr, "both spellings validate");
+  if (a == nullptr || b == nullptr) return;
+  expect(*a == *b, "both spellings validate to the same canonical path");
+  expect(b->is_absolute() && b->wstring().rfind(L"\\\\?\\", 0) != 0, "the canonical path carries no \\\\?\\ prefix");
+}
+
+void dl03_downloader_unc_path_rejected_windows() {
+  const auto validated = secure_frontend::validate_downloader(std::filesystem::path(L"\\\\server\\share\\curl.exe"));
+  const auto* failure = std::get_if<secure_frontend::AcquireError>(&validated);
+  expect(failure != nullptr && failure->reason == secure_frontend::AcquireReason::downloader_untrusted_path,
+         "a network-share downloader is refused (SP1 root-form rule)");
+}
+
 }  // namespace fetch_cases
 #endif

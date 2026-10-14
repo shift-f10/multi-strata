@@ -1272,6 +1272,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         secure_frontend_add_cases(secure_frontend_fetch_tests downloader_transfer_through_job_windows
             dl03_default_windows_curl_path_accepted_windows ARGS $<TARGET_FILE:secure_frontend_fake_curl>
             LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+        # Fix round 1: SP1 normalisation/root-form rules on the downloader path (wine-runnable).
+        secure_frontend_add_cases(secure_frontend_fetch_tests dl03_downloader_path_normalised_windows
+            dl03_downloader_unc_path_rejected_windows ARGS $<TARGET_FILE:secure_frontend_fake_curl>)
         if(SECURE_FRONTEND_TEST_HOOKS)
             secure_frontend_add_cases(secure_frontend_fetch_tests dl03_downloader_runs_at_low_integrity_windows
                 priv04_downloader_env_is_systemroot_only_windows ARGS $<TARGET_FILE:secure_frontend_fake_curl>

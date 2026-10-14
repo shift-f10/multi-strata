@@ -1,6 +1,8 @@
 #if defined(_WIN32)
 #include "windows_security.hpp"
 
+#include "secure_frontend/confinement_plan.hpp"
+
 namespace secure_frontend::windows_security {
 namespace {
 
@@ -49,6 +51,16 @@ bool sid_is_well_known(const PSID sid, const WELL_KNOWN_SID_TYPE type) {
 bool is_permitted_acl_principal(const PSID principal, const PSID owner) {
   return EqualSid(principal, owner) != 0 || sid_is_well_known(principal, WinLocalSystemSid) ||
          sid_is_well_known(principal, WinBuiltinAdministratorsSid);
+}
+
+// SP4 §3.2: NT SERVICE\TrustedInstaller (a service SID, so no WELL_KNOWN_SID_TYPE).
+bool is_trusted_installer(const PSID principal) {
+  const std::wstring text(kTrustedInstallerSid.begin(), kTrustedInstallerSid.end());  // ASCII
+  PSID expected = nullptr;
+  if (ConvertStringSidToSidW(text.c_str(), &expected) == 0) return false;
+  const bool equal = EqualSid(principal, expected) != 0;
+  LocalFree(expected);
+  return equal;
 }
 
 }  // namespace
@@ -152,7 +164,7 @@ std::wstring current_user_sid_string() {
   return out;
 }
 
-Trust write_access_is_private(const HANDLE handle) {
+Trust write_access_is_private(const HANDLE handle, const bool also_trusted_installer) {
   PSID owner = nullptr;
   PACL dacl = nullptr;
   PSECURITY_DESCRIPTOR raw = nullptr;
@@ -164,7 +176,10 @@ Trust write_access_is_private(const HANDLE handle) {
   std::array<std::byte, SECURITY_MAX_SID_SIZE> storage{};
   PSID user = nullptr;
   if (!current_user_sid(storage, &user)) return Trust::unreadable;
-  if (owner == nullptr || !is_permitted_acl_principal(owner, user)) return Trust::untrusted_owner;
+  const auto permitted = [user, also_trusted_installer](const PSID principal) {
+    return is_permitted_acl_principal(principal, user) || (also_trusted_installer && is_trusted_installer(principal));
+  };
+  if (owner == nullptr || !permitted(owner)) return Trust::untrusted_owner;
   if (dacl == nullptr) return Trust::shared_writable;  // a NULL DACL grants everyone full access
   constexpr ACCESS_MASK kWrite = FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES |
                                  FILE_DELETE_CHILD | DELETE | WRITE_DAC | WRITE_OWNER | GENERIC_WRITE | GENERIC_ALL;
@@ -176,7 +191,7 @@ Trust write_access_is_private(const HANDLE handle) {
     if (header->AceType != ACCESS_ALLOWED_ACE_TYPE) return Trust::shared_writable;  // fail closed on other allow forms
     const auto* allowed = static_cast<const ACCESS_ALLOWED_ACE*>(raw_ace);
     PSID sid = reinterpret_cast<PSID>(const_cast<DWORD*>(&allowed->SidStart));
-    if ((allowed->Mask & kWrite) != 0U && !is_permitted_acl_principal(sid, user)) return Trust::shared_writable;
+    if ((allowed->Mask & kWrite) != 0U && !permitted(sid)) return Trust::shared_writable;
   }
   return Trust::trusted;
 }

@@ -47,6 +47,8 @@ void confinement_reduced_is_announced_without_landlock();
 // fetch_spawn_windows_test.cpp (Task 26)
 void downloader_transfer_through_job_windows();
 void dl03_default_windows_curl_path_accepted_windows();
+void dl03_downloader_path_normalised_windows();
+void dl03_downloader_unc_path_rejected_windows();
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
 void dl03_downloader_runs_at_low_integrity_windows();
 void priv04_downloader_env_is_systemroot_only_windows();

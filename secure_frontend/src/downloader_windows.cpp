@@ -4,9 +4,7 @@
 #include "secure_frontend/canonical_path.hpp"
 #include "secure_frontend/win32_prelude.hpp"
 #include "win_child_launch.hpp"
-#include "windows_security.hpp"
 
-#include <aclapi.h>
 #include <sddl.h>
 
 #include <algorithm>
@@ -93,88 +91,10 @@ HANDLE make_low_integrity_token() {
   return restricted_guard.release();
 }
 
-bool sid_matches(const PSID sid, const wchar_t* text) {
-  PSID other = nullptr;
-  if (!ConvertStringSidToSidW(text, &other)) return false;
-  const bool equal = EqualSid(sid, other) != 0;
-  LocalFree(other);
-  return equal;
-}
-
-// Owner and every write-granting allow-ACE (INHERIT_ONLY ignored) belong to the
-// user, SYSTEM, Administrators or TrustedInstaller (§3.2 Windows executable rule).
-// A NULL DACL or an ACE type other than allow/deny fails closed.
-bool write_access_trusted(const HANDLE handle) {
-  PSID owner = nullptr;
-  PACL dacl = nullptr;
-  PSECURITY_DESCRIPTOR raw = nullptr;
-  if (GetSecurityInfo(handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, &owner, nullptr, &dacl,
-                      nullptr, &raw) != ERROR_SUCCESS) {
-    return false;
-  }
-  std::array<std::byte, SECURITY_MAX_SID_SIZE> storage{};
-  PSID user = nullptr;
-  const bool have_user = windows_security::current_user_sid(storage, &user);
-  const std::wstring trusted_installer = path_from_utf8(kTrustedInstallerSid).wstring();
-  const auto permitted = [&](const PSID sid) {
-    return (have_user && EqualSid(sid, user)) || sid_matches(sid, L"S-1-5-18") || sid_matches(sid, L"S-1-5-32-544") ||
-           sid_matches(sid, trusted_installer.c_str());
-  };
-  bool ok = owner != nullptr && permitted(owner) && dacl != nullptr;
-  constexpr ACCESS_MASK kWrite = FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES | FILE_DELETE_CHILD |
-                                 DELETE | WRITE_DAC | WRITE_OWNER | GENERIC_WRITE | GENERIC_ALL;
-  for (DWORD i = 0; ok && i < dacl->AceCount; ++i) {
-    void* ace = nullptr;
-    if (!GetAce(dacl, i, &ace)) {
-      ok = false;
-      break;
-    }
-    const auto* header = static_cast<const ACE_HEADER*>(ace);
-    if ((header->AceFlags & INHERIT_ONLY_ACE) != 0U || header->AceType == ACCESS_DENIED_ACE_TYPE) continue;
-    if (header->AceType != ACCESS_ALLOWED_ACE_TYPE) {
-      ok = false;
-      break;
-    }
-    const auto* allowed = static_cast<const ACCESS_ALLOWED_ACE*>(ace);
-    const PSID sid = reinterpret_cast<PSID>(const_cast<DWORD*>(&allowed->SidStart));
-    if ((allowed->Mask & kWrite) != 0U && !permitted(sid)) ok = false;
-  }
-  LocalFree(raw);
-  return ok;
-}
-
 }  // namespace
 
+// validate_downloader is shared (downloader_common.cpp: SP1 open_executable + TrustedInstaller).
 int landlock_abi() noexcept { return 0; }
-
-std::variant<std::filesystem::path, AcquireError> validate_downloader(const std::filesystem::path& requested) {
-  if (!requested.is_absolute()) return AcquireError{AcquireReason::downloader_untrusted_path, "pull.downloader must be an absolute path"};
-  const std::wstring path = windows_security::extended_path(requested.wstring());
-  const Handle file(CreateFileW(path.c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-                                FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
-  if (!file.valid()) {
-    const DWORD code = GetLastError();
-    if (code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND) {
-      return AcquireError{AcquireReason::downloader_missing, "pull.downloader does not exist"};
-    }
-    return AcquireError{AcquireReason::downloader_untrusted_path, "pull.downloader cannot be opened"};
-  }
-  BY_HANDLE_FILE_INFORMATION info{};
-  if (!GetFileInformationByHandle(file.get(), &info) ||
-      (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0U) {
-    return AcquireError{AcquireReason::downloader_untrusted_path, "pull.downloader must be a regular file"};
-  }
-  const std::wstring final_path = windows_security::final_path_for_handle(file.get());
-  if (final_path.empty()) return AcquireError{AcquireReason::downloader_untrusted_path, "pull.downloader cannot be resolved"};
-  const Handle parent(CreateFileW(windows_security::extended_path(std::filesystem::path(final_path).parent_path().wstring()).c_str(),
-                                  READ_CONTROL, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-                                  FILE_FLAG_BACKUP_SEMANTICS, nullptr));
-  if (!parent.valid() || !write_access_trusted(file.get()) || !write_access_trusted(parent.get())) {
-    return AcquireError{AcquireReason::downloader_untrusted_path,
-                        "pull.downloader and its directory must not be writable by another account"};
-  }
-  return std::filesystem::path(final_path);
-}
 
 std::string ConfinedDownloader::confinement() const { return "full"; }  // Low integrity + Job; read-up remains (§3.1)
 
