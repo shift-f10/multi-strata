@@ -172,6 +172,12 @@ target_compile_features(secure_frontend_secrets PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_secrets PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
 
+add_library(secure_frontend_token_store src/token_store.cpp)
+target_compile_features(secure_frontend_token_store PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_token_store PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_link_libraries(secure_frontend_token_store PUBLIC secure_frontend_paths secure_frontend_secrets)
+
 add_library(secure_frontend_subsystem_limits src/subsystem_limits.cpp)
 target_compile_features(secure_frontend_subsystem_limits PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_subsystem_limits PUBLIC
@@ -359,7 +365,7 @@ foreach(_target IN ITEMS
         secure_frontend_json secure_frontend_typed_config secure_frontend_server_cli secure_frontend_chat_schema
         secure_frontend_tokenizer_pack secure_frontend_qwen_prompt_renderer secure_frontend_glm_prompt_renderer
         secure_frontend_chat_generation_plan secure_frontend_chat_execution secure_frontend_subsystem_limits
-        secure_frontend_secrets
+        secure_frontend_secrets secure_frontend_token_store
         secure-frontend-smoke strata-secure-smoke-server strata-secure-server)
     secure_frontend_set_warnings(${_target})
 endforeach()
@@ -402,6 +408,13 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_secrets_tests
         base64url_known_vectors token_generate_is_43_base64url_chars token_generate_differs_across_calls
         secret_bytes_wiped_on_destroy_and_move secret_bytes_rejects_over_capacity)
+
+    secure_frontend_add_test_executable(secure_frontend_token_store_tests tests/token_store_test.cpp
+        secure_frontend_token_store)
+    if(NOT WIN32)
+        secure_frontend_add_cases(secure_frontend_token_store_tests
+            token_store_creates_0600_file_in_0700_dir token_store_rotate_is_atomic token_store_refuses_symlinked_target)
+    endif()
 
     secure_frontend_add_test_executable(secure_frontend_config_tests tests/config_test.cpp secure_frontend_config)
     secure_frontend_add_cases(secure_frontend_config_tests
