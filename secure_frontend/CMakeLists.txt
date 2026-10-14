@@ -487,6 +487,11 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         cfg01_type_confusion_rejected cfg01_missing_required_rejected cfg01_out_of_range_rejected
         typed_config_cross_field_rules typed_config_errors_never_contain_values
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    if(NOT WIN32)
+        # chmod-based: the config folder's mode decides the roots.secret default.
+        secure_frontend_add_cases(secure_frontend_typed_config_tests
+            cfg02_env_token_ignores_config_folder_permissions cfg02_file_token_default_secret_root_reports_one_issue)
+    endif()
 
     secure_frontend_add_test_executable(secure_frontend_tokenizer_pack_tests tests/tokenizer_pack_test.cpp
         secure_frontend_tokenizer_pack)

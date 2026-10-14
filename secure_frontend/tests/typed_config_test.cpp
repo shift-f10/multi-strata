@@ -11,6 +11,10 @@
 #include <variant>
 #include <vector>
 
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#endif
+
 namespace {
 int failures = 0;
 void expect(const bool condition, const std::string& message) {
@@ -237,6 +241,51 @@ void typed_config_errors_never_contain_values() {
   const auto text = issues_of(validate_text(render_config_json(literals), f.dir));
   expect(!text.empty() && text.find(secret_like) == std::string::npos, "issues name keys, never values: " + text);
 }
+
+#if !defined(_WIN32)
+// Spec §3.2/§4: roots.secret defaults to the config file's folder only for a
+// file: token. An env: token reads nothing below a secret root, so a loose
+// config folder must not fail validation.
+void cfg02_env_token_ignores_config_folder_permissions() {
+  ConfigFixture f;
+  auto literals = f.literals;
+  literals.erase("roots.secret");
+  literals["token.source"] = secure_frontend_test::json_literal("env:SF_UNUSED_TOKEN");
+  chmod(f.dir.c_str(), 0775);
+  const auto result = validate_text(render_config_json(literals), f.dir);
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result),
+         "env token with a 0775 config folder is valid: " + issues_of(result));
+  if (const auto* config = std::get_if<secure_frontend::ValidatedConfig>(&result)) {
+    expect(!config->get().roots.secret.has_value(), "no secret root is opened for an env token");
+  }
+}
+
+void cfg02_file_token_default_secret_root_reports_one_issue() {
+  ConfigFixture f;
+  auto literals = f.literals;
+  literals.erase("roots.secret");
+  literals["token.source"] = secure_frontend_test::json_literal("file:token");
+  chmod(f.dir.c_str(), 0775);
+  const auto result = validate_text(render_config_json(literals), f.dir);
+  const auto* errors = std::get_if<secure_frontend::ConfigErrors>(&result);
+  expect(errors != nullptr, "file token with a 0775 config folder is rejected");
+  if (errors == nullptr) return;
+  const auto count = std::count_if(errors->begin(), errors->end(),
+                                   [](const auto& issue) { return issue.key_path == "roots.secret"; });
+  expect(count == 1, "exactly one roots.secret issue: " + issues_of(result));
+  expect(has_issue(result, "roots.secret", ConfigIssueCode::invalid_value), "the issue is invalid_value");
+  const std::string text = issues_of(result);
+  expect(text.find("roots.secret: is unset, so it defaults to the config file's folder, which is not usable: ") !=
+             std::string::npos,
+         "the reason reads as one sentence: " + text);
+  expect(text.find(f.dir.string()) == std::string::npos, "the reason never contains the path: " + text);
+  chmod(f.dir.c_str(), 0700);
+  const auto ok = validate_text(render_config_json(literals), f.dir);
+  const auto* valid = std::get_if<secure_frontend::ValidatedConfig>(&ok);
+  expect(valid != nullptr && valid->get().roots.secret.has_value(),
+         "a private config folder is the file token's secret root: " + issues_of(ok));
+}
+#endif
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -249,5 +298,9 @@ int main(int argc, char** argv) {
       {"cfg01_out_of_range_rejected", cfg01_out_of_range_rejected},
       {"typed_config_cross_field_rules", typed_config_cross_field_rules},
       {"typed_config_errors_never_contain_values", typed_config_errors_never_contain_values},
+#if !defined(_WIN32)
+      {"cfg02_env_token_ignores_config_folder_permissions", cfg02_env_token_ignores_config_folder_permissions},
+      {"cfg02_file_token_default_secret_root_reports_one_issue", cfg02_file_token_default_secret_root_reports_one_issue},
+#endif
   }, failures);
 }

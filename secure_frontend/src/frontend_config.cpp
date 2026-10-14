@@ -267,27 +267,30 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   const auto models = canonical_root(read, errors, "roots.models");
   const auto tokenizer = canonical_root(read, errors, "roots.tokenizer_pack");
   auto secret = canonical_root(read, errors, "roots.secret");
-  if (!read.present("roots.secret") && draft.config_directory.has_value()) {
-    auto opened = open_root(*draft.config_directory);
-    if (auto* root = std::get_if<CanonicalRoot>(&opened)) {
-      secret = std::move(*root);
-    } else {
-      add(errors, "roots.secret", ConfigIssueCode::invalid_value,
-          "defaults to the config file's folder, which " + std::get<PathError>(opened).message);
-    }
-  }
   const auto logs = canonical_root(read, errors, "roots.logs");
   const auto cache = canonical_root(read, errors, "roots.cache");
 
-  // token
+  // token. An unset roots.secret defaults to the config file's folder, and only
+  // for a file: token: an env: token reads nothing below a secret root (spec
+  // §3.2, §4), so that folder is not opened or checked for it.
   const std::string source_text = read.string("token.source").value_or("file:token");
   auto token = token_source(source_text);
   if (!token.has_value()) {
     add(errors, "token.source", ConfigIssueCode::invalid_value,
         "must be env:NAME ([A-Za-z_][A-Za-z0-9_]{0,127}) or file:RELATIVE-PATH below roots.secret");
-  } else if (token->kind() == SecretSourceKind::protected_file && !secret.has_value() &&
-             !read.present("roots.secret")) {
-    add(errors, "roots.secret", ConfigIssueCode::missing_required, "is required when token.source is file:…");
+  } else if (token->kind() == SecretSourceKind::protected_file && !read.present("roots.secret")) {
+    if (!draft.config_directory.has_value()) {
+      add(errors, "roots.secret", ConfigIssueCode::missing_required, "is required when token.source is file:…");
+    } else {
+      auto opened = open_root(*draft.config_directory);
+      if (auto* root = std::get_if<CanonicalRoot>(&opened)) {
+        secret = std::move(*root);
+      } else {
+        add(errors, "roots.secret", ConfigIssueCode::invalid_value,
+            "is unset, so it defaults to the config file's folder, which is not usable: " +
+                std::get<PathError>(opened).message);
+      }
+    }
   }
 
   // engine
