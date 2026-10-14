@@ -171,6 +171,7 @@ Plan: `docs/superpowers/plans/2026-10-14-sp4-acquire.md`. One line per task.
 - Task 10: SHA256SUMS/MISSING/marker formats and §6.1 manifest diff (url/notice/per-file license shown old -> new, F-21); bundle.* (4), acquire.update_diff_lists_changed_files_and_license.
 - Task 11: Landlock rights/dirs planning, readable-root rule, confinement labels, CRT descriptor block; fetch.landlock_rights_per_abi, confinement_plan_detects_readable_roots, confinement_label_texts, crt_fd_block_layout.
 - Task 12: fake downloader secure_frontend_fake_curl (scenario format, §3.3 grammar, record over fd 4 / CRT entry 4); fetch.fake_curl_* (2 portable + 3 POSIX + 1 windows-runtime; record-channel cases hooks-only).
+- Task 13: dev-only tools/secure/make_bundle.py (D5 (B′): local pack via upstream iq_pack.py, third-party manifest <quant>-local, SHA256SUMS, STRATA-BUNDLE last, 0-byte pack files refused per F-26) + Hub-read shard pins for the four D4 quants (iq3_xxs/iq3_s/iq1_m await owner confirmation, F-25); tools/secure/test_make_bundle.py (7).
 
 ### Upstream bump to `v0.1.44.1` (2026-10-14, branch `upstream/bump-v0.1.44.1`)
 
