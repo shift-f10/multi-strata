@@ -508,6 +508,16 @@ Notes on the SP2 table above:
   RF5 was applied in Task 15, C4/C7 row). The plan file is outside Task 28's
   scope and was not edited.
 
+The native frontend enforces these in-process boundaries: configuration
+validation, secret-source metadata, Linux/Windows protected-file token reading,
+exact Host/Origin/CORS policy, bounded HTTP request parsing with a total request
+deadline plus bearer authentication, portable child-process supervision, and a
+serial native Qwen (or selected GLM-5.3) text-chat route. It does **not**
+download artifacts, package a secure release, implement every upstream serving
+profile, or replace the upstream Python service in a release. Therefore the
+repository must not yet be described as privacy-hardened or as having removed
+upstream network-capable behavior.
+
 ### SP3 M1 deliverables (branch `sp3-api-streaming`)
 
 Plan: `docs/superpowers/plans/2026-10-14-sp3-m1-concurrency-hardening.md`. Spec:
@@ -521,16 +531,6 @@ Baseline before Task 1: linux-gcc N₀ = 520 (+2 allowed skips) tests, wine W₀
 
 | # | Change | Task |
 | --- | --- | --- |
-
-The native frontend enforces these in-process boundaries: configuration
-validation, secret-source metadata, Linux/Windows protected-file token reading,
-exact Host/Origin/CORS policy, bounded HTTP request parsing with a total request
-deadline plus bearer authentication, portable child-process supervision, and a
-serial native Qwen (or selected GLM-5.3) text-chat route. It does **not**
-download artifacts, package a secure release, implement every upstream serving
-profile, or replace the upstream Python service in a release. Therefore the
-repository must not yet be described as privacy-hardened or as having removed
-upstream network-capable behavior.
 
 ## Current security behavior implemented in `secure_frontend`
 
