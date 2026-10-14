@@ -527,6 +527,7 @@ Baseline before Task 1: linux-gcc N₀ = 520 (+2 allowed skips) tests, wine W₀
 | Task | IDs | What changed | Tests (CTest names) | linux-gcc | wine |
 | --- | --- | --- | --- | --- | --- |
 | 1 | §3.9, §4.6, §5.3, §7 | api_constants.hpp, api_errors (§7.2 table), http_wire (security headers, Date), router uses the shared JSON writer | http_parser_tests.err_every_code_renders_fixed_body, …err_param_is_key_only, …wire_response_has_security_headers_and_date, api_router_tests.models_list_keeps_utf8_model_id | 100% tests passed out of 524 (+2 allowed skips) | 100% tests passed out of 260 (smoke; real Windows pending MSYS2) |
+| 2 | DOS-01, §4.2 | request-head scan + parser (414/431/411/413/505/417/400); shared ASCII helpers `ascii_iequal`/`ascii_lower`/`trim_ows` (pre-flight D6; `ascii_lower` moved to header-only `ascii_text.hpp`, shared with SP4 `acquire_manifest`) | http_parser_tests.dos01_request_line_over_limit_is_414, …dos01_header_block_over_limit_is_431, …dos01_too_many_headers_is_431, …dos01_transfer_encoding_variants_are_411, …dos01_content_length_variants, …head_request_line_and_header_syntax | 100% tests passed out of 530 (+2 allowed skips) | 100% tests passed out of 266 (smoke; real Windows pending MSYS2) |
 
 #### SP1 addendum (recorded by SP3, spec §5.1, §5.3)
 

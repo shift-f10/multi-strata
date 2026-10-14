@@ -136,14 +136,6 @@ bool is_directory_prefix(const AcquireManifest& m, const std::string_view dir) {
 
 }  // namespace
 
-std::string ascii_lower(const std::string_view text) {
-  std::string out{text};
-  for (char& c : out) {
-    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-  }
-  return out;
-}
-
 // SP1's validate_model_id is the one model-ID grammar (and, through
 // is_windows_reserved_component, the one device-name list); a manifest name
 // is additionally lowercase and never "index.json".

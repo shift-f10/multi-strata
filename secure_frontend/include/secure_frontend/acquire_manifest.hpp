@@ -1,6 +1,7 @@
 #pragma once
 
 #include "secure_frontend/acquire_reason.hpp"
+#include "secure_frontend/ascii_text.hpp"
 #include "secure_frontend/engine_version.hpp"
 #include "secure_frontend/test_hooks.hpp"
 
@@ -84,7 +85,6 @@ struct ManifestIssue final {
 // file paths (so no caller can skip it). Returns the first issue.
 [[nodiscard]] std::optional<ManifestIssue> validate_manifest(const AcquireManifest& manifest, const ManifestRules& rules);
 
-[[nodiscard]] std::string ascii_lower(std::string_view text);
 // [a-z0-9][a-z0-9._-]{0,127}, not a Windows device name (with any extension),
 // no trailing '.', not "index.json". Callers lowercase first.
 [[nodiscard]] bool is_valid_model_name(std::string_view name) noexcept;

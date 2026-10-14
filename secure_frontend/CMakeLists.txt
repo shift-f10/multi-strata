@@ -113,7 +113,7 @@ add_library(secure_frontend_http_request_handler
 )
 
 secure_frontend_add_library(secure_frontend_api_core
-    SOURCES src/api_errors.cpp src/http_wire.cpp
+    SOURCES src/api_errors.cpp src/http_wire.cpp src/http_request_head.cpp
     LINKS secure_frontend_json)
 
 add_library(secure_frontend_api_router
@@ -820,7 +820,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_test_executable(secure_frontend_http_parser_tests tests/http_parser_test.cpp
         secure_frontend_api_core secure_frontend_http_request_handler)
     secure_frontend_add_cases(secure_frontend_http_parser_tests
-        err_every_code_renders_fixed_body err_param_is_key_only wire_response_has_security_headers_and_date)
+        err_every_code_renders_fixed_body err_param_is_key_only wire_response_has_security_headers_and_date
+        dos01_request_line_over_limit_is_414 dos01_header_block_over_limit_is_431 dos01_too_many_headers_is_431
+        dos01_transfer_encoding_variants_are_411 dos01_content_length_variants head_request_line_and_header_syntax)
 
     secure_frontend_add_test_executable(secure_frontend_http_request_handler_tests tests/http_request_handler_test.cpp
         secure_frontend_http_request_handler)

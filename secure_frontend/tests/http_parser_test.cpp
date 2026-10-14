@@ -1,5 +1,6 @@
 #include "secure_frontend/api_constants.hpp"
 #include "secure_frontend/api_errors.hpp"
+#include "secure_frontend/http_request_head.hpp"
 #include "secure_frontend/http_wire.hpp"
 #include "support/test_support.hpp"
 
@@ -7,6 +8,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <variant>
 
 namespace {
 int failures = 0;
@@ -119,6 +121,101 @@ void wire_response_has_security_headers_and_date() {
   }
   expect(secure_frontend::kContinueResponse == "HTTP/1.1 100 Continue\r\n\r\n", "interim 100 response");
 }
+constexpr secure_frontend::HeadLimits kLimits{.max_request_line_bytes = 4096, .max_header_bytes = 16384,
+                                              .max_headers = 64, .max_request_bytes = 65536};
+
+std::variant<secure_frontend::RequestHead, ApiError> head_of(const std::string& text) {
+  const auto scan = secure_frontend::scan_request_head(text, kLimits);
+  if (scan.state == secure_frontend::HeadScan::line_too_long) return ApiError::request_line_too_long;
+  if (scan.state == secure_frontend::HeadScan::header_too_large) return ApiError::header_too_large;
+  if (scan.state != secure_frontend::HeadScan::complete) return ApiError::internal_error;   // "incomplete" marker for tests
+  return secure_frontend::parse_request_head(std::string_view{text}.substr(0, scan.head_bytes), kLimits);
+}
+bool is_error(const std::variant<secure_frontend::RequestHead, ApiError>& r, ApiError e) {
+  return std::holds_alternative<ApiError>(r) && std::get<ApiError>(r) == e;
+}
+const std::string kHost = "Host: 127.0.0.1:8080\r\n";
+
+void dos01_request_line_over_limit_is_414() {
+  const std::string long_target(4100, 'a');
+  expect(is_error(head_of("GET /" + long_target + " HTTP/1.1\r\n" + kHost + "\r\n"), ApiError::request_line_too_long),
+         "a complete head with a request line over 4096 bytes is 414");
+  const auto partial = secure_frontend::scan_request_head("GET /" + long_target, kLimits);
+  expect(partial.state == secure_frontend::HeadScan::line_too_long, "414 is known before the line ends");
+  const auto short_partial = secure_frontend::scan_request_head("GET /abc", kLimits);
+  expect(short_partial.state == secure_frontend::HeadScan::need_more, "a short partial line needs more bytes");
+}
+
+void dos01_header_block_over_limit_is_431() {
+  std::string head = "GET /health HTTP/1.1\r\n" + kHost;
+  while (head.size() < 16500U) head += "X-Fill: " + std::string(100, 'f') + "\r\n";
+  expect(secure_frontend::scan_request_head(head, kLimits).state == secure_frontend::HeadScan::header_too_large,
+         "431 is known before the blank line arrives");
+  expect(is_error(head_of(head + "\r\n"), ApiError::header_too_large), "a complete head over 16384 bytes is 431");
+}
+
+void dos01_too_many_headers_is_431() {
+  std::string head = "GET /health HTTP/1.1\r\n" + kHost;
+  for (int i = 0; i < 64; ++i) head += "X-" + std::to_string(i) + ": v\r\n";
+  expect(is_error(head_of(head + "\r\n"), ApiError::header_too_large), "65 fields are 431");
+  std::string ok = "GET /health HTTP/1.1\r\n" + kHost;
+  for (int i = 0; i < 63; ++i) ok += "X-" + std::to_string(i) + ": v\r\n";
+  expect(std::holds_alternative<secure_frontend::RequestHead>(head_of(ok + "\r\n")), "64 fields are accepted");
+}
+
+void dos01_transfer_encoding_variants_are_411() {
+  for (const std::string te : {"Transfer-Encoding: chunked\r\n", "Transfer-Encoding: Chunked\r\n", "Transfer-Encoding:  chunked\r\n",
+                               "Transfer-Encoding: gzip, chunked\r\n", "transfer-encoding: identity\r\n",
+                               "Transfer-Encoding: chunked\r\nContent-Length: 2\r\n"}) {
+    expect(is_error(head_of("POST /v1/chat/completions HTTP/1.1\r\n" + kHost + te + "\r\n"), ApiError::length_required),
+           "411 for " + te);
+  }
+  expect(is_error(head_of("POST /v1/chat/completions HTTP/1.1\r\n" + kHost + "Transfer-Encoding : chunked\r\n\r\n"),
+                  ApiError::invalid_request), "space before the colon is 400");
+}
+
+void dos01_content_length_variants() {
+  const auto post = [](const std::string& cl) { return head_of("POST /v1/chat/completions HTTP/1.1\r\n" + kHost + cl + "\r\n"); };
+  expect(is_error(post("Content-Length: 2\r\nContent-Length: 2\r\n"), ApiError::invalid_request), "duplicate");
+  expect(is_error(post("Content-Length: +1\r\n"), ApiError::invalid_request), "sign");
+  expect(is_error(post("Content-Length: 0x10\r\n"), ApiError::invalid_request), "hex");
+  expect(is_error(post("Content-Length: 12345678901\r\n"), ApiError::invalid_request), "11 digits");
+  expect(is_error(post("Content-Length: \r\n"), ApiError::invalid_request), "empty");
+  expect(is_error(post("Content-Length: 70000\r\n"), ApiError::request_too_large), "over the whole-request limit is 413");
+  expect(is_error(post(""), ApiError::length_required), "POST without Content-Length is 411");
+  expect(is_error(head_of("GET /health HTTP/1.1\r\n" + kHost + "Content-Length: 1\r\n\r\n"), ApiError::invalid_request),
+         "GET with a body is 400");
+  const auto ok = post("Content-Length: 0000000002\r\n");
+  expect(std::holds_alternative<secure_frontend::RequestHead>(ok) && std::get<secure_frontend::RequestHead>(ok).content_length == 2U,
+         "ten digits with leading zeros are accepted");
+  // Mismatch and bytes after the body are body-stage rules: see the in-memory seam of Task 6a.
+}
+
+void head_request_line_and_header_syntax() {
+  expect(is_error(head_of("GET /health HTTP/1.0\r\n" + kHost + "\r\n"), ApiError::http_version_not_supported), "1.0 is 505");
+  expect(is_error(head_of("GET /health HTTP/2.0\r\n" + kHost + "\r\n"), ApiError::http_version_not_supported), "2.0 is 505");
+  expect(is_error(head_of("GET /health HTTP/1.2\r\n" + kHost + "\r\n"), ApiError::invalid_request), "other versions are 400");
+  expect(is_error(head_of("GET  /health HTTP/1.1\r\n" + kHost + "\r\n"), ApiError::invalid_request), "double space");
+  for (const std::string target : {"/a?b", "/a#b", "/a%2e", "/a\\b", "*", "http://x/", "/a\x7f"}) {
+    expect(is_error(head_of("GET " + target + " HTTP/1.1\r\n" + kHost + "\r\n"), ApiError::invalid_request), "target " + target);
+  }
+  expect(is_error(head_of("G(T /health HTTP/1.1\r\n" + kHost + "\r\n"), ApiError::invalid_request), "method token");
+  expect(is_error(head_of("GET /health HTTP/1.1\r\n" + kHost + " folded\r\n\r\n"), ApiError::invalid_request), "obs-fold");
+  expect(is_error(head_of("GET /health HTTP/1.1\r\n" + kHost + "X: a\nY: b\r\n\r\n"), ApiError::invalid_request), "bare LF");
+  expect(is_error(head_of("GET /health HTTP/1.1\r\n" + kHost + std::string("X: a\0b\r\n\r\n", 10)), ApiError::invalid_request), "NUL");
+  expect(is_error(head_of("GET /health HTTP/1.1\r\n" + kHost + "X: caf\xc3\xa9\r\n\r\n"), ApiError::invalid_request), "non-ASCII value");
+  expect(is_error(head_of("POST /v1/chat/completions HTTP/1.1\r\n" + kHost + "Content-Length: 2\r\nExpect: foo\r\n\r\n"),
+                  ApiError::expectation_failed), "Expect: foo is 417");
+  const auto cont = head_of("POST /v1/chat/completions HTTP/1.1\r\n" + kHost + "Content-Length: 2\r\nExpect: 100-Continue\r\n\r\n");
+  expect(std::holds_alternative<secure_frontend::RequestHead>(cont) && std::get<secure_frontend::RequestHead>(cont).expect_continue,
+         "Expect: 100-continue is recognised case-insensitively");
+  const auto parsed = head_of("DELETE /v1/models HTTP/1.1\r\n" + kHost + "Origin: http://127.0.0.1:8080\r\n\r\n");
+  expect(std::holds_alternative<secure_frontend::RequestHead>(parsed), "any token method parses (405 comes after auth)");
+  if (const auto* head = std::get_if<secure_frontend::RequestHead>(&parsed)) {
+    expect(head->method == "DELETE" && head->target == "/v1/models", "method and target");
+    expect(head->values("HOST").size() == 1U && head->values("origin").front() == "http://127.0.0.1:8080", "values()");
+  }
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -126,5 +223,11 @@ int main(int argc, char** argv) {
       {"err_every_code_renders_fixed_body", err_every_code_renders_fixed_body},
       {"err_param_is_key_only", err_param_is_key_only},
       {"wire_response_has_security_headers_and_date", wire_response_has_security_headers_and_date},
+      {"dos01_request_line_over_limit_is_414", dos01_request_line_over_limit_is_414},
+      {"dos01_header_block_over_limit_is_431", dos01_header_block_over_limit_is_431},
+      {"dos01_too_many_headers_is_431", dos01_too_many_headers_is_431},
+      {"dos01_transfer_encoding_variants_are_411", dos01_transfer_encoding_variants_are_411},
+      {"dos01_content_length_variants", dos01_content_length_variants},
+      {"head_request_line_and_header_syntax", head_request_line_and_header_syntax},
   }, failures);
 }

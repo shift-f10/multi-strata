@@ -1,5 +1,7 @@
 #include "secure_frontend/http_wire.hpp"
 
+#include "secure_frontend/http_request_head.hpp"
+
 #include <array>
 #include <cstdio>
 
@@ -13,15 +15,6 @@ constexpr std::array<std::pair<std::string_view, std::string_view>, 5> kSecurity
     {"Referrer-Policy", "no-referrer"},
     {"Cross-Origin-Resource-Policy", "same-origin"},
 }};
-
-bool ascii_iequal(std::string_view a, std::string_view b) {
-  if (a.size() != b.size()) return false;
-  for (std::size_t i = 0; i < a.size(); ++i) {
-    const auto lower = [](char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c + 32) : c; };
-    if (lower(a[i]) != lower(b[i])) return false;
-  }
-  return true;
-}
 
 bool is_reserved_header(std::string_view name) {
   for (const auto& [fixed, value] : kSecurityHeaders) {
