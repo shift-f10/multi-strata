@@ -544,7 +544,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_test_executable(secure_frontend_engine_arguments_tests tests/engine_arguments_test.cpp
         secure_frontend_engine_arguments)
     secure_frontend_add_cases(secure_frontend_engine_arguments_tests
-        engine_receives_model_path_from_inventory engine_args_reject_owned_and_network_flags
+        engine_receives_model_path_from_inventory engine_native_path_is_utf8_for_non_ascii_root
+        engine_args_reject_owned_and_network_flags
         strata_profile_passes_pack_and_weight_flags_through rejects_invalid_relative_artifact_path
         glm_profile_passes_arguments_through_without_native
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})

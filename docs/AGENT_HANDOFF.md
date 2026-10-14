@@ -704,7 +704,13 @@ D4) and the stale "MSVC/Windows runtime coverage" CMake comment (Task 18).
    SP2 decides on handle passing (spec §3.4).
 2. On Windows `strata-secure-server` takes `char** argv` in the ANSI code page,
    so non-ASCII paths belong in the config file until the product `strata` CLI
-   uses `wmain`.
+   uses `wmain`. The engine's argv is UTF-8 end to end since the SP1 final fix
+   wave: `--native` is built with `path_to_utf8` (not `path::string()`, which
+   narrowed through the ANSI code page and failed the launcher's strict UTF-8
+   decode for a root such as `C:\Users\José\models`), and the executable's NUL
+   check reads `path::native()`. `engine_native_path_is_utf8_for_non_ascii_root`
+   was RED under wine before the fix and GREEN after; it is `windows-runtime`
+   on Windows CI, so pending windows-msys2-clang.
 3. Windows environment-token scrub — accepted deviation from spec §3.6,
    owner-ruled: Windows has no `/proc/<pid>/environ` exposure, so the scrub
    wipes the CRT copies in place (narrow through `getenv`'s pointer, wide

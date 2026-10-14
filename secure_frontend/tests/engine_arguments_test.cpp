@@ -29,8 +29,9 @@ secure_frontend::CanonicalRoot models_root() {
   return std::get<secure_frontend::CanonicalRoot>(root);
 }
 
+// UTF-8, never the Windows ANSI code page: the engine decodes every argument as UTF-8.
 std::string native_path(const secure_frontend::CanonicalRoot& root) {
-  return (root.path() / "qwen" / "model-00001-of-00004.gguf").make_preferred().string();
+  return secure_frontend::path_to_utf8((root.path() / "qwen" / "model-00001-of-00004.gguf").make_preferred());
 }
 
 void engine_receives_model_path_from_inventory() {
@@ -41,6 +42,27 @@ void engine_receives_model_path_from_inventory() {
   if (!args) return;
   const std::vector<std::string> expected{"--max-context", "8192", "--native", native_path(root)};
   expect(*args == expected, "frontend must append --native from the inventory, last");
+}
+
+// Review Focus 4: a non-ASCII models root (C:/Users/José/models) must reach the
+// engine as UTF-8. path::string() narrows through the ANSI code page on Windows,
+// which the engine's UTF-8 decode (MB_ERR_INVALID_CHARS) refuses.
+void engine_native_path_is_utf8_for_non_ascii_root() {
+  const auto dir = secure_frontend_test::make_scratch_directory() / secure_frontend::path_from_utf8("Jos\xC3\xA9-models");
+  secure_frontend_test::make_private_directory(dir);
+  auto opened = secure_frontend::open_root(dir);
+  if (const auto* error = std::get_if<secure_frontend::PathError>(&opened)) {
+    expect(false, "non-ASCII scratch root rejected: " + error->message);
+    return;
+  }
+  const auto root = std::get<secure_frontend::CanonicalRoot>(opened);
+  const auto result = secure_frontend::build_engine_arguments(kStrata, manifest(), root, {});
+  const auto* args = std::get_if<std::vector<std::string>>(&result);
+  expect(args != nullptr && args->size() == 2U, "--native and its value");
+  if (args == nullptr || args->size() != 2U) return;
+  const auto& value = args->back();
+  expect(value.find("Jos\xC3\xA9-models") != std::string::npos, "the root's non-ASCII name is UTF-8 in --native");
+  expect(value == native_path(root), "--native is path_to_utf8 of the canonical model path");
 }
 
 void engine_args_reject_owned_and_network_flags() {
@@ -113,6 +135,7 @@ void glm_profile_passes_arguments_through_without_native() {
 int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
       {"engine_receives_model_path_from_inventory", engine_receives_model_path_from_inventory},
+      {"engine_native_path_is_utf8_for_non_ascii_root", engine_native_path_is_utf8_for_non_ascii_root},
       {"engine_args_reject_owned_and_network_flags", engine_args_reject_owned_and_network_flags},
       {"strata_profile_passes_pack_and_weight_flags_through", strata_profile_passes_pack_and_weight_flags_through},
       {"rejects_invalid_relative_artifact_path", rejects_invalid_relative_artifact_path},

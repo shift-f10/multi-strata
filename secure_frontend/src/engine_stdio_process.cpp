@@ -28,9 +28,14 @@ namespace secure_frontend {
 namespace {
 
 bool contains_nul(const std::string_view value) { return value.find('\0') != std::string_view::npos; }
+// Checks the native form: path::string() narrows through the ANSI code page on
+// Windows and can throw or mangle a non-ASCII path.
+bool path_contains_nul(const std::filesystem::path& value) {
+  return value.native().find(std::filesystem::path::value_type{}) != std::filesystem::path::string_type::npos;
+}
 
 std::optional<ProcessError> validate(const EngineCommand& command) {
-  if (command.executable.empty() || contains_nul(command.executable.string())) {
+  if (command.executable.empty() || path_contains_nul(command.executable)) {
     return ProcessError{ProcessErrorCode::invalid_command, "engine executable is invalid"};
   }
   for (const auto& arg : command.arguments) {

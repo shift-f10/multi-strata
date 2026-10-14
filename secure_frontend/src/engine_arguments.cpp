@@ -58,7 +58,9 @@ EngineArgumentsResult build_engine_arguments(const EngineArgumentsProfile profil
   // The engine receives the canonical root the inventory used, never the raw
   // configured string (defect e).
   arguments.emplace_back("--native");
-  arguments.push_back(models_root.join(*relative).string());
+  // UTF-8, never path::string(): on Windows that narrows through the ANSI code
+  // page, and the engine launcher decodes every argument as UTF-8.
+  arguments.push_back(path_to_utf8(models_root.join(*relative)));
   return arguments;
 }
 
