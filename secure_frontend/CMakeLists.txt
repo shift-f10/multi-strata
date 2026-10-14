@@ -111,6 +111,11 @@ add_library(secure_frontend_http_socket_server
     src/process_defaults.cpp
 )
 
+add_library(secure_frontend_paths src/canonical_path_common.cpp)
+target_compile_features(secure_frontend_paths PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_paths PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+
 add_library(secure_frontend_model_inventory
     src/model_inventory.cpp
 )
@@ -311,6 +316,9 @@ target_link_libraries(strata-secure-server PRIVATE secure_frontend_server_cli se
 target_link_libraries(strata-secure-server PRIVATE secure_frontend_subsystem_limits)
 target_compile_features(strata-secure-server PRIVATE cxx_std_20)
 
+target_link_libraries(secure_frontend_config PUBLIC secure_frontend_paths)
+target_link_libraries(secure_frontend_model_inventory PUBLIC secure_frontend_paths)
+
 target_compile_features(secure_frontend_config PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_config
     PUBLIC
@@ -333,7 +341,7 @@ if(WIN32)
 endif()
 
 foreach(_target IN ITEMS
-        secure_frontend_config secure_frontend_token_reader secure_frontend_http_policy
+        secure_frontend_paths secure_frontend_config secure_frontend_token_reader secure_frontend_http_policy
         secure_frontend_http_request_handler secure_frontend_api_router secure_frontend_engine_process
         secure_frontend_engine_protocol_client secure_frontend_engine_stdio_process
         secure_frontend_http_socket_server secure_frontend_model_inventory secure_frontend_engine_arguments
@@ -346,6 +354,11 @@ endforeach()
 
 if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     enable_testing()
+
+    secure_frontend_add_test_executable(secure_frontend_paths_tests tests/paths_test.cpp secure_frontend_paths)
+    secure_frontend_add_cases(secure_frontend_paths_tests
+        relative_path_accepts_portable_forms cfg02_rejects_traversal_and_absolute cfg02_rejects_nul_and_control_bytes
+        cfg04_rejects_reserved_and_device_names cfg04_rejects_trailing_dot_space_and_8dot3 cfg04_rejects_ads_and_drive_forms)
 
     secure_frontend_add_test_executable(secure_frontend_config_tests tests/config_test.cpp secure_frontend_config)
     secure_frontend_add_cases(secure_frontend_config_tests

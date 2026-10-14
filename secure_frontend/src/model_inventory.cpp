@@ -1,8 +1,11 @@
 #include "secure_frontend/model_inventory.hpp"
 
+#include "secure_frontend/canonical_path.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <system_error>
+#include <variant>
 
 namespace secure_frontend {
 namespace {
@@ -16,30 +19,6 @@ namespace {
   return std::any_of(value.begin(), value.end(), [](const unsigned char character) {
     return character <= 0x1FU || character == 0x7FU;
   });
-}
-
-[[nodiscard]] bool is_windows_reserved_device_name(std::string_view component) {
-  while (!component.empty() && (component.back() == ' ' || component.back() == '.')) {
-    component.remove_suffix(1U);
-  }
-  const auto extension = component.find('.');
-  if (extension != std::string_view::npos) {
-    component = component.substr(0U, extension);
-  }
-  std::string upper;
-  upper.reserve(component.size());
-  for (const unsigned char character : component) {
-    upper.push_back(static_cast<char>(std::toupper(character)));
-  }
-  if (upper == "CON" || upper == "PRN" || upper == "AUX" || upper == "NUL") {
-    return true;
-  }
-  return upper.size() == 4U && (upper.starts_with("COM") || upper.starts_with("LPT")) &&
-         upper.back() >= '1' && upper.back() <= '9';
-}
-
-[[nodiscard]] bool has_windows_ambiguous_suffix(const std::string_view component) {
-  return !component.empty() && (component.back() == ' ' || component.back() == '.');
 }
 
 [[nodiscard]] bool is_gguf_extension(const std::filesystem::path& path) {
@@ -70,7 +49,7 @@ ModelIdValidation validate_model_id(const std::string_view id) {
                                  "model IDs may contain only ASCII letters, digits, dot, underscore, and hyphen"};
     }
   }
-  if (id.back() == '.' || is_windows_reserved_device_name(id)) {
+  if (id.back() == '.' || is_windows_reserved_component(id)) {
     return ModelInventoryError{ModelInventoryErrorCode::invalid_model_id,
                                "model ID is not portable on Windows"};
   }
@@ -78,27 +57,10 @@ ModelIdValidation validate_model_id(const std::string_view id) {
 }
 
 ArtifactPathValidation validate_local_artifact_path(const std::string_view path) {
-  if (path.empty() || contains_ascii_control(path) || path.front() == '/' || path.front() == '\\' ||
-      path.find(':') != std::string_view::npos) {
-    return ModelInventoryError{ModelInventoryErrorCode::invalid_artifact_path,
-                               "artifact paths must be portable relative paths below the configured model root"};
-  }
-  std::size_t component_start = 0U;
-  while (component_start < path.size()) {
-    const auto component_end = path.find_first_of("/\\", component_start);
-    const auto component = path.substr(component_start, component_end - component_start);
-    if (component.empty() || component == "." || component == ".." ||
-        has_windows_ambiguous_suffix(component) || is_windows_reserved_device_name(component)) {
-      return ModelInventoryError{ModelInventoryErrorCode::invalid_artifact_path,
-                                 "artifact paths must not contain unsafe path components"};
-    }
-    if (component_end == std::string_view::npos) {
-      return std::string{path};
-    }
-    component_start = component_end + 1U;
-  }
+  const auto parsed = parse_relative_path(path);
+  if (const auto* valid = std::get_if<RelativePath>(&parsed)) return valid->generic();
   return ModelInventoryError{ModelInventoryErrorCode::invalid_artifact_path,
-                             "artifact path must contain a filename"};
+                             "artifact paths must be portable relative paths below the configured model root"};
 }
 
 ModelInventoryResult enumerate_local_models(const std::filesystem::path& model_root) {
