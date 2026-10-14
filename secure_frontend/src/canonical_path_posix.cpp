@@ -1,10 +1,12 @@
 #if !defined(_WIN32)
 #include "canonical_path_internal.hpp"
 
+#include <algorithm>
 #include <cerrno>
 #include <climits>
 #include <cstdint>
 #include <cstdlib>
+#include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -228,6 +230,52 @@ std::variant<CanonicalFile, PathError> open_executable(const std::filesystem::pa
                       "the engine executable's directory must be private (owned by you or root, not group/other-writable)");
   }
   return detail::PathFactory::file(canonical_path);
+}
+
+std::variant<std::vector<DirectoryEntry>, PathError> list_directory(const CanonicalRoot& root,
+                                                                    const std::optional<RelativePath>& below) {
+  using detail::path_error;
+  int fd = -1;
+  if (below.has_value()) {
+    auto opened = open_beneath(root, *below, OpenOptions{.kind = OpenKind::directory});
+    if (const auto* failure = std::get_if<PathError>(&opened)) return *failure;
+    fd = ::fcntl(std::get<OpenedFile>(opened).native(), F_DUPFD_CLOEXEC, 0);
+  } else {
+    fd = ::openat(root.handle(), ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  }
+  if (fd < 0) return path_error(PathErrorCode::open_failed, "the directory could not be opened");
+  DIR* directory = ::fdopendir(fd);
+  if (directory == nullptr) {
+    ::close(fd);
+    return path_error(PathErrorCode::open_failed, "the directory could not be listed");
+  }
+  std::vector<DirectoryEntry> entries;
+  for (;;) {
+    errno = 0;  // readdir returns nullptr both at the end and on error
+    const dirent* entry = ::readdir(directory);
+    if (entry == nullptr) {
+      if (errno != 0) {
+        ::closedir(directory);
+        return path_error(PathErrorCode::read_failed, "the directory could not be read");
+      }
+      break;
+    }
+    const std::string name{entry->d_name};
+    if (name == "." || name == "..") continue;
+    struct stat st {};
+    if (::fstatat(::dirfd(directory), entry->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) {
+      ::closedir(directory);
+      return path_error(PathErrorCode::open_failed, "a directory entry could not be inspected");
+    }
+    const EntryType type = S_ISLNK(st.st_mode) ? EntryType::symlink
+                           : S_ISDIR(st.st_mode) ? EntryType::directory
+                           : S_ISREG(st.st_mode) ? EntryType::regular_file
+                                                 : EntryType::other;
+    entries.push_back(DirectoryEntry{name, type, static_cast<std::uint64_t>(st.st_size)});
+  }
+  ::closedir(directory);
+  std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) { return a.name < b.name; });
+  return entries;
 }
 
 bool is_within(const std::filesystem::path& root, const std::filesystem::path& candidate) noexcept {

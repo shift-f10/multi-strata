@@ -1,5 +1,7 @@
 #pragma once
 
+#include "secure_frontend/canonical_path.hpp"
+
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -50,11 +52,16 @@ using ModelInventoryResult = std::variant<std::vector<ModelManifest>, ModelInven
 // and Windows reserved device names.
 [[nodiscard]] ArtifactPathValidation validate_local_artifact_path(std::string_view path);
 
-// Recursively inventories regular *.gguf files beneath model_root. Symlinks
-// are rejected rather than followed. The inventory reads directory metadata
-// only: it never opens artifacts, invokes a subprocess, or makes a network
-// request. Model IDs are derived from the artifact filename stem and duplicate
-// IDs fail closed.
+// Recursively inventories regular *.gguf files beneath model_root through the
+// canonical-path module (list_directory / open_beneath). Symlinks, junctions
+// and other reparse points are rejected rather than followed; the error names
+// the entry. An entry whose name fails the relative-path grammar is ignored
+// unless it is a *.gguf model file, which fails. The inventory reads directory
+// metadata only: it never opens artifacts, invokes a subprocess, or makes a
+// network request. Model IDs are derived from the artifact filename stem and
+// IDs that differ only in ASCII case are duplicates (fail closed).
+[[nodiscard]] ModelInventoryResult enumerate_local_models(const CanonicalRoot& model_root);
+// Opens the root first (open_root: canonical, private, existing).
 [[nodiscard]] ModelInventoryResult enumerate_local_models(const std::filesystem::path& model_root);
 
 }  // namespace secure_frontend

@@ -1,17 +1,16 @@
 #include "secure_frontend/tokenizer_pack.hpp"
 
+#include "secure_frontend/canonical_path.hpp"
 #include "secure_frontend/json.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
-#include <fstream>
 #include <limits>
 #include <map>
 #include <optional>
 #include <set>
 #include <string_view>
-#include <system_error>
 #include <variant>
 
 namespace secure_frontend {
@@ -67,20 +66,25 @@ void append_utf8(std::string* out, const std::uint32_t point) {
   else { out->push_back(static_cast<char>(0xf0U | (point >> 18U))); out->push_back(static_cast<char>(0x80U | ((point >> 12U) & 0x3fU))); out->push_back(static_cast<char>(0x80U | ((point >> 6U) & 0x3fU))); out->push_back(static_cast<char>(0x80U | (point & 0x3fU))); }
 }
 
-std::variant<std::string, TokenizerPackError> read_required(const std::filesystem::path& root, const std::string_view name) {
-  const auto path = root / std::string{name};
-  std::error_code ec;
-  const auto status = std::filesystem::symlink_status(path, ec);
-  if (ec || !std::filesystem::exists(status)) return error(TokenizerPackErrorCode::required_file_missing, "required tokenizer pack file is missing");
-  if (std::filesystem::is_symlink(status)) return error(TokenizerPackErrorCode::symbolic_link_not_allowed, "tokenizer pack files must not be symbolic links");
-  if (!std::filesystem::is_regular_file(status)) return error(TokenizerPackErrorCode::unsafe_pack_path, "tokenizer pack paths must name regular files");
-  const auto size = std::filesystem::file_size(path, ec);
-  if (ec) return error(TokenizerPackErrorCode::file_read_failed, "unable to inspect tokenizer pack file");
-  if (size > kMaximumFileBytes) return error(TokenizerPackErrorCode::file_too_large, "tokenizer pack file exceeds fixed limit");
-  std::ifstream input(path, std::ios::binary); if (!input) return error(TokenizerPackErrorCode::file_read_failed, "unable to open tokenizer pack file");
-  std::string contents(static_cast<std::size_t>(size), '\0'); input.read(contents.data(), static_cast<std::streamsize>(contents.size()));
-  if (!input && !input.eof()) return error(TokenizerPackErrorCode::file_read_failed, "unable to read tokenizer pack file");
-  return contents;
+std::variant<std::string, TokenizerPackError> read_required(const CanonicalRoot& root, const std::string_view name) {
+  const auto relative = std::get<RelativePath>(parse_relative_path(name));
+  auto opened = open_beneath(root, relative, OpenOptions{.kind = OpenKind::regular_file});
+  if (const auto* failure = std::get_if<PathError>(&opened)) {
+    switch (failure->code) {
+      case PathErrorCode::not_found: return error(TokenizerPackErrorCode::required_file_missing, "required tokenizer pack file is missing");
+      case PathErrorCode::symlink_not_allowed: return error(TokenizerPackErrorCode::symbolic_link_not_allowed, "tokenizer pack files must not be symbolic links");
+      case PathErrorCode::not_regular_file: return error(TokenizerPackErrorCode::unsafe_pack_path, "tokenizer pack paths must name regular files");
+      default: return error(TokenizerPackErrorCode::file_read_failed, "unable to open tokenizer pack file");
+    }
+  }
+  const auto& file = std::get<OpenedFile>(opened);
+  if (file.size() > kMaximumFileBytes) return error(TokenizerPackErrorCode::file_too_large, "tokenizer pack file exceeds fixed limit");
+  auto text = file.read_all(kMaximumFileBytes);
+  if (const auto* failure = std::get_if<PathError>(&text)) {
+    return error(failure->code == PathErrorCode::too_large ? TokenizerPackErrorCode::file_too_large : TokenizerPackErrorCode::file_read_failed,
+                 "unable to read tokenizer pack file");
+  }
+  return std::get<std::string>(std::move(text));
 }
 
 std::array<std::string, 256U> byte_symbols() {
@@ -192,10 +196,16 @@ std::optional<std::vector<int>> token_types_from(const JsonParseResult& parsed) 
 }  // namespace
 
 TokenizerPackLoadResult load_local_tokenizer_pack(const std::filesystem::path& pack_root) {
-  std::error_code ec;
-  const auto root = std::filesystem::weakly_canonical(pack_root, ec);
-  if (ec) return error(TokenizerPackErrorCode::pack_root_unavailable, "unable to resolve tokenizer pack root");
-  if (!std::filesystem::is_directory(root, ec)) return error(ec ? TokenizerPackErrorCode::pack_root_unavailable : TokenizerPackErrorCode::pack_root_not_directory, "tokenizer pack root must be an existing directory");
+  auto root = open_root(pack_root);
+  if (const auto* failure = std::get_if<PathError>(&root)) {
+    return error(failure->code == PathErrorCode::not_directory ? TokenizerPackErrorCode::pack_root_not_directory
+                                                               : TokenizerPackErrorCode::pack_root_unavailable,
+                 "tokenizer pack root must be an existing private directory");
+  }
+  return load_local_tokenizer_pack(std::get<CanonicalRoot>(root));
+}
+
+TokenizerPackLoadResult load_local_tokenizer_pack(const CanonicalRoot& root) {
   const auto vocab_text = read_required(root, "vocab.json"); const auto merges_text = read_required(root, "merges.txt"); const auto types_text = read_required(root, "token_type.json");
   if (const auto* e = std::get_if<TokenizerPackError>(&vocab_text)) return *e;
   if (const auto* e = std::get_if<TokenizerPackError>(&merges_text)) return *e;

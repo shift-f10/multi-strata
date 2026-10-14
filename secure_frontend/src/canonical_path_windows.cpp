@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <optional>
+#include <utility>
 
 namespace secure_frontend {
 namespace ws = windows_security;
@@ -169,6 +171,39 @@ std::variant<CanonicalFile, PathError> open_executable(const std::filesystem::pa
     return path_error(PathErrorCode::shared_writable, "the engine executable's folder must not be writable by other users");
   }
   return detail::PathFactory::file(canonical);
+}
+
+std::variant<std::vector<DirectoryEntry>, PathError> list_directory(const CanonicalRoot& root,
+                                                                    const std::optional<RelativePath>& below) {
+  using detail::path_error;
+  std::wstring directory = root.path().wstring();
+  // Held open (no FILE_SHARE_DELETE) for the whole listing so the directory
+  // cannot be renamed or replaced while it is enumerated.
+  std::optional<OpenedFile> pinned;
+  if (below.has_value()) {
+    auto opened = open_beneath(root, *below, OpenOptions{.kind = OpenKind::directory});  // refuses reparse points on the way
+    if (const auto* failure = std::get_if<PathError>(&opened)) return *failure;
+    pinned.emplace(std::move(std::get<OpenedFile>(opened)));
+    for (const auto& component : below->components()) directory += L'\\' + path_from_utf8(component).wstring();
+  }
+  WIN32_FIND_DATAW data{};
+  HANDLE find = FindFirstFileExW(ws::extended_path(directory + L"\\*").c_str(), FindExInfoBasic, &data,
+                                 FindExSearchNameMatch, nullptr, 0);
+  if (find == INVALID_HANDLE_VALUE) return path_error(PathErrorCode::open_failed, "the directory could not be listed");
+  std::vector<DirectoryEntry> entries;
+  do {
+    const std::wstring name{data.cFileName};
+    if (name == L"." || name == L"..") continue;
+    const DWORD attributes = data.dwFileAttributes;
+    const EntryType type = (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U ? EntryType::symlink
+                           : (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0U   ? EntryType::directory
+                                                                             : EntryType::regular_file;
+    const std::uint64_t size = (static_cast<std::uint64_t>(data.nFileSizeHigh) << 32U) | data.nFileSizeLow;
+    entries.push_back(DirectoryEntry{path_to_utf8(std::filesystem::path{name}), type, size});
+  } while (FindNextFileW(find, &data) != 0);
+  FindClose(find);
+  std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) { return a.name < b.name; });
+  return entries;
 }
 
 bool is_within(const std::filesystem::path& root, const std::filesystem::path& candidate) noexcept {

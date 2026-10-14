@@ -259,7 +259,7 @@ target_compile_features(secure_frontend_json PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_json PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
 target_link_libraries(secure_frontend_chat_schema PUBLIC secure_frontend_json)
-target_link_libraries(secure_frontend_tokenizer_pack PUBLIC secure_frontend_json)
+target_link_libraries(secure_frontend_tokenizer_pack PUBLIC secure_frontend_json secure_frontend_paths)
 target_compile_features(secure_frontend_chat_schema PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_chat_schema
     PUBLIC
@@ -475,8 +475,16 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_test_executable(secure_frontend_model_inventory_tests tests/model_inventory_test.cpp
         secure_frontend_model_inventory)
     secure_frontend_add_cases(secure_frontend_model_inventory_tests
-        validates_portable_model_ids validates_portable_artifact_paths inventories_only_local_gguf_artifacts
-        rejects_duplicate_ids_and_symlinks)
+        validates_portable_model_ids validates_portable_artifact_paths)
+    set(_inventory_root_cases inventories_only_local_gguf_artifacts rejects_duplicate_ids)
+    if(WIN32)
+        list(APPEND _inventory_root_cases cfg03_inventory_rejects_junction_entry)
+    else()
+        list(APPEND _inventory_root_cases cfg03_inventory_rejects_symlink_entry inventory_symlink_error_names_entry
+            inventory_duplicate_detection_is_case_insensitive inventory_ignores_non_portable_non_model_names)
+    endif()
+    secure_frontend_add_cases(secure_frontend_model_inventory_tests ${_inventory_root_cases}
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     secure_frontend_add_test_executable(secure_frontend_engine_arguments_tests tests/engine_arguments_test.cpp
         secure_frontend_engine_arguments)
@@ -520,10 +528,13 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         secure_frontend_tokenizer_pack)
     set(_tokenizer_cases loads_validates_and_decodes_offline_pack rejects_ambiguous_or_incompatible_pack_assets
         rejects_malformed_json_and_special_literals_for_decode encoding_fails_closed_for_special_invalid_and_missing_tokens)
-    if(NOT WIN32)
-        list(APPEND _tokenizer_cases rejects_symlinked_assets)
+    if(WIN32)
+        list(APPEND _tokenizer_cases cfg03_tokenizer_file_swapped_to_junction_rejected)
+    else()
+        list(APPEND _tokenizer_cases rejects_symlinked_assets cfg03_tokenizer_file_swapped_to_symlink_rejected)
     endif()
-    secure_frontend_add_cases(secure_frontend_tokenizer_pack_tests ${_tokenizer_cases})
+    secure_frontend_add_cases(secure_frontend_tokenizer_pack_tests ${_tokenizer_cases}
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     secure_frontend_add_test_executable(secure_frontend_qwen_prompt_renderer_tests tests/qwen_prompt_renderer_test.cpp
         secure_frontend_qwen_prompt_renderer)

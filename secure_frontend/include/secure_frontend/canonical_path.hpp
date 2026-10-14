@@ -172,4 +172,16 @@ class OpenedFile final {
                                                                const OpenOptions& options = {},
                                                                WalkMode mode = WalkMode::automatic);
 
+enum class EntryType { regular_file, directory, symlink, other };  // symlink covers junctions and other reparse points
+struct DirectoryEntry final {
+  std::string name;  // UTF-8
+  EntryType type;
+  std::uint64_t size;
+};
+// Lists `root` (or a directory below it, opened with open_beneath) without
+// following links; a junction or any reparse point reports EntryType::symlink.
+// Entries are sorted by name.
+[[nodiscard]] std::variant<std::vector<DirectoryEntry>, PathError> list_directory(
+    const CanonicalRoot& root, const std::optional<RelativePath>& below = std::nullopt);
+
 }  // namespace secure_frontend

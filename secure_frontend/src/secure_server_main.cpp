@@ -83,10 +83,10 @@ int run(const FrontendConfig& config) {
   // Derived once, before bind/spawn; each subsystem keeps its own const copy.
   const auto schema_limits = secure_frontend::chat_schema_limits(config);
   const auto listener_limits = secure_frontend::http_socket_server_limits(config);
-  const auto tokenizer_result = secure_frontend::load_local_tokenizer_pack(config.roots.tokenizer_pack.path());
+  const auto tokenizer_result = secure_frontend::load_local_tokenizer_pack(config.roots.tokenizer_pack);
   const auto* tokenizer = std::get_if<secure_frontend::TokenizerPack>(&tokenizer_result);
   if (tokenizer == nullptr) { std::cerr << "Unable to load local tokenizer pack.\n"; return EXIT_FAILURE; }
-  const auto models_result = secure_frontend::enumerate_local_models(config.roots.models.path());
+  const auto models_result = secure_frontend::enumerate_local_models(config.roots.models);
   const auto* manifests = std::get_if<std::vector<secure_frontend::ModelManifest>>(&models_result);
   if (manifests == nullptr) { std::cerr << "Unable to inventory local models.\n"; return EXIT_FAILURE; }
   const std::string& model_id = config.engine.model_id.value();
