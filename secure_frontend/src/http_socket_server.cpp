@@ -267,7 +267,9 @@ std::optional<HttpSocketServer> HttpSocketServer::bind(const Config& listener_co
                                                                              : std::nullopt,
                                        .allow_remote = listener_config.allow_remote,
                                        .allow_wildcard_bind = listener_config.allow_wildcard_bind};
-  if (!std::holds_alternative<Config>(validate_config(verification_input)) || !validator || !dispatcher) {
+  const ConfigValidation verification = validate_config(verification_input);
+  const auto* verified = std::get_if<Config>(&verification);
+  if (verified == nullptr || !validator || !dispatcher) {
     if (error != nullptr) *error = "invalid listener configuration";
     return std::nullopt;
   }
@@ -285,12 +287,12 @@ std::optional<HttpSocketServer> HttpSocketServer::bind(const Config& listener_co
   int family = AF_UNSPEC;
   auto* address4 = reinterpret_cast<sockaddr_in*>(&address);
   auto* address6 = reinterpret_cast<sockaddr_in6*>(&address);
-  if (inet_pton(AF_INET, listener_config.host.c_str(), &address4->sin_addr) == 1) {
+  if (inet_pton(AF_INET, verified->host.c_str(), &address4->sin_addr) == 1) {
     family = AF_INET;
     address4->sin_family = AF_INET;
     address4->sin_port = htons(listener_config.port);
     address_size = static_cast<NativeAddressLength>(sizeof(sockaddr_in));
-  } else if (inet_pton(AF_INET6, listener_config.host.c_str(), &address6->sin6_addr) == 1) {
+  } else if (inet_pton(AF_INET6, verified->host.c_str(), &address6->sin6_addr) == 1) {
     family = AF_INET6;
     address6->sin6_family = AF_INET6;
     address6->sin6_port = htons(listener_config.port);

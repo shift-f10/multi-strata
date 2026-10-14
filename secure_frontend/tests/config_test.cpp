@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <utility>
 #include <variant>
 
 namespace {
@@ -117,11 +118,78 @@ void rejects_invalid_hosts_and_blank_remote_keys() {
   }
 
   const auto result = secure_frontend::validate_config(
-      {.host = std::string{"service.internal"}, .port = std::nullopt, .api_key = std::string{" \t\n"},
+      {.host = std::string{"192.0.2.10"}, .port = std::nullopt, .api_key = std::string{" \t\n"},
        .allow_remote = true});
   const auto* error = error_from(result);
   expect(error != nullptr && error->code == secure_frontend::ConfigErrorCode::api_key_required,
          "blank API key must not permit remote binding");
+}
+
+// NET-03 / defect (a): every spelling of the unspecified address is a wildcard bind.
+const char* const kWildcardSpellings[] = {"0.0.0.0", "::", "::0", "0::0", "0:0:0:0:0:0:0:0", "::0.0.0.0",
+                                          "::ffff:0.0.0.0", "0000:0000:0000:0000:0000:0000:0000:0000"};
+
+void net03_wildcard_spellings_need_wildcard_opt_in() {
+  for (const char* host : kWildcardSpellings) {
+    const auto without = secure_frontend::validate_config(
+        {.host = std::string{host}, .port = 8080, .api_key = std::string{"k"}});
+    const auto* error = error_from(without);
+    expect(error != nullptr && error->code == secure_frontend::ConfigErrorCode::remote_not_enabled,
+           std::string{"wildcard without any opt-in must be rejected: "} + host);
+    const auto with_both = secure_frontend::validate_config(
+        {.host = std::string{host}, .port = 8080, .api_key = std::string{"k"}, .allow_remote = true,
+         .allow_wildcard_bind = true});
+    const auto* config = config_from(with_both);
+    expect(config != nullptr && !config->is_loopback, std::string{"wildcard with both opt-ins is accepted: "} + host);
+    if (config != nullptr) {
+      expect(config->host == "0.0.0.0" || config->host == "::",
+             std::string{"a wildcard binds its canonical text, got "} + config->host);
+    }
+  }
+}
+
+void net03_remote_opt_in_alone_rejects_wildcard() {
+  for (const char* host : kWildcardSpellings) {
+    const auto result = secure_frontend::validate_config(
+        {.host = std::string{host}, .port = 8080, .api_key = std::string{"k"}, .allow_remote = true});
+    const auto* error = error_from(result);
+    expect(error != nullptr && error->code == secure_frontend::ConfigErrorCode::wildcard_bind_not_enabled,
+           std::string{"--allow-remote alone must not allow a wildcard bind: "} + host);
+  }
+}
+
+void net01_loopback_spellings_classified_from_bytes() {
+  const std::pair<const char*, const char*> cases[] = {
+      {"127.0.0.1", "127.0.0.1"}, {"127.1.2.3", "127.1.2.3"}, {"::1", "::1"},
+      {"0:0:0:0:0:0:0:1", "::1"}, {"0000::0001", "::1"}, {"::ffff:127.0.0.1", "127.0.0.1"}};
+  for (const auto& [host, canonical] : cases) {
+    const auto result = secure_frontend::validate_config(
+        {.host = std::string{host}, .port = 8080, .api_key = std::string{"k"}});
+    const auto* config = config_from(result);
+    expect(config != nullptr && config->is_loopback, std::string{"loopback spelling must need no opt-in: "} + host);
+    if (config != nullptr) expect(config->host == canonical, std::string{"canonical loopback text for "} + host);
+  }
+}
+
+void net02_hostname_rejected_before_bind() {
+  for (const char* host : {"example.com", "service.internal", "my-pc", "localhost.", "localhost.localdomain",
+                           "ip6-localhost", "LOCALHOST.example"}) {
+    const auto result = secure_frontend::validate_config(
+        {.host = std::string{host}, .port = 8080, .api_key = std::string{"k"}, .allow_remote = true});
+    const auto* error = error_from(result);
+    expect(error != nullptr && error->code == secure_frontend::ConfigErrorCode::invalid_host,
+           std::string{"hostnames are rejected at validation, not at bind(): "} + host);
+  }
+}
+
+void net01_localhost_maps_to_ipv4_loopback() {
+  for (const char* host : {"localhost", "LocalHost", "LOCALHOST"}) {
+    const auto result = secure_frontend::validate_config(
+        {.host = std::string{host}, .port = 8080, .api_key = std::string{"k"}});
+    const auto* config = config_from(result);
+    expect(config != nullptr && config->is_loopback && config->host == "127.0.0.1",
+           std::string{"localhost maps to 127.0.0.1 without a resolver: "} + host);
+  }
 }
 
 }  // namespace
@@ -136,5 +204,10 @@ int main(int argc, char** argv) {
       {"requires_separate_opt_in_for_wildcard_host", requires_separate_opt_in_for_wildcard_host},
       {"rejects_invalid_ports", rejects_invalid_ports},
       {"rejects_invalid_hosts_and_blank_remote_keys", rejects_invalid_hosts_and_blank_remote_keys},
+      {"net03_wildcard_spellings_need_wildcard_opt_in", net03_wildcard_spellings_need_wildcard_opt_in},
+      {"net03_remote_opt_in_alone_rejects_wildcard", net03_remote_opt_in_alone_rejects_wildcard},
+      {"net01_loopback_spellings_classified_from_bytes", net01_loopback_spellings_classified_from_bytes},
+      {"net02_hostname_rejected_before_bind", net02_hostname_rejected_before_bind},
+      {"net01_localhost_maps_to_ipv4_loopback", net01_localhost_maps_to_ipv4_loopback},
   }, failures);
 }

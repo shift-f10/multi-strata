@@ -320,7 +320,10 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_config_tests
         defaults_to_loopback requires_key_for_loopback requires_explicit_opt_in_for_remote_host
         requires_key_after_remote_opt_in accepts_remote_host_with_opt_in_and_key
-        requires_separate_opt_in_for_wildcard_host rejects_invalid_ports rejects_invalid_hosts_and_blank_remote_keys)
+        requires_separate_opt_in_for_wildcard_host rejects_invalid_ports rejects_invalid_hosts_and_blank_remote_keys
+        net03_wildcard_spellings_need_wildcard_opt_in net03_remote_opt_in_alone_rejects_wildcard
+        net01_loopback_spellings_classified_from_bytes net02_hostname_rejected_before_bind
+        net01_localhost_maps_to_ipv4_loopback)
 
     secure_frontend_add_test_executable(secure_frontend_secret_source_tests tests/secret_source_test.cpp secure_frontend_config)
     secure_frontend_add_cases(secure_frontend_secret_source_tests
