@@ -167,6 +167,7 @@ Plan: `docs/superpowers/plans/2026-10-14-sp4-acquire.md`. One line per task.
 - Task 6: §3.4 header-block parser and status table; fetch.informational_header_blocks_skipped, header_block_limits_enforced, split_feed_reports_exact_body_offset, status_table_decisions.
 - Task 7: §3.6 retry schedule, run budget, clock seam; fetch.retry_backoff_follows_schedule, non_transient_moves_to_next_source, exhausted_class_follows_last_source_reason, run_budget_remaining_seconds.
 - Task 8: manifest model and §2 struct rules, engine version grammar; manifest.* (13 cases, 1 release-only, 1 hooks-only).
+- Task 9: index model (render/install/retire), staging plan, key and version-dir names; model_index.* (3), acquire.version_dir_name_unique_for_same_version_label, staging_plan_classifies_partials, abandoned_keys_match_same_model_only, fetch.staging_cwd_not_treated_as_key.
 
 ### Upstream bump to `v0.1.44.1` (2026-10-14, branch `upstream/bump-v0.1.44.1`)
 

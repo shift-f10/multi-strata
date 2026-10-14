@@ -3,6 +3,7 @@
 #include "secure_frontend/download_response.hpp"
 #include "secure_frontend/downloader_command.hpp"
 #include "secure_frontend/fetch_schedule.hpp"
+#include "secure_frontend/model_index_model.hpp"
 #include "support/test_support.hpp"
 
 #include <chrono>
@@ -356,6 +357,13 @@ void run_budget_remaining_seconds() {
   expect(!budget.remaining_seconds(start + 60s).has_value(), "used up at the deadline");
 }
 
+void staging_cwd_not_treated_as_key() {
+  expect(!secure_frontend::is_staging_key_name(".cwd"), "the downloader's cwd is never a staging key");
+  expect(secure_frontend::is_staging_key_name(std::string(32, 'f')), "32 lowercase hex");
+  expect(!secure_frontend::is_staging_key_name(std::string(32, 'F')), "uppercase");
+  expect(!secure_frontend::is_staging_key_name(std::string(31, 'f')), "31 characters");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -381,5 +389,6 @@ int main(int argc, char** argv) {
       {"non_transient_moves_to_next_source", non_transient_moves_to_next_source},
       {"exhausted_class_follows_last_source_reason", exhausted_class_follows_last_source_reason},
       {"run_budget_remaining_seconds", run_budget_remaining_seconds},
+      {"staging_cwd_not_treated_as_key", staging_cwd_not_treated_as_key},
   }, failures);
 }

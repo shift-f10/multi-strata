@@ -1,4 +1,7 @@
+#include "secure_frontend/acquire_manifest.hpp"
 #include "secure_frontend/acquire_reason.hpp"
+#include "secure_frontend/model_index_model.hpp"
+#include "secure_frontend/staging_plan.hpp"
 #include "support/test_support.hpp"
 
 #include <cstddef>
@@ -123,6 +126,49 @@ void error_text_states_resumable() {
          "no detail");
 }
 
+void version_dir_name_unique_for_same_version_label() {
+  const std::string first(64, 'a');
+  std::string second = first;
+  second[11] = 'b';
+  expect(secure_frontend::version_directory_name(3, first) == "v3-aaaaaaaaaaaa", "v<sequence>-<12 hex>");
+  expect(secure_frontend::version_directory_name(3, first) != secure_frontend::version_directory_name(3, second),
+         "two manifests with the same version label never share a directory");
+  expect(secure_frontend::staging_key(first) == std::string(32, 'a'), "staging key is 32 hex");
+}
+
+secure_frontend::AcquireManifest staging_manifest() {
+  secure_frontend::AcquireManifest m;
+  m.files = {secure_frontend::ManifestFile{"weights/a.gguf", secure_frontend::FileRole::weights, 100, std::string(64, 'a'), {}, {}},
+             secure_frontend::ManifestFile{"pack/index.txt", secure_frontend::FileRole::pack, 10, std::string(64, 'b'), {}, {}},
+             secure_frontend::ManifestFile{"pack/dense.bin", secure_frontend::FileRole::pack, 10, std::string(64, 'c'), {}, {}},
+             secure_frontend::ManifestFile{"pack/extra.bin", secure_frontend::FileRole::pack, 10, std::string(64, 'd'), {}, {}}};
+  return m;
+}
+
+void staging_plan_classifies_partials() {
+  using secure_frontend::FileStep;
+  const std::vector<secure_frontend::StagedEntry> staged{
+      {"MANIFEST", 900, true},          {"weights/a.gguf.part", 40, true}, {"pack/index.txt.part", 10, true},
+      {"pack/dense.bin.part", 11, true}, {"pack/extra.bin", 10, true},     {"pack/extra.bin.part", 3, true},
+      {"stray.bin", 5, true},            {"weights/link", 0, false}};
+  const auto plan = secure_frontend::plan_staging(staging_manifest(), staged);
+  expect(plan.files.size() == 4, "one plan per manifest file");
+  expect(plan.files[0].step == FileStep::rehash_then_resume && plan.files[0].existing_bytes == 40, "short .part resumes at L");
+  expect(plan.files[1].step == FileStep::rehash_complete_part && plan.files[1].existing_bytes == 10, "full .part is hashed");
+  expect(plan.files[2].step == FileStep::fetch_from_zero && plan.files[2].existing_bytes == 0, "oversize .part is deleted");
+  expect(plan.files[3].step == FileStep::rehash_verified_candidate, "a suffix-less file is re-hashed before it is trusted");
+  const std::vector<std::string> remove{"pack/dense.bin.part", "pack/extra.bin.part", "stray.bin", "weights/link"};
+  expect(plan.remove == remove, "oversize part, shadowed part, strays and non-regular entries are removed");
+  expect(plan.staged_bytes == 60, "40 + 10 + 10 staged bytes count toward the preflight");
+}
+
+void abandoned_keys_match_same_model_only() {
+  const std::vector<secure_frontend::StagingKeyInfo> keys{
+      {std::string(32, 'a'), "m", "t", 100}, {std::string(32, 'b'), "m", "t", 200}, {std::string(32, 'c'), "m", "u", 300}};
+  const auto abandoned = secure_frontend::abandoned_keys(keys, std::string(32, 'a'), "m", "t");
+  expect(abandoned.size() == 1 && abandoned.front().key == std::string(32, 'b'), "other manifests of the same name:tag only");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -130,5 +176,8 @@ int main(int argc, char** argv) {
       {"exit_classes_match_spec_table", exit_classes_match_spec_table},
       {"reason_table_is_complete_and_ordered", reason_table_is_complete_and_ordered},
       {"error_text_states_resumable", error_text_states_resumable},
+      {"version_dir_name_unique_for_same_version_label", version_dir_name_unique_for_same_version_label},
+      {"staging_plan_classifies_partials", staging_plan_classifies_partials},
+      {"abandoned_keys_match_same_model_only", abandoned_keys_match_same_model_only},
   }, failures);
 }

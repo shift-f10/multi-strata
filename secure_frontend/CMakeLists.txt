@@ -395,14 +395,14 @@ add_library(secure_frontend_manifest_core src/acquire_reason.cpp src/acquire_url
 target_compile_features(secure_frontend_manifest_core PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_manifest_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
-target_sources(secure_frontend_manifest_core PRIVATE src/engine_version.cpp src/acquire_manifest.cpp)
+target_sources(secure_frontend_manifest_core PRIVATE src/engine_version.cpp src/acquire_manifest.cpp src/model_index_model.cpp)
 target_link_libraries(secure_frontend_manifest_core PUBLIC secure_frontend_sha256)
 # SP1 model-ID grammar and reserved device names (validate_model_id, is_windows_reserved_component).
 target_link_libraries(secure_frontend_manifest_core PUBLIC secure_frontend_model_inventory)
 secure_frontend_set_warnings(secure_frontend_manifest_core)
 
 add_library(secure_frontend_acquire_core src/address_policy.cpp src/download_response.cpp src/downloader_command.cpp
-    src/fetch_schedule.cpp)
+    src/fetch_schedule.cpp src/staging_plan.cpp)
 target_compile_features(secure_frontend_acquire_core PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_acquire_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
@@ -725,9 +725,14 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         secure_frontend_add_cases(secure_frontend_sha256_tests length_counter_past_2_32_bytes)
     endif()
 
-    secure_frontend_add_test_executable(secure_frontend_acquire_tests tests/acquire_test.cpp secure_frontend_manifest_core)
+    secure_frontend_add_test_executable(secure_frontend_acquire_tests tests/acquire_test.cpp secure_frontend_acquire_core)
     secure_frontend_add_cases(secure_frontend_acquire_tests exit_classes_match_spec_table
-        reason_table_is_complete_and_ordered error_text_states_resumable)
+        reason_table_is_complete_and_ordered error_text_states_resumable
+        version_dir_name_unique_for_same_version_label staging_plan_classifies_partials
+        abandoned_keys_match_same_model_only)
+    secure_frontend_add_test_executable(secure_frontend_model_index_tests tests/model_index_test.cpp secure_frontend_manifest_core)
+    secure_frontend_add_cases(secure_frontend_model_index_tests index_render_is_deterministic
+        install_retires_previous_version reinstall_same_version_does_not_retire)
 
     secure_frontend_add_test_executable(secure_frontend_manifest_tests tests/manifest_test.cpp secure_frontend_manifest_core)
     secure_frontend_add_cases(secure_frontend_manifest_tests source_url_grammar_matrix dns_names_and_wildcards proxy_grammar)
@@ -750,7 +755,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         informational_header_blocks_skipped header_block_limits_enforced split_feed_reports_exact_body_offset
         status_table_decisions
         retry_backoff_follows_schedule non_transient_moves_to_next_source
-        exhausted_class_follows_last_source_reason run_budget_remaining_seconds)
+        exhausted_class_follows_last_source_reason run_budget_remaining_seconds
+        staging_cwd_not_treated_as_key)
 
     add_test(NAME strata_secure_server_help COMMAND strata-secure-server --help)
     # The GLM runner takes positional arguments: glm53 without any --engine-arg is a usage error.
