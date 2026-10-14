@@ -6,14 +6,17 @@
 #include "secure_frontend/process_defaults.hpp"
 #include "secure_frontend/secret_source.hpp"
 #include "secure_frontend/token_reader.hpp"
+#include "secure_frontend/token_verifier.hpp"
 
 #include <charconv>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 
 namespace {
@@ -48,9 +51,10 @@ int main(int argc, char** argv) {
   const auto source_result = secure_frontend::make_environment_secret_source(options->key_env);
   const auto* source = std::get_if<secure_frontend::SecretSource>(&source_result);
   if (source == nullptr) { std::cerr << "invalid API-key environment variable name\n"; return EXIT_FAILURE; }
-  const auto token_result = secure_frontend::read_token(*source, {});
-  const auto* token = std::get_if<std::string>(&token_result);
+  auto token_result = secure_frontend::read_token(*source, {});
+  auto* token = std::get_if<secure_frontend::SecretBytes>(&token_result);
   if (token == nullptr) { std::cerr << "API key is unavailable\n"; return EXIT_FAILURE; }
+  const auto verifier = std::make_shared<const secure_frontend::TokenVerifier>(std::move(*token));
   const auto config_result = secure_frontend::validate_config({.host = options->host, .port = options->port,
       .api_key = std::string{"provided"}, .allow_remote = false, .allow_wildcard_bind = false});
   const auto* config = std::get_if<secure_frontend::Config>(&config_result);
@@ -73,9 +77,8 @@ int main(int argc, char** argv) {
   std::string error;
   auto server = secure_frontend::HttpSocketServer::bind(*config, {.allowed_hosts = {host_header},
       .same_origin_origins = {origin}, .cors_allowed_origins = {}, .cors_enabled = false},
-      [expected = *token](std::string_view candidate) {
-        return secure_frontend::constant_time_token_equals(candidate, expected);
-      }, [router](std::string_view method, std::string_view target, std::string_view) {
+      secure_frontend::make_bearer_validator(verifier),
+      [router](std::string_view method, std::string_view target, std::string_view) {
         return router.dispatch(method, target);
       }, &error);
   if (!server.has_value()) { std::cerr << "listener setup failed: " << error << '\n'; return EXIT_FAILURE; }

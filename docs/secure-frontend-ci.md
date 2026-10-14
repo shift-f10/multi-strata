@@ -17,6 +17,11 @@ The checked-in presets (`secure_frontend/CMakePresets.json`):
 | `windows-msys2-clang` | Windows, MSYS2 CLANG64 clang | Blocking CI; the only job that runs the tests on real Windows |
 | `windows-msvc` | Windows, Visual Studio 2022/MSVC x64 | Informational, non-blocking (`continue-on-error`) |
 
+Each test case is its own CTest test (`<binary>.<case>`). Cases that need real
+Windows semantics carry the label `windows-runtime`; the
+`windows-llvm-mingw-cross` test preset excludes it under wine, and
+`windows-msys2-clang` runs everything.
+
 The Windows toolchain is open source: llvm-mingw and MSYS2 clang. MSVC is kept
 only as an informational job. Caveat: CUDA engine builds on Windows still need
 MSVC as the nvcc host compiler; that concerns the engine (`upstream/src/`), not
@@ -64,11 +69,12 @@ wine on Linux. wine does not implement Job Objects or protected-file DACLs
 faithfully; Windows runtime behavior is validated only by the `windows-msys2-clang`
 CI job on a real Windows runner. The `windows-msvc` job is informational.
 
-The cross build produces 20 `.exe` files (three executables, seventeen test
-binaries) and `ctest` registers 19 entries on Windows against 20 on Linux:
-`secure_frontend_token_reader_tests` is the only UNIX-only target, so the Windows
-protected-file reader has no runtime test even in the `windows-msys2-clang` job
-yet. `secure_frontend_http_socket_server_tests` is portable and runs the Windows
+Since SP1 every test binary, including `secure_frontend_token_reader_tests`,
+is built and run on Windows; the Windows protected-file reader's cases carry
+`windows-runtime`, so they run only in the `windows-msys2-clang` job (which has
+not yet run them: pending). Counts at the end of SP1 (Task 24): see
+`docs/AGENT_HANDOFF.md`, "Verification performed", SP1.
+`secure_frontend_http_socket_server_tests` is portable and runs the Windows
 listener in that job. `engine_process_tests` and `engine_stdio_process_tests`
 start and terminate through the Job on MSYS2; the grandchild assertion
 (`job_object_terminates_grandchild`) runs only there (it also passes under wine,
@@ -90,8 +96,9 @@ defaults `CMAKE_BUILD_TYPE` to `Release` before upstream sees it and declares
 `SECURE_FRONTEND_WERROR=ON`, so `-DSTRATA_WERROR=OFF` does not drop the
 frontend's `-Werror`. `-DSECURE_STRATA_BUILD_ENGINE=OFF` builds only the
 frontend and works with an empty `upstream/`. From clean: 94 Ninja steps, 0
-warnings, `ctest` 111/111 at `v0.1.44.1` (the frontend's tests; upstream registers none at
-`v0.1.44.1` because `STRATA_BUILD_TESTS` is `OFF`).
+warnings, `ctest` 111/111 at `v0.1.44.1` before the SP1 merge (the frontend's
+tests; upstream registers none at `v0.1.44.1` because `STRATA_BUILD_TESTS` is
+`OFF`); the per-case count after SP1 is recorded in `docs/AGENT_HANDOFF.md`.
 
 ## Python tests
 

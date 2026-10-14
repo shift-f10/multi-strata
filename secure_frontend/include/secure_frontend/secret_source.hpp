@@ -47,11 +47,9 @@ using SecretSourceValidation = std::variant<SecretSource, SecretSourceError>;
 [[nodiscard]] SecretSourceValidation make_environment_secret_source(
     std::string_view environment_variable_name);
 
-// This accepts only a portable relative path below a caller-configured secret
-// root. It rejects traversal, absolute/UNC/device/drive/ADS forms, and Windows
-// reserved device names. The platform-specific token reader must still resolve
-// the path below its canonical root and check ownership, permissions, reparse
-// points/symlinks, and contents immediately before it reads the file.
+// This accepts only a path in the canonical-path module's relative grammar
+// (parse_relative_path), below a caller-configured secret root; the token
+// reader opens it with open_beneath.
 [[nodiscard]] SecretSourceValidation make_protected_file_secret_source(
     std::string_view protected_file_path);
 

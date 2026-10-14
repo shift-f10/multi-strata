@@ -30,8 +30,8 @@ ChatExecutionOutcome ChatExecutionService::execute(const ChatCompletionRequest& 
   }
 
   const auto plan_result = profile_ == NativeChatProfile::qwen
-      ? make_qwen_chat_generation_plan(request, tokenizer, limits_.maximum_prompt_tokens)
-      : make_glm53_chat_generation_plan(request, tokenizer, limits_.maximum_prompt_tokens);
+      ? make_qwen_chat_generation_plan(request, tokenizer, limits_.maximum_prompt_tokens, limits_.default_max_tokens)
+      : make_glm53_chat_generation_plan(request, tokenizer, limits_.maximum_prompt_tokens, limits_.default_max_tokens);
   const auto* plan = std::get_if<ChatGenerationPlan>(&plan_result);
   if (plan == nullptr) {
     return error(ChatExecutionErrorCode::planning_failed,

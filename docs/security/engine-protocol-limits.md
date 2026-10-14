@@ -12,10 +12,70 @@ for `generate.cpp` unchanged. The last two rows are new at `v0.1.44.1`.
 | READY | `READY <max_context> stop` | ctx parsed from READY sizes the outbound GEN cap (min(32 + 11 × ctx, 16 MiB)); the inbound record cap is a fixed 8192 bytes (`kMaxReadLineBytes`); a fixed 32768 context is never advertised |
 | STOP | Honored only after the GEN has been picked up; always followed by `DONE ... cancel` | Frontend sends STOP only after a generation has started; drains to DONE |
 | `nonfinite` | `DONE ... nonfinite`; next request restarts from token 0 | 503 for that request; protocol stays idle |
-| Model path | `--pack DIR` is the expert/weight directory, loaded unconditionally, default cwd-relative `pack/full`; `--native <shard1.gguf>` is a separate shard source; other weight flags: `--ple-gguf`, `--embd-gguf`, `--native-head-gguf`, `--native-dense-gguf`, `--mtp`; no positional args. Upstream (`setup.py`) launches `--pack <pack> --native <shard1> [--ple-gguf <ple>] ...` | Strata profile only: the frontend supplies shard 1 as `--native <models_root/artifact>` from the inventory (`engine_arguments`, appended last) and rejects `--native` from `--engine-arg`. The operator MUST pass `--pack` for a real run (otherwise the engine resolves `pack/full` against its cwd); `--pack` and the other weight flags pass through until SP1/SP5 model the whole launch. The GLM-5.3 profile passes arguments through (next row) |
+| Model path | `--pack DIR` is the expert/weight directory, loaded unconditionally, default cwd-relative `pack/full`; `--native <shard1.gguf>` is a separate shard source; other weight flags: `--ple-gguf`, `--embd-gguf`, `--native-head-gguf`, `--native-dense-gguf`, `--mtp`; no positional args. Upstream (`setup.py`) launches `--pack <pack> --native <shard1> [--ple-gguf <ple>] ...` | Strata profile only: the frontend supplies shard 1 as `--native <models_root/artifact>` from the inventory (`engine_arguments`, appended last) and rejects `--native` from `--engine-arg`. The operator MUST pass `--pack` for a real run (otherwise the engine resolves `pack/full` against its cwd); `--pack` and the other weight flags pass through (as `engine.args` since SP1) until SP5 models the whole launch. The GLM-5.3 profile passes arguments through (next row) |
 | GLM-5.3 profile | Engine CLI not characterized | Frontend passes arguments through unchanged (NUL/--serve rejected) and does not supply the model path; model-id linkage is Strata-only until SP5/SP6 |
 | Network | None in the engine; no host/port/bind/http flags | Deny-list covers only frontend-owned flags |
 | Unsupported modes | `--batch` and its alias `--slots` (BT/BDONE), `--vision` (GENI) | Rejected in `--engine-arg` until the frontend implements their protocol |
 | Windows stdin writes | Engine reads stdin with blocking `getline` | The stdin pipe buffer is requested at kMaxWriteLineBytes + 4096 so one GEN record should not block; Win32 treats the size as advisory, and only the `windows-msys2-clang` CI job can confirm it; overlapped writes are SP2 work |
 | `qwen35moe` family switch (new at `v0.1.44.1`, CUDA/HIP builds only) | When the GGUF named by `--native`/`--model` declares `general.architecture = qwen35moe`, `main` hands the whole argv to a separate engine (`upstream/src/qwen35/q36_engine.cu`, `strata::qwen35::run`) before normal parsing. Its serve loop differs: context rule `n + max_new > ctx` (no `+ 8`), only `GEN` (no `GENI`/batch), no `nonfinite` finish, no `QUIT` handling (exits on stdin EOF), no `--pack`, and unknown `--flags` are skipped instead of fatal | Our `+ 8` check is stricter, so still safe. Not yet modeled: the frontend must not assume a `qwen35moe` model behaves as above (QUIT alone does not end it; deny-listed flags would be ignored rather than rejected by the engine). Open until SP5 |
 | `strata_kq` shared library (new at `v0.1.44.1`, CUDA builds only) | With `STRATA_MMQ_KQ=1` (set by default by the `qwen35moe` path unless already set) the engine opens `strata_kq.dll` / `libstrata_kq.so` by full path from its own executable's folder (`LoadLibraryA` / `dlopen`, `upstream/src/prefill/mmq_kq_loader.cpp`); missing file falls back to FP16. Its own DLL dependencies use the default Windows search order | Packaging/inventory must ship or exclude it explicitly and verify it like the engine binary; the engine folder must not be writable by the service user |
+
+## Configuration keys and internal constants (SP1)
+
+Tunable limits are configuration keys (`secure_frontend/README.md` key table;
+defaults in `include/secure_frontend/config_defaults.hpp`): listener backlog,
+request deadline, request/header/request-line sizes and header count, chat body
+/ message / prompt / completion / generated-text limits, `ready_timeout_s`
+(default 900 s, upstream `STRATA_ENGINE_READY_S`), generation and STOP-drain
+timeouts, and `max_concurrent_requests` (only 1 until SP3).
+
+These stay internal because they are format or protocol facts, not tuning:
+`kProtocolMaxLineBytes` 16 MiB and the 8192-byte inbound record cap; the
+`EngineStdioProcess` buffers; process timings (10 ms poll, 1 s post-kill, 250 ms
+grace — SP2); POSIX launch `kReportFd`/`kLiftFloor`/`kSweepCap`; the 1000 ms
+minimum send budget; 50 ms EMFILE backoff; the 100 ms / 256 KiB half-close drain;
+tokenizer-pack caps (64 MiB file, 1 Mi entries, 16 KiB token, 8 MiB decoded);
+model ID ≤ 128 bytes; chat `model` field ≤ 256 bytes; token ≤ 256 bytes; token
+file ≤ 4 KiB; the frontend-owned and unsupported engine flags.
+
+The chat `model` field bound (256 bytes, `chat_schema.cpp` `kMaximumModelBytes`)
+is a parsing bound, not a second model-ID rule: the field must still equal the
+configured `engine.model_id`, whose grammar caps it at 128 bytes, so a 129–256
+byte value parses and is then rejected as a model mismatch.
+
+### `EngineProtocolLimits` and the renderer caps: internal backstops
+
+`EngineProtocolLimits` (`include/secure_frontend/engine_protocol_client.hpp`)
+holds `max_prompt_tokens`, `max_generated_tokens` and `max_new_tokens`, each
+262144, and `secure_server_main.cpp` builds the client with `{}` (these
+defaults). They are classified as **internal protocol backstops**, not
+configuration keys: they bound what the protocol client will put on the GEN
+line or accumulate from `T` records no matter what the layers above decide, and
+they are not in spec §4's list of keys. The operator-facing limits are the
+`limits.chat.*` keys, enforced before `begin_generation` is called.
+
+The Qwen and GLM prompt renderers (`qwen_prompt_renderer.cpp`,
+`glm_prompt_renderer.cpp`) carry three more internal constants:
+`kMaximumMessages` 128, `kMaximumMessageBytes` 64 KiB (65536) and
+`kMaximumPromptBytes` 512 KiB, the cap on the rendered prompt text (template
+markup plus every message) before tokenization. The rendered-prompt cap is an
+internal constant, not a configuration key (controller ruling, SP1 final fix
+wave): with the defaults a chat body is at most 49152 bytes, far below it. An
+operator who raises `limits.http.max_request_bytes` and
+`limits.chat.max_body_bytes` above roughly 512 KiB can send messages that pass
+the per-message and message-count limits but whose rendered prompt exceeds
+512 KiB; such a request is refused at planning (`503`), as before.
+
+Since the SP1 final fix wave the configuration ranges match the enforced caps
+(spec §9.5: every value the schema accepts is one the server can honour):
+
+| Key | Range | Enforced cap it matches |
+| --- | --- | --- |
+| `limits.chat.max_messages` | 1–128 | renderer `kMaximumMessages` 128 |
+| `limits.chat.max_message_bytes` | 1–65536 | renderer `kMaximumMessageBytes` 64 KiB |
+| `limits.chat.max_prompt_tokens` | 1–262144 | `EngineProtocolLimits::max_prompt_tokens` 262144 |
+
+`max_completion_tokens` (≤ 16384) is always below `max_new_tokens`, so that
+pair cannot diverge. The defaults (128 messages, 65536 message bytes, 32768
+prompt tokens) are inside these ranges. `cfg01_chat_ranges_match_enforced_caps`
+pins each cap (the cap is accepted, one above it is `out_of_range`).

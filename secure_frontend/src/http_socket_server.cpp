@@ -267,7 +267,9 @@ std::optional<HttpSocketServer> HttpSocketServer::bind(const Config& listener_co
                                                                              : std::nullopt,
                                        .allow_remote = listener_config.allow_remote,
                                        .allow_wildcard_bind = listener_config.allow_wildcard_bind};
-  if (!std::holds_alternative<Config>(validate_config(verification_input)) || !validator || !dispatcher) {
+  const ConfigValidation verification = validate_config(verification_input);
+  const auto* verified = std::get_if<Config>(&verification);
+  if (verified == nullptr || !validator || !dispatcher) {
     if (error != nullptr) *error = "invalid listener configuration";
     return std::nullopt;
   }
@@ -285,12 +287,12 @@ std::optional<HttpSocketServer> HttpSocketServer::bind(const Config& listener_co
   int family = AF_UNSPEC;
   auto* address4 = reinterpret_cast<sockaddr_in*>(&address);
   auto* address6 = reinterpret_cast<sockaddr_in6*>(&address);
-  if (inet_pton(AF_INET, listener_config.host.c_str(), &address4->sin_addr) == 1) {
+  if (inet_pton(AF_INET, verified->host.c_str(), &address4->sin_addr) == 1) {
     family = AF_INET;
     address4->sin_family = AF_INET;
     address4->sin_port = htons(listener_config.port);
     address_size = static_cast<NativeAddressLength>(sizeof(sockaddr_in));
-  } else if (inet_pton(AF_INET6, listener_config.host.c_str(), &address6->sin6_addr) == 1) {
+  } else if (inet_pton(AF_INET6, verified->host.c_str(), &address6->sin6_addr) == 1) {
     family = AF_INET6;
     address6->sin6_family = AF_INET6;
     address6->sin6_port = htons(listener_config.port);
@@ -324,7 +326,7 @@ std::optional<HttpSocketServer> HttpSocketServer::bind(const Config& listener_co
   // No timeout on the listening socket: accept() blocks until a client
   // arrives. Per-client bounds are applied to each accepted socket.
   if (::bind(state->socket, reinterpret_cast<const sockaddr*>(&address), address_size) != 0 ||
-      listen(state->socket, 16) != 0) {
+      listen(state->socket, std::clamp(limits.backlog, 1, 4096)) != 0) {
     if (error != nullptr) *error = "listener socket setup failed";
     return std::nullopt;
   }
@@ -408,7 +410,9 @@ bool HttpSocketServer::serve_one(std::string* error) {
     if (expected_size != 0U && request.size() >= expected_size) {
       request.resize(expected_size);
       const std::string response = serialize_response(
-          handle_http_request(request, state_->policy, state_->validator, state_->dispatcher));
+          handle_http_request(request, state_->policy, state_->validator, state_->dispatcher,
+                              HttpParserLimits{state_->limits.max_request_bytes, state_->limits.max_header_bytes,
+                                               state_->limits.max_headers, state_->limits.max_request_line_bytes}));
       if (!send_all(client, response, send_deadline())) { if (error != nullptr) *error = "response send failed"; return false; }
       finish_response(client);
       return true;

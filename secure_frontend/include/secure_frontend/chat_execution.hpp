@@ -1,6 +1,7 @@
 #pragma once
 
 #include "secure_frontend/chat_generation_plan.hpp"
+#include "secure_frontend/config_defaults.hpp"
 #include "secure_frontend/engine_protocol_client.hpp"
 
 #include <chrono>
@@ -18,16 +19,17 @@ enum class NativeChatProfile {
   glm53,
 };
 
-// Fixed bounds for the native, non-streaming chat path.  These are separate
-// from engine-protocol bounds: both layers must agree before an engine command
-// is issued.
+// Bounds for the native, non-streaming chat path, derived from FrontendConfig by
+// chat_execution_limits(). Separate from engine-protocol bounds: both layers
+// must agree before an engine command is issued.
 struct ChatExecutionLimits final {
-  std::size_t maximum_prompt_tokens{32768U};
-  std::size_t maximum_output_tokens{4096U};
-  std::chrono::milliseconds ready_timeout{std::chrono::seconds(30)};
-  std::chrono::milliseconds generation_timeout{std::chrono::seconds(120)};
+  std::size_t maximum_prompt_tokens{static_cast<std::size_t>(config_defaults::kChatMaxPromptTokens)};
+  std::size_t maximum_output_tokens{static_cast<std::size_t>(config_defaults::kChatMaxCompletionTokens)};
+  std::size_t default_max_tokens{static_cast<std::size_t>(config_defaults::kChatDefaultMaxTokens)};
+  std::chrono::milliseconds ready_timeout{std::chrono::seconds(config_defaults::kEngineReadyTimeoutS)};
+  std::chrono::milliseconds generation_timeout{std::chrono::seconds(config_defaults::kEngineGenerationTimeoutS)};
   // Total budget for draining to DONE after STOP once generation_timeout expires.
-  std::chrono::milliseconds stop_drain_timeout{std::chrono::seconds(5)};
+  std::chrono::milliseconds stop_drain_timeout{std::chrono::seconds(config_defaults::kEngineStopDrainTimeoutS)};
 };
 
 enum class ChatExecutionErrorCode {

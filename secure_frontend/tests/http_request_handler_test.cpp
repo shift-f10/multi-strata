@@ -1,9 +1,12 @@
 #include "secure_frontend/http_request_handler.hpp"
+#include "secure_frontend/token_verifier.hpp"
 #include "support/test_support.hpp"
 
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -141,6 +144,29 @@ void constant_time_helper_matches_only_equal_tokens() {
   expect(secure_frontend::constant_time_token_equals("same", "same"), "equal tokens should match");
   expect(!secure_frontend::constant_time_token_equals("same", "different"), "unequal tokens should not match");
   expect(!secure_frontend::constant_time_token_equals("same", "sam"), "prefixes should not match");
+  expect(!secure_frontend::constant_time_token_equals("", ""), "an empty expected token never matches");
+}
+
+void auth03_router_uses_verifier() {
+  secure_frontend::SecretBytes secret;
+  (void)secret.assign("router-token-0123456789abcdefghijklmnopqrs");
+  const auto verifier = std::make_shared<const secure_frontend::TokenVerifier>(std::move(secret));
+  const auto validator = secure_frontend::make_bearer_validator(verifier);
+  bool dispatched = false;
+  const secure_frontend::RequestDispatcher record = [&dispatched](std::string_view, std::string_view, std::string_view) {
+    dispatched = true;
+    return secure_frontend::HttpResponse{.status = 200, .headers = {}, .body = "ok"};
+  };
+  const auto request = [](const std::string& token) {
+    return "GET /health HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nAuthorization: Bearer " + token + "\r\n\r\n";
+  };
+  const auto good = secure_frontend::handle_http_request(request("router-token-0123456789abcdefghijklmnopqrs"), policy(),
+                                                         validator, record);
+  expect(good.status == 200 && dispatched, "the verifier's token is accepted through the handler");
+  dispatched = false;
+  const auto prefix = secure_frontend::handle_http_request(request("router-token-0123456789abcdefghijklmnopqr"), policy(),
+                                                           validator, record);
+  expect(prefix.status == 401 && !dispatched, "a prefix is rejected and the dispatcher never runs");
 }
 
 }  // namespace
@@ -155,5 +181,6 @@ int main(int argc, char** argv) {
       {"emits_cors_only_for_policy_approved_origin", emits_cors_only_for_policy_approved_origin},
       {"handles_policy_approved_preflight_without_exposing_an_endpoint", handles_policy_approved_preflight_without_exposing_an_endpoint},
       {"constant_time_helper_matches_only_equal_tokens", constant_time_helper_matches_only_equal_tokens},
+      {"auth03_router_uses_verifier", auth03_router_uses_verifier},
   }, failures);
 }

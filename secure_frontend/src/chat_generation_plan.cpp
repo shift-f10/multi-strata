@@ -8,8 +8,6 @@
 namespace secure_frontend {
 namespace {
 
-constexpr std::size_t kDefaultMaxTokens = 256U;
-
 ChatGenerationPlanError error(const ChatGenerationPlanErrorCode code,
                               const char* const message) {
   return ChatGenerationPlanError{code, message};
@@ -19,7 +17,7 @@ ChatGenerationPlanError error(const ChatGenerationPlanErrorCode code,
 
 ChatGenerationPlanResult make_qwen_chat_generation_plan(
     const ChatCompletionRequest& request, const TokenizerPack& tokenizer,
-    const std::size_t maximum_prompt_tokens) {
+    const std::size_t maximum_prompt_tokens, const std::size_t default_max_tokens) {
   if (request.model.empty() || request.messages.empty() || maximum_prompt_tokens == 0U ||
       (request.max_tokens.has_value() && *request.max_tokens == 0U)) {
     return error(ChatGenerationPlanErrorCode::invalid_request,
@@ -45,13 +43,12 @@ ChatGenerationPlanResult make_qwen_chat_generation_plan(
                  "encoded chat prompt exceeds native serving limits");
   }
 
-  return ChatGenerationPlan{request.model, *token_ids,
-                            request.max_tokens.value_or(kDefaultMaxTokens)};
+  return ChatGenerationPlan{request.model, *token_ids, request.max_tokens.value_or(default_max_tokens)};
 }
 
 ChatGenerationPlanResult make_glm53_chat_generation_plan(
     const ChatCompletionRequest& request, const TokenizerPack& tokenizer,
-    const std::size_t maximum_prompt_tokens) {
+    const std::size_t maximum_prompt_tokens, const std::size_t default_max_tokens) {
   if (request.model.empty() || request.messages.empty() || maximum_prompt_tokens == 0U ||
       (request.max_tokens.has_value() && *request.max_tokens == 0U)) {
     return error(ChatGenerationPlanErrorCode::invalid_request,
@@ -68,8 +65,7 @@ ChatGenerationPlanResult make_glm53_chat_generation_plan(
     return error(ChatGenerationPlanErrorCode::prompt_too_large,
                  "encoded chat prompt exceeds native serving limits");
   }
-  return ChatGenerationPlan{request.model, *token_ids,
-                            request.max_tokens.value_or(kDefaultMaxTokens)};
+  return ChatGenerationPlan{request.model, *token_ids, request.max_tokens.value_or(default_max_tokens)};
 }
 
 }  // namespace secure_frontend

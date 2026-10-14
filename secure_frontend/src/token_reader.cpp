@@ -1,447 +1,176 @@
 #include "secure_frontend/token_reader.hpp"
 
+#include "secure_frontend/secret_bytes.hpp"
+
 #include <array>
-#include <cerrno>
 #include <cstdlib>
-#include <iterator>
+#include <cstring>
+#include <cwchar>
+#include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 
-#ifdef _WIN32
+#if defined(_WIN32)
 #include "secure_frontend/win32_prelude.hpp"
-#include <aclapi.h>
-#include <sddl.h>
-#else
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
+
+#include <wincrypt.h>
+#include <dpapi.h>
 #endif
 
 namespace secure_frontend {
 namespace {
 
-constexpr std::size_t kMaximumTokenBytes = 1024U * 1024U;
-
 TokenReadError error(const TokenReadErrorCode code, std::string message) {
   return TokenReadError{.code = code, .message = std::move(message)};
 }
 
-bool contains_control_character(const std::string_view value) {
-  for (const unsigned char character : value) {
-    if (character <= 0x1FU || character == 0x7FU) return true;
+// A stack buffer that is wiped when it leaves scope, whatever the exit path.
+// One byte over the file cap, so a file that grew past the cap after the size
+// check is seen as too large rather than silently truncated.
+struct WipedBuffer final {
+  std::array<char, kMaximumTokenFileBytes + 1U> bytes{};
+  WipedBuffer() = default;
+  WipedBuffer(const WipedBuffer&) = delete;
+  WipedBuffer& operator=(const WipedBuffer&) = delete;
+  ~WipedBuffer() { secure_wipe(bytes.data(), bytes.size()); }
+};
+
+TokenReadResult read_protected_file(const SecretSource& source, const CanonicalRoot& root) {
+  const auto parsed = parse_relative_path(source.location());
+  const auto* relative = std::get_if<RelativePath>(&parsed);
+  if (relative == nullptr) return error(TokenReadErrorCode::read_failed, "The protected token file path is not valid.");
+  auto opened = open_beneath(root, *relative,
+                             OpenOptions{.kind = OpenKind::regular_file, .trust = FileTrust::owner_only,
+                                         .reject_hard_links = true});
+  if (const auto* failure = std::get_if<PathError>(&opened)) return token_error_from(*failure);
+  const auto& file = std::get<OpenedFile>(opened);
+  if (file.size() > kMaximumTokenFileBytes) return error(TokenReadErrorCode::token_too_large, "The token file is larger than 4 KiB.");
+  // Read straight into wiped storage, not OpenedFile::read_all: its 64 KiB chunk
+  // and std::string reallocations would leave token bytes behind unwiped.
+  WipedBuffer buffer;
+  std::size_t used = 0U;
+  while (used < buffer.bytes.size()) {
+    auto got = file.read_some(buffer.bytes.data() + used, buffer.bytes.size() - used);
+    if (std::holds_alternative<PathError>(got)) return error(TokenReadErrorCode::read_failed, "The protected token file could not be read.");
+    const std::size_t count = std::get<std::size_t>(got);
+    if (count == 0U) break;
+    used += count;
   }
-  return false;
+  // A file that grew past the cap after the size check is too large, not a read failure.
+  if (used > kMaximumTokenFileBytes) return error(TokenReadErrorCode::token_too_large, "The token file is larger than 4 KiB.");
+  const std::string_view raw{buffer.bytes.data(), used};
+#if defined(_WIN32)
+  if (raw.substr(0, kDpapiTokenMagic.size()) == kDpapiTokenMagic) {
+    const std::string_view blob = raw.substr(kDpapiTokenMagic.size());
+    DATA_BLOB input{static_cast<DWORD>(blob.size()), reinterpret_cast<BYTE*>(const_cast<char*>(blob.data()))};
+    DATA_BLOB output{};
+    if (CryptUnprotectData(&input, nullptr, nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &output) == 0) {
+      return error(TokenReadErrorCode::invalid_token, "The token file could not be decrypted for the current user.");
+    }
+    auto result = token_from_bytes(std::string_view{reinterpret_cast<const char*>(output.pbData), output.cbData}, false);
+    SecureZeroMemory(output.pbData, output.cbData);
+    LocalFree(output.pbData);
+    return result;
+  }
+#endif
+  return token_from_bytes(raw, true);
 }
 
-std::filesystem::path source_relative_path(const std::string_view location) {
-  std::filesystem::path result;
-  std::size_t start = 0U;
-  while (start < location.size()) {
-    const std::size_t end = location.find_first_of("\\/", start);
-    result /= location.substr(start, end - start);
-    if (end == std::string_view::npos) {
-      break;
-    }
-    start = end + 1U;
+TokenReadResult read_environment_token(const SecretSource& source) {
+  const std::string& name = source.location();
+  char* const value = std::getenv(name.c_str());
+  if (value == nullptr) {
+    return error(TokenReadErrorCode::environment_variable_not_set, "The configured token environment variable is not set.");
   }
+  auto result = token_from_bytes(value, false);
+  // Overwrite the value where it lives, then remove the variable, so
+  // /proc/<pid>/environ and every later child lack it (CFG-05).
+  secure_wipe(value, std::strlen(value));
+#if defined(_WIN32)
+  // Accepted deviation (spec §3.6): Windows has no /proc/<pid>/environ. The CRT
+  // copies are wiped in place -- the narrow one above, the wide one here (the
+  // name is ASCII by the env-name grammar) -- then the variable is removed from
+  // the CRT and from the Win32 environment block. The block entry is removed,
+  // not overwritten in place: no Win32 API can do that.
+  const std::wstring wide_name(name.begin(), name.end());
+  if (wchar_t* const wide = _wgetenv(wide_name.c_str())) secure_wipe(wide, std::wcslen(wide) * sizeof(wchar_t));
+  (void)_putenv_s(name.c_str(), "");
+  (void)SetEnvironmentVariableW(wide_name.c_str(), nullptr);
+#else
+  (void)::unsetenv(name.c_str());
+#endif
   return result;
 }
 
-#ifndef _WIN32
-bool is_below_or_equal(const std::filesystem::path& root, const std::filesystem::path& candidate) {
-  auto root_part = root.begin();
-  auto candidate_part = candidate.begin();
-  while (root_part != root.end() && candidate_part != candidate.end()) {
-    if (*root_part != *candidate_part) {
-      return false;
-    }
-    ++root_part;
-    ++candidate_part;
-  }
-  return root_part == root.end();
-}
-
-TokenReadResult read_protected_file_linux(const SecretSource& source,
-                                          const std::filesystem::path& requested_root) {
-  std::error_code filesystem_error;
-  const std::filesystem::path root = std::filesystem::canonical(requested_root, filesystem_error);
-  if (filesystem_error || !std::filesystem::is_directory(root, filesystem_error)) {
-    return error(TokenReadErrorCode::secret_root_unavailable,
-                 "The configured protected-file root is unavailable or is not a directory.");
-  }
-
-  const std::filesystem::path relative = source_relative_path(source.location());
-  const std::filesystem::path candidate = std::filesystem::canonical(root / relative, filesystem_error);
-  if (filesystem_error) {
-    return error(TokenReadErrorCode::token_not_found, "The protected token file does not exist.");
-  }
-  if (!is_below_or_equal(root, candidate)) {
-    return error(TokenReadErrorCode::path_escapes_root,
-                 "The protected token file resolves outside the configured root.");
-  }
-
-  int directory_fd = open(root.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW);
-  if (directory_fd < 0) {
-    return error(TokenReadErrorCode::secret_root_unavailable,
-                 "The configured protected-file root could not be opened safely.");
-  }
-
-  int file_fd = -1;
-  std::size_t start = 0U;
-  const std::string_view location = source.location();
-  while (start < location.size()) {
-    const std::size_t end = location.find_first_of("\\/", start);
-    const std::string component{location.substr(start, end - start)};
-    const bool final_component = end == std::string_view::npos;
-    // O_NONBLOCK ensures a hostile FIFO/device cannot block before fstat rejects
-    // it as non-regular. It has no observable effect for regular token files.
-    const int flags = O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK | (final_component ? 0 : O_DIRECTORY);
-    const int next_fd = openat(directory_fd, component.c_str(), flags);
-    close(directory_fd);
-    directory_fd = -1;
-    if (next_fd < 0) {
-      if (errno == ELOOP) {
-        return error(TokenReadErrorCode::symlink_not_allowed,
-                     "Protected token file paths may not include symbolic links.");
-      }
-      return error(TokenReadErrorCode::read_failed, "The protected token file could not be opened safely.");
-    }
-    if (final_component) {
-      file_fd = next_fd;
-      break;
-    }
-    directory_fd = next_fd;
-    start = end + 1U;
-  }
-
-  struct stat details {};
-  if (fstat(file_fd, &details) != 0) {
-    close(file_fd);
-    return error(TokenReadErrorCode::read_failed, "The protected token file could not be inspected.");
-  }
-  if (!S_ISREG(details.st_mode)) {
-    close(file_fd);
-    return error(TokenReadErrorCode::not_regular_file, "The protected token path must be a regular file.");
-  }
-  if (details.st_uid != geteuid()) {
-    close(file_fd);
-    return error(TokenReadErrorCode::file_not_owned_by_current_user,
-                 "The protected token file must be owned by the current user.");
-  }
-  if ((details.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
-    close(file_fd);
-    return error(TokenReadErrorCode::insecure_file_permissions,
-                 "The protected token file must not grant group or world access.");
-  }
-  if (details.st_size < 0 || static_cast<unsigned long long>(details.st_size) > kMaximumTokenBytes) {
-    close(file_fd);
-    return error(TokenReadErrorCode::token_too_large, "The protected token exceeds the size limit.");
-  }
-
-  std::string token;
-  token.reserve(static_cast<std::size_t>(details.st_size));
-  std::array<char, 4096> buffer{};
-  while (true) {
-    const ssize_t bytes_read = read(file_fd, buffer.data(), buffer.size());
-    if (bytes_read < 0) {
-      close(file_fd);
-      return error(TokenReadErrorCode::read_failed, "The protected token file could not be read.");
-    }
-    if (bytes_read == 0) {
-      break;
-    }
-    if (token.size() + static_cast<std::size_t>(bytes_read) > kMaximumTokenBytes) {
-      close(file_fd);
-      return error(TokenReadErrorCode::token_too_large, "The protected token exceeds the size limit.");
-    }
-    token.append(buffer.data(), static_cast<std::size_t>(bytes_read));
-  }
-  close(file_fd);
-  if (token.empty()) {
-    return error(TokenReadErrorCode::empty_token, "The resolved token must not be empty.");
-  }
-  if (contains_control_character(token)) {
-    return error(TokenReadErrorCode::invalid_token, "The resolved token must not contain control characters.");
-  }
-  return token;
-}
-#else
-
-class WindowsHandle final {
- public:
-  explicit WindowsHandle(const HANDLE handle = INVALID_HANDLE_VALUE) noexcept : handle_(handle) {}
-  ~WindowsHandle() {
-    if (handle_ != INVALID_HANDLE_VALUE) {
-      CloseHandle(handle_);
-    }
-  }
-  WindowsHandle(const WindowsHandle&) = delete;
-  WindowsHandle& operator=(const WindowsHandle&) = delete;
-  [[nodiscard]] HANDLE get() const noexcept { return handle_; }
-  [[nodiscard]] bool valid() const noexcept { return handle_ != INVALID_HANDLE_VALUE; }
-
- private:
-  HANDLE handle_;
-};
-
-class LocalSecurityDescriptor final {
- public:
-  explicit LocalSecurityDescriptor(PSECURITY_DESCRIPTOR descriptor = nullptr) noexcept : descriptor_(descriptor) {}
-  ~LocalSecurityDescriptor() {
-    if (descriptor_ != nullptr) {
-      LocalFree(descriptor_);
-    }
-  }
-  LocalSecurityDescriptor(const LocalSecurityDescriptor&) = delete;
-  LocalSecurityDescriptor& operator=(const LocalSecurityDescriptor&) = delete;
-
- private:
-  PSECURITY_DESCRIPTOR descriptor_;
-};
-
-std::wstring final_path_for_handle(const HANDLE handle) {
-  const DWORD required = GetFinalPathNameByHandleW(handle, nullptr, 0U, FILE_NAME_NORMALIZED);
-  if (required == 0U || required > 32768U) {
-    return {};
-  }
-  std::wstring path(required, L'\0');
-  const DWORD written = GetFinalPathNameByHandleW(handle, path.data(), required, FILE_NAME_NORMALIZED);
-  if (written == 0U || written >= required) {
-    return {};
-  }
-  path.resize(written);
-  return path;
-}
-
-bool is_below_or_equal_final_path(const std::wstring& root, const std::wstring& candidate) {
-  if (root.empty() || candidate.size() < root.size() ||
-      CompareStringOrdinal(root.c_str(), static_cast<int>(root.size()), candidate.c_str(),
-                           static_cast<int>(root.size()), TRUE) != CSTR_EQUAL) {
-    return false;
-  }
-  return candidate.size() == root.size() || root.back() == L'\\' || candidate[root.size()] == L'\\';
-}
-
-bool is_reparse_point(const HANDLE handle) {
-  FILE_ATTRIBUTE_TAG_INFO attributes{};
-  return GetFileInformationByHandleEx(handle, FileAttributeTagInfo, &attributes, sizeof(attributes)) == 0 ||
-         (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U;
-}
-
-bool sid_is_well_known(const PSID sid, const WELL_KNOWN_SID_TYPE type) {
-  DWORD sid_size = SECURITY_MAX_SID_SIZE;
-  std::array<std::byte, SECURITY_MAX_SID_SIZE> buffer{};
-  PSID expected = buffer.data();
-  if (CreateWellKnownSid(type, nullptr, expected, &sid_size) == 0) {
-    return false;
-  }
-  return EqualSid(sid, expected) != 0;
-}
-
-bool is_permitted_acl_principal(const PSID principal, const PSID owner) {
-  return EqualSid(principal, owner) != 0 || sid_is_well_known(principal, WinLocalSystemSid) ||
-         sid_is_well_known(principal, WinBuiltinAdministratorsSid);
-}
-
-bool current_process_user_sid(std::array<std::byte, SECURITY_MAX_SID_SIZE>* const storage, PSID* const result) {
-  HANDLE raw_token = INVALID_HANDLE_VALUE;
-  if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw_token) == 0) {
-    return false;
-  }
-  WindowsHandle token(raw_token);
-  DWORD bytes_required = 0U;
-  (void)GetTokenInformation(token.get(), TokenUser, nullptr, 0U, &bytes_required);
-  if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || bytes_required == 0U || bytes_required > 4096U) {
-    return false;
-  }
-  std::array<std::byte, 4096U> information{};
-  if (GetTokenInformation(token.get(), TokenUser, information.data(), bytes_required, &bytes_required) == 0) {
-    return false;
-  }
-  const auto* const user = reinterpret_cast<const TOKEN_USER*>(information.data());
-  DWORD sid_size = SECURITY_MAX_SID_SIZE;
-  if (CopySid(sid_size, storage->data(), user->User.Sid) == 0) {
-    return false;
-  }
-  *result = storage->data();
-  return true;
-}
-
-// A protected token must not rely on inherited ACLs: an ACL inherited from a
-// writable ancestor can be silently broadened after deployment.  The only
-// allowed allow-ACEs are the service user, LocalSystem, and Administrators.
-// The latter two are privileged operating-system principals, not broad users.
-bool has_private_owner_dacl(const HANDLE handle, const PSID current_user) {
-  PSID owner = nullptr;
-  PACL dacl = nullptr;
-  PSECURITY_DESCRIPTOR raw_descriptor = nullptr;
-  const DWORD status = GetSecurityInfo(handle, SE_FILE_OBJECT,
-                                       OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-                                       &owner, nullptr, &dacl, nullptr, &raw_descriptor);
-  LocalSecurityDescriptor descriptor(raw_descriptor);
-  if (status != ERROR_SUCCESS || owner == nullptr || dacl == nullptr || EqualSid(owner, current_user) == 0) {
-    return false;
-  }
-
-  SECURITY_DESCRIPTOR_CONTROL control = 0U;
-  DWORD revision = 0U;
-  if (GetSecurityDescriptorControl(raw_descriptor, &control, &revision) == 0 ||
-      (control & SE_DACL_PROTECTED) == 0U) {
-    return false;
-  }
-
-  for (DWORD index = 0U; index < dacl->AceCount; ++index) {
-    void* raw_ace = nullptr;
-    if (GetAce(dacl, index, &raw_ace) == 0 || raw_ace == nullptr) {
-      return false;
-    }
-    const auto* const header = static_cast<const ACE_HEADER*>(raw_ace);
-    if (header->AceType == ACCESS_DENIED_ACE_TYPE) {
-      continue;
-    }
-    if (header->AceType != ACCESS_ALLOWED_ACE_TYPE) {
-      return false;
-    }
-    const auto* const allowed = static_cast<const ACCESS_ALLOWED_ACE*>(raw_ace);
-    PSID ace_sid = reinterpret_cast<PSID>(const_cast<DWORD*>(&allowed->SidStart));
-    if (IsValidSid(ace_sid) == 0 || !is_permitted_acl_principal(ace_sid, owner)) {
-      return false;
-    }
-  }
-  return true;
-}
-
-TokenReadResult read_protected_file_windows(const SecretSource& source,
-                                            const std::filesystem::path& requested_root) {
-  std::error_code filesystem_error;
-  const std::filesystem::path absolute_root = std::filesystem::absolute(requested_root, filesystem_error);
-  if (filesystem_error || absolute_root.empty()) {
-    return error(TokenReadErrorCode::secret_root_unavailable,
-                 "The configured protected-file root is unavailable.");
-  }
-
-  WindowsHandle root(CreateFileW(absolute_root.c_str(), FILE_READ_ATTRIBUTES,
-                                 FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-                                 FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
-  if (!root.valid() || is_reparse_point(root.get())) {
-    return error(TokenReadErrorCode::secret_root_unavailable,
-                 "The configured protected-file root could not be opened safely.");
-  }
-  const std::wstring root_final_path = final_path_for_handle(root.get());
-  if (root_final_path.empty()) {
-    return error(TokenReadErrorCode::secret_root_unavailable,
-                 "The configured protected-file root could not be canonicalized safely.");
-  }
-
-  std::array<std::byte, SECURITY_MAX_SID_SIZE> current_user_storage{};
-  PSID current_user = nullptr;
-  if (!current_process_user_sid(&current_user_storage, &current_user) ||
-      !has_private_owner_dacl(root.get(), current_user)) {
-    return error(TokenReadErrorCode::insecure_file_permissions,
-                 "The protected-file root must have a protected owner-only access control list.");
-  }
-
-  std::filesystem::path current_path = absolute_root;
-  const std::filesystem::path relative = source_relative_path(source.location());
-  for (auto component = relative.begin(); component != relative.end(); ++component) {
-    current_path /= *component;
-    // std::next, not std::prev(end()): libc++ tags path::iterator as an input
-    // iterator, so prev() is ill-formed there.
-    const bool is_final = std::next(component) == relative.end();
-    WindowsHandle opened(CreateFileW(current_path.c_str(), is_final ? GENERIC_READ : FILE_READ_ATTRIBUTES,
-                                     FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-                                     (is_final ? 0U : FILE_FLAG_BACKUP_SEMANTICS) |
-                                         FILE_FLAG_OPEN_REPARSE_POINT,
-                                     nullptr));
-    if (!opened.valid()) {
-      return error(TokenReadErrorCode::token_not_found, "The protected token file does not exist.");
-    }
-    if (is_reparse_point(opened.get())) {
-      return error(TokenReadErrorCode::symlink_not_allowed,
-                   "Protected token file paths may not include reparse points.");
-    }
-    const std::wstring opened_final_path = final_path_for_handle(opened.get());
-    if (!is_below_or_equal_final_path(root_final_path, opened_final_path)) {
-      return error(TokenReadErrorCode::path_escapes_root,
-                   "The protected token file resolves outside the configured root.");
-    }
-    if (!has_private_owner_dacl(opened.get(), current_user)) {
-      return error(TokenReadErrorCode::insecure_file_permissions,
-                   "Protected token paths must have protected owner-only access control lists.");
-    }
-    if (!is_final) {
-      FILE_ATTRIBUTE_TAG_INFO attributes{};
-      if (GetFileInformationByHandleEx(opened.get(), FileAttributeTagInfo, &attributes, sizeof(attributes)) == 0 ||
-          (attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0U) {
-        return error(TokenReadErrorCode::not_regular_file,
-                     "Protected token path components must be directories.");
-      }
-      continue;
-    }
-
-    FILE_ATTRIBUTE_TAG_INFO attributes{};
-    if (GetFileType(opened.get()) != FILE_TYPE_DISK ||
-        GetFileInformationByHandleEx(opened.get(), FileAttributeTagInfo, &attributes, sizeof(attributes)) == 0 ||
-        (attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0U) {
-      return error(TokenReadErrorCode::not_regular_file, "The protected token path must be a regular file.");
-    }
-
-    LARGE_INTEGER size{};
-    if (GetFileSizeEx(opened.get(), &size) == 0 || size.QuadPart < 0 ||
-        static_cast<unsigned long long>(size.QuadPart) > kMaximumTokenBytes) {
-      return error(TokenReadErrorCode::token_too_large, "The protected token exceeds the size limit.");
-    }
-    std::string token;
-    token.reserve(static_cast<std::size_t>(size.QuadPart));
-    std::array<char, 4096> buffer{};
-    while (true) {
-      DWORD bytes_read = 0U;
-      if (ReadFile(opened.get(), buffer.data(), static_cast<DWORD>(buffer.size()), &bytes_read, nullptr) == 0) {
-        return error(TokenReadErrorCode::read_failed, "The protected token file could not be read.");
-      }
-      if (bytes_read == 0U) {
-        break;
-      }
-      if (token.size() + bytes_read > kMaximumTokenBytes) {
-        return error(TokenReadErrorCode::token_too_large, "The protected token exceeds the size limit.");
-      }
-      token.append(buffer.data(), bytes_read);
-    }
-    if (token.empty()) {
-      return error(TokenReadErrorCode::empty_token, "The resolved token must not be empty.");
-    }
-    if (contains_control_character(token)) {
-      return error(TokenReadErrorCode::invalid_token, "The resolved token must not contain control characters.");
-    }
-    return token;
-  }
-  return error(TokenReadErrorCode::read_failed, "The protected token file path could not be processed.");
-}
-#endif
-
 }  // namespace
 
-TokenReadResult read_token(const SecretSource& source, const std::filesystem::path& protected_file_root) {
-  if (source.kind() == SecretSourceKind::environment_variable) {
-    const char* const value = std::getenv(source.location().c_str());
-    if (value == nullptr) {
-      return error(TokenReadErrorCode::environment_variable_not_set,
-                   "The configured token environment variable is not set.");
-    }
-    if (*value == '\0') {
-      return error(TokenReadErrorCode::empty_token, "The resolved token must not be empty.");
-    }
-    if (contains_control_character(value)) {
-      return error(TokenReadErrorCode::invalid_token, "The resolved token must not contain control characters.");
-    }
-    return std::string{value};
+std::variant<SecretBytes, TokenReadError> token_from_bytes(const std::string_view raw, const bool allow_trailing_newline) {
+  if (raw.size() >= 3U && raw.substr(0, 3) == "\xEF\xBB\xBF") {
+    return error(TokenReadErrorCode::invalid_token, "The token file starts with a UTF-8 byte order mark; save it without one.");
   }
+  std::string_view value = raw;
+  if (allow_trailing_newline) {
+    if (value.size() >= 2U && value.substr(value.size() - 2U) == "\r\n") value.remove_suffix(2U);
+    else if (!value.empty() && value.back() == '\n') value.remove_suffix(1U);
+  }
+  if (value.empty()) return error(TokenReadErrorCode::empty_token, "The resolved token must not be empty.");
+  if (value.size() > kMaximumTokenBytes) return error(TokenReadErrorCode::token_too_large, "The token is longer than 256 bytes.");
+  for (const char c : value) {
+    const auto b = static_cast<unsigned char>(c);
+    if (b >= 0x21U && b <= 0x7eU) continue;
+    if (c == ' ' || c == '\t') {
+      return error(TokenReadErrorCode::invalid_token, "The token contains whitespace; only one trailing newline is allowed.");
+    }
+    if (c == '\n' || c == '\r') {
+      return error(TokenReadErrorCode::invalid_token,
+                   "The token file has more than one trailing newline (or a line break inside the token).");
+    }
+    return error(TokenReadErrorCode::invalid_token, "The token must be printable ASCII.");
+  }
+  if (value.size() >= 2U && ((value.front() == '"' && value.back() == '"') || (value.front() == '\'' && value.back() == '\''))) {
+    return error(TokenReadErrorCode::invalid_token, "The token is wrapped in quotes; remove them.");
+  }
+  if (value.size() < kMinimumOperatorTokenBytes) {
+    return error(TokenReadErrorCode::token_too_short,
+                 "Tokens must be at least 32 bytes; run strata-secure-server init to generate one.");
+  }
+  SecretBytes token;
+  (void)token.assign(value);
+  return token;
+}
 
-#ifdef _WIN32
-  return read_protected_file_windows(source, protected_file_root);
-#else
-  return read_protected_file_linux(source, protected_file_root);
-#endif
+TokenReadError token_error_from(const PathError& failure) {
+  switch (failure.code) {
+    case PathErrorCode::symlink_not_allowed: return error(TokenReadErrorCode::symlink_not_allowed, "Protected token paths may not include links or reparse points.");
+    case PathErrorCode::escapes_root:
+    case PathErrorCode::cross_device: return error(TokenReadErrorCode::path_escapes_root, "The protected token file resolves outside the configured root.");
+    case PathErrorCode::not_found: return error(TokenReadErrorCode::token_not_found, "The protected token file does not exist.");
+    case PathErrorCode::not_directory:
+    case PathErrorCode::not_regular_file: return error(TokenReadErrorCode::not_regular_file, "The protected token path must be a regular file.");
+    case PathErrorCode::not_owned_by_user: return error(TokenReadErrorCode::file_not_owned_by_current_user, "The protected token file must be owned by the current user.");
+    case PathErrorCode::permissions_too_broad:
+    case PathErrorCode::untrusted_owner:
+    case PathErrorCode::shared_writable: return error(TokenReadErrorCode::insecure_file_permissions, "The protected token file must not grant access to other users.");
+    case PathErrorCode::hard_link_not_allowed: return error(TokenReadErrorCode::hard_link_not_allowed, "The protected token file must not have other hard links.");
+    case PathErrorCode::not_absolute:
+    case PathErrorCode::unsupported_root_form:
+    case PathErrorCode::network_location:
+    case PathErrorCode::root_unavailable: return error(TokenReadErrorCode::secret_root_unavailable, "The configured protected-file root is unavailable.");
+    default: return error(TokenReadErrorCode::read_failed, "The protected token file could not be opened safely.");
+  }
+}
+
+TokenReadResult read_token(const SecretSource& source, const CanonicalRoot& protected_file_root) {
+  if (source.kind() == SecretSourceKind::environment_variable) return read_environment_token(source);
+  return read_protected_file(source, protected_file_root);
+}
+
+TokenReadResult read_token(const SecretSource& source, const std::filesystem::path& protected_file_root) {
+  if (source.kind() == SecretSourceKind::environment_variable) return read_environment_token(source);
+  auto root = open_root(protected_file_root);
+  if (const auto* failure = std::get_if<PathError>(&root)) return token_error_from(*failure);
+  return read_protected_file(source, std::get<CanonicalRoot>(root));
 }
 
 }  // namespace secure_frontend

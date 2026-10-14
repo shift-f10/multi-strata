@@ -1,5 +1,7 @@
 #pragma once
 
+#include "secure_frontend/canonical_path.hpp"
+
 #include <cstddef>
 #include <filesystem>
 #include <string>
@@ -51,11 +53,13 @@ using TokenizerDecodeResult = std::variant<std::string, TokenizerPackError>;
 using TokenizerEncodeResult = std::variant<std::vector<std::size_t>, TokenizerPackError>;
 
 // Loads only the fixed local files vocab.json, merges.txt, and token_type.json
-// beneath pack_root. All files must be regular, non-symlink files. Vocabulary
+// beneath pack_root, each opened by handle with open_beneath (no link is
+// followed). All files must be regular, non-symlink files. Vocabulary
 // IDs must be unique, contiguous, and zero-based; merges must name vocabulary
 // tokens and be unique; token types must have exactly one value per ID.
-[[nodiscard]] TokenizerPackLoadResult load_local_tokenizer_pack(
-    const std::filesystem::path& pack_root);
+[[nodiscard]] TokenizerPackLoadResult load_local_tokenizer_pack(const CanonicalRoot& pack_root);
+// Opens the root first (open_root: canonical, private, existing).
+[[nodiscard]] TokenizerPackLoadResult load_local_tokenizer_pack(const std::filesystem::path& pack_root);
 
 // Decodes byte-level-BPE token IDs using GPT-2's reversible byte alphabet.
 // CONTROL (3) and USER_DEFINED (4)
