@@ -400,6 +400,44 @@ void cfg02_create_within_root_writes_nothing_outside() {
   expect((st.st_mode & 0777) == 0700, "created directories are 0700");
 #endif
 }
+
+// SP1 delta f (SP4 §5.3): bundle directories on removable media.
+void external_root_skips_ownership_checks() {
+  const auto scratch = secure_frontend_test::make_scratch_directory();
+  const auto shared = scratch / "shared";
+  secure_frontend_test::make_private_directory(shared);
+#if !defined(_WIN32)
+  ::chmod(shared.c_str(), 0777);
+#endif
+  auto opened = secure_frontend::open_root(shared, secure_frontend::RootPolicy::external);
+  expect(std::holds_alternative<secure_frontend::CanonicalRoot>(opened) && std::get<secure_frontend::CanonicalRoot>(opened).external(),
+         "external roots accept shared-writable directories and say so");
+  if (!std::holds_alternative<secure_frontend::CanonicalRoot>(opened)) return;
+  auto ordinary = secure_frontend::open_root(scratch);
+  expect(std::holds_alternative<secure_frontend::CanonicalRoot>(ordinary) &&
+             !std::get<secure_frontend::CanonicalRoot>(ordinary).external(),
+         "an ordinary root is not external");
+#if !defined(_WIN32)
+  expect(std::holds_alternative<secure_frontend::PathError>(secure_frontend::open_root(shared)), "existing roots still refuse them");
+  ::chmod(shared.c_str(), 0700);
+  const auto inner = shared / "inner";
+  secure_frontend_test::make_private_directory(inner);
+  ::chmod(inner.c_str(), 0777);
+  ::chmod(shared.c_str(), 0777);
+  const auto& root = std::get<secure_frontend::CanonicalRoot>(opened);
+  expect(!secure_frontend::create_directory_within(root, std::get<secure_frontend::RelativePath>(secure_frontend::parse_relative_path("inner/deeper"))),
+         "directories below an external root may be shared-writable (FAT dmask=000)");
+  std::filesystem::create_directory_symlink(scratch, shared / "link");
+  const auto through_link =
+      secure_frontend::create_directory_within(root, std::get<secure_frontend::RelativePath>(secure_frontend::parse_relative_path("link/x")));
+  expect(through_link.has_value() && through_link->code == PathErrorCode::symlink_not_allowed,
+         "links below an external root are still refused");
+  auto private_root = secure_frontend::open_root(scratch);
+  expect(secure_frontend::create_directory_within(std::get<secure_frontend::CanonicalRoot>(private_root),
+             std::get<secure_frontend::RelativePath>(secure_frontend::parse_relative_path("shared/inner/x"))).has_value(),
+         "below an ordinary root a shared-writable directory on the way is still refused");
+#endif
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -416,6 +454,7 @@ int main(int argc, char** argv) {
       {"cfg04_final_path_on_network_share_is_actionable", cfg04_final_path_on_network_share_is_actionable},
       {"paths_handle_non_ascii_and_long_names", paths_handle_non_ascii_and_long_names},
       {"cfg02_create_within_root_writes_nothing_outside", cfg02_create_within_root_writes_nothing_outside},
+      {"external_root_skips_ownership_checks", external_root_skips_ownership_checks},
 #if defined(_WIN32)
       {"auth02_windows_token_file_reads_with_private_dacl", auth02_windows_token_file_reads_with_private_dacl},
       {"cfg03_rejects_junction_below_root", cfg03_rejects_junction_below_root},

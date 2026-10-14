@@ -1,7 +1,7 @@
 name: secure-frontend
 
-# Blocking: linux-gcc, linux-clang, windows-llvm-mingw-cross, windows-msys2-clang,
-# top-level-integration. Non-blocking: windows-msvc (informational).
+# Blocking: linux-gcc, linux-clang, linux-release, windows-llvm-mingw-cross,
+# windows-msys2-clang, top-level-integration. Non-blocking: windows-msvc (informational).
 # Upstream Strata is the git submodule upstream/ (gitlink 296b59d2, tag v0.1.44.1).
 # Jobs that run pytest or configure our root CMakeLists.txt check it out with
 # `submodules: true` (depth 1: about a 19.7 MB pack, 50.7 MB and 2,976 files
@@ -20,9 +20,9 @@ name: secure-frontend
 # this workflow uses sudo, and the test never runs it outside CI.
 on:
   push:
-    paths: ["secure_frontend/**", "CMakeLists.txt", "scripts/**", "pytest.ini", "conftest.py", "tools/**", "upstream", ".gitmodules", ".github/workflows/secure-frontend.yml"]
+    paths: ["secure_frontend/**", "CMakeLists.txt", "scripts/**", "pytest.ini", "conftest.py", "tools/**", "upstream", "upstream.version", ".gitmodules", ".github/workflows/secure-frontend.yml"]
   pull_request:
-    paths: ["secure_frontend/**", "CMakeLists.txt", "scripts/**", "pytest.ini", "conftest.py", "tools/**", "upstream", ".gitmodules", ".github/workflows/secure-frontend.yml"]
+    paths: ["secure_frontend/**", "CMakeLists.txt", "scripts/**", "pytest.ini", "conftest.py", "tools/**", "upstream", "upstream.version", ".gitmodules", ".github/workflows/secure-frontend.yml"]
   workflow_dispatch:
 
 permissions:
@@ -72,6 +72,21 @@ jobs:
             exit 1
           fi
           test -z "$(git -C upstream status --porcelain)"
+
+  linux-release:
+    name: linux-gcc-release (SECURE_FRONTEND_TEST_HOOKS OFF, the shipped configuration)
+    runs-on: ubuntu-24.04  # pinned: `ubuntu-latest` moves to Ubuntu 26 on 2026-10-19; re-verify the bootstrap before unpinning
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/dev/bootstrap-linux.sh
+      - run: echo "$GITHUB_WORKSPACE/.venv-dev/bin" >> "$GITHUB_PATH"
+      - run: cmake --preset linux-gcc-release
+        working-directory: secure_frontend
+      - run: cmake --build --preset linux-gcc-release --parallel
+        working-directory: secure_frontend
+      - run: ctest --preset linux-gcc-release
+        working-directory: secure_frontend
 
   windows-cross:
     name: windows-llvm-mingw-cross (compile+link on Linux)

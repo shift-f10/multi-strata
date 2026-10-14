@@ -202,9 +202,17 @@ an environment variable (`env:NAME`) or a file below `roots.secret`
 (`file:token`).
 
     strata-secure-server init --config ~/.config/strata/config.json \
-        --models-root ~/models --tokenizer-pack ~/tok --engine ~/strata/strata --model-id qwen-local
+        --models-root ~/models --engine ~/strata/strata --model-id NAME:TAG
     strata-secure-server --check --config ~/.config/strata/config.json
     strata-secure-server --config ~/.config/strata/config.json
+
+`engine.model_id` names a model installed in `roots.models` (`strata pull` or
+`strata import`; `strata list` shows them). Its manifest supplies the engine
+profile, `--native`, `--pack`, `--ple-gguf` and the tokenizer, so
+`engine.profile`, `roots.tokenizer_pack` and those weight flags in
+`engine.args` are configuration errors that `--check` and serve both report. A
+model this release cannot run stops serve with exit 11. `--expert` (below)
+is the operator bring-up path instead.
 
 `init` writes the config (owner-only, atomic). For a file token source
 (`file:…`, the default) it also writes a 43-character token generated from the
@@ -244,19 +252,26 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `limits.engine.stop_drain_timeout_s` | integer | `5` | 1-600 | - | Time to drain to DONE after STOP before the engine is marked failed. |
 | `limits.concurrency.max_concurrent_requests` | integer | `1` | 1-1 | - | Requests served at once; only 1 until SP3. |
 | `roots.models` | string | required | - | `--models-root` | Absolute directory of .gguf files. The root itself may be a symlink; nothing below it may be. |
-| `roots.tokenizer_pack` | string | required | - | `--tokenizer-pack` | Absolute directory with vocab.json, merges.txt, token_type.json. |
+| `roots.tokenizer_pack` | string | unset | - | `--tokenizer-pack` | Absolute tokenizer directory; only with strata-secure-server --expert (a managed model brings its own). |
 | `roots.secret` | string | unset | - | `--secret-root` | Absolute directory holding the token file. Default: the config file's directory. |
 | `roots.logs` | string | unset | - | - | Absolute log directory (created 0700; unused in SP1). |
 | `roots.cache` | string | unset | - | - | Absolute cache directory (created 0700); when set, it holds the engine's CUDA cache in its cuda subdirectory. |
 | `roots.state` | string | unset | - | `--state-dir` | Absolute, existing owner-only directory for engine state: the engine's cwd, per-generation temp and (without roots.cache) the CUDA cache. Required to serve. |
 | `token.source` | string | `file:token` | - | `--token-file, --token-env` | file:<relative path below roots.secret> or env:<NAME>. Metadata only; the token is never in the config. |
-| `engine.profile` | string | `qwen` | - | `--profile` | qwen or glm53. |
+| `engine.profile` | string | unset | - | `--profile` | qwen or glm53; only with --expert (a managed model's manifest sets it). |
 | `engine.executable` | string | required | - | `--engine` | Absolute path of the engine; a regular file not writable by group or others. |
-| `engine.model_id` | string | required | - | `--model-id` | Model ID from the local inventory. |
+| `engine.model_id` | string | required | - | `--model-id` | Default model reference name[:tag] from the model index (or, with --expert, an inventory ID). |
 | `engine.args` | string array | `[]` | - | `--engine-arg (repeatable)` | Extra engine arguments; frontend-owned and unsupported flags are rejected. |
 | `engine.lib_dirs` | string array | `[]` | - | `--engine-lib-dir (repeatable)` | Absolute library directories for the engine (default: the engine executable's directory). |
 | `engine.gpu` | string | unset | - | `--gpu` | GPU device indices for the engine, e.g. 0 or 0,1 (distinct, 0-255, at most 16); rendered as the engine's --gpu argument (strata family: no GPU variable). Not supported with engine.profile glm53. |
 | `engine.allow_new_privileges` | boolean | `false` | - | `--allow-new-privileges` | Linux: do not set PR_SET_NO_NEW_PRIVS on the engine (default: set). Only for hosts whose NVIDIA driver must run setuid nvidia-modprobe to create /dev/nvidia-uvm on first use. |
+| `pull.downloader` | string | unset | - | - | Absolute path of curl for pull/update. Default /usr/bin/curl (Windows: System32\curl.exe). Validated when a transfer or doctor --downloader runs, never at serve start. |
+| `pull.proxy` | string | unset | - | - | http://host:port or https://host:port; absent = --noproxy *. No credentials. Environment proxies are never read. |
+| `pull.allow_private_addresses` | boolean | `false` | - | - | Allow sources that resolve to private or special-use addresses. |
+| `pull.max_total_bytes` | integer | `1099511627776` | 1048576-17592186044416 | - | Largest manifest total a pull accepts (bytes). |
+| `pull.max_duration_s` | integer | `172800` | 60-604800 | - | Time budget for a whole pull run. |
+| `pull.stall_timeout_s` | integer | `120` | 10-3600 | - | Abort a transfer slower than 1024 B/s for this long. |
+| `pull.connect_timeout_s` | integer | `30` | 1-300 | - | TCP/TLS connect timeout per request. |
 <!-- config-keys:end -->
 
 `roots.secret` defaults to the config file's directory only for a `file:` token
@@ -274,6 +289,13 @@ default fixed native profile uses the local GPT-2-byte-BPE tokenizer pack and
 the fixed Qwen ChatML renderer; the separately selected GLM-5.3 profile is
 documented below. It deliberately rejects streaming, tools, images, URLs, MCP,
 downloads, and a request whose `model` is not the one model selected at startup.
+
+The launch described in this section is the `--expert` bring-up mode: the
+operator supplies `engine.profile`, `roots.tokenizer_pack` (required) and the
+weight flags other than `--native` in `engine.args`, and `engine.model_id`
+names a `.gguf` in the local inventory (no managed model; `/v1/models` lists
+the whole inventory). Pass `--expert` when serving and with `--check` (which
+then validates this mode); `init` accepts it and ignores it.
 
 The model directory must already contain the selected `.gguf`; the tokenizer
 pack must already contain `vocab.json`, `merges.txt`, and `token_type.json`.
@@ -301,7 +323,7 @@ The flags below can equally live in the config file (see
 
 ```sh
 export STRATA_API_TOKEN='replace-with-a-long-random-token-of-32-bytes-or-more'
-./out/build/linux-gcc/strata-secure-server \
+./out/build/linux-gcc/strata-secure-server --expert \
   --models-root /absolute/path/to/models \
   --model-id local-model-name \
   --tokenizer-pack /absolute/path/to/tokenizer-pack \
@@ -342,12 +364,12 @@ then pass that build's required positional engine arguments unchanged with
 repeated `--engine-arg`. The server adds only `--serve` immediately after the
 executable; it does not reinterpret or synthesize positional arguments, does
 not add `--native`, and rejects only `--serve` and NUL bytes in them. With
-`glm53`, `engine.args` must not be empty (`--check` reports it as required). The
+`glm53`, `engine.args` must not be empty (`--check --expert` reports it as required). The
 tokenizer pack must match that exact engine/model build and provide the fixed
 GLM framing markers as CONTROL tokens.
 
 ```sh
-./out/build/linux-gcc/strata-secure-server \
+./out/build/linux-gcc/strata-secure-server --expert \
   --profile glm53 \
   --models-root /absolute/path/to/models \
   --model-id glm53-local \

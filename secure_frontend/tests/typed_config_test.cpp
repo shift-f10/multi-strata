@@ -1,14 +1,20 @@
 #include "secure_frontend/config_file.hpp"
 #include "secure_frontend/frontend_config.hpp"
+#include "secure_frontend/launch_composition.hpp"
 #include "secure_frontend/secret_bytes.hpp"
 #include "secure_frontend/secret_source.hpp"
 #include "secure_frontend/token_reader.hpp"
+#include "support/cli_harness.hpp"
 #include "support/config_json.hpp"
+#include "support/process_runner.hpp"
 #include "support/test_support.hpp"
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
+#include <filesystem>
+#include <functional>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -89,8 +95,8 @@ void typed_config_accepts_minimal_file_and_applies_defaults() {
   expect(c.limits.concurrency.max_concurrent_requests == 1U, "one request at a time until SP3");
   expect(c.token.kind() == secure_frontend::SecretSourceKind::protected_file && c.token.location() == "token",
          "token.source defaults to file:token");
-  expect(c.engine.profile == secure_frontend::EngineProfile::qwen && c.engine.model_id.value() == "qwen-local",
-         "engine defaults");
+  expect(!c.engine.profile.has_value() && c.engine.model_id.value() == "qwen-local",
+         "engine.profile has no default: a managed model's manifest sets it (SP4 §4.9 c)");
 }
 
 void cfg01_unknown_key_rejected() {
@@ -184,13 +190,25 @@ void cfg01_missing_required_rejected() {
   ConfigFixture f;
   std::vector<std::string> required{"schema_version"};
   for (const auto& key : secure_frontend::config_schema()) if (key.required) required.emplace_back(key.path);
-  expect(required.size() == 5U, "schema_version, roots.models, roots.tokenizer_pack, engine.executable, engine.model_id");
+  expect(required.size() == 4U, "schema_version, roots.models, engine.executable, engine.model_id (roots.tokenizer_pack is --expert only, SP4 §4.9 d)");
   for (const auto& path : required) {
     auto literals = f.literals;
     literals.erase(path);
     const auto result = validate_text(render_config_json(literals), f.dir);
     expect(has_issue(result, path, ConfigIssueCode::missing_required), "missing required key: " + path);
   }
+}
+
+void typed_config_model_reference_accepts_name_tag() {
+  ConfigFixture f;
+  auto literals = f.literals;
+  literals["engine.model_id"] = secure_frontend_test::json_literal("qwen3.8-flash-next:iq2_xs");
+  literals.erase("roots.tokenizer_pack");
+  const auto result = validate_text(render_config_json(literals), f.dir);
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result), "name:tag model reference, no tokenizer root");
+  literals["engine.model_id"] = secure_frontend_test::json_literal("a:b:c");
+  expect(has_issue(validate_text(render_config_json(literals), f.dir), "engine.model_id", ConfigIssueCode::invalid_value),
+         "at most one ':'");
 }
 
 void cfg01_out_of_range_rejected() {
@@ -487,15 +505,176 @@ void readme_config_table_matches_schema() {
   const std::string expected = secure_frontend::render_config_schema_markdown();
   expect(table == expected, "README key table is stale; replace it with:\n" + expected);
 }
+// A minimal valid draft over scratch roots; validate() opens them.
+secure_frontend::FrontendConfigDraft pull_minimal_draft(const std::filesystem::path& scratch) {
+  using secure_frontend::ConfigDraftEntry;
+  using secure_frontend::ConfigSource;
+  secure_frontend_test::make_private_directory(scratch / "models");
+  secure_frontend_test::make_private_directory(scratch / "tokenizer");
+  secure_frontend_test::make_private_directory(scratch / "bin");
+  secure_frontend_test::write_file(scratch / "bin" / "engine", "#!/bin/sh\n", 0700);
+  secure_frontend::FrontendConfigDraft draft;
+  draft.entries["roots.models"] = ConfigDraftEntry{(scratch / "models").string(), ConfigSource::file};
+  draft.entries["roots.tokenizer_pack"] = ConfigDraftEntry{(scratch / "tokenizer").string(), ConfigSource::file};
+  draft.entries["engine.executable"] =
+      ConfigDraftEntry{std::filesystem::canonical(scratch / "bin" / "engine").string(), ConfigSource::file};
+  draft.entries["engine.model_id"] = ConfigDraftEntry{std::string{"m"}, ConfigSource::file};
+  draft.entries["token.source"] = ConfigDraftEntry{std::string{"env:STRATA_TEST_TOKEN"}, ConfigSource::file};
+  return draft;
+}
+
+bool has_issue_for_key(const secure_frontend::ConfigValidationResult& result, const std::string& key) {
+  const auto* issues = std::get_if<secure_frontend::ConfigErrors>(&result);
+  if (issues == nullptr) return false;
+  for (const auto& issue : *issues) {
+    if (issue.key_path == key) return true;
+  }
+  return false;
+}
+
+// Spec §4.9 delta e: every pull.* key, table-driven like CFG-01.
+void cfg01_pull_keys_table_driven() {
+  using Value = secure_frontend::ConfigDraftValue;
+  struct Row final {
+    std::string key;
+    Value good;
+    std::vector<Value> bad;
+  };
+  // Pre-flight F-4: the case runs on Windows too, so absolute paths come from a
+  // scratch directory ("/opt/curl/bin/curl" is not absolute there).
+  const auto elsewhere = secure_frontend_test::make_scratch_directory();
+  const std::string good_downloader = (elsewhere / "opt" / "curl").string();
+  const std::string missing_downloader = (elsewhere / "nonexistent" / "curl").string();
+  const std::vector<Row> rows{
+      {"pull.downloader", Value{good_downloader}, {Value{std::string{"curl"}}, Value{std::int64_t{1}}}},
+      {"pull.proxy", Value{std::string{"http://proxy.corp:3128"}},
+       {Value{std::string{"http://u:p@proxy.corp:3128"}}, Value{std::string{"socks5://p:1"}}, Value{std::string{"http://p"}}}},
+      {"pull.allow_private_addresses", Value{true}, {Value{std::string{"yes"}}}},
+      {"pull.max_total_bytes", Value{std::int64_t{1} << 20}, {Value{(std::int64_t{1} << 20) - 1}, Value{(std::int64_t{1} << 44) + 1}}},
+      {"pull.max_duration_s", Value{std::int64_t{60}}, {Value{std::int64_t{59}}, Value{std::int64_t{604801}}}},
+      {"pull.stall_timeout_s", Value{std::int64_t{3600}}, {Value{std::int64_t{9}}, Value{std::int64_t{3601}}}},
+      {"pull.connect_timeout_s", Value{std::int64_t{1}}, {Value{std::int64_t{0}}, Value{std::int64_t{301}}}},
+  };
+  for (const auto& row : rows) {
+    const auto scratch = secure_frontend_test::make_scratch_directory();
+    auto draft = pull_minimal_draft(scratch);
+    draft.entries[row.key] = secure_frontend::ConfigDraftEntry{row.good, secure_frontend::ConfigSource::file};
+    const auto accepted = secure_frontend::validate(draft);
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(accepted),
+           row.key + " accepts a good value: " + issues_of(accepted));
+    for (const auto& bad : row.bad) {
+      draft.entries[row.key] = secure_frontend::ConfigDraftEntry{bad, secure_frontend::ConfigSource::file};
+      expect(has_issue_for_key(secure_frontend::validate(draft), row.key), row.key + " rejects a bad value");
+    }
+  }
+  const auto scratch = secure_frontend_test::make_scratch_directory();
+  auto defaults = pull_minimal_draft(scratch);
+  defaults.entries["pull.downloader"] = secure_frontend::ConfigDraftEntry{missing_downloader, secure_frontend::ConfigSource::file};
+  const auto validated = secure_frontend::validate(defaults);
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(validated),
+         "pull.downloader is validated lazily: a missing file does not fail validation (CFG-01 exception)");
+  if (const auto* config = std::get_if<secure_frontend::ValidatedConfig>(&validated)) {
+    const auto& pull = config->get().pull;
+    expect(pull.downloader == std::filesystem::path{missing_downloader}, "the configured downloader path is kept as written");
+    expect(pull.max_total_bytes == (std::uint64_t{1} << 40U) && pull.max_duration.count() == 172800 &&
+               pull.stall_timeout.count() == 120 && pull.connect_timeout.count() == 30 && !pull.allow_private_addresses &&
+               !pull.proxy.has_value(),
+           "spec §3.9 defaults");
+    expect(secure_frontend::describe(config->get()).find("pull.max_total_bytes = 1099511627776\n") != std::string::npos,
+           "--check lists the pull keys");
+  }
+}
+// SP4 Task 24b (spec §4.9 c/d; F-8): the managed-model rejections are config errors that
+// strata-secure-server --check reports too. ARGS: <strata-secure-server>.
+secure_frontend_test::ProcessResult server_check(const secure_frontend_test::cli::CliHarness& h, const bool expert) {
+  const auto& args = secure_frontend_test::extra_arguments();
+  if (args.empty()) return {-2, {}, "needs ARGS <strata-secure-server>"};
+  std::vector<std::string> argv{"--check", "--config", secure_frontend::path_to_utf8(h.config)};
+  if (expert) argv.insert(argv.begin(), "--expert");
+  return secure_frontend_test::run_to_completion(secure_frontend_test::ProcessSpec{
+      args[0], argv, {{"STRATA_TEST_TOKEN", "check-token-0123456789abcdefghijklmnop"}}});
+}
+
+using secure_frontend_test::contains;
+
+void cfg01_engine_profile_rejected_for_managed_model() {
+  secure_frontend_test::cli::CliHarness h;
+  (void)secure_frontend_test::cli::install(h);
+  h.make_managed("m:t", ", \"profile\": \"qwen\"");
+  const auto composed = secure_frontend::compose_engine_launch(h.validated_config().get(), false);
+  const auto* failure = std::get_if<secure_frontend::LaunchFailure>(&composed);
+  expect(failure != nullptr && failure->messages.front().find("engine.profile") != std::string::npos &&
+             failure->messages.front().find("engine_profile_conflicts_with_manifest") != std::string::npos,
+         "engine.profile is rejected for a managed model unless --expert");
+  const auto checked = server_check(h, false);
+  expect(checked.exit_code == 1 && contains(checked.err, "Configuration error: engine.profile") &&
+             !contains(checked.out, "Configuration is valid."),
+         "--check reports engine.profile as a config error: " + checked.err);
+}
+
+void cfg01_tokenizer_pack_root_rejected_for_managed_model() {
+  secure_frontend_test::cli::CliHarness h;
+  (void)secure_frontend_test::cli::install(h);
+  std::string text = secure_frontend_test::read_file(h.config);
+  text.replace(text.find("\"model_id\": \"m\""), 15, "\"model_id\": \"m:t\"");  // roots.tokenizer_pack stays set
+  secure_frontend_test::write_file(h.config, text);
+  const auto composed = secure_frontend::compose_engine_launch(h.validated_config().get(), false);
+  const auto* failure = std::get_if<secure_frontend::LaunchFailure>(&composed);
+  expect(failure != nullptr && failure->messages.front().find("roots.tokenizer_pack") != std::string::npos,
+         "roots.tokenizer_pack together with a managed model is a config error (no silent ignore)");
+  const auto checked = server_check(h, false);
+  expect(checked.exit_code == 1 && contains(checked.err, "Configuration error: roots.tokenizer_pack") &&
+             !contains(checked.out, "Configuration is valid."),
+         "--check reports roots.tokenizer_pack as a config error: " + checked.err);
+  const auto expert = server_check(h, true);
+  expect(expert.exit_code == 0 && contains(expert.out, "Configuration is valid."),
+         "--check --expert accepts the operator's tokenizer root: " + expert.err);
+}
+
+// make_model_id accepts "index.json"; the model index grammar never names it (two grammars, F-8).
+void cfg01_model_reference_rejected_for_managed_model() {
+  secure_frontend_test::cli::CliHarness h;
+  h.make_managed("index.json");
+  const auto issues = secure_frontend::managed_config_issues(h.validated_config().get());
+  expect(issues.size() == 1U && issues.front().rfind("engine.model_id", 0) == 0, "a model id that is not a name[:tag] reference");
+  const auto checked = server_check(h, false);
+  expect(checked.exit_code == 1 && contains(checked.err, "Configuration error: engine.model_id"),
+         "--check reports engine.model_id: " + checked.err);
+  const auto expert = server_check(h, true);
+  expect(expert.exit_code == 1 && contains(expert.err, "Configuration error: roots.tokenizer_pack") &&
+             !contains(expert.err, "engine.model_id"),
+         "--check --expert needs roots.tokenizer_pack and takes an inventory id: " + expert.err);
+}
+// SP4 §4.9 c/d (Task 24a addendum): --check prints "(unset)" for the --expert-only keys.
+void describe_reports_unset_expert_keys() {
+  ConfigFixture f;
+  auto literals = f.literals;
+  literals.erase("roots.tokenizer_pack");
+  literals.erase("engine.profile");
+  literals["engine.model_id"] = secure_frontend_test::json_literal("m:t");
+  const auto result = validate_text(render_config_json(literals), f.dir);
+  const auto* config = std::get_if<secure_frontend::ValidatedConfig>(&result);
+  expect(config != nullptr, "a managed config validates: " + issues_of(result));
+  if (config == nullptr) return;
+  const auto text = secure_frontend::describe(config->get());
+  expect(text.find("\nroots.tokenizer_pack = (unset)\n") != std::string::npos, "roots.tokenizer_pack = (unset): " + text);
+  expect(text.find("\nengine.profile = (unset)\n") != std::string::npos, "engine.profile = (unset)");
+  expect(text.find("\nengine.model_id = \"m:t\"\n") != std::string::npos, "engine.model_id as given");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
+      {"cfg01_engine_profile_rejected_for_managed_model", cfg01_engine_profile_rejected_for_managed_model},
+      {"cfg01_tokenizer_pack_root_rejected_for_managed_model", cfg01_tokenizer_pack_root_rejected_for_managed_model},
+      {"cfg01_model_reference_rejected_for_managed_model", cfg01_model_reference_rejected_for_managed_model},
+      {"describe_reports_unset_expert_keys", describe_reports_unset_expert_keys},
       {"typed_config_accepts_minimal_file_and_applies_defaults", typed_config_accepts_minimal_file_and_applies_defaults},
       {"cfg01_unknown_key_rejected", cfg01_unknown_key_rejected},
       {"cfg01_duplicate_key_rejected", cfg01_duplicate_key_rejected},
       {"cfg01_type_confusion_rejected", cfg01_type_confusion_rejected},
       {"cfg01_missing_required_rejected", cfg01_missing_required_rejected},
+      {"typed_config_model_reference_accepts_name_tag", typed_config_model_reference_accepts_name_tag},
       {"cfg01_out_of_range_rejected", cfg01_out_of_range_rejected},
       {"cfg01_chat_ranges_match_enforced_caps", cfg01_chat_ranges_match_enforced_caps},
       {"typed_config_cross_field_rules", typed_config_cross_field_rules},
@@ -505,6 +684,7 @@ int main(int argc, char** argv) {
       {"cfg06_config_has_no_secret_typed_member", cfg06_config_has_no_secret_typed_member},
       {"cfg06_validated_config_bytes_do_not_contain_token", cfg06_validated_config_bytes_do_not_contain_token},
       {"readme_config_table_matches_schema", readme_config_table_matches_schema},
+      {"cfg01_pull_keys_table_driven", cfg01_pull_keys_table_driven},
 #if !defined(_WIN32)
       {"cfg02_env_token_ignores_config_folder_permissions", cfg02_env_token_ignores_config_folder_permissions},
       {"cfg02_file_token_default_secret_root_reports_one_issue", cfg02_file_token_default_secret_root_reports_one_issue},

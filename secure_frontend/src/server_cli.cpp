@@ -87,6 +87,11 @@ std::variant<ServerInvocation, CliError> parse_server_command_line(const int arg
       invocation.force = true;
       continue;
     }
+    if (argument == "--expert") {
+      if (invocation.expert) return CliError{"duplicate --expert"};
+      invocation.expert = true;
+      continue;
+    }
     if (argument == "--config") {
       if (index + 1 >= argc) return CliError{"missing value for --config"};
       if (invocation.config_file.has_value()) return CliError{"duplicate --config"};
@@ -157,6 +162,10 @@ std::string server_usage() {
       "  --config FILE            Read configuration keys from FILE\n"
       "  --check                  Validate everything, print the effective configuration\n"
       "                           (never the token) and exit\n"
+      "  --expert                 Bring-up mode: engine.profile, roots.tokenizer_pack and\n"
+      "                           weight flags other than --native (always frontend-owned)\n"
+      "                           in engine.args are the operator's (no managed model);\n"
+      "                           --check then validates that mode\n"
       "  --help                   Print this help\n"
       "\n"
       "init writes FILE (owner-only, atomic) from the options given and generates a\n"
@@ -184,12 +193,16 @@ std::string server_usage() {
       "SystemDrive, NUMBER_OF_PROCESSORS); nothing is inherited from this server's\n"
       "environment. It serves authenticated GET /health, GET /v1/models and\n"
       "non-streaming text-only POST /v1/chat/completions.\n"
-      "Streaming, tools, downloads, remote URLs, telemetry and MCP are disabled. With\n"
-      "the qwen profile the frontend supplies --native from engine.model_id; the\n"
-      "operator passes --pack and other weight flags with --engine-arg. --engine-arg\n"
-      "refuses the frontend-owned --native, --serve and --gpu: GPUs are chosen only\n"
-      "with --gpu, passed as the engine's own --gpu argument (strata family: no GPU\n"
-      "variable in the engine environment).\n";
+      "Streaming, tools, downloads, remote URLs, telemetry and MCP are disabled. By\n"
+      "default engine.model_id names an installed model (name[:tag], see `strata\n"
+      "list`): its manifest supplies the profile, the weight flags and the tokenizer,\n"
+      "and engine.profile, roots.tokenizer_pack and weight flags in engine.args are\n"
+      "config errors. With --expert and the qwen profile the frontend supplies\n"
+      "--native from the local inventory entry engine.model_id; the operator passes\n"
+      "--pack and other weight flags with --engine-arg and sets roots.tokenizer_pack.\n"
+      "--engine-arg refuses the frontend-owned --native, --serve and --gpu: GPUs are\n"
+      "chosen only with --gpu, passed as the engine's own --gpu argument (strata\n"
+      "family: no GPU variable in the engine environment).\n";
   return text;
 }
 

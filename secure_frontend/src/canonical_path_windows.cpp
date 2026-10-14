@@ -104,7 +104,7 @@ std::variant<OpenedFile, PathError> open_beneath(const CanonicalRoot& root, cons
 
 namespace detail {
 
-std::variant<CanonicalRoot, PathError> open_existing_root(const std::filesystem::path& requested) {
+std::variant<CanonicalRoot, PathError> open_existing_root(const std::filesystem::path& requested, const RootPolicy policy) {
   const std::wstring text = requested.wstring();
   if (auto error = check_windows_root_form(text)) return *error;
   std::wstring full(32768, L'\0');
@@ -124,17 +124,22 @@ std::variant<CanonicalRoot, PathError> open_existing_root(const std::filesystem:
   }
   auto classified = classify_final_path(ws::final_path_for_handle(handle));
   if (auto* error = std::get_if<PathError>(&classified)) return *error;
-  switch (ws::write_access_is_private(handle)) {
-    case ws::Trust::trusted: break;
-    case ws::Trust::untrusted_owner:
-      return path_error(PathErrorCode::untrusted_owner, "the root must be owned by you, SYSTEM or Administrators");
-    case ws::Trust::shared_writable:
-      return path_error(PathErrorCode::shared_writable, "the root must not be writable by other users");
-    case ws::Trust::unreadable:
-      return path_error(PathErrorCode::root_unavailable, "the root's security settings cannot be read");
+  // External roots (bundle directories) skip this: FAT/exFAT volumes have no ACLs, so
+  // Trust::unreadable is accepted there too.
+  if (policy != RootPolicy::external) {
+    switch (ws::write_access_is_private(handle)) {
+      case ws::Trust::trusted: break;
+      case ws::Trust::untrusted_owner:
+        return path_error(PathErrorCode::untrusted_owner, "the root must be owned by you, SYSTEM or Administrators");
+      case ws::Trust::shared_writable:
+        return path_error(PathErrorCode::shared_writable, "the root must not be writable by other users");
+      case ws::Trust::unreadable:
+        return path_error(PathErrorCode::root_unavailable, "the root's security settings cannot be read");
+    }
   }
   // Ownership moves to the CanonicalRoot.
-  return PathFactory::root(std::filesystem::path{std::get<std::wstring>(classified)}, guard.release(), 0U);
+  return PathFactory::root(std::filesystem::path{std::get<std::wstring>(classified)}, guard.release(), 0U,
+                           policy == RootPolicy::external);
 }
 
 }  // namespace detail

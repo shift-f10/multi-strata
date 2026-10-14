@@ -1,2 +1,7 @@
 # Shell scripts keep LF line endings wherever the repository is cloned.
 *.sh text eol=lf
+# Digest-pinned bytes (SP4 §2.5): catalog manifests, fixtures and the engine
+# version file must never be line-ending converted (Windows runners use autocrlf).
+/upstream.version -text
+/secure_frontend/catalog/** -text
+/secure_frontend/tests/fixtures/** -text

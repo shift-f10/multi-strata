@@ -13,6 +13,14 @@ else()
 endif()
 option(SECURE_FRONTEND_WERROR "Treat warnings as errors in the secure frontend" ${_secure_frontend_werror_default})
 
+# SP4 §10.5: test-only hooks (record channel, raw manifest profile, publish
+# fault injection, --cacert loopback test). OFF by default; the test presets
+# turn it ON; linux-gcc-release proves the shipped (OFF) configuration.
+option(SECURE_FRONTEND_TEST_HOOKS "Compile test-only hooks; never for shipped binaries" OFF)
+if(SECURE_FRONTEND_TEST_HOOKS)
+    add_compile_definitions(SECURE_FRONTEND_TEST_HOOKS=1)
+endif()
+
 function(secure_frontend_set_warnings target)
     # C++ only: an .rc source must not hand these flags to the RC compiler (SP2 G3).
     if(MSVC)
@@ -139,6 +147,8 @@ target_include_directories(secure_frontend_typed_config PUBLIC
 target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_config secure_frontend_json
     secure_frontend_model_inventory secure_frontend_engine_arguments)
 target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_paths)
+# SP4 §3.9: pull.proxy is parsed by parse_proxy (ProxySetting).
+target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_manifest_core)
 
 add_library(secure_frontend_server_cli src/server_cli.cpp)
 target_sources(secure_frontend_server_cli PRIVATE src/frontend_init.cpp)
@@ -355,9 +365,17 @@ target_link_libraries(strata-secure-server PRIVATE secure_frontend_config secure
 target_link_libraries(strata-secure-server PRIVATE secure_frontend_server_cli secure_frontend_typed_config)
 target_link_libraries(strata-secure-server PRIVATE secure_frontend_subsystem_limits secure_frontend_engine_supervisor)
 target_compile_features(strata-secure-server PRIVATE cxx_std_20)
+# Spec A2: UTF-8 argv from the wide command line on Windows, shared by
+# strata-secure-server and strata (CommandLineToArgvW: shell32).
+add_library(secure_frontend_utf8_argv src/utf8_argv.cpp)
+target_compile_features(secure_frontend_utf8_argv PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_utf8_argv PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
 if(WIN32)
-    target_link_libraries(strata-secure-server PRIVATE shell32)  # CommandLineToArgvW: UTF-8 argv (A2)
+    target_link_libraries(secure_frontend_utf8_argv PUBLIC shell32)
 endif()
+secure_frontend_set_warnings(secure_frontend_utf8_argv)
+target_link_libraries(strata-secure-server PRIVATE secure_frontend_utf8_argv)
 
 target_link_libraries(secure_frontend_config PUBLIC secure_frontend_paths)
 target_link_libraries(secure_frontend_model_inventory PUBLIC secure_frontend_paths)
@@ -405,6 +423,133 @@ foreach(_target IN ITEMS
     secure_frontend_set_warnings(${_target})
 endforeach()
 
+# --- SP4 acquisition libraries ---
+add_library(secure_frontend_sha256 src/sha256.cpp)
+target_compile_features(secure_frontend_sha256 PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_sha256 PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+secure_frontend_set_warnings(secure_frontend_sha256)
+
+add_library(secure_frontend_manifest_core src/acquire_reason.cpp src/acquire_url.cpp)
+target_compile_features(secure_frontend_manifest_core PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_manifest_core PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_sources(secure_frontend_manifest_core PRIVATE src/engine_version.cpp src/acquire_manifest.cpp src/model_index_model.cpp)
+target_link_libraries(secure_frontend_manifest_core PUBLIC secure_frontend_sha256)
+# SP1 model-ID grammar and reserved device names (validate_model_id, is_windows_reserved_component).
+target_link_libraries(secure_frontend_manifest_core PUBLIC secure_frontend_model_inventory)
+secure_frontend_set_warnings(secure_frontend_manifest_core)
+
+add_library(secure_frontend_acquire_core src/address_policy.cpp src/download_response.cpp src/downloader_command.cpp
+    src/fetch_schedule.cpp src/staging_plan.cpp src/bundle_text.cpp src/manifest_diff.cpp
+    src/confinement_plan.cpp)
+target_compile_features(secure_frontend_acquire_core PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_acquire_core PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_link_libraries(secure_frontend_acquire_core PUBLIC secure_frontend_manifest_core)
+secure_frontend_set_warnings(secure_frontend_acquire_core)
+
+# Models store primitives (spec §4; Windows parity spec §11).
+if(WIN32)
+    set(_sf_models_store_platform src/models_store_windows.cpp)
+else()
+    set(_sf_models_store_platform src/models_store_posix.cpp)
+endif()
+add_library(secure_frontend_acquire src/models_store_common.cpp ${_sf_models_store_platform})
+target_sources(secure_frontend_acquire PRIVATE src/model_index_write.cpp src/acquire_publish.cpp src/bundle_io.cpp)
+# SP4 Task 21 (spec §3.3-§3.7): per-file fetch over an abstract hop transport; getaddrinfo resolver.
+target_sources(secure_frontend_acquire PRIVATE src/fetch_file.cpp src/system_resolver.cpp)
+# SP4 Task 22 (spec §1.3, §3.7, §4.6, §6.1): pull orchestration over the hop transport.
+target_sources(secure_frontend_acquire PRIVATE src/acquire_pull.cpp)
+target_compile_features(secure_frontend_acquire PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_acquire PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_link_libraries(secure_frontend_acquire PUBLIC secure_frontend_acquire_core secure_frontend_model_store
+    secure_frontend_token_store secure_frontend_tokenizer_pack)
+# PullSettings (frontend_config.hpp) for run_pull.
+target_link_libraries(secure_frontend_acquire PUBLIC secure_frontend_typed_config)
+if(WIN32)
+    target_link_libraries(secure_frontend_acquire PUBLIC advapi32 ws2_32)
+endif()
+secure_frontend_set_warnings(secure_frontend_acquire)
+
+# SP4 §2.3 / ruling R-1: the engine version is the committed ../upstream.version
+# (one line, "v<x.y.z[.n]>"). When upstream/ has a reachable exact tag it must equal
+# the file (FATAL_ERROR only on a mismatch); a missing tag never fails configure.
+set(SECURE_STRATA_ENGINE_VERSION "" CACHE STRING "Override x.y.z[.n]; empty = ../upstream.version")
+if(SECURE_STRATA_ENGINE_VERSION STREQUAL "")
+    file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/../upstream.version" _sf_pinned LIMIT_COUNT 1)
+    if(NOT _sf_pinned MATCHES "^v[0-9]+\\.[0-9]+\\.[0-9]+(\\.[0-9]+)?$")
+        message(FATAL_ERROR "upstream.version must hold one line v<x.y.z[.n]>")
+    endif()
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../upstream.version")
+    set(_sf_describe_rc 1)
+    # Only a checked-out submodule is asked: an empty upstream/ must never let git walk up to the superproject's tags.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../upstream/.git")
+        execute_process(COMMAND git -C "${CMAKE_CURRENT_SOURCE_DIR}/../upstream" describe --tags --exact-match
+            RESULT_VARIABLE _sf_describe_rc OUTPUT_VARIABLE _sf_tag ERROR_QUIET OUTPUT_STRIP_TRAILING_WHITESPACE)
+    endif()
+    if(_sf_describe_rc EQUAL 0 AND NOT _sf_tag STREQUAL _sf_pinned)
+        message(FATAL_ERROR "upstream/ is at ${_sf_tag} but upstream.version says ${_sf_pinned}; bump upstream.version with the submodule")
+    endif()
+    string(SUBSTRING "${_sf_pinned}" 1 -1 SECURE_FRONTEND_ENGINE_VERSION_TEXT)
+else()
+    if(NOT SECURE_STRATA_ENGINE_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+(\\.[0-9]+)?$")
+        message(FATAL_ERROR "SECURE_STRATA_ENGINE_VERSION must be x.y.z or x.y.z.n")
+    endif()
+    set(SECURE_FRONTEND_ENGINE_VERSION_TEXT "${SECURE_STRATA_ENGINE_VERSION}")
+endif()
+configure_file(cmake/engine_version.hpp.in
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/secure_frontend/engine_version_generated.hpp" @ONLY)
+
+include(cmake/SecureFrontendCatalog.cmake)
+set(_sf_catalog_fixture "")
+if(SECURE_FRONTEND_TEST_HOOKS)
+    set(_sf_catalog_fixture FIXTURE "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/catalog")
+endif()
+secure_frontend_generate_catalog("${CMAKE_CURRENT_BINARY_DIR}/generated/catalog_data.cpp"
+    PRODUCTION "${CMAKE_CURRENT_SOURCE_DIR}/catalog" ${_sf_catalog_fixture})
+
+add_library(secure_frontend_model_store src/manifest_json.cpp src/catalog.cpp src/manifest_trust.cpp
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/catalog_data.cpp")
+target_compile_features(secure_frontend_model_store PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_model_store PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_include_directories(secure_frontend_model_store PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_link_libraries(secure_frontend_model_store PUBLIC secure_frontend_manifest_core secure_frontend_json secure_frontend_paths)
+# SP4 §4.9 delta b.
+target_sources(secure_frontend_model_store PRIVATE src/model_index_store.cpp)
+# SP4 §2.3 / F-58: the one engine gate (list/show state, run, managed launch).
+target_sources(secure_frontend_model_store PRIVATE src/engine_gate.cpp)
+secure_frontend_set_warnings(secure_frontend_model_store)
+
+# SP4 Task 24b (spec §2.3, §2.4, §4.9 c/d): the engine launch composed from the installed
+# manifest (or SP1's inventory path under --expert). Server-safe: no acquisition library.
+add_library(secure_frontend_launch src/launch_composition.cpp)
+target_compile_features(secure_frontend_launch PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_launch PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_link_libraries(secure_frontend_launch PUBLIC secure_frontend_model_store secure_frontend_typed_config
+    secure_frontend_engine_arguments secure_frontend_model_inventory)
+secure_frontend_set_warnings(secure_frontend_launch)
+target_link_libraries(strata-secure-server PRIVATE secure_frontend_launch)
+
+# SP4 Task 23 (spec §1.5): the strata CLI's verbs.
+add_library(secure_frontend_strata_cli src/strata_cli.cpp)
+target_compile_features(secure_frontend_strata_cli PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_strata_cli PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_acquire secure_frontend_typed_config)
+target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_launch)
+secure_frontend_set_warnings(secure_frontend_strata_cli)
+
+# PX §2: the one user-facing binary. SP4 provides only its acquisition verbs (Controller note 1);
+# strata-secure-server never links secure_frontend_acquire or secure_frontend_strata_cli (§7.1).
+add_executable(strata src/strata_main.cpp)
+target_link_libraries(strata PRIVATE secure_frontend_strata_cli secure_frontend_utf8_argv)
+target_compile_features(strata PRIVATE cxx_std_20)
+secure_frontend_set_warnings(strata)
+
 if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     enable_testing()
 
@@ -419,6 +564,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_paths_tests paths_handle_non_ascii_and_long_names
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     secure_frontend_add_cases(secure_frontend_paths_tests cfg02_create_within_root_writes_nothing_outside
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # SP1 delta f (SP4 §5.3): RootPolicy::external for bundle directories.
+    secure_frontend_add_cases(secure_frontend_paths_tests external_root_skips_ownership_checks
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     if(WIN32)
         secure_frontend_add_cases(secure_frontend_paths_tests
@@ -711,6 +859,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     endif()
     secure_frontend_add_cases(secure_frontend_model_inventory_tests ${_inventory_root_cases}
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # SP4 §4.9 delta a; pre-flight F-5: a scratch inventory root, labelled like the cases above.
+    secure_frontend_add_cases(secure_frontend_model_inventory_tests dl04_staging_ignored_by_inventory_scan
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     secure_frontend_add_test_executable(secure_frontend_engine_arguments_tests tests/engine_arguments_test.cpp
         secure_frontend_engine_arguments)
@@ -722,6 +873,13 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     # Pure parsing, no canonical root: runs under wine too.
     secure_frontend_add_cases(secure_frontend_engine_arguments_tests gpu_list_rejects_malformed_values)
+    # SP4 Task 24b (spec §2.3, §4.9 c): the managed launch over a scratch models store.
+    target_link_libraries(secure_frontend_engine_arguments_tests PRIVATE secure_frontend_launch secure_frontend_strata_cli)
+    secure_frontend_add_cases(secure_frontend_engine_arguments_tests launch_composed_from_manifest_qwen
+        managed_launch_argv_is_utf8_for_non_ascii_models_root launch_refuses_model_not_installed
+        engine_args_reject_weight_flags_for_managed_model managed_launch_renders_typed_gpu_list LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # Pure in-memory (F-63): wine runs it too.
+    secure_frontend_add_cases(secure_frontend_engine_arguments_tests launch_refuses_engine_too_old)
 
     secure_frontend_add_test_executable(secure_frontend_chat_schema_tests tests/chat_schema_test.cpp secure_frontend_chat_schema)
     secure_frontend_add_cases(secure_frontend_chat_schema_tests
@@ -744,6 +902,15 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     secure_frontend_add_cases(secure_frontend_typed_config_tests cfg02_logs_and_cache_roots_are_created_private
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # SP4 §4.9 c, d: engine.model_id is name or name:tag; roots.tokenizer_pack is optional.
+    secure_frontend_add_cases(secure_frontend_typed_config_tests typed_config_model_reference_accepts_name_tag
+        describe_reports_unset_expert_keys LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # SP4 Task 24b (spec §4.9 c/d; F-8): managed-model config errors, also through strata-secure-server --check.
+    target_link_libraries(secure_frontend_typed_config_tests PRIVATE secure_frontend_launch secure_frontend_strata_cli)
+    add_dependencies(secure_frontend_typed_config_tests strata-secure-server)
+    secure_frontend_add_cases(secure_frontend_typed_config_tests cfg01_engine_profile_rejected_for_managed_model
+        cfg01_tokenizer_pack_root_rejected_for_managed_model cfg01_model_reference_rejected_for_managed_model
+        ARGS $<TARGET_FILE:strata-secure-server> LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     if(NOT WIN32)
         # chmod-based: the config folder's mode decides the roots.secret default.
         secure_frontend_add_cases(secure_frontend_typed_config_tests
@@ -757,6 +924,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # D3: the README key table equals render_config_schema_markdown().
     secure_frontend_add_cases(secure_frontend_typed_config_tests readme_config_table_matches_schema
         ARGS ${CMAKE_CURRENT_SOURCE_DIR}/README.md)
+    # SP4 §4.9 delta e: the pull.* keys (scratch roots, DACL-private on Windows).
+    secure_frontend_add_cases(secure_frontend_typed_config_tests cfg01_pull_keys_table_driven
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     if(WIN32)
         secure_frontend_add_cases(secure_frontend_typed_config_tests cfg01_config_with_everyone_write_ace_rejected
             LABELS windows-runtime)
@@ -827,6 +997,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     target_link_libraries(secure_frontend_server_cli_tests PRIVATE secure_frontend_token_reader secure_frontend_server_cli)
     # Unit case (parse + validate in process, no child): unlabeled, so it also runs under wine.
     secure_frontend_add_cases(secure_frontend_server_cli_tests cli_sp2_flags_map_to_schema_keys TIMEOUT 120)
+    # SP4 §4.9 d: pure argv parsing, so wine runs it too.
+    secure_frontend_add_cases(secure_frontend_server_cli_tests cli_expert_flag_parsing)
     secure_frontend_add_cases(secure_frontend_server_cli_tests
         init_writes_config_and_token_then_server_starts init_refuses_to_overwrite_without_force
         init_force_refuses_a_non_regular_config_target init_failure_creates_nothing
@@ -857,6 +1029,223 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
             ${SECURE_FRONTEND_SERVER_ARGS} TIMEOUT 120)
     endif()
 
+    # --- SP4 tests ---
+    secure_frontend_add_test_executable(secure_frontend_sha256_tests tests/sha256_test.cpp secure_frontend_sha256)
+    secure_frontend_add_cases(secure_frontend_sha256_tests fips_180_4_short_vectors fips_180_4_million_a
+        LABELS release-also)
+    secure_frontend_add_cases(secure_frontend_sha256_tests long_message_one_gibibyte TIMEOUT 900)
+    secure_frontend_add_cases(secure_frontend_sha256_tests chunk_boundaries_do_not_change_digest
+        length_field_encodes_bits_big_endian hex_helpers_are_strict)
+    if(SECURE_FRONTEND_TEST_HOOKS)
+        secure_frontend_add_cases(secure_frontend_sha256_tests length_counter_past_2_32_bytes)
+    endif()
+
+    secure_frontend_add_test_executable(secure_frontend_acquire_tests tests/acquire_test.cpp secure_frontend_acquire_core)
+    secure_frontend_add_cases(secure_frontend_acquire_tests exit_classes_match_spec_table
+        reason_table_is_complete_and_ordered error_text_states_resumable
+        version_dir_name_unique_for_same_version_label staging_plan_classifies_partials
+        abandoned_keys_match_same_model_only update_diff_lists_changed_files_and_license)
+    target_sources(secure_frontend_acquire_tests PRIVATE tests/acquire_store_test.cpp tests/acquire_store_windows_test.cpp)
+    target_link_libraries(secure_frontend_acquire_tests PRIVATE secure_frontend_acquire)
+    secure_frontend_add_cases(secure_frontend_acquire_tests concurrent_pull_same_manifest_second_is_models_busy
+        part_file_create_append_resume_truncate rename_within_never_replaces rename_fallback_never_replaces
+        remove_tree_removes_links_without_following hash_into_rejects_hard_links_and_counts_bytes
+        store_environment_seams_report_space_and_fs_kind overlong_joined_paths_fail_closed_without_throwing
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    if(WIN32)
+        secure_frontend_add_cases(secure_frontend_acquire_tests store_primitives_windows store_adopts_only_private_files_windows
+            LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    endif()
+    # SP4 Task 19 (spec §4.4-§4.8): verify, publish, retire, orphan adoption, rm.
+    target_sources(secure_frontend_acquire_tests PRIVATE tests/acquire_publish_test.cpp)
+    secure_frontend_add_cases(secure_frontend_acquire_tests dl04_publish_uses_noreplace_and_never_overwrites
+        publish_falls_back_when_noreplace_unsupported dl04_orphan_adopted_after_rehash_by_digest
+        replace_loaded_model_retires_old_version layout_check_requires_pack_files_and_valid_tokenizer
+        staged_tree_must_be_exactly_the_manifest publish_requires_staging_key_of_manifest
+        overlong_staging_tree_is_publish_failed retire_removes_read_only_published_version
+        downgrade_adopts_retired_version_keeping_one_live rm_refuses_held_version_and_removes_read_only_tree
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # F-42: pure in-memory case, so wine runs it too.
+    secure_frontend_add_cases(secure_frontend_acquire_tests install_decisions_follow_sequence_rules)
+    if(SECURE_FRONTEND_TEST_HOOKS)
+        secure_frontend_add_cases(secure_frontend_acquire_tests dl04_crash_between_publish_and_index_is_not_loaded
+            LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    endif()
+    if(WIN32)
+        secure_frontend_add_cases(secure_frontend_acquire_tests replace_loaded_model_retires_old_version_windows
+            rm_open_version_stays_retired_windows LABELS windows-runtime)
+    else()
+        secure_frontend_add_cases(secure_frontend_acquire_tests rm_reports_unreachable_version_as_failure
+            rm_failed_delete_stays_retired)
+    endif()
+    # SP4 Task 22 (spec §1.3, §3.7, §4.6, §4.7, §6.1): run_pull; these write a models store.
+    target_sources(secure_frontend_acquire_tests PRIVATE tests/acquire_pull_test.cpp)
+    secure_frontend_add_cases(secure_frontend_acquire_tests dl02_correct_digest_publishes_atomically dl02_byte_limit_enforced_while_streaming
+        dl02_resume_with_range_completes_and_verifies resume_offset_ignores_preallocation dl02_published_files_are_private
+        dl02_preflight_refuses_without_space dl03_untrusted_manifest_digest_rejected dl03_downgrade_rejected dl03_sequence_conflict_rejected
+        dl04_interrupt_during_download_never_indexed dl04_interrupt_during_verification dl04_stale_staging_from_other_manifest_discarded
+        abandoned_partials_kept_with_yes abandoned_staging_reported_and_offered_for_deletion all_sources_failed_exits_3_and_keeps_part
+        enospc_mid_stream_keeps_part_and_exits_6 update_reuses_unchanged_files license_change_requires_interactive_yes
+        pull_without_bundle_refuses_sourceless_files confirmation_answers_parsed_strictly already_installed_needs_no_network
+        pull_budgets_map_to_exit_classes discard_partial_runs_only_after_confirmation
+        unreadable_installed_license_requires_interactive_yes
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # SP4 Task 23 (spec §1.5, §4.5, §4.8, §6.2): the strata CLI's local verbs.
+    target_sources(secure_frontend_acquire_tests PRIVATE tests/acquire_cli_test.cpp)
+    target_link_libraries(secure_frontend_acquire_tests PRIVATE secure_frontend_strata_cli)
+    # Neither writes a models store: wine runs them; program update is release evidence too.
+    secure_frontend_add_cases(secure_frontend_acquire_tests program_update_exits_12_without_network LABELS release-also)
+    secure_frontend_add_cases(secure_frontend_acquire_tests cli_requires_config_and_known_verb)
+    secure_frontend_add_cases(secure_frontend_acquire_tests list_and_show_report_installed_models
+        list_all_reports_retired_orphaned_and_staging rm_refuses_loaded_model rm_retired_deletes_unheld_versions
+        rm_partials_deletes_other_staging LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    if(SECURE_FRONTEND_TEST_HOOKS)
+        secure_frontend_add_cases(secure_frontend_acquire_tests dl03_third_party_cannot_shadow_catalog
+            pull_test_cacert_reaches_argv_in_hook_builds list_outdated_uses_catalog_sequence
+            publish_failure_after_step_2_resumes_without_download
+            LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    endif()
+    if(WIN32)
+        secure_frontend_add_cases(secure_frontend_acquire_tests dl02_published_files_have_private_dacl_windows LABELS windows-runtime)
+    endif()
+    secure_frontend_add_test_executable(secure_frontend_bundle_tests tests/bundle_test.cpp secure_frontend_acquire_core)
+    secure_frontend_add_cases(secure_frontend_bundle_tests sha256sums_render_sorted_bytewise sha256sums_parse_is_strict
+        sums_agreement_rules missing_list_names_sourceless_files)
+    # SP4 Task 20 (spec §5): bundle open/verify/import/export; these write a models store or a bundle.
+    target_sources(secure_frontend_bundle_tests PRIVATE tests/bundle_io_test.cpp)
+    target_link_libraries(secure_frontend_bundle_tests PRIVATE secure_frontend_acquire)
+    secure_frontend_add_cases(secure_frontend_bundle_tests dl02_import_bundle_publishes_same_as_pull
+        dl03_bundle_digest_mismatch_publishes_nothing bundle_rejects_traversal_path bundle_rejects_unlisted_file_in_files_dir
+        bundle_sha256sums_must_match_manifest bundle_rejects_hardlinked_file export_refuses_bundle_forbidden_license
+        export_refuses_fat32_target_for_large_file export_rehashes_and_rejects_bit_rot verify_writes_nothing
+        import_from_read_only_bundle_directory bundle_incomplete_and_marker_rules export_onto_shared_writable_target
+        bundle_directory_must_not_be_a_volume_root
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # Task 13 carry: a bundle exactly as tools/secure/make_bundle.py writes it.
+    secure_frontend_add_cases(secure_frontend_bundle_tests make_bundle_tool_output_opens_verifies_and_imports
+        ARGS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bundle/make-bundle-iq2_xs
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # Refused before anything is written (no store, no target directory), so wine runs it too.
+    secure_frontend_add_cases(secure_frontend_bundle_tests export_refuses_when_one_file_license_forbids_bundle)
+    # SP4 Task 22 (spec §2.7, §5.3): pull --bundle; these write a bundle.
+    target_sources(secure_frontend_bundle_tests PRIVATE tests/bundle_pull_test.cpp)
+    secure_frontend_add_cases(secure_frontend_bundle_tests pull_bundle_resumes_after_interrupt pull_bundle_incomplete_without_pack_sources
+        pull_bundle_resume_rehashes_files_from_earlier_run LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # SP4 Task 23 (spec §5): strata import / verify / export; these write a models store.
+    target_sources(secure_frontend_bundle_tests PRIVATE tests/bundle_cli_test.cpp)
+    target_link_libraries(secure_frontend_bundle_tests PRIVATE secure_frontend_strata_cli)
+    secure_frontend_add_cases(secure_frontend_bundle_tests import_works_without_downloader cli_verify_export_import_round_trip
+        failed_export_says_to_remove_target import_blocked_by_orphan_says_how_to_clear_it
+        import_license_change_needs_interactive_yes import_with_unreadable_installed_version_needs_interactive_yes
+        import_over_corrupt_orphan_reports_target_exists
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    if(WIN32)
+        secure_frontend_add_cases(secure_frontend_bundle_tests bundle_rejects_junction_entry_windows LABELS windows-runtime)
+    else()
+        secure_frontend_add_cases(secure_frontend_bundle_tests bundle_rejects_symlink_entry
+            bundle_walk_fails_closed_on_overlong_or_odd_names)
+        secure_frontend_add_cases(secure_frontend_bundle_tests bundle_at_mount_root_is_read_but_never_written)
+        set_tests_properties(secure_frontend_bundle_tests.bundle_at_mount_root_is_read_but_never_written PROPERTIES
+            SKIP_REGULAR_EXPRESSION "SKIPPED:")
+    endif()
+    secure_frontend_add_test_executable(secure_frontend_model_index_tests tests/model_index_test.cpp secure_frontend_model_store)
+    secure_frontend_add_cases(secure_frontend_model_index_tests index_render_is_deterministic
+        install_retires_previous_version reinstall_same_version_does_not_retire
+        downgrade_to_retired_version_leaves_it_live_only)
+    # SP4 §4.9 delta b: DACL-private scratch roots.
+    secure_frontend_add_cases(secure_frontend_model_index_tests scan_tolerates_repeated_shard_names_across_versions
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # SP4 §4.5: index.json on disk. Writing goes through the models store (ruling B).
+    target_link_libraries(secure_frontend_model_index_tests PRIVATE secure_frontend_acquire)
+    secure_frontend_add_cases(secure_frontend_model_index_tests index_round_trip_through_disk
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    secure_frontend_add_cases(secure_frontend_model_index_tests index_inconsistent_manifest_fails_closed
+        index_rejects_unknown_keys_and_bad_dirs index_rejects_bad_versions_and_retired_dirs)
+    # SP4 Task 23 / F-58: shared lookup and engine gate (pure); Task 15 carry: skipped-entry count.
+    secure_frontend_add_cases(secure_frontend_model_index_tests find_installed_matches_name_and_tag
+        engine_gate_honours_profile_family_and_version)
+    if(NOT WIN32)
+        secure_frontend_add_cases(secure_frontend_model_index_tests scan_counts_skipped_entries)
+    endif()
+
+    secure_frontend_add_test_executable(secure_frontend_manifest_tests tests/manifest_test.cpp secure_frontend_model_store)
+    secure_frontend_add_cases(secure_frontend_manifest_tests source_url_grammar_matrix dns_names_and_wildcards proxy_grammar)
+    secure_frontend_add_cases(secure_frontend_manifest_tests valid_qwen_manifest_accepted manifest_field_rules_matrix
+        reserved_manifest_names_rejected model_name_index_json_rejected part_suffix_path_rejected stored_path_length_fits_p1
+        file_and_directory_prefix_collision_rejected shard_set_must_be_complete_in_one_directory
+        launch_keys_follow_profile wildcard_redirect_hosts_validated total_size_above_budget_is_total_budget_exceeded
+        engine_version_parsed_with_fourth_component)
+    secure_frontend_add_cases(secure_frontend_manifest_tests raw_profile_rejected_in_release_build LABELS release-only)
+    if(SECURE_FRONTEND_TEST_HOOKS)
+        secure_frontend_add_cases(secure_frontend_manifest_tests raw_profile_accepted_with_test_hooks
+            typed_digest_must_match_catalog_bytes_too)
+    endif()
+    secure_frontend_add_cases(secure_frontend_manifest_tests base_manifest_parses dl03_invalid_manifest_matrix
+        dl03_http_url_rejected manifest_identity_is_sha256_of_exact_bytes trust_rules_catalog_digest_or_typed_digest)
+    secure_frontend_add_cases(secure_frontend_manifest_tests dl05_catalog_pins_match_committed_list
+        ARGS ${CMAKE_CURRENT_SOURCE_DIR}/catalog/CATALOG.sha256 ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/catalog/CATALOG.sha256
+        LABELS release-also)
+    secure_frontend_add_cases(secure_frontend_manifest_tests engine_version_read_from_upstream_version_file
+        ARGS ${SECURE_FRONTEND_ENGINE_VERSION_TEXT} LABELS release-also)
+    secure_frontend_add_test_executable(secure_frontend_fetch_tests tests/fetch_test.cpp secure_frontend_acquire_core)
+    secure_frontend_add_cases(secure_frontend_fetch_tests dl03_location_with_glob_characters_rejected
+        location_resolution_and_host_normalization location_query_characters
+        address_policy_denies_special_ranges address_policy_any_denied_answer_rejects_hop ipv6_only_answer_fails_closed
+        allow_private_addresses_pins_first_ipv4 resolve_argument_brackets_ipv6
+        transfer_argv_exact_order config_line_is_single_quoted_url probe_argv_is_version_only
+        probe_output_parsing_and_floor curl_exit_codes_map_to_reasons
+        informational_header_blocks_skipped header_block_limits_enforced split_feed_reports_exact_body_offset
+        status_table_decisions
+        retry_backoff_follows_schedule non_transient_moves_to_next_source
+        exhausted_class_follows_last_source_reason run_budget_remaining_seconds
+        staging_cwd_not_treated_as_key landlock_rights_per_abi confinement_plan_detects_readable_roots
+        confinement_label_texts crt_fd_block_layout)
+    # SP4 §10.1: the fake downloader is a test executable; it never opens a socket.
+    add_executable(secure_frontend_fake_curl tests/fake_curl_main.cpp)
+    target_include_directories(secure_frontend_fake_curl PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_features(secure_frontend_fake_curl PRIVATE cxx_std_20)
+    secure_frontend_set_warnings(secure_frontend_fake_curl)
+    if(WIN32)
+        target_link_libraries(secure_frontend_fake_curl PRIVATE advapi32)
+    endif()
+    add_dependencies(secure_frontend_fetch_tests secure_frontend_fake_curl)
+    secure_frontend_add_cases(secure_frontend_fetch_tests fake_curl_scenario_parses_and_renders
+        fake_curl_argv_grammar_matches_builder)
+    if(WIN32)
+        if(SECURE_FRONTEND_TEST_HOOKS)
+            secure_frontend_add_cases(secure_frontend_fetch_tests fake_curl_records_on_crt_entry_4_windows
+                ARGS $<TARGET_FILE:secure_frontend_fake_curl> LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+        endif()
+    else()
+        # Record-channel cases are registered only with test hooks (plan Global Constraints).
+        if(SECURE_FRONTEND_TEST_HOOKS)
+            secure_frontend_add_cases(secure_frontend_fetch_tests fake_curl_replays_scenario_and_records
+                fake_curl_rejects_argv_outside_grammar ARGS $<TARGET_FILE:secure_frontend_fake_curl>)
+        endif()
+        secure_frontend_add_cases(secure_frontend_fetch_tests fake_curl_answers_probe
+            ARGS $<TARGET_FILE:secure_frontend_fake_curl>)
+    endif()
+    # SP4 Task 21 (spec §3.3-§3.7): fetch_file over ScriptedTransport; these write a models store.
+    target_sources(secure_frontend_fetch_tests PRIVATE tests/fetch_file_test.cpp)
+    target_link_libraries(secure_frontend_fetch_tests PRIVATE secure_frontend_acquire)
+    secure_frontend_add_cases(secure_frontend_fetch_tests dl03_truncated_body_rejected dl03_oversize_body_rejected_mid_stream
+        dl03_redirect_to_http_rejected dl03_redirect_off_allowlist_rejected dl03_redirect_limit redirect_query_only_in_config_line
+        dl03_private_address_rejected dl03_mixed_public_private_answer_rejected dl03_range_ignored_restarts_from_zero
+        dl03_content_range_mismatch_rejected dl03_content_encoding_gzip_fails_digest dl03_stalled_source_times_out
+        time_budget_exceeded_is_resumable tls_untrusted_moves_to_next_source digest_mismatch_after_resume_refetches_once
+        free_space_rechecked_while_writing ipv6_only_hop_is_address_not_allowed
+        range_ignored_twice_is_range_mismatch_then_restarts proxy_hop_skips_address_policy
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    if(SECURE_FRONTEND_TEST_HOOKS)
+        secure_frontend_add_cases(secure_frontend_fetch_tests test_cacert_reaches_argv_in_hook_builds
+            LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    endif()
+    # SP4 Task 22: a wrong digest during an update leaves the installed version active.
+    target_sources(secure_frontend_fetch_tests PRIVATE tests/fetch_pull_test.cpp)
+    secure_frontend_add_cases(secure_frontend_fetch_tests dl03_wrong_digest_rejected_prior_version_intact
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+
     add_test(NAME strata_secure_server_help COMMAND strata-secure-server --help)
     # G4: past --help the server refuses an elevated token, and the Windows CI
     # runners (and wine) are elevated. On Windows the CLI checks below run it
@@ -872,7 +1261,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     endif()
     # The GLM runner takes positional arguments: glm53 without any --engine-arg is a usage error.
     add_test(NAME strata_secure_server_glm_requires_engine_arg
-        COMMAND ${SECURE_FRONTEND_SERVER_CLI_LAUNCH} --profile glm53 --models-root models --tokenizer-pack tok
+        COMMAND ${SECURE_FRONTEND_SERVER_CLI_LAUNCH} --expert --profile glm53 --models-root models --tokenizer-pack tok
                 --engine engine --model-id glm-local --token-env STRATA_UNUSED_TOKEN)
     set_tests_properties(strata_secure_server_glm_requires_engine_arg PROPERTIES
         PASS_REGULAR_EXPRESSION "glm53 requires at least one --engine-arg")

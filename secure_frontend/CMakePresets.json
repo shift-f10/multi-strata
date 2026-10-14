@@ -12,7 +12,8 @@
       "binaryDir": "${sourceDir}/out/build/${presetName}",
       "cacheVariables": {
         "BUILD_TESTING": "ON",
-        "STRATA_BUILD_SECURE_FRONTEND_TESTS": "ON"
+        "STRATA_BUILD_SECURE_FRONTEND_TESTS": "ON",
+        "SECURE_FRONTEND_TEST_HOOKS": "ON"
       }
     },
     {
@@ -23,6 +24,15 @@
       "environment": {
         "CC": "gcc",
         "CXX": "g++"
+      }
+    },
+    {
+      "name": "linux-gcc-release",
+      "displayName": "Linux GCC, release configuration (SECURE_FRONTEND_TEST_HOOKS OFF)",
+      "inherits": "linux-gcc",
+      "cacheVariables": {
+        "SECURE_FRONTEND_TEST_HOOKS": "OFF",
+        "CMAKE_BUILD_TYPE": "Release"
       }
     },
     {
@@ -72,6 +82,10 @@
       "configurePreset": "linux-gcc"
     },
     {
+      "name": "linux-gcc-release",
+      "configurePreset": "linux-gcc-release"
+    },
+    {
       "name": "linux-clang",
       "configurePreset": "linux-clang"
     },
@@ -95,6 +109,23 @@
       "configurePreset": "linux-gcc",
       "output": {
         "outputOnFailure": true
+      },
+      "filter": {
+        "exclude": {
+          "label": "release-only"
+        }
+      }
+    },
+    {
+      "name": "linux-gcc-release",
+      "configurePreset": "linux-gcc-release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "release-only|release-also"
+        }
       }
     },
     {
@@ -102,6 +133,11 @@
       "configurePreset": "linux-clang",
       "output": {
         "outputOnFailure": true
+      },
+      "filter": {
+        "exclude": {
+          "label": "release-only"
+        }
       }
     },
     {
@@ -110,6 +146,11 @@
       "configuration": "Release",
       "output": {
         "outputOnFailure": true
+      },
+      "filter": {
+        "exclude": {
+          "label": "release-only"
+        }
       }
     },
     {
@@ -120,7 +161,7 @@
       },
       "filter": {
         "exclude": {
-          "label": "windows-runtime"
+          "label": "windows-runtime|release-only"
         }
       },
       "environment": {
@@ -132,6 +173,11 @@
       "configurePreset": "windows-msys2-clang",
       "output": {
         "outputOnFailure": true
+      },
+      "filter": {
+        "exclude": {
+          "label": "release-only"
+        }
       }
     }
   ]

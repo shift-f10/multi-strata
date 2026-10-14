@@ -34,6 +34,7 @@ struct PathError final {
 // 0x20 and 0x7F (NUL included), a trailing dot or space, Windows reserved
 // device names with any extension (CON PRN AUX NUL COM0-9 LPT0-9 incl. the
 // superscript digits, CONIN$ CONOUT$ CLOCK$), and 8.3 aliases ('~' + digit).
+inline constexpr std::size_t kRelativePathMaxBytes = 1024;  // the whole P1 path
 class RelativePath final {
  public:
   [[nodiscard]] const std::string& generic() const noexcept { return generic_; }
@@ -84,21 +85,26 @@ struct PathFactory;
 // itself may be reached through a symlink or junction) and held open. It is
 // owned by the current user (or root / SYSTEM / Administrators) and not
 // writable by anyone else. Everything below it is opened relative to it.
+// A root opened with RootPolicy::external is canonical and held open the same way, but its owner and write access were not checked (bundle directories only).
 class CanonicalRoot final {
  public:
   [[nodiscard]] const std::filesystem::path& path() const noexcept { return path_; }
   [[nodiscard]] NativeHandle handle() const noexcept { return handle_->get(); }
   [[nodiscard]] std::uint64_t device_id() const noexcept { return device_; }
+  // True only for a root opened with RootPolicy::external.
+  [[nodiscard]] bool external() const noexcept { return external_; }
   // The canonical root joined with a validated relative path (native separators).
   [[nodiscard]] std::filesystem::path join(const RelativePath& relative) const;
 
  private:
   friend struct detail::PathFactory;
-  CanonicalRoot(std::filesystem::path path, std::shared_ptr<const OwnedHandle> handle, const std::uint64_t device)
-      : path_(std::move(path)), handle_(std::move(handle)), device_(device) {}
+  CanonicalRoot(std::filesystem::path path, std::shared_ptr<const OwnedHandle> handle, const std::uint64_t device,
+                const bool external)
+      : path_(std::move(path)), handle_(std::move(handle)), device_(device), external_(external) {}
   std::filesystem::path path_;
   std::shared_ptr<const OwnedHandle> handle_;
   std::uint64_t device_;
+  bool external_;
 };
 
 // engine.executable: absolute, canonical, a regular file not writable by
@@ -115,7 +121,12 @@ class CanonicalFile final {
 
 // create_private: a missing last component is created 0700 / private DACL
 // (reached only from serve and init, never from validation or --check).
-enum class RootPolicy { existing, create_private };
+// external (SP4 §5): a bundle directory on any local file system, including
+// removable exFAT/FAT media whose modes the OS ignores: canonicalized and held
+// open like any root (links below it are still refused), but its owner and
+// write access are not checked, neither for the root nor for directories
+// created below it. Used only for bundle source and target directories.
+enum class RootPolicy { existing, create_private, external };
 
 [[nodiscard]] std::variant<CanonicalRoot, PathError> open_root(const std::filesystem::path& requested,
                                                                RootPolicy policy = RootPolicy::existing);

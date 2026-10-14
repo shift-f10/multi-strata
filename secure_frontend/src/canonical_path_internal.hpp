@@ -8,8 +8,9 @@
 namespace secure_frontend::detail {
 
 struct PathFactory final {
-  static CanonicalRoot root(std::filesystem::path path, const NativeHandle handle, const std::uint64_t device) {
-    return CanonicalRoot{std::move(path), std::make_shared<const OwnedHandle>(handle), device};
+  static CanonicalRoot root(std::filesystem::path path, const NativeHandle handle, const std::uint64_t device,
+                            const bool external = false) {
+    return CanonicalRoot{std::move(path), std::make_shared<const OwnedHandle>(handle), device, external};
   }
   static CanonicalFile file(std::filesystem::path path) { return CanonicalFile{std::move(path)}; }
   static OpenedFile opened(const NativeHandle handle, const std::uint64_t size) { return OpenedFile{handle, size}; }
@@ -17,7 +18,9 @@ struct PathFactory final {
 
 inline PathError path_error(const PathErrorCode code, std::string message) { return PathError{code, std::move(message)}; }
 
-// Opens an existing root (platform files); open_root() wraps it.
-std::variant<CanonicalRoot, PathError> open_existing_root(const std::filesystem::path& requested);
+// Opens an existing root (platform files); open_root() wraps it. RootPolicy::external
+// skips the owner/writability checks and marks the root external.
+std::variant<CanonicalRoot, PathError> open_existing_root(const std::filesystem::path& requested,
+                                                          RootPolicy policy = RootPolicy::existing);
 
 }  // namespace secure_frontend::detail

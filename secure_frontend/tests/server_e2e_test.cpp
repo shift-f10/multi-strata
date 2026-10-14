@@ -103,7 +103,7 @@ void cfg01_invalid_config_fails_before_listener_and_child() {
   unbindable_literals["listener.host"] = secure_frontend_test::json_literal("192.0.2.10");
   unbindable_literals["listener.allow_remote"] = "true";
   f.write_config(unbindable_literals);
-  const auto unbindable = f.run({"--config", f.config.string()});
+  const auto unbindable = f.run({"--expert", "--config", f.config.string()});
   expect(unbindable.exit_code != 0 && contains(unbindable.err, "Unable to bind"),
          "unbindable address exits with the bind error: " + unbindable.err);
   expect(!contains(unbindable.err, "Unable to start the engine supervisor") && !contains(unbindable.err, "engine generation"),
@@ -154,7 +154,7 @@ void ready_timeout_is_configurable() {
     literals["engine.args"] = "[\"--ready-delay-ms=2000\"]";
     f.write_config(literals);
     secure_frontend_test::ChildProcess server;
-    expect(f.start(server, {"--config", f.config.string()}), "server starts: " + server.stderr_text());
+    expect(f.start(server, {"--expert", "--config", f.config.string()}), "server starts: " + server.stderr_text());
     // limits.engine.ready_timeout_s reaches the supervisor (supervisor_config):
     // at 1 s the 2 s READY is never seen and the generation is killed for it;
     // at 5 s the engine becomes ready and nothing is killed.

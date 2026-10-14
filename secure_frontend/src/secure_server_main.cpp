@@ -9,19 +9,19 @@
 #include "secure_frontend/frontend_init.hpp"
 #include "secure_frontend/http_request_handler.hpp"
 #include "secure_frontend/http_socket_server.hpp"
-#include "secure_frontend/model_inventory.hpp"
+#include "secure_frontend/launch_composition.hpp"
 #include "secure_frontend/privilege_check.hpp"
 #include "secure_frontend/process_defaults.hpp"
 #include "secure_frontend/server_cli.hpp"
 #include "secure_frontend/shutdown_signal.hpp"
 #include "secure_frontend/subsystem_limits.hpp"
+#include "secure_frontend/test_hooks.hpp"
 #include "secure_frontend/token_reader.hpp"
 #include "secure_frontend/token_verifier.hpp"
 #include "secure_frontend/tokenizer_pack.hpp"
+#include "secure_frontend/utf8_argv.hpp"
 
-#include <algorithm>
 #include <cstdlib>
-#include <cwchar>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -31,11 +31,6 @@
 #include <utility>
 #include <variant>
 #include <vector>
-
-#if defined(_WIN32)
-#include "secure_frontend/win32_prelude.hpp"
-#include <shellapi.h>
-#endif
 
 namespace {
 
@@ -58,10 +53,16 @@ secure_frontend::TokenReadResult read_configured_token(const FrontendConfig& con
   return secure_frontend::read_token(config.token, std::filesystem::path{"."});
 }
 
-int check(const FrontendConfig& config, const std::vector<std::string>& overridden) {
+int check(const FrontendConfig& config, const std::vector<std::string>& overridden, const bool expert) {
   std::cout << secure_frontend::describe(config);
   for (const auto& key : overridden) std::cout << key << ": the command line overrides the config file\n";
   std::cout.flush();
+  // SP4 §4.9 c/d (F-8): the launch-related config errors serve would refuse, for
+  // the same mode (managed, or --expert). Pure: roots.models is not read.
+  if (const auto issues = secure_frontend::launch_config_issues(config, expert); !issues.empty()) {
+    for (const auto& issue : issues) std::cerr << "Configuration error: " << issue << '\n';
+    return EXIT_FAILURE;
+  }
   // The verdict follows the token read: a configuration whose token cannot be
   // read is not reported valid first.
   const auto token = read_configured_token(config);
@@ -115,7 +116,7 @@ bool prepare_state_dir(const std::filesystem::path& state_dir, const secure_fron
   return secure_frontend::clear_directory_contents(environment.temp_dir);
 }
 
-int run(const FrontendConfig& config) {
+int run(const FrontendConfig& config, const bool expert) {
   if (!state_dir_is_usable(config)) return EXIT_FAILURE;
   // roots.logs / roots.cache: validate() only checked them, so --check stays
   // side-effect free; serve creates a missing one here, before bind or spawn.
@@ -137,39 +138,36 @@ int run(const FrontendConfig& config) {
   // Derived once, before bind/spawn; each subsystem keeps its own const copy.
   const auto schema_limits = secure_frontend::chat_schema_limits(config);
   const auto listener_limits = secure_frontend::http_socket_server_limits(config);
-  const auto tokenizer_result = secure_frontend::load_local_tokenizer_pack(config.roots.tokenizer_pack);
+  // SP4 §2.3/§4.9 (Task 24b): managed models launch from the installed manifest;
+  // --expert keeps SP1's operator path (inventory, roots.tokenizer_pack).
+  auto composed = secure_frontend::compose_engine_launch(config, expert);
+  if (const auto* failure = std::get_if<secure_frontend::LaunchFailure>(&composed)) {
+    for (const auto& message : failure->messages) std::cerr << message << '\n';
+    return failure->exit == secure_frontend::ExitCode::usage ? EXIT_FAILURE : secure_frontend::exit_code_value(failure->exit);
+  }
+  auto& launch = std::get<secure_frontend::ComposedLaunch>(composed);
+  const auto tokenizer_result = secure_frontend::load_local_tokenizer_pack(*launch.tokenizer_root);
   const auto* tokenizer = std::get_if<secure_frontend::TokenizerPack>(&tokenizer_result);
   if (tokenizer == nullptr) {
-    std::cerr << "Unable to load local tokenizer pack (roots.tokenizer_pack): "
-              << std::get<secure_frontend::TokenizerPackError>(tokenizer_result).message << '\n';
+    std::cerr << "Unable to load local tokenizer pack (" << (launch.managed ? "the model's tokenizer" : "roots.tokenizer_pack")
+              << "): " << std::get<secure_frontend::TokenizerPackError>(tokenizer_result).message << '\n';
     return EXIT_FAILURE;
   }
-  const auto models_result = secure_frontend::enumerate_local_models(config.roots.models);
-  const auto* manifests = std::get_if<std::vector<secure_frontend::ModelManifest>>(&models_result);
-  if (manifests == nullptr) {
-    std::cerr << "Unable to inventory local models (roots.models): "
-              << std::get<secure_frontend::ModelInventoryError>(models_result).message << '\n';
-    return EXIT_FAILURE;
-  }
-  const std::string& model_id = config.engine.model_id.value();
-  const auto selected = std::find_if(manifests->begin(), manifests->end(),
-                                     [&model_id](const auto& model) { return model.id == model_id; });
-  if (selected == manifests->end()) { std::cerr << "Selected model is not present in roots.models.\n"; return EXIT_FAILURE; }
-  const bool glm = config.engine.profile == EngineProfile::glm53;
-  const auto arguments_profile = glm ? secure_frontend::EngineArgumentsProfile::lighttransport_glm53
-                                     : secure_frontend::EngineArgumentsProfile::strata_0143;
-  auto engine_arguments_result =
-      secure_frontend::build_engine_arguments(arguments_profile, *selected, config.roots.models, config.engine.args,
-                                              config.engine.gpus);
-  auto* engine_arguments = std::get_if<std::vector<std::string>>(&engine_arguments_result);
-  if (engine_arguments == nullptr) { std::cerr << "Engine arguments rejected.\n"; return EXIT_FAILURE; }
+  const std::string& model_id = launch.model_id;
+  const bool glm = launch.profile == EngineProfile::glm53;
+  auto* engine_arguments = &launch.engine_args;
   std::vector<secure_frontend::ApiModel> models;
-  models.reserve(manifests->size());
-  for (const auto& manifest : *manifests) models.push_back({.id = manifest.id, .owned_by = manifest.owned_by});
+  models.reserve(launch.served_models.size());
+  for (const auto& id : launch.served_models) models.push_back({.id = id, .owned_by = "local"});
 
   // Profile, protocol flavor, chat limits and the READY deadline all come from
   // the validated config (limits.engine.ready_timeout_s drives the policy).
   secure_frontend::SupervisorConfig supervisor_config = secure_frontend::supervisor_config(config);
+  // SP4 §4.9 c: the profile is the composed launch's (a managed model's
+  // manifest sets it; engine.profile is --expert only), not the config key.
+  supervisor_config.profile = glm ? secure_frontend::NativeChatProfile::glm53 : secure_frontend::NativeChatProfile::qwen;
+  supervisor_config.flavor =
+      glm ? secure_frontend::EngineProtocolFlavor::lighttransport_glm53 : secure_frontend::EngineProtocolFlavor::strata_0143;
   const std::filesystem::path& state_dir = *config.roots.state;
   std::vector<std::filesystem::path> lib_dirs = config.engine.lib_dirs;
   if (lib_dirs.empty()) lib_dirs.push_back(config.engine.executable.path().parent_path());
@@ -271,40 +269,16 @@ int run(const FrontendConfig& config) {
   return supervisor.engine_left_unreaped() ? EXIT_FAILURE : EXIT_SUCCESS;
 }
 
-#if defined(_WIN32)
-// The command line as UTF-8 (spec A2: every value arrives literally). The
-// CRT's char** argv is in the ANSI code page, which turns any character
-// outside it into '?'; the config layer reads every value as UTF-8
-// (path_from_utf8). nullopt: the command line is not valid UTF-16.
-std::optional<std::vector<std::string>> utf8_command_line() {
-  int count = 0;
-  wchar_t** wide = CommandLineToArgvW(GetCommandLineW(), &count);
-  if (wide == nullptr) return std::nullopt;
-  std::vector<std::string> arguments;
-  bool valid = true;
-  for (int index = 0; index < count && valid; ++index) {
-    const int length = static_cast<int>(std::wcslen(wide[index]));
-    if (length == 0) {
-      arguments.emplace_back();
-      continue;
-    }
-    const int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide[index], length, nullptr, 0, nullptr, nullptr);
-    std::string text(static_cast<std::size_t>(std::max(size, 0)), '\0');
-    valid = size > 0 && WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide[index], length, text.data(), size, nullptr, nullptr) == size;
-    arguments.push_back(std::move(text));
-  }
-  LocalFree(wide);
-  if (!valid) return std::nullopt;
-  return arguments;
-}
-#endif
-
 }  // namespace
 
 int main(int argc, char* argv[]) {
+#if defined(SECURE_FRONTEND_TEST_HOOKS)
+  std::cerr << "warning: test hooks compiled in (" << secure_frontend::kTestHooksMarker << "); never ship this binary\n";
+#endif
   secure_frontend::install_process_defaults();
 #if defined(_WIN32)
-  const auto utf8_arguments = utf8_command_line();
+  // Spec A2: UTF-8 from the wide command line, not the ANSI code page (utf8_argv.hpp).
+  const auto utf8_arguments = secure_frontend::utf8_command_line(argc, argv);
   if (!utf8_arguments) {
     std::cerr << "Error: the command line is not valid Unicode\nRun strata-secure-server --help for usage.\n";
     return EXIT_FAILURE;
@@ -312,8 +286,6 @@ int main(int argc, char* argv[]) {
   std::vector<const char*> utf8_argv;
   for (const auto& argument : *utf8_arguments) utf8_argv.push_back(argument.c_str());
   utf8_argv.push_back(nullptr);
-  (void)argc;
-  (void)argv;
   const auto parsed = secure_frontend::parse_server_command_line(static_cast<int>(utf8_arguments->size()), utf8_argv.data());
 #else
   const auto parsed = secure_frontend::parse_server_command_line(argc, argv);
@@ -350,6 +322,6 @@ int main(int argc, char* argv[]) {
     return EXIT_FAILURE;
   }
   const auto config = std::get<secure_frontend::ValidatedConfig>(loaded).shared();
-  if (invocation.command == secure_frontend::ServerCommand::check) return check(*config, overridden);
-  return run(*config);
+  if (invocation.command == secure_frontend::ServerCommand::check) return check(*config, overridden, invocation.expert);
+  return run(*config, invocation.expert);
 }
