@@ -180,11 +180,16 @@ std::optional<ProcessError> EngineProcess::start(const EngineCommand& command) {
   STARTUPINFOW startup{};
   startup.cb = sizeof(startup);
   PROCESS_INFORMATION info{};
+  // Spec §3.7: a crashing engine must never wait on a Windows Error Reporting
+  // dialog; the error mode is inherited by the child. Set once per process.
   static const UINT previous_error_mode = SetErrorMode(GetErrorMode() | SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS);
   (void)previous_error_mode;
   // Start suspended so the child is inside the Job before it runs a single
   // instruction: no early descendant can escape the kill-on-close Job (PROC-05).
-  // A new console process group: console events reach only the frontend.
+  // A new console process group: Ctrl-C is disabled in the engine's group;
+  // group-targeted Ctrl-Break reaches only the frontend; a console-wide
+  // Ctrl-Break still reaches the engine (open item for SP2 Task 15:
+  // CREATE_NO_WINDOW or accept the race).
   if (!CreateProcessW(command.executable.c_str(), command_line.data(), nullptr, nullptr, FALSE,
                       CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP, environment.data(), nullptr,
                       &startup, &info)) {

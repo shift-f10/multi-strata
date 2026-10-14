@@ -166,8 +166,11 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
   (void)previous_error_mode;
   // Start suspended so the child is inside the Job before it runs a single
   // instruction: no early descendant can escape the kill-on-close Job (PROC-05).
-  // CREATE_NEW_PROCESS_GROUP: console Ctrl-C/Ctrl-Break reach only the
-  // frontend; a console handler (SP2 Task 15) will run the orderly shutdown.
+  // CREATE_NEW_PROCESS_GROUP: Ctrl-C is disabled in the engine's group;
+  // group-targeted Ctrl-Break reaches only the frontend; a console-wide
+  // Ctrl-Break still reaches the engine (open item for SP2 Task 15:
+  // CREATE_NO_WINDOW or accept the race). A console handler (SP2 Task 15)
+  // will run the orderly shutdown.
   const BOOL created = CreateProcessW(executable.c_str(), line.data(), nullptr, nullptr, TRUE,
                                       CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED |
                                           CREATE_NEW_PROCESS_GROUP,
