@@ -49,14 +49,18 @@ secure_frontend::TokenReadResult read_configured_token(const FrontendConfig& con
 }
 
 int check(const FrontendConfig& config, const std::vector<std::string>& overridden) {
-  std::cout << "Configuration is valid.\n" << secure_frontend::describe(config);
+  std::cout << secure_frontend::describe(config);
   for (const auto& key : overridden) std::cout << key << ": the command line overrides the config file\n";
+  std::cout.flush();
+  // The verdict follows the token read: a configuration whose token cannot be
+  // read is not reported valid first.
   const auto token = read_configured_token(config);
   if (const auto* error = std::get_if<secure_frontend::TokenReadError>(&token)) {
-    std::cout << "token: unavailable: " << error->message << '\n';
+    std::cerr << "token: unavailable: " << error->message << '\n'
+              << "Configuration is not usable: the API token cannot be read.\n";
     return EXIT_FAILURE;
   }
-  std::cout << "token: available (value not shown)\n";
+  std::cout << "token: available (value not shown)\nConfiguration is valid.\n";
   return EXIT_SUCCESS;
 }
 
@@ -67,9 +71,14 @@ int run(const FrontendConfig& config) {
     for (const auto& issue : issues) std::cerr << "Configuration error: " << secure_frontend::format_issue(issue) << '\n';
     return EXIT_FAILURE;
   }
+  // Every reason below is fixed text (plus, for the inventory, an entry name
+  // below roots.models, spec §6.1): never a token or a configured value.
   auto token_result = read_configured_token(config);
   auto* token = std::get_if<secure_frontend::SecretBytes>(&token_result);
-  if (token == nullptr) { std::cerr << "Unable to read API token.\n"; return EXIT_FAILURE; }
+  if (token == nullptr) {
+    std::cerr << "Unable to read API token: " << std::get<secure_frontend::TokenReadError>(token_result).message << '\n';
+    return EXIT_FAILURE;
+  }
   auto verifier = std::make_shared<const secure_frontend::TokenVerifier>(std::move(*token));
 
   const secure_frontend::Config listener = secure_frontend::listener_config(config);
@@ -78,10 +87,18 @@ int run(const FrontendConfig& config) {
   const auto listener_limits = secure_frontend::http_socket_server_limits(config);
   const auto tokenizer_result = secure_frontend::load_local_tokenizer_pack(config.roots.tokenizer_pack);
   const auto* tokenizer = std::get_if<secure_frontend::TokenizerPack>(&tokenizer_result);
-  if (tokenizer == nullptr) { std::cerr << "Unable to load local tokenizer pack.\n"; return EXIT_FAILURE; }
+  if (tokenizer == nullptr) {
+    std::cerr << "Unable to load local tokenizer pack (roots.tokenizer_pack): "
+              << std::get<secure_frontend::TokenizerPackError>(tokenizer_result).message << '\n';
+    return EXIT_FAILURE;
+  }
   const auto models_result = secure_frontend::enumerate_local_models(config.roots.models);
   const auto* manifests = std::get_if<std::vector<secure_frontend::ModelManifest>>(&models_result);
-  if (manifests == nullptr) { std::cerr << "Unable to inventory local models.\n"; return EXIT_FAILURE; }
+  if (manifests == nullptr) {
+    std::cerr << "Unable to inventory local models (roots.models): "
+              << std::get<secure_frontend::ModelInventoryError>(models_result).message << '\n';
+    return EXIT_FAILURE;
+  }
   const std::string& model_id = config.engine.model_id.value();
   const auto selected = std::find_if(manifests->begin(), manifests->end(),
                                      [&model_id](const auto& model) { return model.id == model_id; });

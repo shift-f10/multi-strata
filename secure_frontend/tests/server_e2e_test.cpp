@@ -237,7 +237,45 @@ void auth02_valid_token_succeeds_and_is_not_echoed() {
          "nor written to stdout/stderr");
 }
 
+// Review Focus 1/3: serve prints the actionable reason (fixed text, never a
+// token or a configured value), not only a generic line.
+void serve_reports_why_the_token_and_tokenizer_pack_are_unusable() {
+  ServerFixture f;
+  const std::string short_token = "short-token-value";
+  const auto token = secure_frontend_test::run_to_completion(secure_frontend_test::ProcessSpec{
+      f.server_executable, f.base_flags(), {{secure_frontend_test::kTestTokenVariable, short_token}}});
+  expect(token.exit_code != 0 && contains(token.err, "Unable to read API token") &&
+             contains(token.err, "at least 32 bytes"),
+         "a too-short token names the reason: " + token.err);
+  expect(!contains(token.err, short_token) && !contains(token.out, short_token), "the token value is never printed");
+
+  const auto empty_pack = f.dir / "empty-pack";
+  secure_frontend_test::make_private_directory(empty_pack);
+  auto flags = f.base_flags();
+  for (std::size_t i = 0; i + 1 < flags.size(); ++i) if (flags[i] == "--tokenizer-pack") flags[i + 1] = empty_pack.string();
+  const auto pack = f.run(flags);
+  expect(pack.exit_code != 0 && contains(pack.err, "Unable to load local tokenizer pack") &&
+             contains(pack.err, "required tokenizer pack file is missing"),
+         "a missing tokenizer file names the reason: " + pack.err);
+  expect(!contains(pack.err, secure_frontend_test::kTestToken), "never the token");
+}
+
 #if !defined(_WIN32)
+// Review Focus 1/3: a symlinked .gguf below roots.models stops serve with the
+// entry name (allowed, spec §6.1) and what to do, not only a generic line.
+void serve_reports_symlinked_model_entry() {
+  ServerFixture f;
+  std::filesystem::create_symlink(f.models / "qwen-local.gguf", f.models / "linked.gguf");
+  const auto marker = f.dir / "engine-started";
+  const auto result = f.run(with(f.base_flags(), {"--engine-arg", "--marker=" + marker.string()}));
+  expect(result.exit_code != 0 && contains(result.err, "Unable to inventory local models"), "serve stops: " + result.err);
+  expect(contains(result.err, "linked.gguf") && contains(result.err, "roots.models"),
+         "the error names the entry and roots.models: " + result.err);
+  expect(!contains(result.err, f.models.string()), "the configured root is not echoed");
+  expect(!contains(result.err, secure_frontend_test::kTestToken), "never the token");
+  expect(!std::filesystem::exists(marker), "the engine was not launched");
+}
+
 // P7 / defect e: the fixture's models root is configured through a symlink; the
 // engine must receive the canonical root the inventory used, never the raw string.
 void cfg03_engine_receives_canonical_models_root() {
@@ -296,7 +334,10 @@ int main(int argc, char** argv) {
       {"cfg05_token_absent_from_child_argv_env_and_outputs", cfg05_token_absent_from_child_argv_env_and_outputs},
       {"auth01_socket_rejects_missing_and_wrong_token_on_every_route", auth01_socket_rejects_missing_and_wrong_token_on_every_route},
       {"auth02_valid_token_succeeds_and_is_not_echoed", auth02_valid_token_succeeds_and_is_not_echoed},
+      {"serve_reports_why_the_token_and_tokenizer_pack_are_unusable",
+       serve_reports_why_the_token_and_tokenizer_pack_are_unusable},
 #if !defined(_WIN32)
+      {"serve_reports_symlinked_model_entry", serve_reports_symlinked_model_entry},
       {"cfg03_engine_receives_canonical_models_root", cfg03_engine_receives_canonical_models_root},
       {"server_process_is_not_dumpable", server_process_is_not_dumpable},
 #endif

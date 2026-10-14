@@ -644,6 +644,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     add_dependencies(secure_frontend_server_cli_tests strata-secure-server secure_frontend_fake_engine)
     secure_frontend_add_cases(secure_frontend_server_cli_tests
         cli_config_file_and_flags_share_validator cli_flag_overrides_file_and_is_reported cli_check_prints_no_token
+        cli_check_unreadable_token_is_not_reported_valid
         cli_unknown_option_does_not_echo_value
         auth04_empty_token_rejected_on_loopback auth04_no_switch_disables_auth
         ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
@@ -666,11 +667,14 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         net02_error_is_non_secret_and_exits_before_bind ready_timeout_is_configurable
         cfg05_token_absent_from_child_argv_env_and_outputs
         auth01_socket_rejects_missing_and_wrong_token_on_every_route auth02_valid_token_succeeds_and_is_not_echoed
+        serve_reports_why_the_token_and_tokenizer_pack_are_unusable
         ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
     # GetExtendedTcpTable is not faithful under wine.
     secure_frontend_add_cases(secure_frontend_server_e2e_tests net01_default_listener_is_loopback_only
         ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
     if(NOT WIN32)
+        secure_frontend_add_cases(secure_frontend_server_e2e_tests serve_reports_symlinked_model_entry
+            ${SECURE_FRONTEND_SERVER_ARGS} TIMEOUT 120)
         secure_frontend_add_cases(secure_frontend_server_e2e_tests cfg03_engine_receives_canonical_models_root
             ${SECURE_FRONTEND_SERVER_ARGS} TIMEOUT 120)
         secure_frontend_add_cases(secure_frontend_server_e2e_tests server_process_is_not_dumpable

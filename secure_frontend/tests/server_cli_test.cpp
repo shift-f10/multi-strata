@@ -65,9 +65,28 @@ void cli_check_prints_no_token() {
   expect(result.exit_code == 0, "--check on a valid config exits 0: " + result.err);
   expect(secure_frontend_test::snapshot_tree(f.dir) == before, "--check has no side effects below the fixture");
   expect(contains(result.out, "token.source = \"env:SF_TEST_TOKEN\""), "the token source is shown as metadata");
-  expect(contains(result.out, "token: available (value not shown)"), "--check confirms the token is readable");
+  const auto available = result.out.find("token: available (value not shown)");
+  const auto verdict = result.out.find("Configuration is valid.");
+  expect(available != std::string::npos && verdict != std::string::npos && available < verdict,
+         "--check confirms the token is readable, then gives the verdict: " + result.out);
   expect(!contains(result.out, secure_frontend_test::kTestToken) && !contains(result.err, secure_frontend_test::kTestToken),
          "--check never prints the token");
+}
+
+// F3: the verdict follows the token read; an unreadable token is never
+// preceded by "Configuration is valid.".
+void cli_check_unreadable_token_is_not_reported_valid() {
+  ServerFixture f;
+  f.write_config(f.base_literals());
+  const std::string short_token = "short-token-value";
+  const auto result = secure_frontend_test::run_to_completion(secure_frontend_test::ProcessSpec{
+      f.server_executable, {"--check", "--config", f.config.string()},
+      {{secure_frontend_test::kTestTokenVariable, short_token}}});
+  expect(result.exit_code != 0, "--check with an unreadable token exits 1");
+  expect(!contains(result.out, "Configuration is valid."), "no valid verdict before the failure: " + result.out);
+  expect(contains(result.err, "token: unavailable") && contains(result.err, "at least 32 bytes"),
+         "the failure and its reason go to stderr: " + result.err);
+  expect(!contains(result.out, short_token) && !contains(result.err, short_token), "the token value is never printed");
 }
 
 void cli_unknown_option_does_not_echo_value() {
@@ -275,6 +294,7 @@ int main(int argc, char** argv) {
       {"cli_config_file_and_flags_share_validator", cli_config_file_and_flags_share_validator},
       {"cli_flag_overrides_file_and_is_reported", cli_flag_overrides_file_and_is_reported},
       {"cli_check_prints_no_token", cli_check_prints_no_token},
+      {"cli_check_unreadable_token_is_not_reported_valid", cli_check_unreadable_token_is_not_reported_valid},
       {"cli_check_has_no_side_effects", cli_check_has_no_side_effects},
       {"cli_unknown_option_does_not_echo_value", cli_unknown_option_does_not_echo_value},
       {"init_writes_config_and_token_then_server_starts", init_writes_config_and_token_then_server_starts},
