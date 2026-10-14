@@ -1,4 +1,5 @@
 #include "secure_frontend/engine_process.hpp"
+#include "secure_frontend/exit_status.hpp"
 
 #include <algorithm>
 #include <array>
@@ -177,7 +178,7 @@ std::optional<ProcessError> EngineProcess::start(const EngineCommand& command) {
   HANDLE job = CreateJobObjectW(nullptr, nullptr);
   if (job == nullptr) return ProcessError{ProcessErrorCode::platform_failure, "CreateJobObjectW failed"};
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
-  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
   if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
     CloseHandle(job);
     return ProcessError{ProcessErrorCode::platform_failure, "SetInformationJobObject failed"};
@@ -185,12 +186,31 @@ std::optional<ProcessError> EngineProcess::start(const EngineCommand& command) {
   STARTUPINFOW startup{};
   startup.cb = sizeof(startup);
   PROCESS_INFORMATION info{};
+  // Spec §3.7: a crashing engine must never wait on a Windows Error Reporting
+  // dialog; the error mode is inherited by the child. Set once per process.
+  static const UINT previous_error_mode = SetErrorMode(GetErrorMode() | SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS);
+  (void)previous_error_mode;
   // Start suspended so the child is inside the Job before it runs a single
   // instruction: no early descendant can escape the kill-on-close Job (PROC-05).
+  // CREATE_NEW_PROCESS_GROUP: Ctrl-C is disabled in the engine's group and
+  // group-targeted Ctrl-Break reaches only the frontend. CREATE_NO_WINDOW
+  // (SP2 Task 15 ruling): the engine runs without the frontend's console, so a
+  // console-wide Ctrl-Break or a closed console window reaches only the
+  // frontend, whose console handler stops the engine in order (spec §3.7).
+  // Same flags as the production twin (engine_stdio_process.cpp); this
+  // test-only class (RF12) speaks no stdio protocol. Authoritative in MSYS2.
+  // It keeps its own CreateProcessW (no stdio redirection, bInheritHandles
+  // FALSE, so no handle list) rather than win_launch::launch_in_job (SP2 R4),
+  // which always passes three inheritable standard handles.
+  const std::wstring working_directory = command.working_directory.wstring();
   if (!CreateProcessW(command.executable.c_str(), command_line.data(), nullptr, nullptr, FALSE,
-                      CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED, environment.data(), nullptr, &startup, &info)) {
+                      CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
+                      environment.data(), working_directory.empty() ? nullptr : working_directory.c_str(), &startup, &info)) {
+    const DWORD error = GetLastError();
     CloseHandle(job);
-    return ProcessError{ProcessErrorCode::spawn_failed, "CreateProcessW failed"};
+    // Spec §3.6/G3: never retried via runas.
+    return ProcessError{ProcessErrorCode::spawn_failed,
+                        error == ERROR_ELEVATION_REQUIRED ? "engine requires elevation; refused" : "CreateProcessW failed"};
   }
   if (!AssignProcessToJobObject(job, info.hProcess)) {
     TerminateProcess(info.hProcess, 1);  // still suspended: it never ran
@@ -200,7 +220,7 @@ std::optional<ProcessError> EngineProcess::start(const EngineCommand& command) {
     return ProcessError{ProcessErrorCode::platform_failure, "AssignProcessToJobObject failed"};
   }
   if (ResumeThread(info.hThread) == static_cast<DWORD>(-1)) {
-    TerminateJobObject(job, 1);
+    TerminateJobObject(job, kSupervisorKillExitCode);
     CloseHandle(info.hThread);
     CloseHandle(info.hProcess);
     CloseHandle(job);
@@ -214,25 +234,32 @@ std::optional<ProcessError> EngineProcess::start(const EngineCommand& command) {
   // Everything the child needs is built before fork(); the child body is async-signal-safe.
   posix_launch::PreparedExec prepared;
   posix_launch::prepare(prepared, command, /*insert_serve=*/false);
+  if (!posix_launch::open_cgroup(prepared, command)) {
+    return ProcessError{ProcessErrorCode::platform_failure, "engine cgroup setup failed"};
+  }
   int error_pipe[2];
   if (pipe2(error_pipe, O_CLOEXEC) != 0) return ProcessError{ProcessErrorCode::platform_failure, "pipe failed"};
-  const pid_t child = fork();
+  pid_t child = -1;
+  {
+    posix_launch::BlockAllSignals blocked;
+    child = fork();
+    if (child == 0) {
+      // Inherited stdio is kept; every other descriptor is closed before execve.
+      posix_launch::exec_child(prepared, -1, -1, /*null_stderr=*/false, error_pipe[1]);
+    }
+  }
   if (child < 0) {
     close(error_pipe[0]); close(error_pipe[1]);
     return ProcessError{ProcessErrorCode::spawn_failed, "fork failed"};
   }
-  if (child == 0) {
-    // Inherited stdio is kept; every other descriptor is closed before execve.
-    posix_launch::exec_child(prepared, -1, -1, /*null_stderr=*/false, error_pipe[1]);
-  }
   close(error_pipe[1]);
-  int child_errno = 0;
-  const auto bytes_read = read(error_pipe[0], &child_errno, sizeof(child_errno));
+  // Same report reading as the production twin: execve and hook failures read distinctly (RF11).
+  const auto report = posix_launch::classify_report(posix_launch::read_report(error_pipe[0]));
   close(error_pipe[0]);
-  if (bytes_read > 0) {
+  if (report.kind != posix_launch::ChildReportKind::none) {
     int status = 0;
     (void)waitpid(child, &status, 0);
-    return ProcessError{ProcessErrorCode::spawn_failed, std::string("execve failed: ") + std::strerror(child_errno)};
+    return ProcessError{ProcessErrorCode::spawn_failed, posix_launch::describe_report(report)};
   }
   process_id_ = child;
   return std::nullopt;
@@ -286,7 +313,7 @@ bool EngineProcess::terminate(const std::chrono::milliseconds grace) {
   if (exit_code_.has_value()) return true;
 #if defined(_WIN32)
   if (process_handle_ == nullptr) return true;
-  if (TerminateJobObject(static_cast<HANDLE>(job_handle_), 1) == 0) return false;
+  if (TerminateJobObject(static_cast<HANDLE>(job_handle_), kSupervisorKillExitCode) == 0) return false;
   return wait_for(grace).has_value();
 #else
   if (process_id_ < 0) return true;

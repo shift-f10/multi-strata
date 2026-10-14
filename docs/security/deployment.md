@@ -98,7 +98,8 @@ renaming a quarantined component.
   distinct `--engine-arg` (or `engine.args` element in the `--config` file;
   run `--check` first: it validates every key without side effects and lists
   every problem by key path). It appends `--serve` itself, runs exactly one child
-  with no inherited environment allowlist, and exposes only authenticated
+  with a fixed frontend-rendered environment (nothing inherited from the
+  server's), and exposes only authenticated
   `GET /health`, `GET /v1/models`, and non-streaming text-only
   `POST /v1/chat/completions`. The request `model` must equal the startup
   `--model-id`; streaming, tools, images, URLs, MCP, downloads, and remote
@@ -122,6 +123,18 @@ renaming a quarantined component.
   [`../../tests/security/README.md`](../../tests/security/README.md), including
   monitored startup/inference/shutdown/restart proving no outbound connection
   or DNS lookup.
+- The engine runs with `PR_SET_NO_NEW_PRIVS` (default). On hosts where the
+  NVIDIA driver creates `/dev/nvidia-uvm*` on first CUDA use by executing the
+  setuid `nvidia-modprobe`, NNP blocks that: create the nodes at boot instead
+  (as root: `nvidia-modprobe -u -c=0`, or enable `nvidia-persistenced`). The
+  frontend logs a hint naming this fix when an engine dies before READY under
+  NNP. `--allow-new-privileges` turns NNP off; it exists for the offline GPU
+  validation kit and such hosts, and is not the default.
+- `strata-secure-server` refuses to start as root (Windows: with an elevated
+  token). Containers must run it as an unprivileged user.
+- `--state-dir` must be an existing directory owned by the service user with
+  no group/other permissions; the engine's working directory, temp and CUDA
+  cache live below it.
 
 ## Windows prerequisites and operational checks
 
@@ -159,6 +172,11 @@ The release owner records the following alongside a staged package:
 5. A human review of the package file list confirming no legacy Python server,
    MCP/tool/plugin system, telemetry, updater, or analytics component is
    selected.
+6. Unresolved accepted risks to state: PROC-03 same-uid reopen of engine stdin
+   on Linux (SP2 spec §3.13); PROC-05 frontend SIGKILL leaves engine
+   descendants, without a delegated cgroup and, with one, until the operator's
+   scope is killed (SP2 spec §3.7); the SP2 environment allowlist and the
+   `PR_SET_NO_NEW_PRIVS` default not yet verified on a GPU.
 
 See [`threat-model.md`](threat-model.md) for the normative security contract
 and [`privacy-migration.md`](privacy-migration.md) for the upstream artifacts

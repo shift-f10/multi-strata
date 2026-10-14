@@ -290,6 +290,28 @@ inline bool create_junction(const std::filesystem::path& link, const std::filesy
 }
 #endif
 
+// A --state-dir root: what serve's owner-only check (is_private_state_root)
+// accepts. Windows: make_protected_directory's descriptor (explicit O:<user>,
+// protected DACL for the user and SYSTEM) -- make_private_directory leaves the
+// owner to the token default, which is Administrators for an elevated admin.
+// An existing directory is accepted, as make_private_directory does. POSIX:
+// make_private_directory (0700).
+inline void make_owner_private_directory(const std::filesystem::path& path) {
+#if defined(_WIN32)
+  ProtectedAttributes sa(true);
+  const std::wstring extended = L"\\\\?\\" + std::filesystem::absolute(path).wstring();
+  if (CreateDirectoryW(extended.c_str(), &sa.attributes) == 0) {
+    const DWORD error = GetLastError();
+    if (error != ERROR_ALREADY_EXISTS) {
+      std::cerr << "owner-private CreateDirectoryW failed: " << path.string() << ": error " << error << '\n';
+      std::exit(EXIT_FAILURE);
+    }
+  }
+#else
+  make_private_directory(path);
+#endif
+}
+
 inline std::string read_file(const std::filesystem::path& path) {
   std::ifstream input(path, std::ios::binary);
   return std::string{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};

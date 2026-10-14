@@ -1,5 +1,8 @@
 #include "secure_frontend/engine_protocol_client.hpp"
 
+#include "secure_frontend/config_defaults.hpp"
+#include "secure_frontend/deadline.hpp"
+
 #include <algorithm>
 #include <charconv>
 #include <limits>
@@ -56,6 +59,11 @@ std::vector<std::string_view> fields(const std::string_view line) {
 
 }  // namespace
 
+bool is_engine_fatal_line(const std::string_view line) noexcept {
+  return std::any_of(kEngineFatalPrefixes.begin(), kEngineFatalPrefixes.end(),
+                     [line](const std::string_view prefix) { return line.substr(0, prefix.size()) == prefix; });
+}
+
 EngineProtocolClient::EngineProtocolClient(EngineLineTransport& transport,
                                            const EngineProtocolLimits limits,
                                            const EngineProtocolFlavor flavor)
@@ -71,6 +79,7 @@ std::size_t EngineProtocolClient::inbound_max_line_bytes() const noexcept {
 std::optional<EngineProtocolError> EngineProtocolClient::fail(const EngineProtocolErrorCode code,
                                                               std::string message) {
   state_ = State::failed;
+  failure_code_ = code;
   return EngineProtocolError{code, std::move(message)};
 }
 
@@ -87,12 +96,13 @@ std::optional<EngineProtocolError> EngineProtocolClient::validate_incoming(const
   return std::nullopt;
 }
 
-std::optional<EngineProtocolError> EngineProtocolClient::write_command(const std::string_view command) {
+std::optional<EngineProtocolError> EngineProtocolClient::write_command(const std::string_view command,
+                                                                        const MonotonicClock::time_point deadline) {
   if (command.empty() || command.size() > effective_max_line_bytes_ || !ascii_printable(command)) {
     return fail(EngineProtocolErrorCode::invalid_argument, "outbound protocol command is invalid");
   }
   std::string transport_error;
-  if (!transport_.write_line(command, transport_error)) {
+  if (!transport_.write_line(command, deadline, transport_error)) {
     return fail(EngineProtocolErrorCode::transport_write_failed,
                 transport_error.empty() ? "engine command write failed" : transport_error);
   }
@@ -104,11 +114,12 @@ std::optional<EngineProtocolError> EngineProtocolClient::await_ready(const std::
   if (state_ != State::waiting_ready) {
     return EngineProtocolError{EngineProtocolErrorCode::invalid_state, "engine is not awaiting READY"};
   }
-  const auto duration = std::max(timeout, std::chrono::milliseconds(0));
-  const auto deadline = std::chrono::steady_clock::now() + duration;
+  const auto deadline = deadline_after(timeout);
   while (true) {
-    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::max(deadline - std::chrono::steady_clock::now(), std::chrono::steady_clock::duration::zero()));
+    const auto remaining = remaining_until(deadline);
+    if (remaining.count() == 0) {
+      return EngineProtocolError{EngineProtocolErrorCode::timeout, "engine did not report READY before timeout"};
+    }
     const auto response = transport_.read_line(remaining);
     if (response.kind == EngineReadKind::timeout) {
       return EngineProtocolError{EngineProtocolErrorCode::timeout, "engine did not report READY before timeout"};
@@ -120,6 +131,9 @@ std::optional<EngineProtocolError> EngineProtocolClient::await_ready(const std::
     }
     if (const auto validation = validate_incoming(response.line); validation.has_value()) {
       return fail(validation->code, validation->message);
+    }
+    if (is_engine_fatal_line(response.line)) {
+      return fail(EngineProtocolErrorCode::fatal_engine_line, "engine reported a fatal verification failure");
     }
     const auto parsed = fields(response.line);
     if (parsed.size() >= 2 && parsed.front() == "INFO") continue;
@@ -150,7 +164,9 @@ std::optional<EngineProtocolError> EngineProtocolClient::await_ready(const std::
 }
 
 std::optional<EngineProtocolError> EngineProtocolClient::begin_generation(
-    const std::uint32_t max_new_tokens, const std::vector<std::uint32_t>& prompt_token_ids) {
+    const std::uint32_t max_new_tokens, const std::vector<std::uint32_t>& prompt_token_ids,
+    const MonotonicClock::time_point write_deadline) {
+  stop_cause_.reset();  // a cause never outlives its request, even if this GEN is refused
   if (state_ != State::idle) return EngineProtocolError{EngineProtocolErrorCode::invalid_state, "engine is not idle"};
   if (max_new_tokens == 0 || max_new_tokens > limits_.max_new_tokens || prompt_token_ids.empty() ||
       prompt_token_ids.size() > limits_.max_prompt_tokens) {
@@ -164,7 +180,7 @@ std::optional<EngineProtocolError> EngineProtocolClient::begin_generation(
       return EngineProtocolError{EngineProtocolErrorCode::invalid_argument, "generation command exceeds line limit"};
     }
   }
-  if (const auto error = write_command(command); error.has_value()) return error;
+  if (const auto error = write_command(command, write_deadline); error.has_value()) return error;
   active_generation_ = EngineGeneration{};
   stop_requested_ = false;
   state_ = State::generating;
@@ -175,13 +191,12 @@ std::optional<EngineProtocolError> EngineProtocolClient::read_generation(const s
                                                                           EngineGeneration& generation) {
   if (state_ != State::generating) return EngineProtocolError{EngineProtocolErrorCode::invalid_state, "no generation is active"};
   generation = active_generation_;
-  const auto deadline = std::chrono::steady_clock::now() + std::max(timeout, std::chrono::milliseconds(0));
+  const auto deadline = deadline_after(timeout);
   while (true) {
-    const auto now = std::chrono::steady_clock::now();
-    if (now >= deadline) {
+    const auto remaining = remaining_until(deadline);
+    if (remaining.count() == 0) {
       return EngineProtocolError{EngineProtocolErrorCode::timeout, "engine generation read timed out"};
     }
-    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
     const auto response = transport_.read_line(remaining);
     if (response.kind == EngineReadKind::timeout) {
       return EngineProtocolError{EngineProtocolErrorCode::timeout, "engine generation read timed out"};
@@ -193,6 +208,9 @@ std::optional<EngineProtocolError> EngineProtocolClient::read_generation(const s
     }
     if (const auto validation = validate_incoming(response.line); validation.has_value()) {
       return fail(validation->code, validation->message);
+    }
+    if (is_engine_fatal_line(response.line)) {
+      return fail(EngineProtocolErrorCode::fatal_engine_line, "engine reported a fatal verification failure");
     }
     if (response.line.rfind("T ", 0) == 0) {
       const auto token_text = std::string_view(response.line).substr(2);
@@ -235,6 +253,7 @@ std::optional<EngineProtocolError> EngineProtocolClient::read_generation(const s
       if (done_fields.size() >= 6U && done_fields[5] == "nonfinite") {
         return EngineProtocolError{EngineProtocolErrorCode::engine_error, "engine reported a non-finite result"};
       }
+      completed_generations_.fetch_add(1U);
       return std::nullopt;
     }
     if (response.line.rfind("ERR", 0) == 0 && (response.line.size() == 3 || response.line[3] == ' ')) {
@@ -244,24 +263,28 @@ std::optional<EngineProtocolError> EngineProtocolClient::read_generation(const s
   }
 }
 
-std::optional<EngineProtocolError> EngineProtocolClient::stop() {
+std::optional<EngineProtocolError> EngineProtocolClient::stop(const EngineStopCause cause) {
   if (state_ != State::generating) return EngineProtocolError{EngineProtocolErrorCode::invalid_state, "no generation is active"};
   if (!supports_stop_) return EngineProtocolError{EngineProtocolErrorCode::invalid_state, "engine did not advertise STOP support"};
   if (stop_requested_) return std::nullopt;
-  if (const auto error = write_command("STOP"); error.has_value()) return error;
+  if (const auto error = write_command("STOP", deadline_after(config_defaults::kStdinWriteDeadline)); error.has_value()) return error;
   stop_requested_ = true;
+  stop_cause_ = cause;
   return std::nullopt;
 }
 
 std::optional<EngineProtocolError> EngineProtocolClient::quit() {
   if (state_ == State::closed) return std::nullopt;
   if (state_ == State::failed) return EngineProtocolError{EngineProtocolErrorCode::invalid_state, "engine protocol has failed"};
-  if (const auto error = write_command("QUIT"); error.has_value()) return error;
+  if (const auto error = write_command("QUIT", deadline_after(config_defaults::kStdinWriteDeadline)); error.has_value()) return error;
   state_ = State::closed;
   return std::nullopt;
 }
 
-void EngineProtocolClient::abandon() noexcept { state_ = State::failed; }
+void EngineProtocolClient::abandon() noexcept {
+  state_ = State::failed;
+  if (!failure_code_) failure_code_ = EngineProtocolErrorCode::abandoned;  // ignored STOP: drain failed (§3.5(3))
+}
 
 bool EngineProtocolClient::ready() const noexcept { return state_ == State::idle || state_ == State::generating; }
 bool EngineProtocolClient::generating() const noexcept { return state_ == State::generating; }

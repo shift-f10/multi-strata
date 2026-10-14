@@ -5,10 +5,12 @@
 #include "support/test_support.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <map>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #if !defined(_WIN32)
@@ -66,7 +68,7 @@ inline void write_test_tokenizer_pack(const std::filesystem::path& root) {
 }
 
 // A complete local installation in a scratch directory: models/ with
-// qwen-local.gguf, a tokenizer pack, an empty secret root, a private copy of
+// qwen-local.gguf, a tokenizer pack, an empty secret root, a 0700 state root, a private copy of
 // the fake engine, and a free loopback port. ARGS: [0] strata-secure-server, [1] fake engine.
 class ServerFixture final {
  public:
@@ -74,6 +76,7 @@ class ServerFixture final {
   std::filesystem::path models = dir / "models";
   std::filesystem::path tokenizer = dir / "tok";
   std::filesystem::path secret = dir / "secret";
+  std::filesystem::path state = dir / "state";  // roots.state (--state-dir): required to serve
   std::filesystem::path engine;
   std::filesystem::path config = dir / "config.json";
   std::filesystem::path server_executable;
@@ -87,6 +90,7 @@ class ServerFixture final {
     }
     server_executable = args[0];
     for (const auto& directory : {models, tokenizer, secret, dir / "bin"}) make_private_directory(directory);
+    make_owner_private_directory(state);  // --state-dir: Windows owner must be the user, not Administrators
     write_file(models / "qwen-local.gguf", "GGUF");
 #if defined(_WIN32)
     engine = dir / "bin" / "strata.exe";
@@ -102,13 +106,15 @@ class ServerFixture final {
 
   [[nodiscard]] std::vector<std::string> base_flags() const {
     return {"--models-root", models.string(), "--tokenizer-pack", tokenizer.string(), "--engine", engine.string(),
-            "--model-id", "qwen-local", "--token-env", kTestTokenVariable, "--port", std::to_string(port)};
+            "--model-id", "qwen-local", "--token-env", kTestTokenVariable, "--port", std::to_string(port),
+            "--state-dir", state.string()};
   }
   [[nodiscard]] std::map<std::string, std::string> base_literals() const {
     return {{"schema_version", "1"},
             {"listener.port", std::to_string(port)},
             {"roots.models", json_literal(models.string())},
             {"roots.tokenizer_pack", json_literal(tokenizer.string())},
+            {"roots.state", json_literal(state.string())},
             {"engine.executable", json_literal(engine.string())},
             {"engine.model_id", json_literal("qwen-local")},
             {"token.source", json_literal(std::string{"env:"} + kTestTokenVariable)}};
@@ -142,6 +148,19 @@ class ServerFixture final {
     return http_exchange(port, text + "\r\n" + body);
   }
   [[nodiscard]] std::string bearer() const { return "Bearer " + std::string{kTestToken}; }
+  // SP2: READY is consumed eagerly; until then /health is 503 and a chat is a
+  // 503. Poll /health until the engine is ready before a case sends a chat or
+  // expects a 200 /health. `authorization` defaults to bearer().
+  [[nodiscard]] bool wait_engine_ready(const std::chrono::milliseconds timeout = std::chrono::seconds(10),
+                                       const std::string& authorization = {}) const {
+    const std::string credential = authorization.empty() ? bearer() : authorization;
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (contains(request("GET", "/health", credential), "\"engine\":\"ready\"")) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return false;
+  }
 };
 
 }  // namespace secure_frontend_test

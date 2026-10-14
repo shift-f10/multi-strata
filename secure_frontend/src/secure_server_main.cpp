@@ -3,14 +3,17 @@
 #include "secure_frontend/chat_schema.hpp"
 #include "secure_frontend/config.hpp"
 #include "secure_frontend/engine_arguments.hpp"
-#include "secure_frontend/engine_stdio_process.hpp"
+#include "secure_frontend/engine_environment.hpp"
+#include "secure_frontend/engine_supervisor.hpp"
 #include "secure_frontend/frontend_config.hpp"
 #include "secure_frontend/frontend_init.hpp"
 #include "secure_frontend/http_request_handler.hpp"
 #include "secure_frontend/http_socket_server.hpp"
 #include "secure_frontend/model_inventory.hpp"
+#include "secure_frontend/privilege_check.hpp"
 #include "secure_frontend/process_defaults.hpp"
 #include "secure_frontend/server_cli.hpp"
+#include "secure_frontend/shutdown_signal.hpp"
 #include "secure_frontend/subsystem_limits.hpp"
 #include "secure_frontend/token_reader.hpp"
 #include "secure_frontend/token_verifier.hpp"
@@ -64,7 +67,49 @@ int check(const FrontendConfig& config, const std::vector<std::string>& overridd
   return EXIT_SUCCESS;
 }
 
+// roots.state (--state-dir) holds the engine's cwd, temp and CUDA cache (spec
+// §3.9, §3.12). validate() only checked that it is absolute (--check stays
+// side-effect free); serve refuses, before anything is created, bound or
+// spawned, unless it is an existing owner-only directory.
+bool state_dir_is_usable(const FrontendConfig& config) {
+  if (!config.roots.state) {
+    std::cerr << "roots.state (--state-dir) is required to serve.\n";
+    return false;
+  }
+  // POSIX: lstat -- a real directory, not a symlink, owned by the effective
+  // uid, no group/other bits. Windows: opened without following a junction or
+  // symlink (refused), owner the current user, protected DACL with allow-ACEs
+  // only for the user, SYSTEM and Administrators (is_private_state_root).
+  const bool owner_only = secure_frontend::is_private_state_root(*config.roots.state);
+  if (!owner_only) {
+    std::cerr << "--state-dir must be an existing owner-only directory.\n";
+    return false;
+  }
+  return true;
+}
+
+// Creates <state>/engine, the temp root and the CUDA cache owner-only and
+// clears the temp root: no engine runs yet, so temp directories a previous
+// frontend left behind are stale. Where the CUDA cache lives is
+// engine_environment_for()'s decision: <roots.cache>/cuda (that root was
+// already created 0700 by create_runtime_roots() and is left as it is) or
+// <state>/cache/cuda, whose parent below the state dir is created owner-only too.
+bool prepare_state_dir(const std::filesystem::path& state_dir, const secure_frontend::EngineEnvironment& environment) {
+  std::vector<std::filesystem::path> directories{state_dir / "engine", environment.temp_dir};
+  const auto below_state = [&state_dir](const std::filesystem::path& path) {
+    const auto relative = path.lexically_relative(state_dir);
+    return !relative.empty() && relative != "." && *relative.begin() != "..";
+  };
+  if (below_state(environment.cuda_cache_dir.parent_path())) directories.push_back(environment.cuda_cache_dir.parent_path());
+  directories.push_back(environment.cuda_cache_dir);
+  for (const auto& directory : directories) {
+    if (!secure_frontend::create_owner_only_directory(directory)) return false;
+  }
+  return secure_frontend::clear_directory_contents(environment.temp_dir);
+}
+
 int run(const FrontendConfig& config) {
+  if (!state_dir_is_usable(config)) return EXIT_FAILURE;
   // roots.logs / roots.cache: validate() only checked them, so --check stays
   // side-effect free; serve creates a missing one here, before bind or spawn.
   if (const auto issues = secure_frontend::create_runtime_roots(config); !issues.empty()) {
@@ -107,50 +152,76 @@ int run(const FrontendConfig& config) {
   const auto arguments_profile = glm ? secure_frontend::EngineArgumentsProfile::lighttransport_glm53
                                      : secure_frontend::EngineArgumentsProfile::strata_0143;
   auto engine_arguments_result =
-      secure_frontend::build_engine_arguments(arguments_profile, *selected, config.roots.models, config.engine.args);
+      secure_frontend::build_engine_arguments(arguments_profile, *selected, config.roots.models, config.engine.args,
+                                              config.engine.gpus);
   auto* engine_arguments = std::get_if<std::vector<std::string>>(&engine_arguments_result);
   if (engine_arguments == nullptr) { std::cerr << "Engine arguments rejected.\n"; return EXIT_FAILURE; }
   std::vector<secure_frontend::ApiModel> models;
   models.reserve(manifests->size());
   for (const auto& manifest : *manifests) models.push_back({.id = manifest.id, .owned_by = manifest.owned_by});
 
-  secure_frontend::EngineStdioProcess engine;
-  const secure_frontend::EngineCommand command{.executable = config.engine.executable.path(),
-                                               .arguments = std::move(*engine_arguments), .environment = {}};
-  const auto protocol_flavor = glm ? secure_frontend::EngineProtocolFlavor::lighttransport_glm53
-                                   : secure_frontend::EngineProtocolFlavor::strata_0143;
-  secure_frontend::EngineProtocolClient protocol(engine, {}, protocol_flavor);
-  const auto chat_profile = glm ? secure_frontend::NativeChatProfile::glm53 : secure_frontend::NativeChatProfile::qwen;
-  secure_frontend::ChatExecutionService chat(protocol, secure_frontend::chat_execution_limits(config), chat_profile);
+  // Profile, protocol flavor, chat limits and the READY deadline all come from
+  // the validated config (limits.engine.ready_timeout_s drives the policy).
+  secure_frontend::SupervisorConfig supervisor_config = secure_frontend::supervisor_config(config);
+  const std::filesystem::path& state_dir = *config.roots.state;
+  std::vector<std::filesystem::path> lib_dirs = config.engine.lib_dirs;
+  if (lib_dirs.empty()) lib_dirs.push_back(config.engine.executable.path().parent_path());
+  secure_frontend::EngineLaunchPlan plan{.command = {.executable = config.engine.executable.path(),
+                                                     .arguments = std::move(*engine_arguments), .environment = {}}};
+  // Spec §3.9: the engine's whole environment, rendered per generation; nothing
+  // is inherited from this server's environment.
+  auto environment = secure_frontend::engine_environment_for(state_dir, config.roots.cache, std::move(lib_dirs));
+  if (!prepare_state_dir(state_dir, environment)) {
+    std::cerr << "Unable to prepare the state or cache directory.\n";
+    return EXIT_FAILURE;
+  }
+  plan.environment = std::move(environment);
+  // Spec §3.12: the engine's cwd-relative files (`pack/full`, stall dumps)
+  // land in <state_dir>/engine, created by prepare_state_dir() above.
+  plan.command.working_directory = state_dir / "engine";
+  // Spec §3.7(d): detected, never configured; off unless this process runs in
+  // a writable delegated cgroup v2.
+  plan.use_delegated_cgroup = true;
+  // Spec §3.12 (G2): PR_SET_NO_NEW_PRIVS on the engine unless
+  // engine.allow_new_privileges (--allow-new-privileges); when it is set, an
+  // engine that dies before READY gets the one-time /dev/nvidia-uvm hint.
+  plan.command.no_new_privileges =
+      secure_frontend::config_defaults::kNoNewPrivilegesDefault && !config.engine.allow_new_privileges;
+#if defined(__linux__)
+  supervisor_config.no_new_privileges_hint = plan.command.no_new_privileges;
+#endif
+  // The supervisor thread spawns, watches and restarts the engine (spec §3.1).
+  // Declared before the listener and the router, so it outlives both; a Lease
+  // lives only inside one execute_with_lease() call.
+  secure_frontend::EngineSupervisor supervisor(supervisor_config, secure_frontend::make_stdio_process_factory(std::move(plan)));
 
   const std::string authority = host_header(listener);
   secure_frontend::HttpPolicy policy{.allowed_hosts = {authority}, .same_origin_origins = {"http://" + authority},
                                      .cors_allowed_origins = {}, .cors_enabled = false};
-  const auto engine_state = [&engine, &chat]() -> std::string_view {
-    if (!engine.running()) return "failed";
-    switch (chat.health()) {
-      case secure_frontend::EngineHealth::starting: return "starting";
-      case secure_frontend::EngineHealth::ready: return "ready";
-      case secure_frontend::EngineHealth::generating: return "generating";
-      case secure_frontend::EngineHealth::failed: return "failed";
-    }
-    return "failed";
-  };
-  std::string_view health_snapshot{"failed"};
+  // /health takes one supervisor snapshot per request: the router calls the
+  // bool provider first, then the engine and recovery providers, once each
+  // (api_router.hpp), and the listener is serial.
+  secure_frontend::HealthSnapshot health = secure_frontend::health_for(secure_frontend::SupervisorState::stopped);
   const secure_frontend::ApiRouter router(
-      [&engine_state, &health_snapshot] { health_snapshot = engine_state(); return health_snapshot != "failed"; },
-      [models] { return models; }, [&health_snapshot] { return health_snapshot; });
+      [&supervisor, &health] {
+        health = supervisor.snapshot();
+        return health.healthy;
+      },
+      [models] { return models; }, [&health] { return health.engine; }, [&health] { return health.recovery; });
   auto server = secure_frontend::HttpSocketServer::bind(
       listener, std::move(policy), secure_frontend::make_bearer_validator(verifier),
-      [&router, &chat, &engine, &tokenizer, &model_id, &schema_limits](
+      [&router, &supervisor, &tokenizer, &model_id, &schema_limits](
           const std::string_view method, const std::string_view target, const std::string_view body) {
         if (method == "GET") return router.dispatch(method, target);
         if (method != "POST" || target != "/v1/chat/completions") return json_error(404, "Not Found");
-        if (!engine.running()) return json_error(503, "Service Unavailable");
+        // Parse first: a request the frontend refuses (tools, functions, MCP,
+        // stream, unknown fields) is answered with no engine or process action (EXT-01).
         const auto request = secure_frontend::parse_chat_completion_request(body, schema_limits);
         if (!request || request->model != model_id) return json_error(400, "Bad Request");
-        const auto result = chat.execute(*request, *tokenizer);
-        const auto* completion = std::get_if<secure_frontend::ChatExecutionResult>(&result);
+        // Outside `ready` there is no lease: an immediate generic 503, never a wait (spec §3.4).
+        const auto outcome = secure_frontend::execute_with_lease(supervisor, *request, *tokenizer);
+        if (!outcome) return json_error(503, "Service Unavailable");
+        const auto* completion = std::get_if<secure_frontend::ChatExecutionResult>(&*outcome);
         if (completion == nullptr) return json_error(503, "Service Unavailable");
         const auto response =
             secure_frontend::render_chat_completion_response(*request, completion->text, schema_limits);
@@ -163,17 +234,34 @@ int run(const FrontendConfig& config) {
       nullptr, listener_limits);
   if (!server) { std::cerr << "Unable to bind secure listener.\n"; return EXIT_FAILURE; }
   // Bound first, spawned second: a listener that cannot bind never leaves an
-  // engine child behind (CFG-01).
-  if (engine.start(command).has_value()) { std::cerr << "Unable to start local engine.\n"; return EXIT_FAILURE; }
+  // engine child behind (CFG-01). The token was read above, before any spawn.
+  // Spec §3.7: once every engine is gone the supervisor shuts the listener,
+  // which wakes the accept() below. Signals route to the supervisor's wake.
+  supervisor.set_on_stopped([&server] { server->shutdown_listener(); });
+  secure_frontend::install_shutdown_signals(supervisor.wake());
+  if (!supervisor.start()) { std::cerr << "Unable to start the engine supervisor.\n"; return EXIT_FAILURE; }
+  // Every way out of this scope, an exception included, stops the supervisor
+  // while the listener its on-stopped hook uses still exists.
+  struct StopSupervisor final {
+    secure_frontend::EngineSupervisor& supervisor;
+    ~StopSupervisor() { supervisor.shutdown(secure_frontend::config_defaults::kShutdownBound); }
+  } stop_supervisor{supervisor};
   std::cout << "Secure server listening on http://" << authority << " (authenticated; Ctrl-C to stop)\n";
   std::cout.flush();
   for (;;) {
     std::string error;
-    if (!server->serve_one(&error) && server->listener_failed()) {
+    const bool served = server->serve_one(&error);
+    if (supervisor.stop_requested()) break;
+    if (!served && server->listener_failed()) {
       std::cerr << "listener stopped: " << error << '\n';
+      supervisor.shutdown(secure_frontend::config_defaults::kShutdownBound);
       return EXIT_FAILURE;
     }
+    // Any other failure was one client's; keep serving.
   }
+  supervisor.shutdown(secure_frontend::config_defaults::kShutdownBound);
+  // Spec C4: exit 0 means no engine is left; an unreaped one was logged.
+  return supervisor.engine_left_unreaped() ? EXIT_FAILURE : EXIT_SUCCESS;
 }
 
 }  // namespace
@@ -189,6 +277,12 @@ int main(int argc, char* argv[]) {
   if (invocation.command == secure_frontend::ServerCommand::help) {
     std::cout << secure_frontend::server_usage();
     return EXIT_SUCCESS;
+  }
+  // Spec §3.12 (G4): never as root or with an elevated Windows token, for
+  // init and --check too. No flag or variable overrides this.
+  if (const auto refused = secure_frontend::privileged_start_error(secure_frontend::current_process_privileges())) {
+    std::cerr << *refused << '\n';
+    return EXIT_FAILURE;
   }
   if (invocation.command == secure_frontend::ServerCommand::init) {
     const auto failure = secure_frontend::init_frontend(*invocation.config_file, invocation.flags, invocation.force);

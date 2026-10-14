@@ -14,6 +14,18 @@ struct EngineCommand final {
   std::filesystem::path executable;
   std::vector<std::string> arguments;
   std::map<std::string, std::string, std::less<>> environment;
+  // Linux, delegated cgroup v2 only: the child writes itself into this
+  // cgroup.procs before execve, so even its escaping descendants stay inside.
+  // `{}`: existing designated initializers that omit it keep compiling (-Werror).
+  std::optional<std::filesystem::path> cgroup_procs{};
+  // The child's working directory (spec §3.12): the engine writes its
+  // cwd-relative `pack/full` default and `strata-stall-<pid>.dmp` there. Empty: inherit.
+  // `{}`: existing designated initializers that omit it keep compiling (-Werror).
+  std::filesystem::path working_directory{};
+  // Linux: PR_SET_NO_NEW_PRIVS before execve (spec §3.12). The server turns it
+  // on by default (owner decision 2026-10-13); --allow-new-privileges turns it off.
+  // `{false}`: existing designated initializers that omit it keep compiling (-Werror).
+  bool no_new_privileges{false};
 };
 
 enum class ProcessErrorCode {
@@ -30,6 +42,8 @@ struct ProcessError final {
 
 // Owns one engine child and its process group (or Windows Job Object).
 // start() always invokes the supplied executable directly; it never uses a shell.
+// Test-only (SP0): no production code uses it; the server's engine runs under
+// EngineStdioProcess and EngineSupervisor. It is deliberately not C1-hardened.
 class EngineProcess final {
  public:
   EngineProcess() = default;
@@ -44,6 +58,10 @@ class EngineProcess final {
   // Returns an exit code when the child exits; nullopt means the timeout elapsed.
   [[nodiscard]] std::optional<int> wait_for(std::chrono::milliseconds timeout);
   // Terminates the whole child group, waits at most grace, then force-kills it.
+  // POSIX: the group SIGKILL is sent only while the leader is unreaped. Unlike
+  // spec C1 (EngineStdioProcess) it does not always SIGKILL the group: wait_for
+  // reaps the leader, so a later group kill could hit a recycled pgid. Kept as
+  // is by design (controller ruling RF12); used by tests only.
   [[nodiscard]] bool terminate(std::chrono::milliseconds grace);
 
  private:

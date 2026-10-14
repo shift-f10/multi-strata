@@ -22,7 +22,9 @@ using HealthStatusProvider = std::function<bool()>;
 using ModelListProvider = std::function<std::vector<ApiModel>()>;
 // Optional engine state for /health. It must return one of the fixed literals
 // "starting", "ready", "generating", "failed"; any other value fails closed
-// (503, no engine field) so the body never echoes dynamic text.
+// (503, no engine field) so the body never echoes dynamic text. The optional
+// recovery provider returns "", "restarting" or "exhausted"; a non-empty value
+// is allowed only with "failed" and anything else fails closed the same way.
 using EngineStateProvider = std::function<std::string_view()>;
 
 // Dispatches only the authenticated API surface currently implemented. The
@@ -32,11 +34,13 @@ using EngineStateProvider = std::function<std::string_view()>;
 class ApiRouter final {
  public:
   // /health returns {"status":"ok"|"unavailable"} and, when engine_state is
-  // set, also "engine":"<state>". The status code is 200 only when
-  // health_status returns true. Per /health request, health_status is called
-  // exactly once and before engine_state (also exactly once), so a caller can
-  // take one snapshot in the first and report it from the second.
-  ApiRouter(HealthStatusProvider health_status, ModelListProvider model_list, EngineStateProvider engine_state = {});
+  // set, also "engine":"<state>" and, when recovery_state returns a value,
+  // "recovery":"<value>". The status code is 200 only when health_status
+  // returns true. Per /health request the providers are called exactly once
+  // each, in the order health_status, engine_state, recovery_state, so a
+  // caller can take one snapshot in the first and report it from the others.
+  ApiRouter(HealthStatusProvider health_status, ModelListProvider model_list, EngineStateProvider engine_state = {},
+            EngineStateProvider recovery_state = {});
 
   [[nodiscard]] HttpResponse dispatch(std::string_view method, std::string_view target) const;
 
@@ -44,6 +48,7 @@ class ApiRouter final {
   const HealthStatusProvider health_status_;
   const ModelListProvider model_list_;
   const EngineStateProvider engine_state_;
+  const EngineStateProvider recovery_state_;
 };
 
 }  // namespace secure_frontend

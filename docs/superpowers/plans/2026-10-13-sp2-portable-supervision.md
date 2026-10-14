@@ -6719,6 +6719,8 @@ Claude-Session: https://claude.ai/code/session_01XJi4XE2uAmBQoccdFoTPQw"
 
 ### Task 15: SIGTERM/SIGINT stop the frontend in order; only engines are children (C4, C7; C6 server cases)
 
+> **Merge note from the parallel-safe run (binding):** the branch's `EngineSupervisor::shutdown_generation` already differs from the code below: it retires the instance with `retire(instance, reaped)` (ended instances are destroyed only on the supervisor thread — Task 6a/7 ruling, spec §3.1) and, when the leader was reaped and `sweep_orphans` is set, runs `sweep_orphans({}, 250 ms)` (Task 13 ruling, spec §3.7(b)). Do NOT replace it with `current_.reset()`. Merge the §3.7 EOF → SIGTERM → SIGKILL sequence and the `engine generation <n> ended: killed_by_supervisor(shutdown)` log line onto the current function, keeping both. Also carry the pre-6b items: a Lease must not outlive the supervisor; a failed SupervisorWake must make start() refuse; exceptions escaping run() go to circuit_open; SupervisorWake::notify() from signal handlers must save/restore errno; and decide CREATE_NO_WINDOW for the engine (a console-wide Ctrl-Break still reaches it — Task 17 ruling).
+
 Runs after Task 6b (its server tests need the supervisor in `main`). Only Step 6 changes `secure_server_main.cpp`.
 
 **Files:**

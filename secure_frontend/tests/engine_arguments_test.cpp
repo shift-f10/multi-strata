@@ -130,6 +130,46 @@ void glm_profile_passes_arguments_through_without_native() {
   const auto batch = secure_frontend::build_engine_arguments(kGlm, manifest(), root, {"--batch", "2"});
   expect(std::holds_alternative<std::vector<std::string>>(batch), "GLM: the Strata deny-list does not apply");
 }
+
+// Spec §3.9: GPUs are selected only by the typed list, rendered as the engine's own --gpu before --native.
+void engine_args_render_typed_gpu_and_deny_gpu_passthrough() {
+  const auto root = models_root();
+  const auto result = secure_frontend::build_engine_arguments(kStrata, manifest(), root, {"--max-context", "8192"}, {0U, 2U});
+  const auto* args = std::get_if<std::vector<std::string>>(&result);
+  expect(args != nullptr, "typed GPUs build");
+  if (args) {
+    const std::vector<std::string> expected{"--max-context", "8192", "--gpu", "0,2", "--native", native_path(root)};
+    expect(*args == expected, "--gpu comes from the typed list, before --native");
+  }
+  for (const std::string bad : {"--gpu", "--gpu=0"}) {
+    const auto r = secure_frontend::build_engine_arguments(kStrata, manifest(), root, {bad, "1"});
+    const auto* e = std::get_if<secure_frontend::EngineArgumentsError>(&r);
+    expect(e != nullptr && e->code == secure_frontend::EngineArgumentsErrorCode::owned_flag, "--gpu is owned by the frontend: " + bad);
+    expect(secure_frontend::validate_engine_user_arguments(kStrata, {bad, "1"}).has_value(),
+           "engine.args with --gpu fails validation, before anything is spawned: " + bad);
+  }
+  const auto glm = secure_frontend::build_engine_arguments(kGlm, manifest(), root, {"--model", "/x"}, {0U});
+  const auto* glm_error = std::get_if<secure_frontend::EngineArgumentsError>(&glm);
+  expect(glm_error != nullptr && glm_error->code == secure_frontend::EngineArgumentsErrorCode::unsupported_mode,
+         "GPU selection is refused for the uncharacterized GLM CLI");
+  // The GLM branch passes unknown arguments through, but --gpu is frontend-owned for every profile.
+  for (const std::string bad : {"--gpu", "--gpu=0"}) {
+    const auto r = secure_frontend::build_engine_arguments(kGlm, manifest(), root, {"--model", "/x", bad, "1"});
+    const auto* e = std::get_if<secure_frontend::EngineArgumentsError>(&r);
+    expect(e != nullptr && e->code == secure_frontend::EngineArgumentsErrorCode::owned_flag, "GLM: --gpu via --engine-arg is refused: " + bad);
+  }
+}
+
+// Review Focus 4: a malformed --gpu value never reaches the engine.
+void gpu_list_rejects_malformed_values() {
+  for (const std::string bad : {"0,0", "-1", "1,,2", " 1", "1 ", "256", "01", "", ",", "1,", "+1", "a",
+                                "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16"}) {
+    expect(!secure_frontend::parse_gpu_list(bad).has_value(), "--gpu must reject '" + bad + "'");
+  }
+  expect(secure_frontend::parse_gpu_list("0") == std::vector<unsigned>{0U}, "a single device");
+  expect(secure_frontend::parse_gpu_list("3,1,255") == std::vector<unsigned>{3U, 1U, 255U}, "order is kept");
+  expect(secure_frontend::parse_gpu_list("0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15").has_value(), "16 devices are allowed");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -140,5 +180,7 @@ int main(int argc, char** argv) {
       {"strata_profile_passes_pack_and_weight_flags_through", strata_profile_passes_pack_and_weight_flags_through},
       {"rejects_invalid_relative_artifact_path", rejects_invalid_relative_artifact_path},
       {"glm_profile_passes_arguments_through_without_native", glm_profile_passes_arguments_through_without_native},
+      {"engine_args_render_typed_gpu_and_deny_gpu_passthrough", engine_args_render_typed_gpu_and_deny_gpu_passthrough},
+      {"gpu_list_rejects_malformed_values", gpu_list_rejects_malformed_values},
   }, failures);
 }

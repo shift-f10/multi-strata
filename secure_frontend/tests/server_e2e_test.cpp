@@ -1,12 +1,14 @@
 #include "support/server_fixture.hpp"
 #include "support/test_support.hpp"
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #if defined(_WIN32)
@@ -104,7 +106,7 @@ void cfg01_invalid_config_fails_before_listener_and_child() {
   const auto unbindable = f.run({"--config", f.config.string()});
   expect(unbindable.exit_code != 0 && contains(unbindable.err, "Unable to bind"),
          "unbindable address exits with the bind error: " + unbindable.err);
-  expect(!contains(unbindable.err, "Unable to start local engine"),
+  expect(!contains(unbindable.err, "Unable to start the engine supervisor") && !contains(unbindable.err, "engine generation"),
          "the engine must not be started before the listener is bound");
   expect(!std::filesystem::exists(marker), "the engine must not start when the listener cannot bind");
 }
@@ -153,10 +155,24 @@ void ready_timeout_is_configurable() {
     f.write_config(literals);
     secure_frontend_test::ChildProcess server;
     expect(f.start(server, {"--config", f.config.string()}), "server starts: " + server.stderr_text());
+    // limits.engine.ready_timeout_s reaches the supervisor (supervisor_config):
+    // at 1 s the 2 s READY is never seen and the generation is killed for it;
+    // at 5 s the engine becomes ready and nothing is killed.
+    const std::string_view kill_line = "killed_by_supervisor(ready_timeout)";
+    if (std::string_view{timeout_s} == "1") {
+      expect(!f.wait_engine_ready(std::chrono::seconds(4)), "ready_timeout_s=1: the engine never becomes ready");
+      expect(contains(server.stderr_text(), kill_line), "ready_timeout_s=1: the supervisor kills it at the READY deadline: " +
+                                                            server.stderr_text());
+    } else {
+      expect(f.wait_engine_ready(), "engine ready before the chat");
+    }
     const auto response = f.request("POST", "/v1/chat/completions", f.bearer(), chat);
     expect(response.rfind(expected, 0) == 0,
            std::string{"ready_timeout_s="} + timeout_s + " against a 2 s READY must give " + expected + ", got " +
                response.substr(0, 16));
+    if (std::string_view{timeout_s} == "5") {
+      expect(!contains(server.stderr_text(), kill_line), "ready_timeout_s=5: no READY-deadline kill: " + server.stderr_text());
+    }
   }
 }
 
@@ -167,6 +183,7 @@ void cfg05_token_absent_from_child_argv_env_and_outputs() {
   expect(f.start(server, with(f.base_flags(), {"--engine-arg", "--dump=" + dump.string()})), "server starts: " + server.stderr_text());
   const std::string token{secure_frontend_test::kTestToken};
   std::string seen;
+  expect(f.wait_engine_ready(), "engine ready before the chat");
   // A completed chat proves READY was read, so the engine has already written its dump.
   seen += f.request("POST", "/v1/chat/completions", f.bearer(),
                     R"({"model":"qwen-local","messages":[{"role":"user","content":"Hi"}],"max_tokens":2})");
@@ -225,6 +242,7 @@ void auth02_valid_token_succeeds_and_is_not_echoed() {
   ServerFixture f;
   secure_frontend_test::ChildProcess server;
   expect(f.start(server, f.base_flags()), "server starts: " + server.stderr_text());
+  expect(f.wait_engine_ready(), "engine ready: /health is 503 while it starts");
   const auto health = f.request("GET", "/health", f.bearer());
   const auto models = f.request("GET", "/v1/models", f.bearer());
   expect(health.rfind("HTTP/1.1 200", 0) == 0 && models.rfind("HTTP/1.1 200", 0) == 0 && contains(models, "qwen-local"),
@@ -292,6 +310,7 @@ void cfg03_engine_receives_canonical_models_root() {
   // returns. The fake engine closes the dump before it prints READY, and a chat
   // completion needs READY: after a 200 the dump is complete.
   const std::string chat = R"({"model":"qwen-local","messages":[{"role":"user","content":"Hi"}],"max_tokens":2})";
+  expect(f.wait_engine_ready(), "engine ready before the chat");
   const auto response = f.request("POST", "/v1/chat/completions", f.bearer(), chat);
   expect(response.rfind("HTTP/1.1 200", 0) == 0, "a chat completion succeeds first: " + response.substr(0, 16));
   const std::string argv_dump = secure_frontend_test::read_file(dump);

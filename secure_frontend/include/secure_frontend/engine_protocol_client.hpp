@@ -1,5 +1,9 @@
 #pragma once
 
+#include "secure_frontend/deadline.hpp"
+
+#include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -29,8 +33,12 @@ class EngineLineTransport {
  public:
   virtual ~EngineLineTransport() = default;
   // `line` never contains a newline. Implementations must write it as one
-  // atomic protocol record (line plus LF) or report failure.
-  [[nodiscard]] virtual bool write_line(std::string_view line, std::string& error) = 0;
+  // atomic protocol record (line plus LF) or report failure. `deadline` is the
+  // absolute overall bound for the whole record (spec §3.10, owner ruling
+  // 2026-10-14): a write still incomplete at `deadline` fails exactly like a
+  // chunk that misses its per-chunk deadline. No write is ever unbounded.
+  [[nodiscard]] virtual bool write_line(std::string_view line, MonotonicClock::time_point deadline,
+                                        std::string& error) = 0;
   [[nodiscard]] virtual EngineReadResult read_line(std::chrono::milliseconds timeout) = 0;
 };
 
@@ -46,7 +54,21 @@ enum class EngineProtocolErrorCode {
   unexpected_line,
   engine_error,
   response_limit,
+  fatal_engine_line,
+  abandoned,
 };
+
+// The engine's fatal verification lines (upstream/serve/server.py:734-735
+// FATAL_PREFIXES), matched as prefixes. The engine lives on but is unusable;
+// a trailing DONE is never accepted (upstream _pump, upstream/serve/server.py:952-967).
+inline constexpr std::array<std::string_view, 4> kEngineFatalPrefixes{
+    "ERR verify: timed out at layer ",
+    "ERR verify batch: timed out at layer ",
+    "ERR verify: an earlier window never finished",
+    "ERR verify batch: an earlier window never finished",
+};
+
+[[nodiscard]] bool is_engine_fatal_line(std::string_view line) noexcept;
 
 struct EngineProtocolError final {
   EngineProtocolErrorCode code;
@@ -73,6 +95,11 @@ enum class EngineProtocolFlavor {
   lighttransport_glm53,
 };
 
+// Who asked for a STOP (SP3 D-2). The frontend's own deadline
+// (ChatExecutionService's generation_timeout) is `generation_timeout`; SP3's
+// cancellation for a client that went away (SP3 spec §2.6) is `client_cancelled`.
+enum class EngineStopCause { generation_timeout, client_cancelled };
+
 struct EngineReady final {
   std::uint32_t max_context_tokens;
   bool supports_stop;
@@ -96,8 +123,12 @@ class EngineProtocolClient final {
 
   [[nodiscard]] std::optional<EngineProtocolError> await_ready(std::chrono::milliseconds timeout,
                                                                  EngineReady& ready);
+  // `write_deadline` bounds the whole GEN write (the request's generation
+  // deadline, supplied by ChatExecutionService); a miss fails the protocol with
+  // transport_write_failed, which the supervisor kills as write_timeout.
   [[nodiscard]] std::optional<EngineProtocolError> begin_generation(
-      std::uint32_t max_new_tokens, const std::vector<std::uint32_t>& prompt_token_ids);
+      std::uint32_t max_new_tokens, const std::vector<std::uint32_t>& prompt_token_ids,
+      MonotonicClock::time_point write_deadline);
   // Reads until DONE. `timeout` is the TOTAL budget for this call, not a
   // per-line allowance. A timeout leaves a generation active so the caller may
   // issue STOP and continue draining; all malformed/terminal failures close it.
@@ -105,7 +136,12 @@ class EngineProtocolClient final {
   // the client idle: the engine is alive and resets on the next GEN.
   [[nodiscard]] std::optional<EngineProtocolError> read_generation(
       std::chrono::milliseconds timeout, EngineGeneration& generation);
-  [[nodiscard]] std::optional<EngineProtocolError> stop();
+  // Sends STOP once per generation; `cause` is recorded only when STOP was
+  // written and is forgotten by the next begin_generation() call, even a refused one.
+  // STOP and QUIT are single-chunk control records sent after (or without) a
+  // request deadline: each write is bounded overall by one per-chunk deadline
+  // (config_defaults::kStdinWriteDeadline) from the call.
+  [[nodiscard]] std::optional<EngineProtocolError> stop(EngineStopCause cause = EngineStopCause::generation_timeout);
   [[nodiscard]] std::optional<EngineProtocolError> quit();
   // Marks the protocol failed without writing anything, e.g. when the engine
   // ignored STOP and cannot be trusted with further commands.
@@ -116,6 +152,14 @@ class EngineProtocolClient final {
   // True only when the engine is between generations and accepts GEN.
   [[nodiscard]] bool idle() const noexcept;
   [[nodiscard]] bool closed() const noexcept;
+  // The code that failed the protocol (set by every terminal failure), or nullopt.
+  [[nodiscard]] std::optional<EngineProtocolErrorCode> failure_code() const noexcept { return failure_code_; }
+  // Why STOP was sent for the current (or last) generation; nullopt if none was.
+  [[nodiscard]] std::optional<EngineStopCause> stop_cause() const noexcept { return stop_cause_; }
+  // Generations that ended with a successful DONE (a `nonfinite` DONE is not
+  // one). Atomic: the supervisor thread reads it while a Lease holder may use
+  // the client (SP3 D-2 streak reset); everything else here is single-threaded.
+  [[nodiscard]] std::uint64_t completed_generations() const noexcept { return completed_generations_.load(); }
 
  private:
   enum class State { waiting_ready, idle, generating, closed, failed };
@@ -127,13 +171,17 @@ class EngineProtocolClient final {
   EngineGeneration active_generation_;
   bool supports_stop_{false};
   bool stop_requested_{false};
+  std::optional<EngineStopCause> stop_cause_;
+  std::atomic<std::uint64_t> completed_generations_{0};
+  std::optional<EngineProtocolErrorCode> failure_code_;
   // Outbound command cap; sized from READY when limits_.max_line_bytes == 0.
   std::size_t effective_max_line_bytes_;
 
   static constexpr std::size_t kDefaultInboundLineBytes = 8192;
   [[nodiscard]] std::size_t inbound_max_line_bytes() const noexcept;
 
-  [[nodiscard]] std::optional<EngineProtocolError> write_command(std::string_view command);
+  [[nodiscard]] std::optional<EngineProtocolError> write_command(std::string_view command,
+                                                                  MonotonicClock::time_point deadline);
   [[nodiscard]] std::optional<EngineProtocolError> validate_incoming(std::string_view line) const;
   [[nodiscard]] std::optional<EngineProtocolError> fail(EngineProtocolErrorCode code,
                                                          std::string message);

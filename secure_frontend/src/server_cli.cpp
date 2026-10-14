@@ -20,7 +20,7 @@ struct FlagSpec final {
   FlagKind kind;
 };
 
-constexpr std::array<FlagSpec, 13> kFlags{{
+constexpr std::array<FlagSpec, 17> kFlags{{
     {"--host", "listener.host", FlagKind::string},
     {"--port", "listener.port", FlagKind::integer},
     {"--allow-remote", "listener.allow_remote", FlagKind::boolean},
@@ -34,6 +34,10 @@ constexpr std::array<FlagSpec, 13> kFlags{{
     {"--token-env", "token.source", FlagKind::token_env},
     {"--token-file", "token.source", FlagKind::token_file},
     {"--secret-root", "roots.secret", FlagKind::string},
+    {"--state-dir", "roots.state", FlagKind::string},
+    {"--engine-lib-dir", "engine.lib_dirs", FlagKind::append},
+    {"--gpu", "engine.gpu", FlagKind::string},
+    {"--allow-new-privileges", "engine.allow_new_privileges", FlagKind::boolean},
 }};
 
 const FlagSpec* find_flag(const std::string_view argument) {
@@ -172,12 +176,19 @@ std::string server_usage() {
   }
   text +=
       "\n"
-      "The server starts exactly one local --serve child with no shell and an empty\n"
+      "The server supervises one local --serve child at a time (it waits for READY,\n"
+      "restarts a failed engine with backoff, then stops trying until it is restarted)\n"
+      "with no shell and a fixed environment (PATH, the library path, temp and CUDA\n"
+      "cache directories below --state-dir; on Windows also SystemRoot, WINDIR,\n"
+      "SystemDrive, NUMBER_OF_PROCESSORS); nothing is inherited from this server's\n"
       "environment. It serves authenticated GET /health, GET /v1/models and\n"
-      "non-streaming text-only POST /v1/chat/completions. Streaming, tools, downloads,\n"
-      "remote URLs, telemetry and MCP are disabled. With the qwen profile the frontend\n"
-      "supplies --native from engine.model_id; the operator passes --pack and other\n"
-      "weight flags with --engine-arg.\n";
+      "non-streaming text-only POST /v1/chat/completions.\n"
+      "Streaming, tools, downloads, remote URLs, telemetry and MCP are disabled. With\n"
+      "the qwen profile the frontend supplies --native from engine.model_id; the\n"
+      "operator passes --pack and other weight flags with --engine-arg. --engine-arg\n"
+      "refuses the frontend-owned --native, --serve and --gpu: GPUs are chosen only\n"
+      "with --gpu, passed as the engine's own --gpu argument (strata family: no GPU\n"
+      "variable in the engine environment).\n";
   return text;
 }
 

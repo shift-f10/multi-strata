@@ -14,15 +14,16 @@ endif()
 option(SECURE_FRONTEND_WERROR "Treat warnings as errors in the secure frontend" ${_secure_frontend_werror_default})
 
 function(secure_frontend_set_warnings target)
+    # C++ only: an .rc source must not hand these flags to the RC compiler (SP2 G3).
     if(MSVC)
-        target_compile_options(${target} PRIVATE /W4)
+        target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W4>)
         if(SECURE_FRONTEND_WERROR)
-            target_compile_options(${target} PRIVATE /WX)
+            target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/WX>)
         endif()
     else()
-        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(${target} PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic>")
         if(SECURE_FRONTEND_WERROR)
-            target_compile_options(${target} PRIVATE -Werror)
+            target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Werror>)
         endif()
     endif()
     if(WIN32)
@@ -103,7 +104,9 @@ add_library(secure_frontend_engine_protocol_client
 )
 
 add_library(secure_frontend_engine_stdio_process
+    src/cgroup_scope.cpp
     src/engine_stdio_process.cpp
+    src/exit_status.cpp
 )
 
 add_library(secure_frontend_http_socket_server
@@ -169,6 +172,15 @@ add_library(secure_frontend_chat_execution
     src/chat_execution.cpp
 )
 
+add_library(secure_frontend_engine_supervisor
+    src/descendant_sweep.cpp
+    src/engine_environment.cpp
+    src/engine_supervisor.cpp
+    src/privilege_check.cpp
+    src/restart_policy.cpp
+    src/shutdown_signal.cpp
+    src/supervisor_wake.cpp
+)
 add_library(secure_frontend_secrets src/secret_bytes.cpp src/token_generator.cpp src/token_verifier.cpp)
 target_compile_features(secure_frontend_secrets PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_secrets PUBLIC
@@ -186,7 +198,8 @@ target_compile_features(secure_frontend_subsystem_limits PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_subsystem_limits PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
 target_link_libraries(secure_frontend_subsystem_limits PUBLIC secure_frontend_typed_config
-    secure_frontend_http_socket_server secure_frontend_chat_execution secure_frontend_chat_schema)
+    secure_frontend_http_socket_server secure_frontend_chat_execution secure_frontend_chat_schema
+    secure_frontend_engine_supervisor)
 
 add_executable(secure-frontend-smoke src/smoke_main.cpp)
 
@@ -316,6 +329,16 @@ target_include_directories(secure_frontend_chat_execution
 )
 target_link_libraries(secure_frontend_chat_execution
     PUBLIC secure_frontend_chat_generation_plan secure_frontend_engine_protocol_client secure_frontend_tokenizer_pack)
+target_compile_features(secure_frontend_engine_supervisor PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_engine_supervisor
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(secure_frontend_engine_supervisor
+    PUBLIC secure_frontend_chat_execution secure_frontend_engine_stdio_process)
+# engine_environment.cpp: SP1's windows_security helpers (the --state-dir check).
+target_link_libraries(secure_frontend_engine_supervisor PRIVATE secure_frontend_paths)
 target_link_libraries(secure-frontend-smoke PRIVATE secure_frontend_config secure_frontend_token_reader
     secure_frontend_http_policy secure_frontend_http_request_handler secure_frontend_http_socket_server
     secure_frontend_api_router secure_frontend_model_inventory)
@@ -330,7 +353,7 @@ target_link_libraries(strata-secure-server PRIVATE secure_frontend_config secure
     secure_frontend_engine_protocol_client secure_frontend_engine_stdio_process secure_frontend_chat_schema
     secure_frontend_chat_generation_plan secure_frontend_chat_execution secure_frontend_engine_arguments)
 target_link_libraries(strata-secure-server PRIVATE secure_frontend_server_cli secure_frontend_typed_config)
-target_link_libraries(strata-secure-server PRIVATE secure_frontend_subsystem_limits)
+target_link_libraries(strata-secure-server PRIVATE secure_frontend_subsystem_limits secure_frontend_engine_supervisor)
 target_compile_features(strata-secure-server PRIVATE cxx_std_20)
 
 target_link_libraries(secure_frontend_config PUBLIC secure_frontend_paths)
@@ -357,6 +380,9 @@ if(WIN32)
     target_link_libraries(secure_frontend_config PUBLIC ws2_32)
     target_link_libraries(secure_frontend_http_socket_server PUBLIC ws2_32)
     target_link_libraries(secure_frontend_token_reader PUBLIC advapi32)
+    target_link_libraries(secure_frontend_engine_stdio_process PUBLIC advapi32 secure_frontend_secrets)
+    # SP2 R4: win_launch::launch_in_job, the engine's CreateProcessW + Job sequence (SP4 seam).
+    target_sources(secure_frontend_engine_stdio_process PRIVATE src/win_child_launch.cpp)
     target_link_libraries(secure_frontend_paths PUBLIC advapi32)
     target_link_libraries(secure_frontend_secrets PUBLIC bcrypt)
     target_link_libraries(secure_frontend_token_reader PUBLIC crypt32)
@@ -370,8 +396,8 @@ foreach(_target IN ITEMS
         secure_frontend_http_socket_server secure_frontend_model_inventory secure_frontend_engine_arguments
         secure_frontend_json secure_frontend_typed_config secure_frontend_server_cli secure_frontend_chat_schema
         secure_frontend_tokenizer_pack secure_frontend_qwen_prompt_renderer secure_frontend_glm_prompt_renderer
-        secure_frontend_chat_generation_plan secure_frontend_chat_execution secure_frontend_subsystem_limits
-        secure_frontend_secrets secure_frontend_token_store
+        secure_frontend_chat_generation_plan secure_frontend_chat_execution secure_frontend_engine_supervisor
+        secure_frontend_subsystem_limits secure_frontend_secrets secure_frontend_token_store
         secure-frontend-smoke strata-secure-smoke-server strata-secure-server)
     secure_frontend_set_warnings(${_target})
 endforeach()
@@ -468,7 +494,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
 
     secure_frontend_add_test_executable(secure_frontend_engine_stdio_process_tests tests/engine_stdio_process_test.cpp
         secure_frontend_engine_stdio_process)
-    set(_stdio_cases test_round_trip test_invalid_record read_line_rejects_oversize_on_all_platforms
+    set(_stdio_cases test_round_trip test_invalid_record write_line_fails_once_deadline_passed read_line_rejects_oversize_on_all_platforms
         read_line_waits_for_a_record_split_across_writes)
     if(WIN32)
         list(APPEND _stdio_cases job_object_terminates_grandchild)
@@ -477,6 +503,144 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
             terminate_reaps_killed_child)
     endif()
     secure_frontend_add_cases(secure_frontend_engine_stdio_process_tests ${_stdio_cases} TIMEOUT 300)
+
+    # SP2 F1: test-only stand-in for `strata --serve`. Never installed. SP1's own
+    # fake (tests/fake_engine_main.cpp, secure_frontend_fake_engine) is separate.
+    add_executable(strata-supervision-fake-engine tests/supervision_fake_engine_main.cpp)
+    target_include_directories(strata-supervision-fake-engine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_features(strata-supervision-fake-engine PRIVATE cxx_std_20)
+    secure_frontend_set_warnings(strata-supervision-fake-engine)
+    if(WIN32)
+        target_link_libraries(strata-supervision-fake-engine PRIVATE shell32 advapi32)
+    endif()
+
+    # Paths every SP2 test needs (fixture directories come from SP1's
+    # make_scratch_directory below ${SECURE_FRONTEND_TEST_TMP}).
+    function(secure_frontend_test_paths target)
+        target_compile_definitions(${target} PRIVATE
+            "STRATA_FAKE_ENGINE_PATH=\"$<TARGET_FILE:strata-supervision-fake-engine>\""
+            "STRATA_SECURE_SERVER_PATH=\"$<TARGET_FILE:strata-secure-server>\"")
+        add_dependencies(${target} strata-supervision-fake-engine strata-secure-server)
+        if(WIN32)
+            target_link_libraries(${target} PRIVATE advapi32)  # grant_current_user()
+        endif()
+    endfunction()
+
+    # SP1 Task 2 already builds and registers secure_frontend_engine_stdio_process_tests.
+    secure_frontend_test_paths(secure_frontend_engine_stdio_process_tests)
+
+    secure_frontend_add_test_executable(secure_frontend_fake_engine_tests tests/fake_engine_test.cpp
+        secure_frontend_engine_process secure_frontend_engine_stdio_process)
+    secure_frontend_test_paths(secure_frontend_fake_engine_tests)
+    # Crash exit codes are Windows runtime semantics: MSYS2 only.
+    secure_frontend_add_cases(secure_frontend_fake_engine_tests fake_engine_modes_selftest fake_engine_dump_is_parseable
+        TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+
+    # F3: start/stop the real server with the fake engine; process-tree helpers.
+    add_library(secure_frontend_test_support STATIC tests/support/server_harness.cpp)
+    target_include_directories(secure_frontend_test_support PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_features(secure_frontend_test_support PUBLIC cxx_std_20)
+    target_link_libraries(secure_frontend_test_support PUBLIC secure_frontend_tokenizer_pack)
+    if(WIN32)
+        target_link_libraries(secure_frontend_test_support PUBLIC ws2_32 advapi32)
+    endif()
+    secure_frontend_set_warnings(secure_frontend_test_support)
+    secure_frontend_test_paths(secure_frontend_test_support)
+
+    secure_frontend_add_test_executable(secure_frontend_server_tests tests/server_test.cpp secure_frontend_test_support)
+    secure_frontend_test_paths(secure_frontend_server_tests)
+    target_link_libraries(secure_frontend_server_tests PRIVATE secure_frontend_engine_stdio_process)
+    # Later tasks append case names to these three set() lines only. Every
+    # server-level test is windows-runtime on Windows: it relies on console
+    # groups, Jobs, tokens and process exit codes.
+    set(SECURE_FRONTEND_SERVER_CASES harness_server_lifecycle_selftest proc01_server_passes_literal_argv proc04_ready_is_eager_and_health_starting_is_503 proc04_chat_during_restart_is_generic_503 proc04_abort_in_generation_is_generic_503 proc04_health_leaves_ready_after_idle_engine_death state_dir_must_be_owner_only state_dir_stale_engine_tmp_is_cleared ext01_extension_fields_spawn_nothing ext02_extension_env_never_reaches_child ext02_rejected_before_spawn engine_cuda_cache_follows_roots_cache)
+    set(SECURE_FRONTEND_SERVER_LINUX_CASES proc05_frontend_sigkill_kills_engine proc05_frontend_sigterm_stops_all_descendants proc05_frontend_sigint_stops_all_descendants proc05_frontend_has_only_engine_children proc05_sigterm_during_generation_exits_cleanly proc05_double_sigterm_is_idempotent proc05_sigterm_with_idle_client_exits_cleanly proc06_nnp_startup_hint_names_nvidia_uvm_fix)
+    set(SECURE_FRONTEND_SERVER_WINDOWS_CASES proc05_windows_ctrl_break_stops_all_descendants proc05_windows_ctrl_break_with_idle_client_exits_cleanly proc05_windows_terminate_frontend_kills_job state_dir_must_be_owner_only_windows)
+    if(WIN32)
+        list(APPEND SECURE_FRONTEND_SERVER_CASES ${SECURE_FRONTEND_SERVER_WINDOWS_CASES})
+    else()
+        list(APPEND SECURE_FRONTEND_SERVER_CASES ${SECURE_FRONTEND_SERVER_LINUX_CASES})
+    endif()
+    secure_frontend_add_cases(secure_frontend_server_tests ${SECURE_FRONTEND_SERVER_CASES}
+        TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+
+    secure_frontend_add_test_executable(secure_frontend_deadline_tests tests/deadline_test.cpp secure_frontend_engine_stdio_process)
+    secure_frontend_test_paths(secure_frontend_deadline_tests)
+    # Portable and unlabeled: it also runs under wine.
+    secure_frontend_add_cases(secure_frontend_deadline_tests deadline_zero_timeout_is_immediate_everywhere TIMEOUT 120)
+
+    secure_frontend_add_test_executable(secure_frontend_engine_child_tests tests/engine_child_test.cpp
+        secure_frontend_engine_stdio_process secure_frontend_test_support)
+    secure_frontend_test_paths(secure_frontend_engine_child_tests)
+    target_link_libraries(secure_frontend_engine_child_tests PRIVATE secure_frontend_engine_process)
+    # SP2 R4: the SP4 seam cases drive the internal launch headers (src/posix_child_launch.hpp, src/win_child_launch.hpp).
+    target_include_directories(secure_frontend_engine_child_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    set(SECURE_FRONTEND_CHILD_CASES proc04_exit_status_is_classified proc06_child_ids_and_cwd)
+    set(SECURE_FRONTEND_CHILD_LINUX_CASES proc05_group_killed_after_leader_reaped proc02_child_signal_state_is_default proc02_canary_descriptors_absent
+        proc03_other_uid_cannot_open_engine_fd proc03_same_uid_reopen_is_accepted_risk proc06_child_has_no_new_privs
+        sp4_seam_keep_fds_lift_and_hook_order sp4_seam_hook_failure_is_distinct_from_execve_failure)
+    set(SECURE_FRONTEND_CHILD_WINDOWS_CASES proc02_canary_handles_absent proc02_stdin_pipe_dacl_is_owner_only proc03_windows_pipe_second_open_fails proc01_windows_argv_round_trip
+        sp4_seam_launch_in_job_handle_and_crt_block sp4_seam_launch_in_job_rejects_non_inheritable_handle)
+    if(WIN32)
+        list(APPEND SECURE_FRONTEND_CHILD_CASES ${SECURE_FRONTEND_CHILD_WINDOWS_CASES})
+    else()
+        list(APPEND SECURE_FRONTEND_CHILD_CASES ${SECURE_FRONTEND_CHILD_LINUX_CASES})
+    endif()
+    secure_frontend_add_cases(secure_frontend_engine_child_tests ${SECURE_FRONTEND_CHILD_CASES}
+        TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    if(NOT WIN32)
+        set_tests_properties(secure_frontend_engine_child_tests.proc03_other_uid_cannot_open_engine_fd PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+    # SP2 G3: a test-only copy of the fake whose embedded manifest demands
+    # elevation. Its case (proc06_elevation_required_is_spawn_failed) is in the
+    # binary's case list only, never registered with CTest: a validation-kit
+    # step for a NON-elevated prompt on the owner's offline Windows box.
+    if(WIN32)
+        enable_language(RC)
+        add_executable(strata-supervision-fake-engine-elevated tests/supervision_fake_engine_main.cpp tests/fake_engine_elevated.rc)
+        target_include_directories(strata-supervision-fake-engine-elevated PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        target_compile_features(strata-supervision-fake-engine-elevated PRIVATE cxx_std_20)
+        target_link_libraries(strata-supervision-fake-engine-elevated PRIVATE shell32 advapi32)
+        if(MSVC)
+            # The .rc embeds the requireAdministrator manifest; without /MANIFEST:NO the
+            # linker generates a second one and the informational windows-msvc job
+            # fails with a duplicate-manifest link error.
+            target_link_options(strata-supervision-fake-engine-elevated PRIVATE /MANIFEST:NO)
+        endif()
+        secure_frontend_set_warnings(strata-supervision-fake-engine-elevated)
+        add_dependencies(secure_frontend_engine_child_tests strata-supervision-fake-engine-elevated)
+        target_compile_definitions(secure_frontend_engine_child_tests PRIVATE
+            "STRATA_FAKE_ENGINE_ELEVATED_PATH=\"$<TARGET_FILE:strata-supervision-fake-engine-elevated>\"")
+    endif()
+
+    secure_frontend_add_test_executable(secure_frontend_engine_supervisor_tests tests/engine_supervisor_test.cpp
+        secure_frontend_engine_supervisor secure_frontend_test_support)
+    secure_frontend_test_paths(secure_frontend_engine_supervisor_tests)
+    # UNIT: no surviving process (in-process fakes, or a spawn that fails
+    # before any child runs); also smoke-run under wine. PROCESS: real
+    # fake-engine children. LINUX / WINDOWS: platform-only process cases. Later
+    # tasks append case names to these four set() lines only.
+    set(SECURE_FRONTEND_SUPERVISOR_UNIT_CASES supervisor_health_literals_per_state proc04_restart_backoff_then_circuit_open proc04_healthy_window_resets_failure_count proc04_missing_engine_opens_circuit_without_spinning proc04_client_err_lines_open_circuit_until_restart supervisor_retires_ended_generation_on_its_own_thread proc04_monitor_fallback_without_pidfd proc04_backoff_survives_stale_wake proc04_fatal_line_before_ready_kills_as_fatal_line proc04_unreaped_child_opens_circuit supervisor_unreaped_at_shutdown_reports_engine_left proc06_nnp_hint_when_exit_status_lags supervisor_exception_opens_circuit supervisor_shutdown_sends_eof_first_then_kills supervisor_lease_outliving_shutdown_is_safe supervisor_wait_wakes_on_lease_release supervisor_wait_wakes_on_shutdown proc06_refuses_privileged_start engine_environment_uses_cache_root_when_set sp3_d2_kill_reason_follows_stop_cause sp3_d2_client_stop_drain_failure_restarts_uncounted sp3_d2_timeout_stop_drain_failure_still_counts sp3_d2_client_stop_counts_when_engine_ended_itself sp3_d2_uncounted_end_resets_count_after_healthy_window sp3_d2_uncounted_streak_is_bounded sp3_d2_done_resets_uncounted_streak sp6_env_strata_family_renders_unchanged sp6_env_forced_values_override_and_add sp6_env_forced_values_reject_never_list sp6_env_forcible_names_are_the_ruled_set sp6_env_hook_derives_values_from_environment sp6_env_hook_suppresses_only_optional_rows sp6_env_refused_family_is_spawn_failure)
+    set(SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES proc04_recovers_after_transient_crash proc04_monitor_detects_idle_crash proc04_fatal_prefix_kills_engine proc04_ready_timeout_kills_and_counts proc04_drain_failure_kills_and_restarts proc04_no_leak_across_restarts proc02_child_env_is_exact_allowlist supervisor_serving_api_is_thread_safe proc04_slow_stdin_write_bounded_by_request_deadline sp6_env_derived_value_reaches_child)
+    set(SECURE_FRONTEND_SUPERVISOR_LINUX_CASES proc05_setsid_grandchild_is_reaped proc05_setsid_grandchild_is_reaped_at_shutdown supervisor_start_refuses_without_wake shutdown_signal_preserves_errno proc05_cgroup_kill_when_delegated)
+    set(SECURE_FRONTEND_SUPERVISOR_WINDOWS_CASES proc04_windows_abort_does_not_stall proc04_windows_crash_does_not_stall proc04_windows_write_timeout_kills_engine)
+    if(WIN32)
+        list(APPEND SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES ${SECURE_FRONTEND_SUPERVISOR_WINDOWS_CASES})
+    else()
+        list(APPEND SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES ${SECURE_FRONTEND_SUPERVISOR_LINUX_CASES})
+    endif()
+    secure_frontend_add_cases(secure_frontend_engine_supervisor_tests ${SECURE_FRONTEND_SUPERVISOR_UNIT_CASES} TIMEOUT 120)
+    # Process cases are windows-runtime on Windows (Jobs, exit codes, pipes).
+    secure_frontend_add_cases(secure_frontend_engine_supervisor_tests ${SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES}
+        TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    if(WIN32)
+        # Tokenizing and writing a ~240 KB GEN line on a slow runner; the case itself ends in seconds.
+        set_tests_properties(secure_frontend_engine_supervisor_tests.proc04_windows_write_timeout_kills_engine PROPERTIES TIMEOUT 300)
+    endif()
+    if(NOT WIN32)
+        set_tests_properties(secure_frontend_engine_supervisor_tests.proc05_cgroup_kill_when_delegated PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
 
     secure_frontend_add_test_executable(secure_frontend_http_policy_tests tests/http_policy_test.cpp secure_frontend_http_policy)
     secure_frontend_add_cases(secure_frontend_http_policy_tests
@@ -500,7 +664,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         socket_server_rejects_oversize_request_over_tcp socket_server_accept_waits_without_timeout
         socket_server_ipv6_bind_is_v6only socket_server_response_is_complete
         socket_server_survives_reset_before_accept socket_server_responds_after_client_half_close
-        parser_honors_configured_max_request_bytes
+        parser_honors_configured_max_request_bytes socket_server_shutdown_listener_wakes_accept
+        socket_server_shutdown_listener_wakes_idle_client
         TIMEOUT 300)
 
     secure_frontend_add_test_executable(secure_frontend_api_router_tests tests/api_router_test.cpp secure_frontend_api_router)
@@ -508,7 +673,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         health_samples_status_before_state_once_each health_includes_engine_state_when_provided
         health_is_503_with_engine_state_when_unavailable dispatches_exact_health_route
         dispatches_models_with_json_escaping rejects_non_exact_routes
-        fails_closed_when_provider_throws_or_returns_invalid_model
+        fails_closed_when_provider_throws_or_returns_invalid_model health_carries_recovery_only_with_failed
         auth01_every_route_rejects_missing_malformed_wrong_token)
     target_link_libraries(secure_frontend_api_router_tests PRIVATE secure_frontend_secrets)
 
@@ -517,14 +682,17 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_engine_process_tests
         starts_without_a_shell_and_uses_only_allowlisted_environment rejects_empty_executable
         rejects_malformed_allowlist_entry rejects_embedded_nul_in_exec_boundary termination_cleans_up_a_process_group)
+    secure_frontend_add_cases(secure_frontend_engine_process_tests proc02_engine_process_env_checks_windows_names
+        TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    secure_frontend_test_paths(secure_frontend_engine_process_tests)
 
     secure_frontend_add_test_executable(secure_frontend_engine_protocol_client_tests tests/engine_protocol_client_test.cpp
         secure_frontend_engine_protocol_client)
     secure_frontend_add_cases(secure_frontend_engine_protocol_client_tests
-        runs_the_solo_protocol stop_and_quit_are_explicit refuses_stop_when_not_advertised
+        runs_the_solo_protocol stop_and_quit_are_explicit write_deadlines_reach_the_transport refuses_stop_when_not_advertised
         rejects_malformed_and_unexpected_engine_output bounds_and_engine_errors_fail_closed
         prefill_progress_is_glm_only_and_strictly_bounded generation_total_deadline_is_enforced
-        gen_line_fits_max_prompt_tokens derived_line_cap_is_clamped_to_protocol_max)
+        gen_line_fits_max_prompt_tokens derived_line_cap_is_clamped_to_protocol_max stop_cause_and_completed_generations)
 
     secure_frontend_add_test_executable(secure_frontend_model_inventory_tests tests/model_inventory_test.cpp
         secure_frontend_model_inventory)
@@ -547,8 +715,10 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         engine_receives_model_path_from_inventory engine_native_path_is_utf8_for_non_ascii_root
         engine_args_reject_owned_and_network_flags
         strata_profile_passes_pack_and_weight_flags_through rejects_invalid_relative_artifact_path
-        glm_profile_passes_arguments_through_without_native
+        glm_profile_passes_arguments_through_without_native engine_args_render_typed_gpu_and_deny_gpu_passthrough
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # Pure parsing, no canonical root: runs under wine too.
+    secure_frontend_add_cases(secure_frontend_engine_arguments_tests gpu_list_rejects_malformed_values)
 
     secure_frontend_add_test_executable(secure_frontend_chat_schema_tests tests/chat_schema_test.cpp secure_frontend_chat_schema)
     secure_frontend_add_cases(secure_frontend_chat_schema_tests
@@ -567,6 +737,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         typed_config_accepts_minimal_file_and_applies_defaults cfg01_unknown_key_rejected cfg01_duplicate_key_rejected
         cfg01_type_confusion_rejected cfg01_missing_required_rejected cfg01_out_of_range_rejected
         cfg01_chat_ranges_match_enforced_caps typed_config_cross_field_rules typed_config_errors_never_contain_values
+        engine_lib_dirs_must_be_absolute_directories
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     secure_frontend_add_cases(secure_frontend_typed_config_tests cfg02_logs_and_cache_roots_are_created_private
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
@@ -623,15 +794,15 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_chat_execution_tests
         executes_a_bounded_non_streaming_completion rejects_context_and_output_limits_before_generation
         fails_closed_on_invalid_engine_output executes_glm53_only_when_explicitly_selected
-        chat_recovers_after_generation_timeout chat_marks_engine_failed_when_drain_fails
+        chat_recovers_after_generation_timeout chat_gen_write_bounded_by_generation_deadline chat_marks_engine_failed_when_drain_fails
         chat_rejects_nonfinite_done_and_stays_ready health_reflects_protocol_state
         health_is_failed_after_engine_closed_mid_generation health_is_failed_when_engine_closes_before_ready
-        chat_applies_engine_context_rule_with_eight_token_margin)
+        chat_applies_engine_context_rule_with_eight_token_margin chat_uses_adopted_ready_without_waiting)
 
     secure_frontend_add_test_executable(secure_frontend_subsystem_limits_tests tests/subsystem_limits_test.cpp
         secure_frontend_subsystem_limits)
     secure_frontend_add_cases(secure_frontend_subsystem_limits_tests
-        ready_timeout_defaults_to_900_seconds subsystem_limits_follow_config
+        ready_timeout_defaults_to_900_seconds subsystem_limits_follow_config supervisor_policy_follows_config
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     add_executable(secure_frontend_fake_engine tests/fake_engine_main.cpp)
@@ -646,11 +817,13 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         cli_config_file_and_flags_share_validator cli_flag_overrides_file_and_is_reported cli_check_prints_no_token
         cli_check_unreadable_token_is_not_reported_valid
         cli_unknown_option_does_not_echo_value
-        auth04_empty_token_rejected_on_loopback auth04_no_switch_disables_auth
+        auth04_empty_token_rejected_on_loopback auth04_no_switch_disables_auth serve_requires_state_root
         ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
     secure_frontend_add_cases(secure_frontend_server_cli_tests cli_check_has_no_side_effects
         ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
     target_link_libraries(secure_frontend_server_cli_tests PRIVATE secure_frontend_token_reader secure_frontend_server_cli)
+    # Unit case (parse + validate in process, no child): unlabeled, so it also runs under wine.
+    secure_frontend_add_cases(secure_frontend_server_cli_tests cli_sp2_flags_map_to_schema_keys TIMEOUT 120)
     secure_frontend_add_cases(secure_frontend_server_cli_tests
         init_writes_config_and_token_then_server_starts init_refuses_to_overwrite_without_force
         init_force_refuses_a_non_regular_config_target init_failure_creates_nothing
@@ -682,10 +855,33 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     endif()
 
     add_test(NAME strata_secure_server_help COMMAND strata-secure-server --help)
+    # G4: past --help the server refuses an elevated token, and the Windows CI
+    # runners (and wine) are elevated. On Windows the CLI checks below run it
+    # through the shared non-elevated launch (tests/support/non_elevated_launch.hpp)
+    # and are windows-runtime (wine cannot produce a non-elevated token); on
+    # Linux they run the server directly and stay unlabeled.
+    set(SECURE_FRONTEND_SERVER_CLI_LAUNCH strata-secure-server)
+    if(WIN32)
+        secure_frontend_add_test_executable(secure_frontend_non_elevated_run tests/non_elevated_run_main.cpp shell32)
+        target_include_directories(secure_frontend_non_elevated_run PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        add_dependencies(secure_frontend_non_elevated_run strata-secure-server)
+        set(SECURE_FRONTEND_SERVER_CLI_LAUNCH secure_frontend_non_elevated_run $<TARGET_FILE:strata-secure-server>)
+    endif()
     # The GLM runner takes positional arguments: glm53 without any --engine-arg is a usage error.
     add_test(NAME strata_secure_server_glm_requires_engine_arg
-        COMMAND strata-secure-server --profile glm53 --models-root models --tokenizer-pack tok
+        COMMAND ${SECURE_FRONTEND_SERVER_CLI_LAUNCH} --profile glm53 --models-root models --tokenizer-pack tok
                 --engine engine --model-id glm-local --token-env STRATA_UNUSED_TOKEN)
     set_tests_properties(strata_secure_server_glm_requires_engine_arg PROPERTIES
         PASS_REGULAR_EXPRESSION "glm53 requires at least one --engine-arg")
+    # Review Focus 4: a malformed --gpu is a startup error with a fixed message (never the value).
+    add_test(NAME strata_secure_server_rejects_malformed_gpu
+        COMMAND ${SECURE_FRONTEND_SERVER_CLI_LAUNCH} --models-root models --tokenizer-pack tok --engine engine
+                --model-id m --token-env STRATA_UNUSED_TOKEN --gpu 0,0)
+    set_tests_properties(strata_secure_server_rejects_malformed_gpu PROPERTIES
+        PASS_REGULAR_EXPRESSION "engine.gpu: must be a comma-separated list of distinct device indices"
+        FAIL_REGULAR_EXPRESSION "0,0")
+    if(WIN32)
+        set_tests_properties(strata_secure_server_glm_requires_engine_arg strata_secure_server_rejects_malformed_gpu
+            PROPERTIES LABELS windows-runtime)
+    endif()
 endif()

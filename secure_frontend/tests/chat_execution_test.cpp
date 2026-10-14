@@ -60,10 +60,13 @@ class FakeTransport final : public secure_frontend::EngineLineTransport {
  public:
   std::deque<secure_frontend::EngineReadResult> reads;
   std::vector<std::string> writes;
+  std::vector<secure_frontend::MonotonicClock::time_point> deadlines;
   std::chrono::milliseconds delay_per_read{0};
 
-  bool write_line(const std::string_view line, std::string&) override {
+  bool write_line(const std::string_view line, const secure_frontend::MonotonicClock::time_point deadline,
+                  std::string&) override {
     writes.emplace_back(line);
+    deadlines.push_back(deadline);
     return true;
   }
 
@@ -190,6 +193,25 @@ void executes_glm53_only_when_explicitly_selected() {
          "the explicit GLM profile must use the same bounded private engine protocol");
 }
 
+// R1 (owner ruling 2026-10-14, RF10): the GEN write is bounded by the
+// request's generation deadline, fixed when the generation starts; the read to
+// DONE then has only what the write left of that same deadline.
+void chat_gen_write_bounded_by_generation_deadline() {
+  const std::string prompt = "<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n";
+  const auto tokenizer = tokenizer_for(prompt + "OK");
+  FakeTransport transport;
+  transport.reads = {line("READY 512 stop"), line("T " + std::to_string(token_id_for(tokenizer, "O"))), line("DONE 1")};
+  secure_frontend::EngineProtocolClient protocol(transport);
+  secure_frontend::ChatExecutionService service(protocol, {.generation_timeout = std::chrono::milliseconds(7000)});
+  const auto before = secure_frontend::MonotonicClock::now();
+  const auto result = service.execute(valid_request(1U), tokenizer);
+  const auto after = secure_frontend::MonotonicClock::now();
+  expect(std::holds_alternative<secure_frontend::ChatExecutionResult>(result), "the request succeeds");
+  expect(transport.deadlines.size() == 1U && transport.deadlines.front() >= before + std::chrono::milliseconds(7000) &&
+             transport.deadlines.front() <= after + std::chrono::milliseconds(7000),
+         "the GEN write deadline is the request's generation deadline");
+}
+
 // E2: after a timeout the service sends STOP, drains to DONE, and serves the next request.
 void chat_recovers_after_generation_timeout() {
   const std::string prompt = "<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n";
@@ -312,6 +334,21 @@ void chat_applies_engine_context_rule_with_eight_token_margin() {
   }
 }
 
+void chat_uses_adopted_ready_without_waiting() {
+  const std::string prompt = "<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n";
+  const auto tokenizer = tokenizer_for(prompt + "OK");
+  FakeTransport transport;
+  transport.reads = {line("READY 512 stop"), line("T " + std::to_string(token_id_for(tokenizer, "O"))), line("DONE 1")};
+  secure_frontend::EngineProtocolClient protocol(transport);
+  secure_frontend::EngineReady ready{};
+  expect(!protocol.await_ready(std::chrono::seconds(1), ready).has_value(), "the supervisor consumed READY");
+  secure_frontend::ChatExecutionService service(protocol);
+  service.adopt_ready(ready);
+  expect(service.health() == secure_frontend::EngineHealth::ready, "an adopted READY is ready before any request");
+  const auto result = service.execute(valid_request(), tokenizer);
+  expect(std::holds_alternative<secure_frontend::ChatExecutionResult>(result), "execute does not wait for a second READY");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -321,11 +358,13 @@ int main(int argc, char** argv) {
       {"fails_closed_on_invalid_engine_output", fails_closed_on_invalid_engine_output},
       {"executes_glm53_only_when_explicitly_selected", executes_glm53_only_when_explicitly_selected},
       {"chat_recovers_after_generation_timeout", chat_recovers_after_generation_timeout},
+      {"chat_gen_write_bounded_by_generation_deadline", chat_gen_write_bounded_by_generation_deadline},
       {"chat_marks_engine_failed_when_drain_fails", chat_marks_engine_failed_when_drain_fails},
       {"chat_rejects_nonfinite_done_and_stays_ready", chat_rejects_nonfinite_done_and_stays_ready},
       {"health_reflects_protocol_state", health_reflects_protocol_state},
       {"health_is_failed_after_engine_closed_mid_generation", health_is_failed_after_engine_closed_mid_generation},
       {"health_is_failed_when_engine_closes_before_ready", health_is_failed_when_engine_closes_before_ready},
       {"chat_applies_engine_context_rule_with_eight_token_margin", chat_applies_engine_context_rule_with_eight_token_margin},
+      {"chat_uses_adopted_ready_without_waiting", chat_uses_adopted_ready_without_waiting},
   }, failures);
 }

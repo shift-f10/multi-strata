@@ -1,4 +1,5 @@
 #include "secure_frontend/engine_process.hpp"
+#include "support/test_paths.hpp"
 #include "support/test_support.hpp"
 
 #include <chrono>
@@ -26,31 +27,17 @@ void expect(const bool condition, const std::string& message) {
   }
 }
 
-std::filesystem::path current_executable() {
-#if defined(_WIN32)
-  std::vector<wchar_t> buffer(32768);
-  const auto length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-  return std::filesystem::path(std::wstring(buffer.data(), length));
-#else
-  std::vector<char> buffer(4096);
-  const auto length = readlink("/proc/self/exe", buffer.data(), buffer.size());
-  return std::filesystem::path(std::string(buffer.data(), static_cast<std::size_t>(length)));
-#endif
-}
+using test_support::current_executable;
 
 int run_fake_engine(const int argc, char** argv) {
+  if (argc != 3 || std::string(argv[2]) != "literal; exit 73") return 41;
   const char* const allowed = std::getenv("STRATA_ALLOWED_TEST");
-  // Diagnostic on the inherited stderr (visible under ctest --output-on-failure):
-  // shape only, never values.
-  std::cerr << "fake-engine: argc=" << argc
-            << " argv2_literal=" << (argc >= 3 && std::string(argv[2]) == "literal; exit 73")
-            << " allowed=" << (allowed != nullptr) << " HOME=" << (std::getenv("HOME") != nullptr)
-            << " PATH=" << (std::getenv("PATH") != nullptr) << " SystemRoot=" << (std::getenv("SystemRoot") != nullptr)
-            << '\n';
-  if (argc != 3 || std::string(argv[2]) != "literal; exit 73") {
-    return 41;
+  if (allowed == nullptr || std::string(allowed) != "present") return 42;
+  // The names a real parent has (HOME/PATH on POSIX; PATH, SystemRoot, USERPROFILE on Windows): none may leak.
+  for (const char* name : {"HOME", "PATH", "SystemRoot", "USERPROFILE"}) {
+    if (std::getenv(name) != nullptr) return 43;
   }
-  return allowed != nullptr && std::string(allowed) == "present" && std::getenv("HOME") == nullptr ? 0 : 42;
+  return 0;
 }
 
 void starts_without_a_shell_and_uses_only_allowlisted_environment() {
@@ -69,6 +56,16 @@ void starts_without_a_shell_and_uses_only_allowlisted_environment() {
   }
   expect(result.has_value() && *result == 0,
          "arguments must reach the child literally, without a shell, and environment must be allowlisted");
+}
+
+// N3: the leak check above is only meaningful when the parent really has
+// the names it looks for.
+void proc02_engine_process_env_checks_windows_names() {
+  expect(std::getenv("PATH") != nullptr, "precondition: the parent has PATH");
+#if defined(_WIN32)
+  expect(std::getenv("SystemRoot") != nullptr && std::getenv("USERPROFILE") != nullptr, "precondition: the parent has SystemRoot and USERPROFILE");
+#endif
+  starts_without_a_shell_and_uses_only_allowlisted_environment();
 }
 
 void rejects_empty_executable() {
@@ -129,5 +126,6 @@ int main(int argc, char** argv) {
       {"rejects_malformed_allowlist_entry", rejects_malformed_allowlist_entry},
       {"rejects_embedded_nul_in_exec_boundary", rejects_embedded_nul_in_exec_boundary},
       {"termination_cleans_up_a_process_group", termination_cleans_up_a_process_group},
+      {"proc02_engine_process_env_checks_windows_names", proc02_engine_process_env_checks_windows_names},
   }, failures);
 }

@@ -26,7 +26,8 @@ anything else is read as a plaintext token under the same rules. The token may
 end in one LF or CRLF and must be at least 32 bytes. `secure_frontend_token_reader_tests`
 now builds and runs on every platform; its Windows file cases carry the
 `windows-runtime` label and are validated only by the `windows-msys2-clang` CI
-job (pending: that job has not yet run them).
+job (CI run `38540719307`: `windows-msys2-clang` 193/193 on SP1, before
+the SP2 merge).
 
 ## Security contract
 
@@ -76,9 +77,11 @@ job (pending: that job has not yet run them).
   generation with `STOP` and a bounded drain (or marks the engine failed),
   sizes the outbound `GEN` cap from the engine's `READY` context, and reports
   its state through `/health` as `{"status":"ok"|"unavailable","engine":"<state>"}`:
-  `starting` → `200` with `engine=starting` (READY is consumed on the first
-  request; eager READY is SP2), `ready`/`generating` → `200`, `failed` (or a
-  stopped child) → `503`. The engine
+  `starting` → `503` (since SP2 a supervisor thread reads READY as soon as
+  the engine starts), `ready`/`generating` → `200`, `failed` → `503` with an
+  optional `recovery` of `restarting` or `exhausted`. The supervisor restarts
+  a failed engine with backoff and opens a circuit after three consecutive
+  failures. The engine
   facts these limits rely on are in
   [`docs/security/engine-protocol-limits.md`](../docs/security/engine-protocol-limits.md).
 
@@ -179,7 +182,7 @@ secret root and pass `--token-file token.txt --secret-root /path/to/root`.
 The relative token-file name is validated before the secure reader opens it.
 Windows protected-file tokens require an explicitly protected owner-only DACL;
 the implementation is fail-closed, and its runtime tests (`windows-runtime`)
-are pending the `windows-msys2-clang` CI job. Tokens shorter than 32 bytes are
+passed in the `windows-msys2-clang` CI job (run `38540719307`). Tokens shorter than 32 bytes are
 rejected.
 
 Remote/wildcard binds are rejected unless the corresponding explicit flags are
@@ -236,7 +239,7 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `limits.chat.max_completion_tokens` | integer | `4096` | 1-16384 | - | Largest max_tokens a request may ask for. |
 | `limits.chat.default_max_tokens` | integer | `256` | 1-16384 | - | max_tokens when a request omits it; at most limits.chat.max_completion_tokens. |
 | `limits.chat.max_generated_bytes` | integer | `1048576` | 1-16777216 | - | Largest generated text returned. |
-| `limits.engine.ready_timeout_s` | integer | `900` | 1-86400 | - | How long the first request waits for the engine's READY (upstream STRATA_ENGINE_READY_S). |
+| `limits.engine.ready_timeout_s` | integer | `900` | 1-86400 | - | How long the supervisor waits for the engine's READY after each start; a miss kills and restarts it (upstream STRATA_ENGINE_READY_S). |
 | `limits.engine.generation_timeout_s` | integer | `120` | 1-86400 | - | Total time for one generation before STOP. |
 | `limits.engine.stop_drain_timeout_s` | integer | `5` | 1-600 | - | Time to drain to DONE after STOP before the engine is marked failed. |
 | `limits.concurrency.max_concurrent_requests` | integer | `1` | 1-1 | - | Requests served at once; only 1 until SP3. |
@@ -244,12 +247,16 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `roots.tokenizer_pack` | string | required | - | `--tokenizer-pack` | Absolute directory with vocab.json, merges.txt, token_type.json. |
 | `roots.secret` | string | unset | - | `--secret-root` | Absolute directory holding the token file. Default: the config file's directory. |
 | `roots.logs` | string | unset | - | - | Absolute log directory (created 0700; unused in SP1). |
-| `roots.cache` | string | unset | - | - | Absolute cache directory (created 0700; unused in SP1). |
+| `roots.cache` | string | unset | - | - | Absolute cache directory (created 0700); when set, it holds the engine's CUDA cache in its cuda subdirectory. |
+| `roots.state` | string | unset | - | `--state-dir` | Absolute, existing owner-only directory for engine state: the engine's cwd, per-generation temp and (without roots.cache) the CUDA cache. Required to serve. |
 | `token.source` | string | `file:token` | - | `--token-file, --token-env` | file:<relative path below roots.secret> or env:<NAME>. Metadata only; the token is never in the config. |
 | `engine.profile` | string | `qwen` | - | `--profile` | qwen or glm53. |
 | `engine.executable` | string | required | - | `--engine` | Absolute path of the engine; a regular file not writable by group or others. |
 | `engine.model_id` | string | required | - | `--model-id` | Model ID from the local inventory. |
 | `engine.args` | string array | `[]` | - | `--engine-arg (repeatable)` | Extra engine arguments; frontend-owned and unsupported flags are rejected. |
+| `engine.lib_dirs` | string array | `[]` | - | `--engine-lib-dir (repeatable)` | Absolute library directories for the engine (default: the engine executable's directory). |
+| `engine.gpu` | string | unset | - | `--gpu` | GPU device indices for the engine, e.g. 0 or 0,1 (distinct, 0-255, at most 16); rendered as the engine's --gpu argument (strata family: no GPU variable). Not supported with engine.profile glm53. |
+| `engine.allow_new_privileges` | boolean | `false` | - | `--allow-new-privileges` | Linux: do not set PR_SET_NO_NEW_PRIVS on the engine (default: set). Only for hosts whose NVIDIA driver must run setuid nvidia-modprobe to create /dev/nvidia-uvm on first use. |
 <!-- config-keys:end -->
 
 `roots.secret` defaults to the config file's directory only for a `file:` token
@@ -282,8 +289,10 @@ its own `--engine-arg` (its own array element in `engine.args`). With the
 `qwen` profile, `--native`, `--serve`, `--batch`, `--slots` and `--vision` are
 rejected there, in both `--flag value` and `--flag=value` forms, and
 `--check` names `engine.args` as the key at fault.
-The engine child receives an empty environment allowlist, so encode all
-required engine options explicitly. The engine path (`engine.executable`)
+The engine child receives a fixed environment rendered by the frontend (see
+`docs/security/threat-model.md`, Engine process isolation); nothing is
+inherited from the server's environment, so pass every engine setting as a
+typed option or `--engine-arg`. The engine path (`engine.executable`)
 must be absolute and name a regular file not writable by group or others; the
 engine receives the canonical models root, never the configured spelling.
 
@@ -298,6 +307,7 @@ export STRATA_API_TOKEN='replace-with-a-long-random-token-of-32-bytes-or-more'
   --tokenizer-pack /absolute/path/to/tokenizer-pack \
   --engine /absolute/path/to/strata-engine \
   --engine-arg --pack --engine-arg /absolute/path/to/pack \
+  --state-dir /absolute/path/to/owner-only-state-dir \
   --token-env STRATA_API_TOKEN
 ```
 

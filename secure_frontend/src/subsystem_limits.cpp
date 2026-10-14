@@ -1,5 +1,7 @@
 #include "secure_frontend/subsystem_limits.hpp"
 
+#include <chrono>
+
 namespace secure_frontend {
 
 HttpSocketServerLimits http_socket_server_limits(const FrontendConfig& c) {
@@ -32,6 +34,16 @@ ChatExecutionLimits chat_execution_limits(const FrontendConfig& c) {
   limits.generation_timeout = c.limits.engine.generation_timeout;
   limits.stop_drain_timeout = c.limits.engine.stop_drain_timeout;
   return limits;
+}
+
+SupervisorConfig supervisor_config(const FrontendConfig& config) {
+  SupervisorConfig supervisor;
+  supervisor.chat_limits = chat_execution_limits(config);
+  supervisor.policy.ready_timeout = std::chrono::duration_cast<std::chrono::milliseconds>(config.limits.engine.ready_timeout);
+  supervisor.profile = config.engine.profile == EngineProfile::glm53 ? NativeChatProfile::glm53 : NativeChatProfile::qwen;
+  supervisor.flavor = config.engine.profile == EngineProfile::glm53 ? EngineProtocolFlavor::lighttransport_glm53
+                                                                     : EngineProtocolFlavor::strata_0143;
+  return supervisor;
 }
 
 }  // namespace secure_frontend

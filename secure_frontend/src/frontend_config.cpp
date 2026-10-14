@@ -14,7 +14,7 @@ namespace {
 namespace d = config_defaults;
 using T = ConfigValueType;
 
-constexpr std::array<ConfigKey, 32> kSchema{{
+constexpr std::array<ConfigKey, 36> kSchema{{
     {"schema_version", T::integer, false, 1, 1, d::kSchemaVersion, false, "", "",
      "Config format version; must be 1. Required in a config file."},
     {"listener.host", T::string, false, 0, 0, 0, false, "127.0.0.1", "--host",
@@ -49,7 +49,7 @@ constexpr std::array<ConfigKey, 32> kSchema{{
     {"limits.chat.max_generated_bytes", T::integer, false, 1, 16'777'216, d::kChatMaxGeneratedBytes, false, "", "",
      "Largest generated text returned."},
     {"limits.engine.ready_timeout_s", T::integer, false, 1, 86'400, d::kEngineReadyTimeoutS, false, "", "",
-     "How long the first request waits for the engine's READY (upstream STRATA_ENGINE_READY_S)."},
+     "How long the supervisor waits for the engine's READY after each start; a miss kills and restarts it (upstream STRATA_ENGINE_READY_S)."},
     {"limits.engine.generation_timeout_s", T::integer, false, 1, 86'400, d::kEngineGenerationTimeoutS, false, "", "",
      "Total time for one generation before STOP."},
     {"limits.engine.stop_drain_timeout_s", T::integer, false, 1, 600, d::kEngineStopDrainTimeoutS, false, "", "",
@@ -63,7 +63,10 @@ constexpr std::array<ConfigKey, 32> kSchema{{
     {"roots.secret", T::string, false, 0, 0, 0, false, "", "--secret-root",
      "Absolute directory holding the token file. Default: the config file's directory."},
     {"roots.logs", T::string, false, 0, 0, 0, false, "", "", "Absolute log directory (created 0700; unused in SP1)."},
-    {"roots.cache", T::string, false, 0, 0, 0, false, "", "", "Absolute cache directory (created 0700; unused in SP1)."},
+    {"roots.cache", T::string, false, 0, 0, 0, false, "", "",
+     "Absolute cache directory (created 0700); when set, it holds the engine's CUDA cache in its cuda subdirectory."},
+    {"roots.state", T::string, false, 0, 0, 0, false, "", "--state-dir",
+     "Absolute, existing owner-only directory for engine state: the engine's cwd, per-generation temp and (without roots.cache) the CUDA cache. Required to serve."},
     {"token.source", T::string, false, 0, 0, 0, false, "file:token", "--token-file, --token-env",
      "file:<relative path below roots.secret> or env:<NAME>. Metadata only; the token is never in the config."},
     {"engine.profile", T::string, false, 0, 0, 0, false, "qwen", "--profile", "qwen or glm53."},
@@ -72,6 +75,12 @@ constexpr std::array<ConfigKey, 32> kSchema{{
     {"engine.model_id", T::string, true, 0, 0, 0, false, "", "--model-id", "Model ID from the local inventory."},
     {"engine.args", T::string_array, false, 0, 0, 0, false, "", "--engine-arg (repeatable)",
      "Extra engine arguments; frontend-owned and unsupported flags are rejected."},
+    {"engine.lib_dirs", T::string_array, false, 0, 0, 0, false, "", "--engine-lib-dir (repeatable)",
+     "Absolute library directories for the engine (default: the engine executable's directory)."},
+    {"engine.gpu", T::string, false, 0, 0, 0, false, "", "--gpu",
+     "GPU device indices for the engine, e.g. 0 or 0,1 (distinct, 0-255, at most 16); rendered as the engine's --gpu argument (strata family: no GPU variable). Not supported with engine.profile glm53."},
+    {"engine.allow_new_privileges", T::boolean, false, 0, 0, 0, false, "", "--allow-new-privileges",
+     "Linux: do not set PR_SET_NO_NEW_PRIVS on the engine (default: set). Only for hosts whose NVIDIA driver must run setuid nvidia-modprobe to create /dev/nvidia-uvm on first use."},
 }};
 
 void add(ConfigErrors& errors, std::string key, const ConfigIssueCode code, std::string reason) {
@@ -160,6 +169,19 @@ std::optional<std::filesystem::path> creatable_root(DraftReader& read, ConfigErr
     return std::nullopt;
   }
   return std::get<std::filesystem::path>(std::move(checked));
+}
+
+// roots.state: absolute, non-empty, no NUL. No filesystem access here, so
+// --check stays side-effect free; serve checks it is an existing owner-only
+// directory before anything is spawned.
+std::optional<std::filesystem::path> absolute_path(DraftReader& read, ConfigErrors& errors, const std::string_view path) {
+  const auto text = read.string(path);
+  if (!text.has_value()) return std::nullopt;
+  if (text->empty() || text->find('\0') != std::string::npos || !path_from_utf8(*text).is_absolute()) {
+    add(errors, std::string{path}, ConfigIssueCode::invalid_value, "must be an absolute directory");
+    return std::nullopt;
+  }
+  return path_from_utf8(*text);
 }
 
 std::optional<SecretSource> token_source(const std::string& text) {
@@ -316,6 +338,7 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   auto secret = canonical_root(read, errors, "roots.secret");
   const auto logs = creatable_root(read, errors, "roots.logs");
   const auto cache = creatable_root(read, errors, "roots.cache");
+  const auto state = absolute_path(read, errors, "roots.state");
 
   // token. An unset roots.secret defaults to the config file's folder, and only
   // for a file: token: an env: token reads nothing below a secret root (spec
@@ -369,6 +392,36 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   if (profile == EngineProfile::glm53 && args.empty()) {
     add(errors, "engine.args", ConfigIssueCode::missing_required, "--profile glm53 requires at least one --engine-arg");
   }
+  // Each entry is one directory: the platform's list separator would split
+  // LD_LIBRARY_PATH (':') or PATH (';') into extra, unvalidated entries.
+#if defined(_WIN32)
+  constexpr char kListSeparator = ';';
+#else
+  constexpr char kListSeparator = ':';
+#endif
+  std::vector<std::filesystem::path> lib_dirs;
+  for (const auto& text : read.strings("engine.lib_dirs")) {
+    if (text.empty() || text.find('\0') != std::string::npos || text.find(kListSeparator) != std::string::npos ||
+        !path_from_utf8(text).is_absolute()) {
+      add(errors, "engine.lib_dirs", ConfigIssueCode::invalid_value, "every entry must be an absolute directory");
+      break;
+    }
+    lib_dirs.push_back(path_from_utf8(text));
+  }
+  std::vector<unsigned> gpus;
+  if (const auto gpu_text = read.string("engine.gpu")) {
+    if (const auto parsed = parse_gpu_list(*gpu_text)) {
+      if (profile == EngineProfile::glm53) {
+        add(errors, "engine.gpu", ConfigIssueCode::conflicting_values, "is not supported with engine.profile glm53");
+      } else {
+        gpus = *parsed;
+      }
+    } else {
+      add(errors, "engine.gpu", ConfigIssueCode::invalid_value,
+          "must be a comma-separated list of distinct device indices 0-255, at most 16");
+    }
+  }
+  const bool allow_new_privileges = read.boolean("engine.allow_new_privileges");
 
   if (!errors.empty() || !host || !models || !tokenizer || !token || !executable || !model_id) {
     if (errors.empty()) add(errors, "config file", ConfigIssueCode::invalid_value, "is incomplete");
@@ -382,8 +435,8 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
                  u32(max_generated)},
       EngineLimits{std::chrono::seconds(ready_s), std::chrono::seconds(generation_s), std::chrono::seconds(drain_s)},
       ConcurrencyLimits{u32(concurrent)}};
-  Roots roots{*models, *tokenizer, secret, logs, cache};
-  EngineLaunch engine{profile, *executable, std::move(*model_id), args};
+  Roots roots{*models, *tokenizer, secret, logs, cache, state};
+  EngineLaunch engine{profile, *executable, std::move(*model_id), args, std::move(lib_dirs), std::move(gpus), allow_new_privileges};
   return ValidatedConfig{std::shared_ptr<const FrontendConfig>(
       new FrontendConfig(std::move(listener), limits, std::move(roots), std::move(*token), std::move(engine)))};
 }
@@ -427,6 +480,7 @@ std::string describe(const FrontendConfig& c) {
   line("roots.secret", root_or_unset(c.roots.secret));
   line("roots.logs", path_or_unset(c.roots.logs));
   line("roots.cache", path_or_unset(c.roots.cache));
+  line("roots.state", path_or_unset(c.roots.state));
   line("token.source", json_quoted((c.token.kind() == SecretSourceKind::environment_variable ? "env:" : "file:") +
                               c.token.location()));
   line("engine.profile", c.engine.profile == EngineProfile::glm53 ? "\"glm53\"" : "\"qwen\"");
@@ -435,6 +489,13 @@ std::string describe(const FrontendConfig& c) {
   std::string args = "[";
   for (const auto& arg : c.engine.args) args += (args.size() > 1U ? "," : "") + json_quoted(arg);
   line("engine.args", args + "]");
+  std::string libs = "[";
+  for (const auto& directory : c.engine.lib_dirs) libs += (libs.size() > 1U ? "," : "") + json_quoted(path_to_utf8(directory));
+  line("engine.lib_dirs", libs + "]");
+  std::string gpu_list;
+  for (const unsigned device : c.engine.gpus) gpu_list += (gpu_list.empty() ? "" : ",") + std::to_string(device);
+  line("engine.gpu", gpu_list.empty() ? std::string{"(unset)"} : json_quoted(gpu_list));
+  line("engine.allow_new_privileges", c.engine.allow_new_privileges ? "true" : "false");
   return out;
 }
 

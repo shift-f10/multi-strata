@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
@@ -36,16 +37,27 @@ using EngineArgumentsResult = std::variant<std::vector<std::string>, EngineArgum
 // default cwd-relative `pack/full`) and every other weight flag (--ple-gguf,
 // --embd-gguf, --native-head-gguf, --native-dense-gguf, --mtp) pass through:
 // they are operator-supplied until SP1/SP5 model the whole launch.
+// `--gpu` is owned too (spec §3.9): GPUs are selected only by the typed `gpus`
+// list (engine.gpu), rendered `--gpu i,j` before `--native`; the engine sets
+// CUDA_DEVICE_ORDER/CUDA_VISIBLE_DEVICES (or HIP) itself (upstream
+// generate.cpp:1844-1865, usage :706-708, at v0.1.44.1), so the strata
+// family's environment carries no GPU variable.
 //
 // lighttransport_glm53: the GLM runner's CLI is not characterized, so the
 // user's arguments pass through unchanged and no model path is supplied; only
-// `--serve` (inserted by the launcher) is rejected.
+// `--serve` (inserted by the launcher) and `--gpu` (frontend-owned) are
+// rejected, and a non-empty `gpus` list is refused (unsupported_mode).
 //
 // In both profiles, values containing NUL are rejected.
 [[nodiscard]] EngineArgumentsResult build_engine_arguments(EngineArgumentsProfile profile,
                                                            const ModelManifest& selected,
                                                            const CanonicalRoot& models_root,
-                                                           const std::vector<std::string>& user_arguments);
+                                                           const std::vector<std::string>& user_arguments,
+                                                           const std::vector<unsigned>& gpus = {});
+
+// Parses the operator's --gpu value: comma-separated decimal device indices
+// 0-255, no sign, spaces or leading zeros, distinct, 1-16 entries.
+[[nodiscard]] std::optional<std::vector<unsigned>> parse_gpu_list(std::string_view value);
 
 // Checks only the operator's pass-through arguments (no model needed): NUL,
 // frontend-owned flags and unsupported modes for `profile`. build_engine_arguments

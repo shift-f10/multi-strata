@@ -127,21 +127,71 @@ Trust boundaries:
 - The frontend starts the engine without a shell. It passes a fixed executable
   path and an argument vector built from validated typed values; user strings
   never form shell syntax.
-- The child inherits an empty environment allowlist and no listening socket,
-  credential file descriptor/handle, or token. Its stdout is the bounded strict
-  protocol pipe; stderr is discarded to the platform null device in the
-  privacy-preserving profile so diagnostics cannot corrupt protocol framing or
-  leak prompts into logs.
+- The child gets a fixed, frontend-rendered environment and nothing from the
+  parent: POSIX `PATH=/usr/bin:/bin`, `LD_LIBRARY_PATH` (the engine library
+  directories), `TMPDIR`, `CUDA_CACHE_PATH`; Windows `PATH`, `TEMP`, `TMP`,
+  `CUDA_CACHE_PATH`, `SystemRoot`, `WINDIR`, `SystemDrive`,
+  `NUMBER_OF_PROCESSORS`. The renderer also supports optional
+  `STRATA_HIPBLASLT_TUNING`, `STRATA_WATCHDOG_S` and `STRATA_WATCHDOG_IO_S`
+  rows, but no configuration key sets them yet. Never the token variable,
+  `STRATA_API_KEY` or other `STRATA_*`, `LD_PRELOAD`, `LD_AUDIT`,
+  `CUDA_LAUNCH_BLOCKING`, `HOME`/`USERPROFILE`/`APPDATA`, proxies, or
+  GPU-selection variables (strata family: GPUs are the typed `--gpu` argv; the
+  SP6 `glm` family will render `CUDA_DEVICE_ORDER`/`CUDA_VISIBLE_DEVICES` from
+  typed configuration, a mechanism that no configuration reaches today). Not
+  yet verified with a real CUDA/ROCm engine. The child inherits no listening
+  socket, credential descriptor/handle or token. On POSIX it starts with
+  default signal dispositions and an empty signal mask; on both platforms its
+  cwd is `<state_dir>/engine`; on Linux `PR_SET_NO_NEW_PRIVS` is set by default
+  (`engine.allow_new_privileges` turns it off for a GPU stack that needs it).
+  Its stdout is the bounded strict protocol pipe; stderr is discarded to the
+  platform null device so diagnostics cannot corrupt protocol framing or leak
+  prompts into logs.
 - The child is reached only by private stdio in the current profile; clients
   never receive an engine address. Any future private loopback/IPC bridge must
   be authenticated and blocked from non-frontend peers.
+- PROC-03 on Linux means "other user context": another uid cannot open the
+  engine's stdio (`proc03_other_uid_cannot_open_engine_fd`; it runs only in CI,
+  which has not yet run SP2 — pending rflores's push). The
+  **same** uid can reopen the engine's stdin through `/proc/<pid>/fd/0` and
+  inject protocol lines; the upstream engine cannot be made non-dumpable after
+  exec and its protocol carries no nonce without engine changes. This is an
+  **accepted risk** for SP2 and must appear in the release record
+  (`proc03_same_uid_reopen_is_accepted_risk` pins today's behavior). On Windows
+  the stdin pipe is owner-only, single-instance and client-verified (N6, R1)
+  (implemented; authoritative in the MSYS2 CI job — pending rflores's push).
 - Windows uses restricted handle inheritance plus a Job Object so all child
-  processes terminate with the service. Linux uses close-on-exec descriptors,
-  a dedicated process group, and reliable `waitpid`/signal cleanup. Restart
-  loops are bounded with backoff.
+  processes terminate with the service. Linux uses close-on-exec descriptors
+  plus a descriptor sweep before `execve`; the listening and accepted sockets
+  are not close-on-exec (no `SOCK_CLOEXEC`), so the sweep is what closes them
+  in the engine child (the fallback sweep's 65536 cap is a recorded gap,
+  `docs/AGENT_HANDOFF.md`, Known small gaps), a dedicated process group, and
+  reliable `waitpid`/signal cleanup. A single supervisor thread owns the
+  engine: it restarts a failed engine after 1 s, 2 s, … (at most 60 s), opens
+  a circuit on the third consecutive failure (closed only by restarting the
+  frontend), and resets the count after 300 s of healthy running. Because an
+  `ERR` answer leaves the generation unusable, three requests in a row whose
+  input makes the engine answer `ERR` open the circuit until the frontend is
+  restarted; this is accepted (Review Focus 6,
+  `proc04_client_err_lines_open_circuit_until_restart`). A drain failure after
+  a client-requested `STOP` (SP3) restarts the engine without counting, at most
+  3 times in a row with no `DONE` in between; after that it counts. Linux
+  cleanup is process-group SIGKILL, a child-subreaper sweep after every reaped
+  generation, `PR_SET_PDEATHSIG`, and `cgroup.kill` when a delegated cgroup v2
+  is detected (the delegated path is verified by reading only, not run).
+  **Residual risk (PROC-05):** a frontend killed with SIGKILL on Linux takes
+  the engine leader with it (`PR_SET_PDEATHSIG`), but the engine's own
+  descendants survive. Without a delegated cgroup nothing reaches them; with
+  one they stay in the generation's cgroup until the operator's scope is
+  killed, because nothing writes `cgroup.kill` once the frontend is dead. The
+  upstream engine is not known to spawn any. This must appear in the release
+  record.
 - Privilege elevation is forbidden. The service and child run as the invoking
   user (or a documented dedicated low-privilege account); writable roots are
-  narrowly scoped.
+  narrowly scoped. The frontend refuses to start as root or with an elevated
+  Windows token; an engine that requires elevation is a spawn failure and is
+  never started via `runas` (G3 is verified only on a non-elevated Windows
+  prompt, a validation-kit step; CI runners are elevated).
 
 ### Extensions and MCP
 

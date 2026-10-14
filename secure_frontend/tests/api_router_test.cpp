@@ -107,16 +107,36 @@ void health_is_503_with_engine_state_when_unavailable() {
 }
 
 void health_samples_status_before_state_once_each() {
+  // SP2 (spec §3.4): READY is consumed eagerly, so `starting` means the model
+  // is loading and is reported 503. The providers are called in order b, s, r.
   std::string calls;
   std::string_view snapshot{"failed"};
   const secure_frontend::ApiRouter snapshotting(
-      [&] { calls += 'b'; snapshot = "starting"; return true; },
+      [&] { calls += 'b'; snapshot = "starting"; return false; },
       [] { return std::vector<secure_frontend::ApiModel>{}; },
-      [&]() -> std::string_view { calls += 's'; return snapshot; });
+      [&]() -> std::string_view { calls += 's'; return snapshot; },
+      [&]() -> std::string_view { calls += 'r'; return {}; });
   const auto response = snapshotting.dispatch("GET", "/health");
-  expect(calls == "bs", "health must call the bool provider once, then the state provider once; saw: " + calls);
-  expect(response.status == 200 && response.body == "{\"status\":\"ok\",\"engine\":\"starting\"}\n",
-         "a starting engine that is not failed is reported 200 with engine=starting");
+  expect(calls == "bsr", "health must call bool, then state, then recovery, once each; saw: " + calls);
+  expect(response.status == 503 && response.body == "{\"status\":\"unavailable\",\"engine\":\"starting\"}\n",
+         "a starting engine is 503 with engine=starting");
+}
+
+void health_carries_recovery_only_with_failed() {
+  const auto with = [](std::string_view state, std::string_view recovery, bool healthy) {
+    return secure_frontend::ApiRouter([healthy] { return healthy; }, [] { return std::vector<secure_frontend::ApiModel>{}; },
+                                      [state]() -> std::string_view { return state; },
+                                      [recovery]() -> std::string_view { return recovery; })
+        .dispatch("GET", "/health");
+  };
+  const auto restarting = with("failed", "restarting", false);
+  expect(restarting.status == 503 && restarting.body == "{\"status\":\"unavailable\",\"engine\":\"failed\",\"recovery\":\"restarting\"}\n",
+         "failed + restarting");
+  expect(with("failed", "exhausted", false).body == "{\"status\":\"unavailable\",\"engine\":\"failed\",\"recovery\":\"exhausted\"}\n",
+         "failed + exhausted");
+  expect(with("failed", "", false).body == "{\"status\":\"unavailable\",\"engine\":\"failed\"}\n", "no recovery field when empty");
+  expect(with("ready", "restarting", true).body == "{\"status\":\"unavailable\"}\n", "recovery with a non-failed state fails closed");
+  expect(with("failed", "/secret", false).body == "{\"status\":\"unavailable\"}\n", "an unknown recovery literal fails closed");
 }
 
 void auth01_every_route_rejects_missing_malformed_wrong_token() {
@@ -164,6 +184,7 @@ void auth01_every_route_rejects_missing_malformed_wrong_token() {
 int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
       {"health_samples_status_before_state_once_each", health_samples_status_before_state_once_each},
+      {"health_carries_recovery_only_with_failed", health_carries_recovery_only_with_failed},
       {"health_includes_engine_state_when_provided", health_includes_engine_state_when_provided},
       {"health_is_503_with_engine_state_when_unavailable", health_is_503_with_engine_state_when_unavailable},
       {"dispatches_exact_health_route", dispatches_exact_health_route},
