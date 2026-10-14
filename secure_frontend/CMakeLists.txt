@@ -14,15 +14,16 @@ endif()
 option(SECURE_FRONTEND_WERROR "Treat warnings as errors in the secure frontend" ${_secure_frontend_werror_default})
 
 function(secure_frontend_set_warnings target)
+    # C++ only: an .rc source must not hand these flags to the RC compiler (SP2 G3).
     if(MSVC)
-        target_compile_options(${target} PRIVATE /W4)
+        target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W4>)
         if(SECURE_FRONTEND_WERROR)
-            target_compile_options(${target} PRIVATE /WX)
+            target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/WX>)
         endif()
     else()
-        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(${target} PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic>")
         if(SECURE_FRONTEND_WERROR)
-            target_compile_options(${target} PRIVATE -Werror)
+            target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Werror>)
         endif()
     endif()
     if(WIN32)
@@ -570,7 +571,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         secure_frontend_engine_stdio_process secure_frontend_test_support)
     secure_frontend_test_paths(secure_frontend_engine_child_tests)
     target_link_libraries(secure_frontend_engine_child_tests PRIVATE secure_frontend_engine_process)
-    set(SECURE_FRONTEND_CHILD_CASES proc04_exit_status_is_classified)
+    set(SECURE_FRONTEND_CHILD_CASES proc04_exit_status_is_classified proc06_child_ids_and_cwd)
     set(SECURE_FRONTEND_CHILD_LINUX_CASES proc05_group_killed_after_leader_reaped proc02_child_signal_state_is_default proc02_canary_descriptors_absent
         proc03_other_uid_cannot_open_engine_fd proc03_same_uid_reopen_is_accepted_risk)
     set(SECURE_FRONTEND_CHILD_WINDOWS_CASES proc02_canary_handles_absent proc02_stdin_pipe_dacl_is_owner_only proc03_windows_pipe_second_open_fails proc01_windows_argv_round_trip)
@@ -583,6 +584,27 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     if(NOT WIN32)
         set_tests_properties(secure_frontend_engine_child_tests.proc03_other_uid_cannot_open_engine_fd PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+    # SP2 G3: a test-only copy of the fake whose embedded manifest demands
+    # elevation. Its case (proc06_elevation_required_is_spawn_failed) is in the
+    # binary's case list only, never registered with CTest: a validation-kit
+    # step for a NON-elevated prompt on the owner's offline Windows box.
+    if(WIN32)
+        enable_language(RC)
+        add_executable(strata-supervision-fake-engine-elevated tests/supervision_fake_engine_main.cpp tests/fake_engine_elevated.rc)
+        target_include_directories(strata-supervision-fake-engine-elevated PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        target_compile_features(strata-supervision-fake-engine-elevated PRIVATE cxx_std_20)
+        target_link_libraries(strata-supervision-fake-engine-elevated PRIVATE shell32 advapi32)
+        if(MSVC)
+            # The .rc embeds the requireAdministrator manifest; without /MANIFEST:NO the
+            # linker generates a second one and the informational windows-msvc job
+            # fails with a duplicate-manifest link error.
+            target_link_options(strata-supervision-fake-engine-elevated PRIVATE /MANIFEST:NO)
+        endif()
+        secure_frontend_set_warnings(strata-supervision-fake-engine-elevated)
+        add_dependencies(secure_frontend_engine_child_tests strata-supervision-fake-engine-elevated)
+        target_compile_definitions(secure_frontend_engine_child_tests PRIVATE
+            "STRATA_FAKE_ENGINE_ELEVATED_PATH=\"$<TARGET_FILE:strata-supervision-fake-engine-elevated>\"")
     endif()
 
     secure_frontend_add_test_executable(secure_frontend_engine_supervisor_tests tests/engine_supervisor_test.cpp

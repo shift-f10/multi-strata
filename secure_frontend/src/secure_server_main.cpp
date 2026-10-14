@@ -165,6 +165,9 @@ int run(const FrontendConfig& config) {
   // is inherited from this server's environment.
   plan.environment = secure_frontend::EngineEnvironment{
       .lib_dirs = std::move(lib_dirs), .temp_dir = state_dir / "engine-tmp", .cuda_cache_dir = state_dir / "cache" / "cuda"};
+  // Spec §3.12: the engine's cwd-relative files (`pack/full`, stall dumps)
+  // land in <state_dir>/engine, created by prepare_state_dir() above.
+  plan.command.working_directory = state_dir / "engine";
   // Spec §3.7(d): detected, never configured; off unless this process runs in
   // a writable delegated cgroup v2.
   plan.use_delegated_cgroup = true;

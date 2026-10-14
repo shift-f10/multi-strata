@@ -234,13 +234,22 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
   // frontend, whose console handler (shutdown_signal.cpp) runs the orderly
   // shutdown (spec §3.7). Its stdio is redirected, so it needs no console.
   // Authoritative in MSYS2.
+  // Spec §3.12: the engine's cwd-relative files land in <state_dir>/engine; empty: inherit.
+  const std::wstring working_directory = command.working_directory.wstring();
   const BOOL created = CreateProcessW(executable.c_str(), line.data(), nullptr, nullptr, TRUE,
                                       CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED |
                                           CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
-                                      environment.data(), nullptr, &startup.StartupInfo, &info);
+                                      environment.data(), working_directory.empty() ? nullptr : working_directory.c_str(),
+                                      &startup.StartupInfo, &info);
+  const DWORD create_error = created ? ERROR_SUCCESS : GetLastError();  // before CloseHandle can overwrite it
   DeleteProcThreadAttributeList(attribute_list);
   CloseHandle(child_stdin); CloseHandle(child_stdout); CloseHandle(child_stderr);
-  if (!created) { CloseHandle(parent_stdin); CloseHandle(parent_stdout); CloseHandle(job); return ProcessError{ProcessErrorCode::spawn_failed, with_last_error("CreateProcessW failed")}; }
+  if (!created) {
+    CloseHandle(parent_stdin); CloseHandle(parent_stdout); CloseHandle(job);
+    // Spec §3.6/G3: an engine that asks for elevation is a spawn failure; it is never retried via runas.
+    if (create_error == ERROR_ELEVATION_REQUIRED) return ProcessError{ProcessErrorCode::spawn_failed, "engine requires elevation; refused"};
+    return ProcessError{ProcessErrorCode::spawn_failed, "CreateProcessW failed (Win32 error " + std::to_string(create_error) + ")"};
+  }
   if (!AssignProcessToJobObject(job, info.hProcess)) { TerminateProcess(info.hProcess, 1); /* still suspended: it never ran */ CloseHandle(info.hThread); CloseHandle(info.hProcess); CloseHandle(parent_stdin); CloseHandle(parent_stdout); CloseHandle(job); return ProcessError{ProcessErrorCode::platform_failure, with_last_error("AssignProcessToJobObject failed")}; }
   if (ResumeThread(info.hThread) == static_cast<DWORD>(-1)) { TerminateJobObject(job, kSupervisorKillExitCode); CloseHandle(info.hThread); CloseHandle(info.hProcess); CloseHandle(parent_stdin); CloseHandle(parent_stdout); CloseHandle(job); return ProcessError{ProcessErrorCode::platform_failure, with_last_error("ResumeThread failed")}; }
   CloseHandle(info.hThread);

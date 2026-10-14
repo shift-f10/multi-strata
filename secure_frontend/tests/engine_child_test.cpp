@@ -11,7 +11,10 @@
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <functional>
 #include <iostream>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -22,6 +25,7 @@
 #include "secure_frontend/win32_prelude.hpp"
 
 #include <aclapi.h>
+#include <sddl.h>
 #else
 #include <csignal>
 #include <fcntl.h>
@@ -451,6 +455,93 @@ void proc01_windows_argv_round_trip() {
   expect(dump && dump->argv == expected, "CommandLineToArgvW in the child yields exactly the argv the frontend was given");
   (void)child.terminate(250ms);
 }
+
+// This process's user SID, elevation and integrity RID, keyed as the fake
+// engine's DUMP `IDS` line keys them.
+std::map<std::string, std::string, std::less<>> own_token_ids() {
+  std::map<std::string, std::string, std::less<>> ids;
+  HANDLE token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return ids;
+  const auto user = current_token_user();
+  LPWSTR sid = nullptr;
+  if (!user.empty() && ConvertSidToStringSidW(reinterpret_cast<const TOKEN_USER*>(user.data())->User.Sid, &sid)) {
+    const std::wstring wide(sid);
+    ids["sid"] = std::string(wide.begin(), wide.end());  // SID strings are ASCII
+    LocalFree(sid);
+  }
+  TOKEN_ELEVATION elevation{};
+  DWORD size = sizeof(elevation);
+  ids["elevated"] = GetTokenInformation(token, TokenElevation, &elevation, size, &size) && elevation.TokenIsElevated != 0 ? "1" : "0";
+  size = 0;
+  (void)GetTokenInformation(token, TokenIntegrityLevel, nullptr, 0, &size);
+  std::vector<unsigned char> label(size);
+  if (size != 0 && GetTokenInformation(token, TokenIntegrityLevel, label.data(), size, &size)) {
+    PSID level = reinterpret_cast<TOKEN_MANDATORY_LABEL*>(label.data())->Label.Sid;
+    ids["integrity"] = std::to_string(*GetSidSubAuthority(level, static_cast<DWORD>(*GetSidSubAuthorityCount(level) - 1U)));
+  }
+  CloseHandle(token);
+  return ids;
+}
+#endif
+
+// G1 (spec §3.12; relative identity rule by owner decision, Global
+// Constraints): the engine runs in <state_dir>/engine and never with more
+// privilege than the frontend.
+void proc06_child_ids_and_cwd() {
+  const auto state = secure_frontend_test::make_scratch_directory() / "g1";
+  secure_frontend_test::make_owner_private_directory(state);
+  const auto cwd = state / "engine";
+  secure_frontend_test::make_private_directory(cwd);
+  secure_frontend::EngineStdioProcess child;
+  expect(!child.start({.executable = test_support::fake_engine_path(), .arguments = {}, .environment = {}, .working_directory = cwd})
+              .has_value(),
+         "start");
+  expect(child.read_line(5s).line == "READY 4096 stop", "READY");
+  const auto dump = test_support::request_dump(child, 5s);
+  expect(dump.has_value(), "DUMP");
+  if (dump) {
+    std::error_code error;
+    expect(std::filesystem::equivalent(dump->cwd, cwd, error), "the engine runs in <state_dir>/engine (its cwd-relative files land there)");
+#if defined(_WIN32)
+    const auto parent = own_token_ids();
+    expect(dump->ids.count("sid") == 1 && parent.count("sid") == 1 && dump->ids.at("sid") == parent.at("sid"), "same user SID");
+    // Relative by owner decision (Global Constraints): CI runs this binary
+    // elevated, so an elevated engine under an elevated frontend is allowed;
+    // an engine MORE elevated than the frontend never is.
+    expect(dump->ids.count("elevated") == 1 && parent.count("elevated") == 1 &&
+               !(dump->ids.at("elevated") == "1" && parent.at("elevated") == "0"),
+           "never more elevated than the frontend: no elevation is requested");
+    expect(dump->ids.count("integrity") == 1 && parent.count("integrity") == 1 &&
+               std::stoul(dump->ids.at("integrity")) <= std::stoul(parent.at("integrity")),
+           "integrity never above the frontend's");
+#else
+    expect(dump->ids.count("uid") == 1 && dump->ids.count("gid") == 1 && dump->ids.count("euid") == 1 && dump->ids.count("egid") == 1,
+           "IDS carries uid, gid, euid and egid");
+    if (dump->ids.count("uid") == 1 && dump->ids.count("gid") == 1 && dump->ids.count("euid") == 1 && dump->ids.count("egid") == 1) {
+      expect(dump->ids.at("uid") == std::to_string(getuid()) && dump->ids.at("gid") == std::to_string(getgid()) &&
+                 dump->ids.at("euid") == std::to_string(geteuid()) && dump->ids.at("egid") == std::to_string(getegid()),
+             "the same uid/gid as the frontend: nothing gained");
+    }
+#endif
+  }
+  (void)child.terminate(250ms);
+}
+
+#if defined(_WIN32)
+// G3 -- UNVERIFIED in CI (the runners are elevated, so requireAdministrator
+// needs no elevation and error 740 cannot occur) and under wine (no UAC). Not
+// registered with CTest and not a skipped test. Validation kit, owner's
+// offline Windows box, from a NON-elevated prompt:
+//   secure_frontend_engine_child_tests.exe --case proc06_elevation_required_is_spawn_failed
+void proc06_elevation_required_is_spawn_failed() {
+  const bool elevated = own_token_ids()["elevated"] != "0";
+  expect(!elevated, "run this case from a non-elevated prompt: an elevated token never sees error 740");
+  if (elevated) return;
+  secure_frontend::EngineStdioProcess child;
+  const auto error = child.start({.executable = std::filesystem::path(STRATA_FAKE_ENGINE_ELEVATED_PATH), .arguments = {}, .environment = {}});
+  expect(error && error->code == secure_frontend::ProcessErrorCode::spawn_failed && error->message == "engine requires elevation; refused",
+         "ERROR_ELEVATION_REQUIRED is spawn_failed and is never retried via runas");
+}
 #endif
 
 }  // namespace
@@ -459,6 +550,7 @@ int main(int argc, char* argv[]) {
   return secure_frontend_test::run_cases(argc, argv,
                                          {
                                              {"proc04_exit_status_is_classified", proc04_exit_status_is_classified},
+                                             {"proc06_child_ids_and_cwd", proc06_child_ids_and_cwd},
 #if !defined(_WIN32)
                                              {"proc05_group_killed_after_leader_reaped", proc05_group_killed_after_leader_reaped},
                                              {"proc02_child_signal_state_is_default", proc02_child_signal_state_is_default},
@@ -471,6 +563,8 @@ int main(int argc, char* argv[]) {
                                              {"proc02_stdin_pipe_dacl_is_owner_only", proc02_stdin_pipe_dacl_is_owner_only},
                                              {"proc03_windows_pipe_second_open_fails", proc03_windows_pipe_second_open_fails},
                                              {"proc01_windows_argv_round_trip", proc01_windows_argv_round_trip},
+                                             // G3: in the case list only, never registered with CTest.
+                                             {"proc06_elevation_required_is_spawn_failed", proc06_elevation_required_is_spawn_failed},
 #endif
                                          },
                                          failures);

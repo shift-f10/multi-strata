@@ -18,6 +18,10 @@ struct EngineCommand final {
   // cgroup.procs before execve, so even its escaping descendants stay inside.
   // `{}`: existing designated initializers that omit it keep compiling (-Werror).
   std::optional<std::filesystem::path> cgroup_procs{};
+  // The child's working directory (spec §3.12): the engine writes its
+  // cwd-relative `pack/full` default and `strata-stall-<pid>.dmp` there. Empty: inherit.
+  // `{}`: existing designated initializers that omit it keep compiling (-Werror).
+  std::filesystem::path working_directory{};
 };
 
 enum class ProcessErrorCode {

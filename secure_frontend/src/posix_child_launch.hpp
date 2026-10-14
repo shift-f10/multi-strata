@@ -4,7 +4,7 @@
 //
 // Everything that allocates (argv, envp, the executable path, the descriptor
 // sweep limit) is prepared BEFORE fork().  The child body, exec_child(), uses
-// only async-signal-safe calls (prctl, getppid, setpgid, open, fcntl, dup2, close, syscall,
+// only async-signal-safe calls (prctl, getppid, setpgid, open, fcntl, dup2, chdir, close, syscall,
 // sigaction, sigprocmask, execve, write, _exit), so it is safe even when other
 // parent threads held the allocator lock at the moment of fork().
 
@@ -61,11 +61,14 @@ struct PreparedExec {
   // Linux, delegated cgroup v2 only: the generation's cgroup.procs, opened
   // before fork() by open_cgroup(); -1 = no cgroup.
   int cgroup_fd{-1};
+  // The engine's working directory (spec §3.12); empty: inherit the parent's.
+  std::string working_directory{};
 };
 
 inline void prepare(PreparedExec& out, const EngineCommand& command, const bool insert_serve) {
   out.expected_parent = getpid();
   out.executable = command.executable.string();
+  out.working_directory = command.working_directory.string();
   out.argument_storage.reserve(command.arguments.size() + 2);
   out.argument_storage.push_back(out.executable);
   if (insert_serve) out.argument_storage.emplace_back("--serve");
@@ -171,6 +174,8 @@ inline int lift(const int fd) noexcept { return fd < 0 ? -1 : fcntl(fd, F_DUPFD_
       fcntl(kReportFd, F_SETFD, FD_CLOEXEC) != 0) {
     fail(report);
   }
+  // Spec §3.12: the engine's cwd-relative files land in <state_dir>/engine.
+  if (!prepared.working_directory.empty() && chdir(prepared.working_directory.c_str()) != 0) fail(kReportFd);
 #if defined(__linux__) && defined(SYS_close_range)
   if (syscall(SYS_close_range, static_cast<unsigned>(kReportFd + 1), ~0U, 0U) != 0)
 #endif

@@ -199,11 +199,15 @@ std::optional<ProcessError> EngineProcess::start(const EngineCommand& command) {
   // frontend, whose console handler stops the engine in order (spec §3.7).
   // Same flags as the production twin (engine_stdio_process.cpp); this
   // test-only class (RF12) speaks no stdio protocol. Authoritative in MSYS2.
+  const std::wstring working_directory = command.working_directory.wstring();
   if (!CreateProcessW(command.executable.c_str(), command_line.data(), nullptr, nullptr, FALSE,
                       CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
-                      environment.data(), nullptr, &startup, &info)) {
+                      environment.data(), working_directory.empty() ? nullptr : working_directory.c_str(), &startup, &info)) {
+    const DWORD error = GetLastError();
     CloseHandle(job);
-    return ProcessError{ProcessErrorCode::spawn_failed, "CreateProcessW failed"};
+    // Spec §3.6/G3: never retried via runas.
+    return ProcessError{ProcessErrorCode::spawn_failed,
+                        error == ERROR_ELEVATION_REQUIRED ? "engine requires elevation; refused" : "CreateProcessW failed"};
   }
   if (!AssignProcessToJobObject(job, info.hProcess)) {
     TerminateProcess(info.hProcess, 1);  // still suspended: it never ran
