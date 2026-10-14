@@ -36,7 +36,8 @@ without asking the owner.
      Windows (W) rows pending the `windows-msys2-clang` job** (not pushed; no
      CI run covers SP2).
    - SP3 — API concurrency, streaming, and `NET-*`/`WEB-*`/`DOS-*`/`EXT-*` tests.
-   - SP4 — the explicit `acquire` command.
+   - SP4 — the explicit `acquire` command. **Tasks 1–24b merged into `main`
+     at `4b9fdd31`** (Windows-runtime rows pending MSYS2).
    - SP5 — frontend parity with the upstream service.
    - SP6 — GLM engine port, in its own directory, tracking
      `lighttransport/Strata` branch `glm53f` and, since 2026-10-14,
@@ -190,6 +191,14 @@ Plan: `docs/superpowers/plans/2026-10-14-sp4-acquire.md`. One line per task.
 - Task 24a: SP1 deltas c/d config side: optional roots.tokenizer_pack and engine.profile, name:tag model references, strata-secure-server --expert; SP1 tests and fixtures updated; typed_config.typed_config_model_reference_accepts_name_tag.
 - Task 24b: manifest-composed launch (index → --native/--pack/--ple-gguf as UTF-8, tokenizer root from the manifest), engine gate exit 11 (shared engine_gate), --expert keeps SP1's inventory path and messages, --check reports the managed-model config errors (F-8), server hooks banner; engine_arguments.launch_composed_from_manifest_qwen, managed_launch_argv_is_utf8_for_non_ascii_models_root, launch_refuses_model_not_installed, engine_args_reject_weight_flags_for_managed_model, launch_refuses_engine_too_old; typed_config.cfg01_engine_profile_rejected_for_managed_model, cfg01_tokenizer_pack_root_rejected_for_managed_model, cfg01_model_reference_rejected_for_managed_model, describe_reports_unset_expert_keys; server_cli.cli_expert_flag_parsing.
 - Final-review fixes: C1 import decides under .lock, then §6.1 diff + license questions --yes never answers (shared review_update/confirm_license_change with pull); I1 staged manifest.json (publish failed after step 2) still trusted and renamed back; I2 rm retires before deleting, corrupt orphan not adoptable; I3 directory case variants manifest_invalid; M1 typed digest checked first; M10 EOPNOTSUPP fallback; bundle.import_license_change_needs_interactive_yes +2, acquire.rm_failed_delete_stays_retired (+_windows), publish_failure_after_step_2_resumes_without_download, manifest.typed_digest_must_match_catalog_bytes_too.
+
+Merge into `main` (`4b9fdd31`, SP2 run 2 + SP4; merge-time changes, report `merge-sp4-report.md`):
+
+- (a) GPU list: `compose_engine_launch` renders SP2's typed `engine.gpu` list in both modes (SP2 §3.9): `--expert` passes `config.engine.gpus` to `build_engine_arguments`; a managed model appends `--gpu <list>` after `engine.args` (`--gpu` in `engine.args` stays refused); engine_arguments.managed_launch_renders_typed_gpu_list (windows-runtime).
+- (b) SP4's manifest-side `EngineFamily { strata, glm, none }` is renamed `ManifestFamily` (beside `ManifestProfile`) so it coexists with SP2's environment `EngineFamily { strata, glm }`; no behaviour change (the SP4 plan text still says `EngineFamily`).
+- (c) Shared Windows UTF-8 argv: `utf8_command_line(argc, argv)` (`include/secure_frontend/utf8_argv.hpp`, `src/utf8_argv.cpp`) in library `secure_frontend_utf8_argv` (links `shell32`), used by `strata-secure-server` and `strata`; POSIX returns argv as given. `strata`'s Windows runtime proof is pending MSYS2 (Known small gaps).
+- (d) The supervisor's chat profile and protocol flavor come from `launch.profile` (the manifest's for a managed model), not `config.engine.profile` (`--expert` only); identical today (managed is qwen).
+- SP2's `tests/support/server_harness.cpp` passes `--expert` (SP1-style inventory fixture); server fixtures pass `--expert` and `--state-dir`.
 
 ### Upstream bump to `v0.1.44.1` (2026-10-14, branch `upstream/bump-v0.1.44.1`)
 
@@ -749,6 +758,17 @@ owns it (see the decisions above).
 
 ## Verification performed
 
+### SP4 merge into `main` (2026-10-14, merge `4b9fdd31`)
+
+Merged tree (main `863b3ff6` + `sp4-acquire` `f0b09e2e`), dev host, `.venv-dev/bin` first.
+
+| Command | Result |
+| --- | --- |
+| in `secure_frontend/`: `cmake --preset linux-gcc && cmake --build --preset linux-gcc && ctest --preset linux-gcc` | build: 0 warnings; `100% tests passed out of 520` (2 skipped: `proc03_other_uid_cannot_open_engine_fd`, `proc05_cgroup_kill_when_delegated`); 312 (main) + 207 (SP4) + 1 merge case |
+| `cmake --preset linux-gcc-release && cmake --build --preset linux-gcc-release`; `ctest --test-dir out/build/linux-gcc-release`; `ctest --preset linux-gcc-release` (`release-only\|release-also`) | 0 warnings; `100% tests passed out of 510` (same 2 skipped); labelled `6/6` |
+| `cmake --preset windows-llvm-mingw-cross && cmake --build --preset windows-llvm-mingw-cross`; `WINEPREFIX=$PWD/out/wineprefix WINEDLLOVERRIDES=mscoree,mshtml= ctest --preset windows-llvm-mingw-cross` | `-Werror`, 0 warnings; wine `100% tests passed out of 256` (489 registered; `windows-runtime` cases excluded) |
+| `.venv-dev/bin/pytest -q` (worktree root) | `23 passed` |
+
 ### SP2 final-review fix wave (2026-10-14, branch `sp2-portable-supervision`)
 
 HEAD before the wave was `b9d707de`; each line was run after the wave's code
@@ -929,6 +949,9 @@ release.
 Deferred from the SP0 task reviews; none blocks SP0, each is worth a look in the
 sub-project named.
 
+- `strata`'s Windows UTF-8 argv (shared `secure_frontend_utf8_argv`, SP4 merge
+  `4b9fdd31`) builds and runs under wine only; a non-ASCII path through a
+  `strata` verb on real Windows is pending the MSYS2 job.
 - The fallback descriptor sweep (used only where `close_range(2)` is missing
   or fails) stops at `kSweepCap` = 65536 (documented at the constant, SP2
   Task 28). The listening and accepted sockets are created without
