@@ -157,6 +157,33 @@ void ready_timeout_is_configurable() {
                response.substr(0, 16));
   }
 }
+
+#if !defined(_WIN32)
+// P7 / defect e: the fixture's models root is configured through a symlink; the
+// engine must receive the canonical root the inventory used, never the raw string.
+void cfg03_engine_receives_canonical_models_root() {
+  ServerFixture f;
+  const auto link = f.dir / "models-link";
+  std::filesystem::create_directory_symlink(f.models, link);
+  const auto dump = f.dir / "engine-argv.txt";
+  auto flags = f.base_flags();
+  for (std::size_t i = 0; i + 1 < flags.size(); ++i) if (flags[i] == "--models-root") flags[i + 1] = link.string();
+  flags.insert(flags.end(), {"--engine-arg", "--dump=" + dump.string()});
+  secure_frontend_test::ChildProcess server;
+  expect(f.start(server, flags), "server starts: " + server.stderr_text());
+  // The engine is spawned after bind, so the dump may not exist when start()
+  // returns. The fake engine closes the dump before it prints READY, and a chat
+  // completion needs READY: after a 200 the dump is complete.
+  const std::string chat = R"({"model":"qwen-local","messages":[{"role":"user","content":"Hi"}],"max_tokens":2})";
+  const auto response = f.request("POST", "/v1/chat/completions", f.bearer(), chat);
+  expect(response.rfind("HTTP/1.1 200", 0) == 0, "a chat completion succeeds first: " + response.substr(0, 16));
+  const std::string argv_dump = secure_frontend_test::read_file(dump);
+  const std::string canonical = std::filesystem::canonical(f.models).string();
+  expect(contains(argv_dump, "argv:--native\nargv:" + canonical + "/qwen-local.gguf\n"),
+         "--native carries the canonical models root: " + argv_dump);
+  expect(!contains(argv_dump, "models-link"), "the raw (symlinked) root never reaches the engine");
+}
+#endif
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -166,5 +193,8 @@ int main(int argc, char** argv) {
       {"net02_remote_addresses_need_opt_in", net02_remote_addresses_need_opt_in},
       {"net02_error_is_non_secret_and_exits_before_bind", net02_error_is_non_secret_and_exits_before_bind},
       {"ready_timeout_is_configurable", ready_timeout_is_configurable},
+#if !defined(_WIN32)
+      {"cfg03_engine_receives_canonical_models_root", cfg03_engine_receives_canonical_models_root},
+#endif
   }, failures);
 }

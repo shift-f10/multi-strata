@@ -1,5 +1,7 @@
 #include "secure_frontend/canonical_path.hpp"
 
+#include "canonical_path_internal.hpp"
+
 #include <optional>
 #include <string>
 #include <utility>
@@ -103,6 +105,66 @@ std::filesystem::path path_from_utf8(const std::string_view text) {
 std::string path_to_utf8(const std::filesystem::path& path) {
   const std::u8string utf8 = path.u8string();
   return std::string(utf8.begin(), utf8.end());
+}
+
+std::filesystem::path CanonicalRoot::join(const RelativePath& relative) const {
+  std::filesystem::path joined = path_;
+  for (const auto& component : relative.components()) joined /= path_from_utf8(component);
+  joined.make_preferred();
+  return joined;
+}
+
+std::variant<CanonicalRoot, PathError> open_root(const std::filesystem::path& requested, const RootPolicy policy) {
+  (void)policy;
+  return detail::open_existing_root(requested);
+}
+
+std::optional<PathError> check_windows_root_form(const std::wstring_view text) {
+  const auto is_separator = [](const wchar_t c) { return c == L'\\' || c == L'/'; };
+  if (text.empty()) return detail::path_error(PathErrorCode::empty, "the root path is empty");
+  if (text.size() >= 2U && is_separator(text[0]) && is_separator(text[1])) {
+    return detail::path_error(PathErrorCode::unsupported_root_form, "UNC, device and \\\\?\\ paths are not accepted as roots");
+  }
+  if (text.substr(0, 4) == L"\\??\\") {
+    return detail::path_error(PathErrorCode::unsupported_root_form, "NT object paths are not accepted as roots");
+  }
+  if (is_separator(text[0])) {
+    return detail::path_error(PathErrorCode::not_absolute, "a rooted path without a drive letter depends on the current drive");
+  }
+  const bool drive_letter = text.size() >= 2U && ((text[0] >= L'A' && text[0] <= L'Z') || (text[0] >= L'a' && text[0] <= L'z')) &&
+                            text[1] == L':';
+  if (!drive_letter) return detail::path_error(PathErrorCode::not_absolute, "roots must be absolute (X:\\...)");
+  if (text.size() == 2U || !is_separator(text[2])) {
+    return detail::path_error(PathErrorCode::not_absolute, "a drive-relative path (C:foo) depends on the current directory");
+  }
+  std::size_t start = 3U;
+  while (start < text.size()) {
+    std::size_t end = start;
+    while (end < text.size() && !is_separator(text[end])) ++end;
+    const std::wstring_view component = text.substr(start, end - start);
+    if (component.find(L':') != std::wstring_view::npos) {
+      return detail::path_error(PathErrorCode::drive_or_stream, "roots must not name an alternate data stream");
+    }
+    std::string ascii;
+    for (const wchar_t c : component) ascii.push_back(c < 0x80 ? static_cast<char>(c) : '_');
+    if (!ascii.empty() && is_windows_reserved_component(ascii)) {
+      return detail::path_error(PathErrorCode::reserved_name, "roots must not contain a reserved device name");
+    }
+    start = end + 1U;
+  }
+  return std::nullopt;
+}
+
+std::variant<std::wstring, PathError> classify_final_path(const std::wstring_view final_path) {
+  if (final_path.substr(0, 8) == L"\\\\?\\UNC\\") {
+    return detail::path_error(PathErrorCode::network_location,
+                              "the folder resolves to a network share or a redirected folder (for example OneDrive "
+                              "or a roaming profile); choose a local folder on this computer");
+  }
+  if (final_path.size() >= 7U && final_path.substr(0, 4) == L"\\\\?\\" && final_path[5] == L':') {
+    return std::wstring{final_path.substr(4)};
+  }
+  return detail::path_error(PathErrorCode::unsupported_root_form, "the folder resolves to an unsupported location");
 }
 
 }  // namespace secure_frontend

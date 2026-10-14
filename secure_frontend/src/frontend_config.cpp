@@ -138,15 +138,15 @@ class DraftReader final {
   ConfigErrors& errors_;
 };
 
-std::optional<std::filesystem::path> absolute_root(DraftReader& read, ConfigErrors& errors, const std::string_view path) {
+std::optional<CanonicalRoot> canonical_root(DraftReader& read, ConfigErrors& errors, const std::string_view path) {
   const auto text = read.string(path);
   if (!text.has_value()) return std::nullopt;
-  const std::filesystem::path value{*text};
-  if (text->empty() || text->find('\0') != std::string::npos || !value.is_absolute()) {
-    add(errors, std::string{path}, ConfigIssueCode::invalid_value, "must be an absolute path");
+  auto opened = open_root(path_from_utf8(*text));
+  if (auto* error = std::get_if<PathError>(&opened)) {
+    add(errors, std::string{path}, ConfigIssueCode::invalid_value, error->message);
     return std::nullopt;
   }
-  return value;
+  return std::get<CanonicalRoot>(std::move(opened));
 }
 
 std::optional<SecretSource> token_source(const std::string& text) {
@@ -263,13 +263,21 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
         "must not exceed limits.chat.max_completion_tokens");
   }
 
-  // roots
-  const auto models = absolute_root(read, errors, "roots.models");
-  const auto tokenizer = absolute_root(read, errors, "roots.tokenizer_pack");
-  auto secret = absolute_root(read, errors, "roots.secret");
-  if (!read.present("roots.secret") && draft.config_directory.has_value()) secret = *draft.config_directory;
-  const auto logs = absolute_root(read, errors, "roots.logs");
-  const auto cache = absolute_root(read, errors, "roots.cache");
+  // roots: each is opened once, here, and held open by the FrontendConfig.
+  const auto models = canonical_root(read, errors, "roots.models");
+  const auto tokenizer = canonical_root(read, errors, "roots.tokenizer_pack");
+  auto secret = canonical_root(read, errors, "roots.secret");
+  if (!read.present("roots.secret") && draft.config_directory.has_value()) {
+    auto opened = open_root(*draft.config_directory);
+    if (auto* root = std::get_if<CanonicalRoot>(&opened)) {
+      secret = std::move(*root);
+    } else {
+      add(errors, "roots.secret", ConfigIssueCode::invalid_value,
+          "defaults to the config file's folder, which " + std::get<PathError>(opened).message);
+    }
+  }
+  const auto logs = canonical_root(read, errors, "roots.logs");
+  const auto cache = canonical_root(read, errors, "roots.cache");
 
   // token
   const std::string source_text = read.string("token.source").value_or("file:token");
@@ -287,7 +295,15 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   EngineProfile profile = EngineProfile::qwen;
   if (profile_text == "glm53") profile = EngineProfile::glm53;
   else if (profile_text != "qwen") add(errors, "engine.profile", ConfigIssueCode::invalid_value, "must be qwen or glm53");
-  const auto executable = absolute_root(read, errors, "engine.executable");
+  std::optional<CanonicalFile> executable;
+  if (const auto text = read.string("engine.executable")) {
+    auto opened = open_executable(path_from_utf8(*text));
+    if (auto* error = std::get_if<PathError>(&opened)) {
+      add(errors, "engine.executable", ConfigIssueCode::invalid_value, error->message);
+    } else {
+      executable = std::get<CanonicalFile>(std::move(opened));
+    }
+  }
   const auto model_text = read.string("engine.model_id");
   std::optional<ModelId> model_id = model_text ? make_model_id(*model_text) : std::nullopt;
   if (model_text.has_value() && !model_id.has_value()) {
@@ -327,8 +343,9 @@ std::string describe(const FrontendConfig& c) {
   const auto line = [&out](const std::string_view key, const std::string& value) {
     out.append(key).append(" = ").append(value).push_back('\n');
   };
-  const auto path_or_unset = [](const std::optional<std::filesystem::path>& p) {
-    return p.has_value() ? json_quoted(p->string()) : std::string{"(unset)"};
+  const auto root_text = [](const CanonicalRoot& root) { return json_quoted(path_to_utf8(root.path())); };
+  const auto root_or_unset = [&root_text](const std::optional<CanonicalRoot>& root) {
+    return root.has_value() ? root_text(*root) : std::string{"(unset)"};
   };
   line("schema_version", "1");
   line("listener.host", json_quoted(c.listener.host.canonical_text()));
@@ -352,15 +369,15 @@ std::string describe(const FrontendConfig& c) {
   line("limits.engine.generation_timeout_s", std::to_string(c.limits.engine.generation_timeout.count()));
   line("limits.engine.stop_drain_timeout_s", std::to_string(c.limits.engine.stop_drain_timeout.count()));
   line("limits.concurrency.max_concurrent_requests", std::to_string(c.limits.concurrency.max_concurrent_requests));
-  line("roots.models", json_quoted(c.roots.models.string()));
-  line("roots.tokenizer_pack", json_quoted(c.roots.tokenizer_pack.string()));
-  line("roots.secret", path_or_unset(c.roots.secret));
-  line("roots.logs", path_or_unset(c.roots.logs));
-  line("roots.cache", path_or_unset(c.roots.cache));
+  line("roots.models", root_text(c.roots.models));
+  line("roots.tokenizer_pack", root_text(c.roots.tokenizer_pack));
+  line("roots.secret", root_or_unset(c.roots.secret));
+  line("roots.logs", root_or_unset(c.roots.logs));
+  line("roots.cache", root_or_unset(c.roots.cache));
   line("token.source", json_quoted((c.token.kind() == SecretSourceKind::environment_variable ? "env:" : "file:") +
                               c.token.location()));
   line("engine.profile", c.engine.profile == EngineProfile::glm53 ? "\"glm53\"" : "\"qwen\"");
-  line("engine.executable", json_quoted(c.engine.executable.string()));
+  line("engine.executable", json_quoted(path_to_utf8(c.engine.executable.path())));
   line("engine.model_id", json_quoted(c.engine.model_id.value()));
   std::string args = "[";
   for (const auto& arg : c.engine.args) args += (args.size() > 1U ? "," : "") + json_quoted(arg);

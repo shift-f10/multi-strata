@@ -2,8 +2,11 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -51,5 +54,79 @@ class RelativePath final {
 // UTF-8 <-> std::filesystem::path without the Windows ANSI code page.
 [[nodiscard]] std::filesystem::path path_from_utf8(std::string_view text);
 [[nodiscard]] std::string path_to_utf8(const std::filesystem::path& path);
+
+#if defined(_WIN32)
+using NativeHandle = void*;  // HANDLE
+#else
+using NativeHandle = int;    // file descriptor
+#endif
+
+class OwnedHandle final {
+ public:
+  explicit OwnedHandle(NativeHandle handle) noexcept : handle_(handle) {}
+  ~OwnedHandle();
+  OwnedHandle(const OwnedHandle&) = delete;
+  OwnedHandle& operator=(const OwnedHandle&) = delete;
+  [[nodiscard]] NativeHandle get() const noexcept { return handle_; }
+  // Gives up ownership (the destructor then closes nothing) and returns the handle.
+  [[nodiscard]] NativeHandle release() noexcept;
+
+ private:
+  NativeHandle handle_;
+};
+
+namespace detail {
+struct PathFactory;
+}
+
+// A root directory resolved once to its canonical absolute form (the root
+// itself may be reached through a symlink or junction) and held open. It is
+// owned by the current user (or root / SYSTEM / Administrators) and not
+// writable by anyone else. Everything below it is opened relative to it.
+class CanonicalRoot final {
+ public:
+  [[nodiscard]] const std::filesystem::path& path() const noexcept { return path_; }
+  [[nodiscard]] NativeHandle handle() const noexcept { return handle_->get(); }
+  [[nodiscard]] std::uint64_t device_id() const noexcept { return device_; }
+  // The canonical root joined with a validated relative path (native separators).
+  [[nodiscard]] std::filesystem::path join(const RelativePath& relative) const;
+
+ private:
+  friend struct detail::PathFactory;
+  CanonicalRoot(std::filesystem::path path, std::shared_ptr<const OwnedHandle> handle, const std::uint64_t device)
+      : path_(std::move(path)), handle_(std::move(handle)), device_(device) {}
+  std::filesystem::path path_;
+  std::shared_ptr<const OwnedHandle> handle_;
+  std::uint64_t device_;
+};
+
+// engine.executable: absolute, canonical, a regular file not writable by
+// group/other (other SIDs on Windows), in a directory with the same property.
+class CanonicalFile final {
+ public:
+  [[nodiscard]] const std::filesystem::path& path() const noexcept { return path_; }
+
+ private:
+  friend struct detail::PathFactory;
+  explicit CanonicalFile(std::filesystem::path path) : path_(std::move(path)) {}
+  std::filesystem::path path_;
+};
+
+enum class RootPolicy { existing };
+
+[[nodiscard]] std::variant<CanonicalRoot, PathError> open_root(const std::filesystem::path& requested,
+                                                               RootPolicy policy = RootPolicy::existing);
+[[nodiscard]] std::variant<CanonicalFile, PathError> open_executable(const std::filesystem::path& requested);
+
+// Containment on a separator boundary: "/r" does not contain "/r2". Windows
+// compares case-insensitively (CompareStringOrdinal).
+[[nodiscard]] bool is_within(const std::filesystem::path& root, const std::filesystem::path& candidate) noexcept;
+
+// Pure string checks, compiled on every platform so they are tested everywhere.
+// Accepts only drive-absolute X:\... roots; rejects drive-relative C:foo,
+// rooted \foo, UNC \\server\share, \\?\, \\.\, \??\, streams and reserved names.
+[[nodiscard]] std::optional<PathError> check_windows_root_form(std::wstring_view text);
+// GetFinalPathNameByHandleW output -> X:\... ; \\?\UNC\... is network_location.
+[[nodiscard]] std::variant<std::wstring, PathError> classify_final_path(std::wstring_view final_path);
 
 }  // namespace secure_frontend

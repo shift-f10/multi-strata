@@ -112,6 +112,7 @@ add_library(secure_frontend_http_socket_server
 )
 
 add_library(secure_frontend_paths src/canonical_path_common.cpp)
+target_sources(secure_frontend_paths PRIVATE src/canonical_path_posix.cpp src/canonical_path_windows.cpp src/windows_security.cpp)
 target_compile_features(secure_frontend_paths PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_paths PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
@@ -134,6 +135,7 @@ target_include_directories(secure_frontend_typed_config PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
 target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_config secure_frontend_json
     secure_frontend_model_inventory secure_frontend_engine_arguments)
+target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_paths)
 
 add_library(secure_frontend_server_cli src/server_cli.cpp)
 target_compile_features(secure_frontend_server_cli PUBLIC cxx_std_20)
@@ -252,6 +254,7 @@ target_include_directories(secure_frontend_engine_arguments
         $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(secure_frontend_engine_arguments PUBLIC secure_frontend_model_inventory)
+target_link_libraries(secure_frontend_engine_arguments PUBLIC secure_frontend_paths)
 target_compile_features(secure_frontend_json PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_json PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
@@ -333,11 +336,13 @@ target_include_directories(secure_frontend_token_reader
         $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(secure_frontend_token_reader PUBLIC secure_frontend_config)
+target_link_libraries(secure_frontend_token_reader PUBLIC secure_frontend_paths)
 
 if(WIN32)
     target_link_libraries(secure_frontend_config PUBLIC ws2_32)
     target_link_libraries(secure_frontend_http_socket_server PUBLIC ws2_32)
     target_link_libraries(secure_frontend_token_reader PUBLIC advapi32)
+    target_link_libraries(secure_frontend_paths PUBLIC advapi32)
 endif()
 
 foreach(_target IN ITEMS
@@ -359,6 +364,14 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_paths_tests
         relative_path_accepts_portable_forms cfg02_rejects_traversal_and_absolute cfg02_rejects_nul_and_control_bytes
         cfg04_rejects_reserved_and_device_names cfg04_rejects_trailing_dot_space_and_8dot3 cfg04_rejects_ads_and_drive_forms)
+    secure_frontend_add_cases(secure_frontend_paths_tests
+        cfg02_rejects_relative_root cfg02_sibling_prefix_root_rejected cfg04_rejects_unc_device_and_extended_roots
+        cfg04_final_path_on_network_share_is_actionable)
+    if(NOT WIN32)
+        secure_frontend_add_cases(secure_frontend_paths_tests
+            cfg02_rejects_shared_writable_root cfg02_root_may_traverse_symlink
+            cfg02_engine_executable_must_be_private_regular_file)
+    endif()
 
     secure_frontend_add_test_executable(secure_frontend_config_tests tests/config_test.cpp secure_frontend_config)
     secure_frontend_add_cases(secure_frontend_config_tests
@@ -453,7 +466,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_engine_arguments_tests
         engine_receives_model_path_from_inventory engine_args_reject_owned_and_network_flags
         strata_profile_passes_pack_and_weight_flags_through rejects_invalid_relative_artifact_path
-        glm_profile_passes_arguments_through_without_native)
+        glm_profile_passes_arguments_through_without_native
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     secure_frontend_add_test_executable(secure_frontend_chat_schema_tests tests/chat_schema_test.cpp secure_frontend_chat_schema)
     secure_frontend_add_cases(secure_frontend_chat_schema_tests
@@ -471,7 +485,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_typed_config_tests
         typed_config_accepts_minimal_file_and_applies_defaults cfg01_unknown_key_rejected cfg01_duplicate_key_rejected
         cfg01_type_confusion_rejected cfg01_missing_required_rejected cfg01_out_of_range_rejected
-        typed_config_cross_field_rules typed_config_errors_never_contain_values)
+        typed_config_cross_field_rules typed_config_errors_never_contain_values
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     secure_frontend_add_test_executable(secure_frontend_tokenizer_pack_tests tests/tokenizer_pack_test.cpp
         secure_frontend_tokenizer_pack)
@@ -511,7 +526,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_test_executable(secure_frontend_subsystem_limits_tests tests/subsystem_limits_test.cpp
         secure_frontend_subsystem_limits)
     secure_frontend_add_cases(secure_frontend_subsystem_limits_tests
-        ready_timeout_defaults_to_900_seconds subsystem_limits_follow_config)
+        ready_timeout_defaults_to_900_seconds subsystem_limits_follow_config
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     add_executable(secure_frontend_fake_engine tests/fake_engine_main.cpp)
     target_compile_features(secure_frontend_fake_engine PRIVATE cxx_std_20)
@@ -524,7 +540,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_server_cli_tests
         cli_config_file_and_flags_share_validator cli_flag_overrides_file_and_is_reported cli_check_prints_no_token
         cli_unknown_option_does_not_echo_value
-        ${SECURE_FRONTEND_SERVER_ARGS} TIMEOUT 120)
+        ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
 
     secure_frontend_add_test_executable(secure_frontend_server_e2e_tests tests/server_e2e_test.cpp
         secure_frontend_typed_config)
@@ -535,10 +551,14 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_server_e2e_tests
         cfg01_invalid_config_fails_before_listener_and_child net02_remote_addresses_need_opt_in
         net02_error_is_non_secret_and_exits_before_bind ready_timeout_is_configurable
-        ${SECURE_FRONTEND_SERVER_ARGS} TIMEOUT 120)
+        ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
     # GetExtendedTcpTable is not faithful under wine.
     secure_frontend_add_cases(secure_frontend_server_e2e_tests net01_default_listener_is_loopback_only
         ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+    if(NOT WIN32)
+        secure_frontend_add_cases(secure_frontend_server_e2e_tests cfg03_engine_receives_canonical_models_root
+            ${SECURE_FRONTEND_SERVER_ARGS} TIMEOUT 120)
+    endif()
 
     add_test(NAME strata_secure_server_help COMMAND strata-secure-server --help)
     # The GLM runner takes positional arguments: glm53 without any --engine-arg is a usage error.

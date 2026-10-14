@@ -45,20 +45,20 @@ std::optional<EngineArgumentsError> validate_engine_user_arguments(const EngineA
 }
 
 EngineArgumentsResult build_engine_arguments(const EngineArgumentsProfile profile, const ModelManifest& selected,
-                                             const std::filesystem::path& models_root,
+                                             const CanonicalRoot& models_root,
                                              const std::vector<std::string>& user_arguments) {
   if (auto rejected = validate_engine_user_arguments(profile, user_arguments)) return *rejected;
   std::vector<std::string> arguments = user_arguments;
   if (profile == EngineArgumentsProfile::lighttransport_glm53) return arguments;
-  const auto path = validate_local_artifact_path(selected.relative_artifact_path);
-  if (!std::holds_alternative<std::string>(path)) {
+  const auto parsed = parse_relative_path(selected.relative_artifact_path);
+  const auto* relative = std::get_if<RelativePath>(&parsed);
+  if (relative == nullptr) {
     return EngineArgumentsError{EngineArgumentsErrorCode::invalid_value, "selected model has an invalid artifact path"};
   }
-  // Native separators throughout: on Windows `root / "a/b"` would otherwise mix `\` and `/`.
-  auto model_path = models_root / std::get<std::string>(path);
-  model_path.make_preferred();
+  // The engine receives the canonical root the inventory used, never the raw
+  // configured string (defect e).
   arguments.emplace_back("--native");
-  arguments.push_back(model_path.string());
+  arguments.push_back(models_root.join(*relative).string());
   return arguments;
 }
 

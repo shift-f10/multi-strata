@@ -1,5 +1,6 @@
 #pragma once
 
+#include "secure_frontend/canonical_path.hpp"
 #include "secure_frontend/config.hpp"
 #include "secure_frontend/secret_source.hpp"
 
@@ -122,15 +123,15 @@ struct Limits final {
   ConcurrencyLimits concurrency;
 };
 struct Roots final {
-  std::filesystem::path models;
-  std::filesystem::path tokenizer_pack;
-  std::optional<std::filesystem::path> secret;
-  std::optional<std::filesystem::path> logs;
-  std::optional<std::filesystem::path> cache;
+  CanonicalRoot models;
+  CanonicalRoot tokenizer_pack;
+  std::optional<CanonicalRoot> secret;
+  std::optional<CanonicalRoot> logs;
+  std::optional<CanonicalRoot> cache;
 };
 struct EngineLaunch final {
   EngineProfile profile;
-  std::filesystem::path executable;
+  CanonicalFile executable;
   ModelId model_id;
   std::vector<std::string> args;
 };

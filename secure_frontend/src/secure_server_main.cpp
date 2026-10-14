@@ -57,7 +57,8 @@ secure_frontend::HttpResponse json_error(const int status, const char* message) 
 }
 
 secure_frontend::TokenReadResult read_configured_token(const FrontendConfig& config) {
-  return secure_frontend::read_token(config.token, config.roots.secret.value_or(std::filesystem::path{"."}));
+  return secure_frontend::read_token(config.token, config.roots.secret.has_value() ? config.roots.secret->path()
+                                                                                   : std::filesystem::path{"."});
 }
 
 int check(const FrontendConfig& config, const std::vector<std::string>& overridden) {
@@ -82,10 +83,10 @@ int run(const FrontendConfig& config) {
   // Derived once, before bind/spawn; each subsystem keeps its own const copy.
   const auto schema_limits = secure_frontend::chat_schema_limits(config);
   const auto listener_limits = secure_frontend::http_socket_server_limits(config);
-  const auto tokenizer_result = secure_frontend::load_local_tokenizer_pack(config.roots.tokenizer_pack);
+  const auto tokenizer_result = secure_frontend::load_local_tokenizer_pack(config.roots.tokenizer_pack.path());
   const auto* tokenizer = std::get_if<secure_frontend::TokenizerPack>(&tokenizer_result);
   if (tokenizer == nullptr) { std::cerr << "Unable to load local tokenizer pack.\n"; return EXIT_FAILURE; }
-  const auto models_result = secure_frontend::enumerate_local_models(config.roots.models);
+  const auto models_result = secure_frontend::enumerate_local_models(config.roots.models.path());
   const auto* manifests = std::get_if<std::vector<secure_frontend::ModelManifest>>(&models_result);
   if (manifests == nullptr) { std::cerr << "Unable to inventory local models.\n"; return EXIT_FAILURE; }
   const std::string& model_id = config.engine.model_id.value();
@@ -104,7 +105,7 @@ int run(const FrontendConfig& config) {
   for (const auto& manifest : *manifests) models.push_back({.id = manifest.id, .owned_by = manifest.owned_by});
 
   secure_frontend::EngineStdioProcess engine;
-  const secure_frontend::EngineCommand command{.executable = config.engine.executable,
+  const secure_frontend::EngineCommand command{.executable = config.engine.executable.path(),
                                                .arguments = std::move(*engine_arguments), .environment = {}};
   const auto protocol_flavor = glm ? secure_frontend::EngineProtocolFlavor::lighttransport_glm53
                                    : secure_frontend::EngineProtocolFlavor::strata_0143;

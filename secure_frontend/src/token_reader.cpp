@@ -9,6 +9,7 @@
 
 #ifdef _WIN32
 #include "secure_frontend/win32_prelude.hpp"
+#include "windows_security.hpp"
 #include <aclapi.h>
 #include <sddl.h>
 #else
@@ -167,6 +168,8 @@ TokenReadResult read_protected_file_linux(const SecretSource& source,
 }
 #else
 
+using namespace secure_frontend::windows_security;
+
 class WindowsHandle final {
  public:
   explicit WindowsHandle(const HANDLE handle = INVALID_HANDLE_VALUE) noexcept : handle_(handle) {}
@@ -184,35 +187,6 @@ class WindowsHandle final {
   HANDLE handle_;
 };
 
-class LocalSecurityDescriptor final {
- public:
-  explicit LocalSecurityDescriptor(PSECURITY_DESCRIPTOR descriptor = nullptr) noexcept : descriptor_(descriptor) {}
-  ~LocalSecurityDescriptor() {
-    if (descriptor_ != nullptr) {
-      LocalFree(descriptor_);
-    }
-  }
-  LocalSecurityDescriptor(const LocalSecurityDescriptor&) = delete;
-  LocalSecurityDescriptor& operator=(const LocalSecurityDescriptor&) = delete;
-
- private:
-  PSECURITY_DESCRIPTOR descriptor_;
-};
-
-std::wstring final_path_for_handle(const HANDLE handle) {
-  const DWORD required = GetFinalPathNameByHandleW(handle, nullptr, 0U, FILE_NAME_NORMALIZED);
-  if (required == 0U || required > 32768U) {
-    return {};
-  }
-  std::wstring path(required, L'\0');
-  const DWORD written = GetFinalPathNameByHandleW(handle, path.data(), required, FILE_NAME_NORMALIZED);
-  if (written == 0U || written >= required) {
-    return {};
-  }
-  path.resize(written);
-  return path;
-}
-
 bool is_below_or_equal_final_path(const std::wstring& root, const std::wstring& candidate) {
   if (root.empty() || candidate.size() < root.size() ||
       CompareStringOrdinal(root.c_str(), static_cast<int>(root.size()), candidate.c_str(),
@@ -220,95 +194,6 @@ bool is_below_or_equal_final_path(const std::wstring& root, const std::wstring& 
     return false;
   }
   return candidate.size() == root.size() || root.back() == L'\\' || candidate[root.size()] == L'\\';
-}
-
-bool is_reparse_point(const HANDLE handle) {
-  FILE_ATTRIBUTE_TAG_INFO attributes{};
-  return GetFileInformationByHandleEx(handle, FileAttributeTagInfo, &attributes, sizeof(attributes)) == 0 ||
-         (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U;
-}
-
-bool sid_is_well_known(const PSID sid, const WELL_KNOWN_SID_TYPE type) {
-  DWORD sid_size = SECURITY_MAX_SID_SIZE;
-  std::array<std::byte, SECURITY_MAX_SID_SIZE> buffer{};
-  PSID expected = buffer.data();
-  if (CreateWellKnownSid(type, nullptr, expected, &sid_size) == 0) {
-    return false;
-  }
-  return EqualSid(sid, expected) != 0;
-}
-
-bool is_permitted_acl_principal(const PSID principal, const PSID owner) {
-  return EqualSid(principal, owner) != 0 || sid_is_well_known(principal, WinLocalSystemSid) ||
-         sid_is_well_known(principal, WinBuiltinAdministratorsSid);
-}
-
-bool current_process_user_sid(std::array<std::byte, SECURITY_MAX_SID_SIZE>* const storage, PSID* const result) {
-  HANDLE raw_token = INVALID_HANDLE_VALUE;
-  if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw_token) == 0) {
-    return false;
-  }
-  WindowsHandle token(raw_token);
-  DWORD bytes_required = 0U;
-  (void)GetTokenInformation(token.get(), TokenUser, nullptr, 0U, &bytes_required);
-  if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || bytes_required == 0U || bytes_required > 4096U) {
-    return false;
-  }
-  std::array<std::byte, 4096U> information{};
-  if (GetTokenInformation(token.get(), TokenUser, information.data(), bytes_required, &bytes_required) == 0) {
-    return false;
-  }
-  const auto* const user = reinterpret_cast<const TOKEN_USER*>(information.data());
-  DWORD sid_size = SECURITY_MAX_SID_SIZE;
-  if (CopySid(sid_size, storage->data(), user->User.Sid) == 0) {
-    return false;
-  }
-  *result = storage->data();
-  return true;
-}
-
-// A protected token must not rely on inherited ACLs: an ACL inherited from a
-// writable ancestor can be silently broadened after deployment.  The only
-// allowed allow-ACEs are the service user, LocalSystem, and Administrators.
-// The latter two are privileged operating-system principals, not broad users.
-bool has_private_owner_dacl(const HANDLE handle, const PSID current_user) {
-  PSID owner = nullptr;
-  PACL dacl = nullptr;
-  PSECURITY_DESCRIPTOR raw_descriptor = nullptr;
-  const DWORD status = GetSecurityInfo(handle, SE_FILE_OBJECT,
-                                       OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-                                       &owner, nullptr, &dacl, nullptr, &raw_descriptor);
-  LocalSecurityDescriptor descriptor(raw_descriptor);
-  if (status != ERROR_SUCCESS || owner == nullptr || dacl == nullptr || EqualSid(owner, current_user) == 0) {
-    return false;
-  }
-
-  SECURITY_DESCRIPTOR_CONTROL control = 0U;
-  DWORD revision = 0U;
-  if (GetSecurityDescriptorControl(raw_descriptor, &control, &revision) == 0 ||
-      (control & SE_DACL_PROTECTED) == 0U) {
-    return false;
-  }
-
-  for (DWORD index = 0U; index < dacl->AceCount; ++index) {
-    void* raw_ace = nullptr;
-    if (GetAce(dacl, index, &raw_ace) == 0 || raw_ace == nullptr) {
-      return false;
-    }
-    const auto* const header = static_cast<const ACE_HEADER*>(raw_ace);
-    if (header->AceType == ACCESS_DENIED_ACE_TYPE) {
-      continue;
-    }
-    if (header->AceType != ACCESS_ALLOWED_ACE_TYPE) {
-      return false;
-    }
-    const auto* const allowed = static_cast<const ACCESS_ALLOWED_ACE*>(raw_ace);
-    PSID ace_sid = reinterpret_cast<PSID>(const_cast<DWORD*>(&allowed->SidStart));
-    if (IsValidSid(ace_sid) == 0 || !is_permitted_acl_principal(ace_sid, owner)) {
-      return false;
-    }
-  }
-  return true;
 }
 
 TokenReadResult read_protected_file_windows(const SecretSource& source,
@@ -335,7 +220,7 @@ TokenReadResult read_protected_file_windows(const SecretSource& source,
 
   std::array<std::byte, SECURITY_MAX_SID_SIZE> current_user_storage{};
   PSID current_user = nullptr;
-  if (!current_process_user_sid(&current_user_storage, &current_user) ||
+  if (!current_user_sid(current_user_storage, &current_user) ||
       !has_private_owner_dacl(root.get(), current_user)) {
     return error(TokenReadErrorCode::insecure_file_permissions,
                  "The protected-file root must have a protected owner-only access control list.");
