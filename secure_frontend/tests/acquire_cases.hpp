@@ -37,4 +37,35 @@ void replace_loaded_model_retires_old_version_windows();
 void store_primitives_windows();
 void store_adopts_only_private_files_windows();
 #endif
+// acquire_pull_test.cpp (Task 22)
+void dl02_correct_digest_publishes_atomically();
+void dl02_byte_limit_enforced_while_streaming();
+void dl02_resume_with_range_completes_and_verifies();
+void resume_offset_ignores_preallocation();
+void dl02_published_files_are_private();
+#if defined(_WIN32)
+void dl02_published_files_have_private_dacl_windows();
+#endif
+void dl02_preflight_refuses_without_space();
+void dl03_untrusted_manifest_digest_rejected();
+void dl03_downgrade_rejected();
+void dl03_sequence_conflict_rejected();
+#if defined(SECURE_FRONTEND_TEST_HOOKS)
+void dl03_third_party_cannot_shadow_catalog();
+void pull_test_cacert_reaches_argv_in_hook_builds();
+#endif
+void dl04_interrupt_during_download_never_indexed();
+void dl04_interrupt_during_verification();
+void dl04_stale_staging_from_other_manifest_discarded();
+void abandoned_partials_kept_with_yes();
+void abandoned_staging_reported_and_offered_for_deletion();
+void all_sources_failed_exits_3_and_keeps_part();
+void enospc_mid_stream_keeps_part_and_exits_6();
+void update_reuses_unchanged_files();
+void license_change_requires_interactive_yes();
+void pull_without_bundle_refuses_sourceless_files();
+void confirmation_answers_parsed_strictly();
+void already_installed_needs_no_network();
+void pull_budgets_map_to_exit_classes();
+void discard_partial_runs_only_after_confirmation();
 }  // namespace acquire_cases

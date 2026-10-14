@@ -82,6 +82,9 @@ int main(int argc, char** argv) {
       {"export_refuses_when_one_file_license_forbids_bundle", bundle_cases::export_refuses_when_one_file_license_forbids_bundle},
       {"bundle_directory_must_not_be_a_volume_root", bundle_cases::bundle_directory_must_not_be_a_volume_root},
       {"make_bundle_tool_output_opens_verifies_and_imports", bundle_cases::make_bundle_tool_output_opens_verifies_and_imports},
+      {"pull_bundle_resumes_after_interrupt", bundle_cases::pull_bundle_resumes_after_interrupt},
+      {"pull_bundle_incomplete_without_pack_sources", bundle_cases::pull_bundle_incomplete_without_pack_sources},
+      {"pull_bundle_resume_rehashes_files_from_earlier_run", bundle_cases::pull_bundle_resume_rehashes_files_from_earlier_run},
 #if defined(_WIN32)
       {"bundle_rejects_junction_entry_windows", bundle_cases::bundle_rejects_junction_entry_windows},
 #else

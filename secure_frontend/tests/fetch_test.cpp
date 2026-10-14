@@ -604,6 +604,7 @@ int main(int argc, char** argv) {
       {"ipv6_only_hop_is_address_not_allowed", fetch_cases::ipv6_only_hop_is_address_not_allowed},
       {"range_ignored_twice_is_range_mismatch_then_restarts", fetch_cases::range_ignored_twice_is_range_mismatch_then_restarts},
       {"proxy_hop_skips_address_policy", fetch_cases::proxy_hop_skips_address_policy},
+      {"dl03_wrong_digest_rejected_prior_version_intact", fetch_cases::dl03_wrong_digest_rejected_prior_version_intact},
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
       {"test_cacert_reaches_argv_in_hook_builds", fetch_cases::test_cacert_reaches_argv_in_hook_builds},
 #endif

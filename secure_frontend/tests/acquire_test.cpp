@@ -274,6 +274,36 @@ int main(int argc, char** argv) {
       {"retire_removes_read_only_published_version", acquire_cases::retire_removes_read_only_published_version},
       {"downgrade_adopts_retired_version_keeping_one_live", acquire_cases::downgrade_adopts_retired_version_keeping_one_live},
       {"rm_refuses_held_version_and_removes_read_only_tree", acquire_cases::rm_refuses_held_version_and_removes_read_only_tree},
+      {"dl02_correct_digest_publishes_atomically", acquire_cases::dl02_correct_digest_publishes_atomically},
+      {"dl02_byte_limit_enforced_while_streaming", acquire_cases::dl02_byte_limit_enforced_while_streaming},
+      {"dl02_resume_with_range_completes_and_verifies", acquire_cases::dl02_resume_with_range_completes_and_verifies},
+      {"resume_offset_ignores_preallocation", acquire_cases::resume_offset_ignores_preallocation},
+      {"dl02_published_files_are_private", acquire_cases::dl02_published_files_are_private},
+      {"dl02_preflight_refuses_without_space", acquire_cases::dl02_preflight_refuses_without_space},
+      {"dl03_untrusted_manifest_digest_rejected", acquire_cases::dl03_untrusted_manifest_digest_rejected},
+      {"dl03_downgrade_rejected", acquire_cases::dl03_downgrade_rejected},
+      {"dl03_sequence_conflict_rejected", acquire_cases::dl03_sequence_conflict_rejected},
+      {"dl04_interrupt_during_download_never_indexed", acquire_cases::dl04_interrupt_during_download_never_indexed},
+      {"dl04_interrupt_during_verification", acquire_cases::dl04_interrupt_during_verification},
+      {"dl04_stale_staging_from_other_manifest_discarded", acquire_cases::dl04_stale_staging_from_other_manifest_discarded},
+      {"abandoned_partials_kept_with_yes", acquire_cases::abandoned_partials_kept_with_yes},
+      {"abandoned_staging_reported_and_offered_for_deletion", acquire_cases::abandoned_staging_reported_and_offered_for_deletion},
+      {"all_sources_failed_exits_3_and_keeps_part", acquire_cases::all_sources_failed_exits_3_and_keeps_part},
+      {"enospc_mid_stream_keeps_part_and_exits_6", acquire_cases::enospc_mid_stream_keeps_part_and_exits_6},
+      {"update_reuses_unchanged_files", acquire_cases::update_reuses_unchanged_files},
+      {"license_change_requires_interactive_yes", acquire_cases::license_change_requires_interactive_yes},
+      {"pull_without_bundle_refuses_sourceless_files", acquire_cases::pull_without_bundle_refuses_sourceless_files},
+      {"confirmation_answers_parsed_strictly", acquire_cases::confirmation_answers_parsed_strictly},
+      {"already_installed_needs_no_network", acquire_cases::already_installed_needs_no_network},
+      {"pull_budgets_map_to_exit_classes", acquire_cases::pull_budgets_map_to_exit_classes},
+      {"discard_partial_runs_only_after_confirmation", acquire_cases::discard_partial_runs_only_after_confirmation},
+#if defined(SECURE_FRONTEND_TEST_HOOKS)
+      {"dl03_third_party_cannot_shadow_catalog", acquire_cases::dl03_third_party_cannot_shadow_catalog},
+      {"pull_test_cacert_reaches_argv_in_hook_builds", acquire_cases::pull_test_cacert_reaches_argv_in_hook_builds},
+#endif
+#if defined(_WIN32)
+      {"dl02_published_files_have_private_dacl_windows", acquire_cases::dl02_published_files_have_private_dacl_windows},
+#endif
 #if !defined(_WIN32)
       {"rm_reports_unreachable_version_as_failure", acquire_cases::rm_reports_unreachable_version_as_failure},
 #endif

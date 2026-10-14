@@ -24,4 +24,6 @@ void proxy_hop_skips_address_policy();
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
 void test_cacert_reaches_argv_in_hook_builds();
 #endif
+// fetch_pull_test.cpp (Task 22)
+void dl03_wrong_digest_rejected_prior_version_intact();
 }  // namespace fetch_cases

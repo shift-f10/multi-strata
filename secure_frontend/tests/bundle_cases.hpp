@@ -21,6 +21,10 @@ void export_onto_shared_writable_target();
 void export_refuses_when_one_file_license_forbids_bundle();
 void bundle_directory_must_not_be_a_volume_root();
 void make_bundle_tool_output_opens_verifies_and_imports();
+// bundle_pull_test.cpp (Task 22): pull --bundle.
+void pull_bundle_resumes_after_interrupt();
+void pull_bundle_incomplete_without_pack_sources();
+void pull_bundle_resume_rehashes_files_from_earlier_run();
 #if defined(_WIN32)
 void bundle_rejects_junction_entry_windows();
 #else

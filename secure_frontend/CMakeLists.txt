@@ -422,11 +422,15 @@ add_library(secure_frontend_acquire src/models_store_common.cpp ${_sf_models_sto
 target_sources(secure_frontend_acquire PRIVATE src/model_index_write.cpp src/acquire_publish.cpp src/bundle_io.cpp)
 # SP4 Task 21 (spec §3.3-§3.7): per-file fetch over an abstract hop transport; getaddrinfo resolver.
 target_sources(secure_frontend_acquire PRIVATE src/fetch_file.cpp src/system_resolver.cpp)
+# SP4 Task 22 (spec §1.3, §3.7, §4.6, §6.1): pull orchestration over the hop transport.
+target_sources(secure_frontend_acquire PRIVATE src/acquire_pull.cpp)
 target_compile_features(secure_frontend_acquire PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_acquire PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
 target_link_libraries(secure_frontend_acquire PUBLIC secure_frontend_acquire_core secure_frontend_model_store
     secure_frontend_token_store secure_frontend_tokenizer_pack)
+# PullSettings (frontend_config.hpp) for run_pull.
+target_link_libraries(secure_frontend_acquire PUBLIC secure_frontend_typed_config)
 if(WIN32)
     target_link_libraries(secure_frontend_acquire PUBLIC advapi32 ws2_32)
 endif()
@@ -841,6 +845,24 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     else()
         secure_frontend_add_cases(secure_frontend_acquire_tests rm_reports_unreachable_version_as_failure)
     endif()
+    # SP4 Task 22 (spec §1.3, §3.7, §4.6, §4.7, §6.1): run_pull; these write a models store.
+    target_sources(secure_frontend_acquire_tests PRIVATE tests/acquire_pull_test.cpp)
+    secure_frontend_add_cases(secure_frontend_acquire_tests dl02_correct_digest_publishes_atomically dl02_byte_limit_enforced_while_streaming
+        dl02_resume_with_range_completes_and_verifies resume_offset_ignores_preallocation dl02_published_files_are_private
+        dl02_preflight_refuses_without_space dl03_untrusted_manifest_digest_rejected dl03_downgrade_rejected dl03_sequence_conflict_rejected
+        dl04_interrupt_during_download_never_indexed dl04_interrupt_during_verification dl04_stale_staging_from_other_manifest_discarded
+        abandoned_partials_kept_with_yes abandoned_staging_reported_and_offered_for_deletion all_sources_failed_exits_3_and_keeps_part
+        enospc_mid_stream_keeps_part_and_exits_6 update_reuses_unchanged_files license_change_requires_interactive_yes
+        pull_without_bundle_refuses_sourceless_files confirmation_answers_parsed_strictly already_installed_needs_no_network
+        pull_budgets_map_to_exit_classes discard_partial_runs_only_after_confirmation
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    if(SECURE_FRONTEND_TEST_HOOKS)
+        secure_frontend_add_cases(secure_frontend_acquire_tests dl03_third_party_cannot_shadow_catalog
+            pull_test_cacert_reaches_argv_in_hook_builds LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    endif()
+    if(WIN32)
+        secure_frontend_add_cases(secure_frontend_acquire_tests dl02_published_files_have_private_dacl_windows LABELS windows-runtime)
+    endif()
     secure_frontend_add_test_executable(secure_frontend_bundle_tests tests/bundle_test.cpp secure_frontend_acquire_core)
     secure_frontend_add_cases(secure_frontend_bundle_tests sha256sums_render_sorted_bytewise sha256sums_parse_is_strict
         sums_agreement_rules missing_list_names_sourceless_files)
@@ -860,6 +882,10 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     # Refused before anything is written (no store, no target directory), so wine runs it too.
     secure_frontend_add_cases(secure_frontend_bundle_tests export_refuses_when_one_file_license_forbids_bundle)
+    # SP4 Task 22 (spec §2.7, §5.3): pull --bundle; these write a bundle.
+    target_sources(secure_frontend_bundle_tests PRIVATE tests/bundle_pull_test.cpp)
+    secure_frontend_add_cases(secure_frontend_bundle_tests pull_bundle_resumes_after_interrupt pull_bundle_incomplete_without_pack_sources
+        pull_bundle_resume_rehashes_files_from_earlier_run LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     if(WIN32)
         secure_frontend_add_cases(secure_frontend_bundle_tests bundle_rejects_junction_entry_windows LABELS windows-runtime)
     else()
@@ -955,6 +981,10 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         secure_frontend_add_cases(secure_frontend_fetch_tests test_cacert_reaches_argv_in_hook_builds
             LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     endif()
+    # SP4 Task 22: a wrong digest during an update leaves the installed version active.
+    target_sources(secure_frontend_fetch_tests PRIVATE tests/fetch_pull_test.cpp)
+    secure_frontend_add_cases(secure_frontend_fetch_tests dl03_wrong_digest_rejected_prior_version_intact
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     add_test(NAME strata_secure_server_help COMMAND strata-secure-server --help)
     # The GLM runner takes positional arguments: glm53 without any --engine-arg is a usage error.
