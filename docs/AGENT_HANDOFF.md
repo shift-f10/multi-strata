@@ -540,6 +540,7 @@ Baseline before Task 1: linux-gcc N₀ = 520 (+2 allowed skips) tests, wine W₀
 | --- | --- | --- |
 | A1 | Rows listener.cors_origins, listener.host_aliases, limits.http.{header_deadline_ms, write_stall_ms, response_write_deadline_ms, stream_keepalive_ms}, logging.requests; string-array entry bound and per-entry grammar (ConfigKeyExtension side table); cross-field header ≤ request, response ≥ stall, wildcard ⇒ aliases. Compatibility: an SP1 file that sets request_deadline_ms below 10000 must now also set header_deadline_ms (≤ it); an SP1 wildcard-bind config must now name listener.host_aliases (spec §4.3) | 4 |
 | A2 | max_concurrent_requests 1-256 default 8; max_queued_generations, queue_timeout_ms, max_connections_per_remote_address (derived defaults, `--check` marks "(derived)", init omits them); default_max_tokens 0-16384 default 0 = auto. Compatibility: an SP1 file that sets max_concurrent_requests to 1 still validates (queue 0, per-remote cap 1 derived); one that omits it now gets 8 workers | 5 |
+| A6b | export `is_valid_utf8` from json.hpp (noexcept wrapper over the existing valid_utf8; behaviour unchanged) for §3.9 model-field validation | Task 6b |
 
 ## Current security behavior implemented in `secure_frontend`
 

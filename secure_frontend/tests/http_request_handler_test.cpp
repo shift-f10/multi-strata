@@ -58,6 +58,13 @@ class RecordingRouter final : public secure_frontend::RequestRouter {
                   .status = 200, .headers = {{"Content-Type", "application/json; charset=utf-8"}}, .body = "{}\n"};
             }}) {}
 
+  // The chat lambda captures `this`: never copied or moved.
+  RecordingRouter(const RecordingRouter&) = delete;
+  RecordingRouter& operator=(const RecordingRouter&) = delete;
+  RecordingRouter(RecordingRouter&&) = delete;
+  RecordingRouter& operator=(RecordingRouter&&) = delete;
+  ~RecordingRouter() override = default;
+
   secure_frontend::RouteDecision authorize(const secure_frontend::RequestHead& head) override { return router_.authorize(head); }
   secure_frontend::RouteResult handle(const secure_frontend::RequestHead& head, std::string_view body,
                                       const secure_frontend::RouteDecision& decision,
