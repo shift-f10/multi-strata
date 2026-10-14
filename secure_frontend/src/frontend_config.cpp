@@ -21,7 +21,7 @@ namespace {
 namespace d = config_defaults;
 using T = ConfigValueType;
 
-constexpr std::array<ConfigKey, 43 + 7> kSchema{{
+constexpr std::array<ConfigKey, 43 + 7 + 3> kSchema{{
     {"schema_version", T::integer, false, 1, 1, d::kSchemaVersion, false, "", "",
      "Config format version; must be 1. Required in a config file."},
     {"listener.host", T::string, false, 0, 0, 0, false, "127.0.0.1", "--host",
@@ -63,8 +63,8 @@ constexpr std::array<ConfigKey, 43 + 7> kSchema{{
      "Largest tokenized prompt sent to the engine."},
     {"limits.chat.max_completion_tokens", T::integer, false, 1, 16'384, d::kChatMaxCompletionTokens, false, "", "",
      "Largest max_tokens a request may ask for."},
-    {"limits.chat.default_max_tokens", T::integer, false, 1, 16'384, d::kChatDefaultMaxTokens, false, "", "",
-     "max_tokens when a request omits it; at most limits.chat.max_completion_tokens."},
+    {"limits.chat.default_max_tokens", T::integer, false, 0, 16'384, d::kChatDefaultMaxTokens, false, "", "",
+     "max_tokens when a request omits it; 0 = auto: min(max_completion_tokens, context - prompt - 8); at most limits.chat.max_completion_tokens."},
     {"limits.chat.max_generated_bytes", T::integer, false, 1, 16'777'216, d::kChatMaxGeneratedBytes, false, "", "",
      "Largest generated text returned."},
     {"limits.engine.ready_timeout_s", T::integer, false, 1, 86'400, d::kEngineReadyTimeoutS, false, "", "",
@@ -73,8 +73,14 @@ constexpr std::array<ConfigKey, 43 + 7> kSchema{{
      "Total time for one generation before STOP."},
     {"limits.engine.stop_drain_timeout_s", T::integer, false, 1, 600, d::kEngineStopDrainTimeoutS, false, "", "",
      "Time to drain to DONE after STOP before the engine is marked failed."},
-    {"limits.concurrency.max_concurrent_requests", T::integer, false, 1, 1, d::kMaxConcurrentRequests, false, "", "",
-     "Requests served at once; only 1 until SP3."},
+    {"limits.concurrency.max_concurrent_requests", T::integer, false, 1, 256, d::kMaxConcurrentRequests, false, "", "",
+     "Worker threads: connections read or answered at once; 1 = serial."},
+    {"limits.concurrency.max_queued_generations", T::integer, false, 0, 254, 0, false, "", "",
+     "Chats waiting behind the running generation; 0 when max_concurrent_requests is 1, otherwise at most max_concurrent_requests - 2."},
+    {"limits.concurrency.queue_timeout_ms", T::integer, false, 1'000, 3'600'000, d::kQueueTimeoutMs, false, "", "",
+     "Longest wait for the engine before 503 server_busy."},
+    {"limits.concurrency.max_connections_per_remote_address", T::integer, false, 1, 256, 0, false, "", "",
+     "Workers one non-loopback address may hold; at most max_concurrent_requests. Loopback is exempt."},
     {"roots.models", T::string, true, 0, 0, 0, false, "", "--models-root",
      "Absolute directory of .gguf files. The root itself may be a symlink; nothing below it may be."},
     {"roots.tokenizer_pack", T::string, false, 0, 0, 0, false, "", "--tokenizer-pack",
@@ -270,11 +276,13 @@ const ConfigKey* find_config_key(const std::string_view path) noexcept {
 }
 
 namespace {
-constexpr std::array<ConfigKeyExtension, 2> kSchemaExtensions{{
+constexpr std::array<ConfigKeyExtension, 4> kSchemaExtensions{{
     {"listener.cors_origins", static_cast<std::size_t>(config_defaults::kMaxListEntries), &is_valid_cors_origin,
      "each entry must be http:// or https://, a lower-case host, an optional port and no path; * and null are not allowed", ""},
     {"listener.host_aliases", static_cast<std::size_t>(config_defaults::kMaxListEntries), &is_valid_host_alias,
      "each entry must be a host or host:port", ""},
+    {"limits.concurrency.max_queued_generations", 0U, nullptr, "", "derived: min(4, max(0, workers-2))"},
+    {"limits.concurrency.max_connections_per_remote_address", 0U, nullptr, "", "derived: min(4, workers)"},
 }};
 
 // Reads a string-array row and applies its SP3 bounds; any failure records one
@@ -312,6 +320,15 @@ const ConfigKeyExtension* find_config_key_extension(const std::string_view path)
   return nullptr;
 }
 
+std::uint32_t derived_max_queued_generations(const std::uint32_t workers) noexcept {
+  const std::uint32_t spare = workers > 2U ? workers - 2U : 0U;
+  return std::min<std::uint32_t>(static_cast<std::uint32_t>(config_defaults::kDerivedQueueCap), spare);
+}
+
+std::uint32_t derived_max_connections_per_remote_address(const std::uint32_t workers) noexcept {
+  return std::min<std::uint32_t>(static_cast<std::uint32_t>(config_defaults::kDerivedRemoteCap), workers);
+}
+
 bool is_config_section(const std::string_view path) noexcept {
   return std::any_of(kSchema.begin(), kSchema.end(), [path](const ConfigKey& key) {
     return key.path.size() > path.size() && key.path.substr(0, path.size()) == path && key.path[path.size()] == '.';
@@ -342,6 +359,9 @@ std::string render_config_schema_markdown() {
       case ConfigValueType::integer:
         type = "integer";
         fallback = "`" + std::to_string(key.default_integer) + "`";
+        if (const auto* ext = find_config_key_extension(key.path); ext != nullptr && !ext->derived_default.empty()) {
+          fallback = "`" + std::string{ext->derived_default} + "`";
+        }
         range = std::to_string(key.minimum) + "-" + std::to_string(key.maximum);
         break;
       case ConfigValueType::string:
@@ -433,6 +453,16 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   const auto generation_s = read.integer("limits.engine.generation_timeout_s");
   const auto drain_s = read.integer("limits.engine.stop_drain_timeout_s");
   const auto concurrent = read.integer("limits.concurrency.max_concurrent_requests");
+  // SP3 §5.1: a derived value is used only when the key is absent; an explicit
+  // value is validated as written and never adjusted.
+  const auto workers = static_cast<std::uint32_t>(concurrent);
+  const bool queue_set = read.present("limits.concurrency.max_queued_generations");
+  const auto queued = queue_set ? read.integer("limits.concurrency.max_queued_generations")
+                                : static_cast<std::int64_t>(derived_max_queued_generations(workers));
+  const auto queue_timeout_ms = read.integer("limits.concurrency.queue_timeout_ms");
+  const bool cap_set = read.present("limits.concurrency.max_connections_per_remote_address");
+  const auto remote_cap = cap_set ? read.integer("limits.concurrency.max_connections_per_remote_address")
+                                  : static_cast<std::int64_t>(derived_max_connections_per_remote_address(workers));
   if (max_header > max_request) {
     add(errors, "limits.http.max_header_bytes", ConfigIssueCode::conflicting_values,
         "must not exceed limits.http.max_request_bytes");
@@ -456,6 +486,17 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   if (response_deadline_ms < write_stall_ms) {
     add(errors, "limits.http.response_write_deadline_ms", ConfigIssueCode::conflicting_values,
         "must be at least limits.http.write_stall_ms");
+  }
+  if (concurrent == 1 && queued != 0) {
+    add(errors, "limits.concurrency.max_queued_generations", ConfigIssueCode::conflicting_values,
+        "must be 0 when limits.concurrency.max_concurrent_requests is 1");
+  } else if (concurrent >= 2 && queued + 2 > concurrent) {
+    add(errors, "limits.concurrency.max_queued_generations", ConfigIssueCode::conflicting_values,
+        "plus 2 must not exceed limits.concurrency.max_concurrent_requests");
+  }
+  if (remote_cap > concurrent) {
+    add(errors, "limits.concurrency.max_connections_per_remote_address", ConfigIssueCode::conflicting_values,
+        "must not exceed limits.concurrency.max_concurrent_requests");
   }
 
   // roots: each is opened once, here, and held open by the FrontendConfig.
@@ -589,7 +630,8 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
       ChatLimits{u32(max_body), u32(max_messages), u32(max_message), u32(max_prompt), u32(max_completion), u32(default_max),
                  u32(max_generated)},
       EngineLimits{std::chrono::seconds(ready_s), std::chrono::seconds(generation_s), std::chrono::seconds(drain_s)},
-      ConcurrencyLimits{u32(concurrent)}};
+      ConcurrencyLimits{u32(concurrent), u32(queued), std::chrono::milliseconds(queue_timeout_ms), u32(remote_cap), !queue_set,
+                        !cap_set}};
   Roots roots{*models, tokenizer, secret, logs, cache, state};
   EngineLaunch engine{profile, *executable, std::move(*model_id), args, std::move(lib_dirs), std::move(gpus), allow_new_privileges};
   return ValidatedConfig{std::shared_ptr<const FrontendConfig>(
@@ -644,7 +686,13 @@ std::string describe(const FrontendConfig& c) {
   line("limits.engine.ready_timeout_s", std::to_string(c.limits.engine.ready_timeout.count()));
   line("limits.engine.generation_timeout_s", std::to_string(c.limits.engine.generation_timeout.count()));
   line("limits.engine.stop_drain_timeout_s", std::to_string(c.limits.engine.stop_drain_timeout.count()));
-  line("limits.concurrency.max_concurrent_requests", std::to_string(c.limits.concurrency.max_concurrent_requests));
+  const auto& cc = c.limits.concurrency;
+  line("limits.concurrency.max_concurrent_requests", std::to_string(cc.max_concurrent_requests));
+  line("limits.concurrency.max_queued_generations",
+       std::to_string(cc.max_queued_generations) + (cc.queue_derived ? " (derived)" : ""));
+  line("limits.concurrency.queue_timeout_ms", std::to_string(cc.queue_timeout.count()));
+  line("limits.concurrency.max_connections_per_remote_address",
+       std::to_string(cc.max_connections_per_remote_address) + (cc.remote_cap_derived ? " (derived)" : ""));
   line("roots.models", root_text(c.roots.models));
   line("roots.tokenizer_pack", root_or_unset(c.roots.tokenizer_pack));
   line("roots.secret", root_or_unset(c.roots.secret));

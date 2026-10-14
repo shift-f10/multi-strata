@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <deque>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unordered_set>
@@ -143,16 +144,14 @@ void rejects_context_and_output_limits_before_generation() {
          "context overflow must not emit GEN");
 
   FakeTransport limit_transport;
-  limit_transport.reads = {line("READY 512")};
+  limit_transport.reads = {line("READY 512"), line("DONE 0")};
   secure_frontend::EngineProtocolClient limit_protocol(limit_transport);
   secure_frontend::ChatExecutionService limit_service(
       limit_protocol, {.maximum_prompt_tokens = 128U, .maximum_output_tokens = 1U});
   const auto limit_result = limit_service.execute(valid_request(2U), tokenizer);
-  const auto* limit_error = std::get_if<secure_frontend::ChatExecutionError>(&limit_result);
-  expect(limit_error != nullptr &&
-             limit_error->code == secure_frontend::ChatExecutionErrorCode::invalid_request &&
-             limit_transport.writes.empty(),
-         "local output bound must reject before GEN");
+  expect(std::holds_alternative<secure_frontend::ChatExecutionResult>(limit_result) &&
+             limit_transport.writes.size() == 1U && limit_transport.writes.front().rfind("GEN 1 ", 0) == 0,
+         "a request above the local output bound is clamped to it (B2), not rejected");
 }
 
 void fails_closed_on_invalid_engine_output() {
@@ -349,6 +348,20 @@ void chat_uses_adopted_ready_without_waiting() {
   expect(std::holds_alternative<secure_frontend::ChatExecutionResult>(result), "execute does not wait for a second READY");
 }
 
+void resolve_max_tokens_follows_decisions_1_and_2() {
+  using secure_frontend::resolve_max_tokens;
+  // requested, prompt, ctx, max_completion, default -> result
+  expect(resolve_max_tokens(100U, 10U, 4096U, 4096U, 0U) == std::optional<std::size_t>{100U}, "fits as asked");
+  expect(resolve_max_tokens(16384U, 10U, 100000U, 4096U, 0U) == std::optional<std::size_t>{4096U}, "clamped to max_completion (B2)");
+  expect(resolve_max_tokens(1000U, 50U, 100U, 4096U, 0U) == std::optional<std::size_t>{42U}, "clamped to ctx - n - 8 (B2)");
+  expect(resolve_max_tokens(std::nullopt, 50U, 100U, 4096U, 0U) == std::optional<std::size_t>{42U}, "auto = min(max, ctx - n - 8) (B1)");
+  expect(resolve_max_tokens(std::nullopt, 10U, 100000U, 4096U, 0U) == std::optional<std::size_t>{4096U}, "auto capped by max_completion");
+  expect(resolve_max_tokens(std::nullopt, 10U, 4096U, 4096U, 256U) == std::optional<std::size_t>{256U}, "a configured default applies");
+  expect(!resolve_max_tokens(5U, 92U, 100U, 4096U, 0U).has_value(), "prompt alone fills the context: 400 (B2)");
+  expect(resolve_max_tokens(5U, 91U, 100U, 4096U, 0U) == std::optional<std::size_t>{1U}, "one token of room is still allowed");
+  expect(resolve_max_tokens(5U, 100000U, 0U, 4096U, 0U) == std::optional<std::size_t>{5U}, "unknown context: no context clamp");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -366,5 +379,6 @@ int main(int argc, char** argv) {
       {"health_is_failed_when_engine_closes_before_ready", health_is_failed_when_engine_closes_before_ready},
       {"chat_applies_engine_context_rule_with_eight_token_margin", chat_applies_engine_context_rule_with_eight_token_margin},
       {"chat_uses_adopted_ready_without_waiting", chat_uses_adopted_ready_without_waiting},
+      {"resolve_max_tokens_follows_decisions_1_and_2", resolve_max_tokens_follows_decisions_1_and_2},
   }, failures);
 }

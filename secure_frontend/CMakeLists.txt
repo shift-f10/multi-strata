@@ -960,7 +960,10 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_typed_config_tests cfg01_sp3_rows_type_and_range
         cfg01_header_deadline_le_request_deadline cfg01_response_deadline_ge_write_stall
         cfg01_wildcard_bind_requires_host_aliases cfg01_host_alias_grammar_and_count
-        web05_cors_origin_config_rejects_wildcard_null_path_duplicate_and_17_entries)
+        web05_cors_origin_config_rejects_wildcard_null_path_duplicate_and_17_entries
+        cfg01_sp3_concurrency_rows_and_defaults cfg01_queue_plus_two_le_workers cfg01_serial_requires_zero_queue
+        cfg01_remote_cap_le_workers cfg01_sp1_config_with_one_worker_still_valid
+        cfg01_derived_defaults_follow_worker_count cfg01_explicit_values_are_not_adjusted)
     if(WIN32)
         secure_frontend_add_cases(secure_frontend_typed_config_tests cfg01_config_with_everyone_write_ace_rejected
             LABELS windows-runtime)
@@ -1004,7 +1007,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         chat_recovers_after_generation_timeout chat_gen_write_bounded_by_generation_deadline chat_marks_engine_failed_when_drain_fails
         chat_rejects_nonfinite_done_and_stays_ready health_reflects_protocol_state
         health_is_failed_after_engine_closed_mid_generation health_is_failed_when_engine_closes_before_ready
-        chat_applies_engine_context_rule_with_eight_token_margin chat_uses_adopted_ready_without_waiting)
+        chat_applies_engine_context_rule_with_eight_token_margin chat_uses_adopted_ready_without_waiting
+        resolve_max_tokens_follows_decisions_1_and_2)
 
     secure_frontend_add_test_executable(secure_frontend_subsystem_limits_tests tests/subsystem_limits_test.cpp
         secure_frontend_subsystem_limits)

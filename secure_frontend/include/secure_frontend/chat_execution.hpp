@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <variant>
 
@@ -57,6 +58,14 @@ using ChatExecutionOutcome = std::variant<ChatExecutionResult, ChatExecutionErro
 // starting: READY not yet received; ready: protocol idle; generating: a
 // request is in flight; failed: the protocol is closed or failed.
 enum class EngineHealth { starting, ready, generating, failed };
+
+// Spec §5.4, owner decisions B1/B2. Returns the max_new for GEN, or nullopt
+// when the prompt alone leaves no room (400 context_length_exceeded).
+// context_tokens 0 = not known yet (no context clamp); default_max_tokens 0 =
+// auto (min(max_completion_tokens, context - prompt - 8)).
+[[nodiscard]] std::optional<std::size_t> resolve_max_tokens(std::optional<std::size_t> requested, std::size_t prompt_tokens,
+                                                            std::size_t context_tokens, std::size_t max_completion_tokens,
+                                                            std::size_t default_max_tokens) noexcept;
 
 // Stateful adapter for one private Strata --serve connection. It accepts a
 // schema-validated request, uses the startup-selected fixed prompt renderer

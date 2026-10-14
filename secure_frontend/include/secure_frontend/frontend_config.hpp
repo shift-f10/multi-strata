@@ -133,9 +133,18 @@ struct EngineLimits final {
   std::chrono::seconds generation_timeout;
   std::chrono::seconds stop_drain_timeout;
 };
+// SP3 §5.1: an absent queue / per-remote key takes its value derived from the
+// worker count (the *_derived flags record that for --check).
 struct ConcurrencyLimits final {
   std::uint32_t max_concurrent_requests;
+  std::uint32_t max_queued_generations;
+  std::chrono::milliseconds queue_timeout;
+  std::uint32_t max_connections_per_remote_address;
+  bool queue_derived;
+  bool remote_cap_derived;
 };
+[[nodiscard]] std::uint32_t derived_max_queued_generations(std::uint32_t workers) noexcept;
+[[nodiscard]] std::uint32_t derived_max_connections_per_remote_address(std::uint32_t workers) noexcept;
 struct Limits final {
   HttpLimits http;
   ChatLimits chat;

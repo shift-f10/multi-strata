@@ -109,8 +109,8 @@ void defaults_output_limit_and_rejects_unsafe_inputs() {
   const auto pack = tokenizer_for(prompt, true);
   const auto result = secure_frontend::make_qwen_chat_generation_plan(*request, pack);
   const auto* plan = std::get_if<secure_frontend::ChatGenerationPlan>(&result);
-  expect(plan != nullptr && plan->max_tokens == 256U,
-         "omitted max_tokens must receive the fixed native default");
+  expect(plan != nullptr && plan->max_tokens == 0U,
+         "omitted max_tokens receives the native default, 0 = auto (SP3 B1)");
 
   const auto tiny_limit = secure_frontend::make_qwen_chat_generation_plan(*request, pack, 1U);
   const auto* tiny_error = std::get_if<secure_frontend::ChatGenerationPlanError>(&tiny_limit);

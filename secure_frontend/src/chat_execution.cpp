@@ -1,7 +1,9 @@
 #include "secure_frontend/chat_execution.hpp"
 
+#include "secure_frontend/api_constants.hpp"
 #include "secure_frontend/deadline.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <utility>
 #include <vector>
@@ -14,6 +16,23 @@ ChatExecutionOutcome error(const ChatExecutionErrorCode code, const char* const 
 }
 
 }  // namespace
+
+std::optional<std::size_t> resolve_max_tokens(const std::optional<std::size_t> requested, const std::size_t prompt_tokens,
+                                              const std::size_t context_tokens, const std::size_t max_completion_tokens,
+                                              const std::size_t default_max_tokens) noexcept {
+  // The engine's rule (generate.cpp): n + max_new + kContextMarginTokens <= ctx.
+  constexpr std::size_t kMargin = api_constants::kContextMarginTokens;
+  std::size_t room = max_completion_tokens;
+  if (context_tokens != 0U) {
+    if (prompt_tokens >= context_tokens || context_tokens - prompt_tokens <= kMargin) return std::nullopt;
+    room = context_tokens - prompt_tokens - kMargin;
+  }
+  const std::size_t base = requested.has_value() ? *requested
+                           : (default_max_tokens == 0U ? max_completion_tokens : default_max_tokens);
+  const std::size_t resolved = std::min({base, max_completion_tokens, room});
+  if (resolved == 0U) return std::nullopt;
+  return resolved;
+}
 
 ChatExecutionService::ChatExecutionService(EngineProtocolClient& protocol,
                                            const ChatExecutionLimits limits,
@@ -39,12 +58,6 @@ ChatExecutionOutcome ChatExecutionService::execute(const ChatCompletionRequest& 
     return error(ChatExecutionErrorCode::planning_failed,
                  "chat request cannot be represented by the native serving profile");
   }
-  if (plan->max_tokens == 0U || plan->max_tokens > limits_.maximum_output_tokens ||
-      plan->max_tokens > std::numeric_limits<std::uint32_t>::max()) {
-    return error(ChatExecutionErrorCode::invalid_request,
-                 "requested output exceeds native serving limits");
-  }
-
   if (!received_ready_) {
     EngineReady ready{};
     if (protocol_.ready()) {
@@ -59,11 +72,14 @@ ChatExecutionOutcome ChatExecutionService::execute(const ChatCompletionRequest& 
     received_ready_ = true;
   }
 
-  // The engine's own rule (generate.cpp): n + max_new + 8 <= --max-context.
-  // Both terms are already bounded (prompt by maximum_prompt_tokens, output by
-  // uint32), so the sum cannot overflow std::size_t.
-  if (!protocol_.ready() || engine_context_tokens_ == 0U ||
-      plan->prompt_token_ids.size() + plan->max_tokens + 8U > engine_context_tokens_) {
+  // B1/B2 (spec §5.4): an omitted max_tokens (plan value 0) is auto; a value
+  // above the local output bound or the engine's context rule
+  // (n + max_new + 8 <= --max-context) is clamped; only a prompt that leaves no
+  // room is rejected. The result is at most maximum_output_tokens (<= uint32).
+  const auto budget = resolve_max_tokens(plan->max_tokens == 0U ? std::nullopt : std::optional<std::size_t>{plan->max_tokens},
+                                         plan->prompt_token_ids.size(), engine_context_tokens_,
+                                         limits_.maximum_output_tokens, 0U);
+  if (!protocol_.ready() || engine_context_tokens_ == 0U || !budget.has_value()) {
     return error(ChatExecutionErrorCode::context_limit_exceeded,
                  "request exceeds the local engine context limit");
   }
@@ -81,7 +97,7 @@ ChatExecutionOutcome ChatExecutionService::execute(const ChatCompletionRequest& 
   // One request generation deadline (K1, R1): it bounds the GEN write overall
   // and then the read to DONE, which gets only what the write left.
   const auto generation_deadline = deadline_after(limits_.generation_timeout);
-  if (protocol_.begin_generation(static_cast<std::uint32_t>(plan->max_tokens), prompt_ids, generation_deadline)
+  if (protocol_.begin_generation(static_cast<std::uint32_t>(*budget), prompt_ids, generation_deadline)
           .has_value()) {
     return error(ChatExecutionErrorCode::engine_protocol_failed,
                  "local engine rejected the generation request");
@@ -110,7 +126,7 @@ ChatExecutionOutcome ChatExecutionService::execute(const ChatCompletionRequest& 
     }
     return error(ChatExecutionErrorCode::generation_timed_out, "generation exceeded the time limit");
   }
-  if (generation.token_ids.size() > plan->max_tokens) {
+  if (generation.token_ids.size() > *budget) {
     return error(ChatExecutionErrorCode::engine_protocol_failed,
                  "local engine exceeded the requested output limit");
   }
