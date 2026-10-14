@@ -508,7 +508,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         health_samples_status_before_state_once_each health_includes_engine_state_when_provided
         health_is_503_with_engine_state_when_unavailable dispatches_exact_health_route
         dispatches_models_with_json_escaping rejects_non_exact_routes
-        fails_closed_when_provider_throws_or_returns_invalid_model)
+        fails_closed_when_provider_throws_or_returns_invalid_model
+        auth01_every_route_rejects_missing_malformed_wrong_token)
+    target_link_libraries(secure_frontend_api_router_tests PRIVATE secure_frontend_secrets)
 
     secure_frontend_add_test_executable(secure_frontend_engine_process_tests tests/engine_process_test.cpp
         secure_frontend_engine_process)
@@ -639,6 +641,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_server_cli_tests
         cli_config_file_and_flags_share_validator cli_flag_overrides_file_and_is_reported cli_check_prints_no_token
         cli_unknown_option_does_not_echo_value
+        auth04_empty_token_rejected_on_loopback auth04_no_switch_disables_auth
         ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
     secure_frontend_add_cases(secure_frontend_server_cli_tests cli_check_has_no_side_effects
         ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
@@ -658,6 +661,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         cfg01_invalid_config_fails_before_listener_and_child net02_remote_addresses_need_opt_in
         net02_error_is_non_secret_and_exits_before_bind ready_timeout_is_configurable
         cfg05_token_absent_from_child_argv_env_and_outputs
+        auth01_socket_rejects_missing_and_wrong_token_on_every_route auth02_valid_token_succeeds_and_is_not_echoed
         ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
     # GetExtendedTcpTable is not faithful under wine.
     secure_frontend_add_cases(secure_frontend_server_e2e_tests net01_default_listener_is_loopback_only

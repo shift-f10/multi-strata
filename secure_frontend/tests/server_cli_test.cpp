@@ -1,7 +1,9 @@
+#include "secure_frontend/frontend_config.hpp"
 #include "secure_frontend/token_reader.hpp"
 #include "support/server_fixture.hpp"
 #include "support/test_support.hpp"
 
+#include <chrono>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -165,6 +167,59 @@ void init_failure_creates_nothing() {
   expect(!std::filesystem::exists(f.dir / "never"), "no config directory was created");
   expect(secure_frontend_test::snapshot_tree(f.dir) == before, "nothing below the scratch tree changed");
 }
+
+void auth04_empty_token_rejected_on_loopback() {
+  ServerFixture f;
+  const auto marker = f.dir / "engine-started";
+  const auto flags = with(f.base_flags(), {"--engine-arg", "--marker=" + marker.string()});
+  for (const char* value : {"", "   "}) {
+    const auto result = secure_frontend_test::run_to_completion(
+        secure_frontend_test::ProcessSpec{f.server_executable, flags, {{secure_frontend_test::kTestTokenVariable, value}}});
+    expect(result.exit_code != 0 && contains(result.err, "Unable to read API token"),
+           std::string{"an empty or blank token stops the loopback server: \""} + value + "\"");
+  }
+  secure_frontend_test::write_file(f.secret / "token", "");
+  std::vector<std::string> file_flags = f.base_flags();
+  for (std::size_t i = 0; i + 1 < file_flags.size(); ++i) {
+    if (file_flags[i] == "--token-env") { file_flags[i] = "--token-file"; file_flags[i + 1] = "token"; }
+  }
+  file_flags.insert(file_flags.end(), {"--secret-root", f.secret.string(), "--engine-arg", "--marker=" + marker.string()});
+  const auto empty_file = f.run(file_flags);
+  expect(empty_file.exit_code != 0 && contains(empty_file.err, "Unable to read API token"), "an empty token file too");
+  expect(!std::filesystem::exists(marker), "the engine never started");
+  expect(!secure_frontend_test::can_connect(f.port), "and nothing listens");
+}
+
+void auth04_no_switch_disables_auth() {
+  for (const auto& key : secure_frontend::config_schema()) {
+    const std::string path{key.path};
+    for (const char* word : {"auth", "insecure", "unauth", "dev", "anonymous", "disable", "no_token"}) {
+      expect(path.find(word) == std::string::npos, "no config key can switch off authentication: " + path);
+    }
+    if (key.type == secure_frontend::ConfigValueType::boolean) {
+      expect(path == "listener.allow_remote" || path == "listener.allow_wildcard_bind",
+             "the only switches are the two bind opt-ins: " + path);
+    }
+  }
+  ServerFixture f;
+  for (const char* flag : {"--no-auth", "--insecure", "--dev", "--disable-auth", "--allow-unauthenticated", "--auth=none"}) {
+    const auto result = f.run(with(f.base_flags(), {flag}));
+    expect(result.exit_code != 0 && contains(result.err, "unknown option"), std::string{"no such option: "} + flag);
+  }
+  // Upstream's STRATA_* knobs are never read (product spec §4); set them all and probe without a token.
+  auto environment = f.environment();
+  for (const char* name : {"STRATA_API_KEY", "STRATA_NO_AUTH", "STRATA_DEV", "STRATA_INSECURE", "STRATA_DEBUG", "STRATA_AUTH"}) {
+    environment.emplace_back(name, std::string{name} == "STRATA_API_KEY" ? "" : "1");
+  }
+  secure_frontend_test::ChildProcess server;
+  expect(server.start(secure_frontend_test::ProcessSpec{f.server_executable, f.base_flags(), environment}), "server spawned");
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (!secure_frontend_test::can_connect(f.port) && std::chrono::steady_clock::now() < deadline &&
+         !server.wait_for(std::chrono::milliseconds(50)).has_value()) {
+  }
+  const auto response = f.request("GET", "/v1/models", "");
+  expect(response.rfind("HTTP/1.1 401", 0) == 0, "no environment variable disables authentication");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -178,5 +233,7 @@ int main(int argc, char** argv) {
       {"init_refuses_to_overwrite_without_force", init_refuses_to_overwrite_without_force},
       {"init_force_refuses_a_non_regular_config_target", init_force_refuses_a_non_regular_config_target},
       {"init_failure_creates_nothing", init_failure_creates_nothing},
+      {"auth04_empty_token_rejected_on_loopback", auth04_empty_token_rejected_on_loopback},
+      {"auth04_no_switch_disables_auth", auth04_no_switch_disables_auth},
   }, failures);
 }

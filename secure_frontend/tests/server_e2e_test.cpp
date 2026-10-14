@@ -193,6 +193,36 @@ void cfg05_token_absent_from_child_argv_env_and_outputs() {
          "the server's stdout and stderr lack the token");
 }
 
+void auth01_socket_rejects_missing_and_wrong_token_on_every_route() {
+  ServerFixture f;
+  secure_frontend_test::ChildProcess server;
+  expect(f.start(server, f.base_flags()), "server starts: " + server.stderr_text());
+  for (const auto& [method, target] : {std::pair{"GET", "/health"}, std::pair{"GET", "/v1/models"},
+                                       std::pair{"POST", "/v1/chat/completions"}, std::pair{"GET", "/does-not-exist"}}) {
+    for (const std::string& authorization : {std::string{}, std::string{"Bearer wrong-token-0123456789abcdefghijklmnop"}}) {
+      const auto response = f.request(method, target, authorization, std::string{method} == "POST" ? "{}" : "");
+      expect(response.rfind("HTTP/1.1 401", 0) == 0, std::string{method} + " " + target + " over TCP must be 401");
+      expect(!contains(response, "qwen-local") && !contains(response, "\"engine\""), "no route or model data leaks");
+    }
+  }
+}
+
+void auth02_valid_token_succeeds_and_is_not_echoed() {
+  ServerFixture f;
+  secure_frontend_test::ChildProcess server;
+  expect(f.start(server, f.base_flags()), "server starts: " + server.stderr_text());
+  const auto health = f.request("GET", "/health", f.bearer());
+  const auto models = f.request("GET", "/v1/models", f.bearer());
+  expect(health.rfind("HTTP/1.1 200", 0) == 0 && models.rfind("HTTP/1.1 200", 0) == 0 && contains(models, "qwen-local"),
+         "authorized requests succeed");
+  expect(!contains(health, secure_frontend_test::kTestToken) && !contains(models, secure_frontend_test::kTestToken),
+         "the token is not echoed in a response");
+  server.terminate();
+  expect(!contains(server.stdout_text(), secure_frontend_test::kTestToken) &&
+             !contains(server.stderr_text(), secure_frontend_test::kTestToken),
+         "nor written to stdout/stderr");
+}
+
 #if !defined(_WIN32)
 // P7 / defect e: the fixture's models root is configured through a symlink; the
 // engine must receive the canonical root the inventory used, never the raw string.
@@ -250,6 +280,8 @@ int main(int argc, char** argv) {
       {"net02_error_is_non_secret_and_exits_before_bind", net02_error_is_non_secret_and_exits_before_bind},
       {"ready_timeout_is_configurable", ready_timeout_is_configurable},
       {"cfg05_token_absent_from_child_argv_env_and_outputs", cfg05_token_absent_from_child_argv_env_and_outputs},
+      {"auth01_socket_rejects_missing_and_wrong_token_on_every_route", auth01_socket_rejects_missing_and_wrong_token_on_every_route},
+      {"auth02_valid_token_succeeds_and_is_not_echoed", auth02_valid_token_succeeds_and_is_not_echoed},
 #if !defined(_WIN32)
       {"cfg03_engine_receives_canonical_models_root", cfg03_engine_receives_canonical_models_root},
       {"server_process_is_not_dumpable", server_process_is_not_dumpable},
