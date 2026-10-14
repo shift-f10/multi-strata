@@ -48,6 +48,7 @@ enum class EngineProtocolErrorCode {
   engine_error,
   response_limit,
   fatal_engine_line,
+  abandoned,
 };
 
 // The engine's fatal verification lines (upstream/serve/server.py:587-588

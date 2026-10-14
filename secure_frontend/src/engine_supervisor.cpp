@@ -43,6 +43,7 @@ KillReason kill_reason_for(const EngineProtocolClient& protocol) noexcept {
   switch (*code) {
     case EngineProtocolErrorCode::transport_write_failed: return KillReason::write_timeout;
     case EngineProtocolErrorCode::fatal_engine_line: return KillReason::fatal_line;
+    case EngineProtocolErrorCode::abandoned: return KillReason::drain_failed;
     default: return KillReason::protocol_failed;
   }
 }
@@ -214,15 +215,19 @@ KillReason EngineSupervisor::supervise(EngineInstance& instance, std::chrono::mi
   return reason;
 }
 
-// Eager READY (spec §3.4): consumed on this thread right after spawn, in short
+// Eager READY (spec §3.4), bounded by policy.ready_timeout (§3.5(2)), in short
 // slices so shutdown and an early exit are seen promptly.
 std::optional<KillReason> EngineSupervisor::await_ready(EngineInstance& instance, EngineReady& ready) {
+  const auto deadline = clock_->now() + config_.policy.ready_timeout;
   for (;;) {
     if (stop_requested()) return KillReason::shutdown;
-    const auto error = instance.protocol->await_ready(config_.ready_poll_slice, ready);
+    const auto remaining = remaining_until(deadline, clock_->now());
+    if (remaining.count() == 0) return KillReason::ready_timeout;
+    const auto error = instance.protocol->await_ready(std::min(remaining, config_.ready_poll_slice), ready);
     if (!error) return std::nullopt;
     if (error->code == EngineProtocolErrorCode::closed) return KillReason::none;  // it ended; its exit status says why
-    if (error->code != EngineProtocolErrorCode::timeout) return KillReason::protocol_failed;
+    // A fatal verify line before READY is fatal_line (§3.8); others protocol_failed.
+    if (error->code != EngineProtocolErrorCode::timeout) return kill_reason_for(*instance.protocol);
     if (instance.process->try_reap()) return KillReason::none;
   }
 }

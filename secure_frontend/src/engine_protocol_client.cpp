@@ -275,7 +275,10 @@ std::optional<EngineProtocolError> EngineProtocolClient::quit() {
   return std::nullopt;
 }
 
-void EngineProtocolClient::abandon() noexcept { state_ = State::failed; }
+void EngineProtocolClient::abandon() noexcept {
+  state_ = State::failed;
+  if (!failure_code_) failure_code_ = EngineProtocolErrorCode::abandoned;  // ignored STOP: drain failed (§3.5(3))
+}
 
 bool EngineProtocolClient::ready() const noexcept { return state_ == State::idle || state_ == State::generating; }
 bool EngineProtocolClient::generating() const noexcept { return state_ == State::generating; }

@@ -319,6 +319,56 @@ void proc04_fatal_prefix_kills_engine() {
   }
 }
 
+// Spec §3.8: a fatal verify line before READY is a fatal_line kill, not a
+// generic protocol failure.
+void proc04_fatal_line_before_ready_kills_as_fatal_line() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) {
+    child.push_line(std::string(secure_frontend::kEngineFatalPrefixes.front()) + "3");
+  });
+  secure_frontend::SupervisorConfig config;
+  config.policy.max_consecutive_failures = 1U;  // one end opens the circuit: nothing respawns
+  test_support::LogCapture log;
+  secure_frontend::EngineSupervisor supervisor(config, fakes.factory(), std::make_shared<test_support::ManualClock>(), log.sink());
+  supervisor.start();
+  expect(supervisor.wait_for_state(SupervisorState::circuit_open, 5s), "the generation ends before READY");
+  expect(log.contains("engine generation 1 ended: killed_by_supervisor(fatal_line)"), "killed as fatal_line, not protocol_failed");
+  supervisor.shutdown(5s);
+}
+
+void proc04_ready_timeout_kills_and_counts() {
+  secure_frontend::SupervisorConfig config;
+  config.policy.ready_timeout = 200ms;
+  config.policy.max_consecutive_failures = 2U;
+  config.policy.backoff_initial = 20ms;
+  test_support::LogCapture log;
+  secure_frontend::EngineSupervisor supervisor(config, secure_frontend::make_stdio_process_factory(fake_plan({"--hang-before-ready"})),
+                                               std::make_shared<secure_frontend::SteadySupervisorClock>(), log.sink());
+  supervisor.start();
+  expect(supervisor.wait_for_state(SupervisorState::circuit_open, 5s), "two READY timeouts open the circuit: each one counts");
+  expect(supervisor.generations_started() == 2U, "two generations");
+  expect(log.contains("engine generation 1 ended: killed_by_supervisor(ready_timeout)"), "killed as ready_timeout");
+  supervisor.shutdown(5s);
+}
+
+void proc04_drain_failure_kills_and_restarts() {
+  secure_frontend::SupervisorConfig config;
+  config.chat_limits.generation_timeout = 200ms;
+  config.chat_limits.stop_drain_timeout = 200ms;
+  config.policy.backoff_initial = 20ms;
+  test_support::LogCapture log;
+  secure_frontend::EngineSupervisor supervisor(config, secure_frontend::make_stdio_process_factory(fake_plan({"--hang-in-gen"})),
+                                               std::make_shared<secure_frontend::SteadySupervisorClock>(), log.sink());
+  supervisor.start();
+  expect(test_support::wait_generation_ready(supervisor, 1U, 10s), "generation 1 ready");
+  const auto tokenizer = test_support::byte_tokenizer();
+  const secure_frontend::ChatCompletionRequest request{"fake-model", {{"user", "Hi"}}, 2U};
+  const auto outcome = secure_frontend::execute_with_lease(supervisor, request, tokenizer);
+  expect(outcome && std::holds_alternative<secure_frontend::ChatExecutionError>(*outcome), "the request fails after STOP is ignored");
+  expect(test_support::wait_generation_ready(supervisor, 2U, 10s), "a new generation replaces the wedged one");
+  expect(log.contains("engine generation 1 ended: killed_by_supervisor(drain_failed)"), "killed as drain_failed");
+  supervisor.shutdown(5s);
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -332,5 +382,8 @@ int main(int argc, char* argv[]) {
                                                 {"proc04_monitor_detects_idle_crash", proc04_monitor_detects_idle_crash},
                                                 {"proc04_monitor_fallback_without_pidfd", proc04_monitor_fallback_without_pidfd},
                                                 {"proc04_backoff_survives_stale_wake", proc04_backoff_survives_stale_wake},
-                                                {"proc04_fatal_prefix_kills_engine", proc04_fatal_prefix_kills_engine}}, failures);
+                                                {"proc04_fatal_prefix_kills_engine", proc04_fatal_prefix_kills_engine},
+                                                {"proc04_fatal_line_before_ready_kills_as_fatal_line", proc04_fatal_line_before_ready_kills_as_fatal_line},
+                                                {"proc04_ready_timeout_kills_and_counts", proc04_ready_timeout_kills_and_counts},
+                                                {"proc04_drain_failure_kills_and_restarts", proc04_drain_failure_kills_and_restarts}}, failures);
 }
