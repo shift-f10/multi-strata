@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <new>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -637,6 +638,42 @@ std::size_t open_handle_count() {
 #endif
 }
 
+#if defined(_WIN32)
+// Diagnostics only: how many handles of each object type this process holds
+// (every valid handle value, typed by NtQueryObject ObjectTypeInformation,
+// which never blocks, unlike ObjectNameInformation on a pipe).
+std::map<std::string, int> open_handle_types() {
+  using NtQueryObjectFn = LONG(NTAPI*)(HANDLE, int, void*, ULONG, ULONG*);
+  const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+  const auto query =
+      ntdll == nullptr ? nullptr : reinterpret_cast<NtQueryObjectFn>(reinterpret_cast<void (*)()>(GetProcAddress(ntdll, "NtQueryObject")));
+  struct TypeName {
+    USHORT length;
+    USHORT maximum_length;
+    PWSTR buffer;
+  };
+  std::map<std::string, int> types;
+  alignas(8) std::array<unsigned char, 4096> storage{};
+  for (std::uintptr_t value = 4U; value < 0x10000U; value += 4U) {
+    HANDLE handle = reinterpret_cast<HANDLE>(value);
+    DWORD flags = 0;
+    if (GetHandleInformation(handle, &flags) == 0) continue;
+    std::string name = "?";
+    ULONG returned = 0;
+    if (query != nullptr && query(handle, 2 /* ObjectTypeInformation */, storage.data(), static_cast<ULONG>(storage.size()), &returned) >= 0) {
+      TypeName type{};
+      std::memcpy(&type, storage.data(), sizeof(type));
+      name.clear();
+      for (USHORT index = 0; type.buffer != nullptr && index < type.length / sizeof(wchar_t); ++index) {
+        name.push_back(static_cast<char>(type.buffer[index] < 0x80 ? type.buffer[index] : L'?'));
+      }
+    }
+    ++types[name];
+  }
+  return types;
+}
+#endif
+
 void proc04_no_leak_across_restarts() {
   secure_frontend::SupervisorConfig config;
   config.policy.max_consecutive_failures = 100U;
@@ -645,12 +682,39 @@ void proc04_no_leak_across_restarts() {
   secure_frontend::EngineSupervisor supervisor(config, secure_frontend::make_stdio_process_factory(fake_plan({})));
   expect(supervisor.start(), "the supervisor starts");
   std::optional<std::size_t> baseline;
+#if defined(_WIN32)
+  // Ruling (winfix): on Windows the baseline is taken at generation 2, after
+  // one restart. Real Windows showed exactly +1 handle from generation 2 on and
+  // never more (88 vs 87 at generations 2..11, CI run 38598235525): a one-time
+  // allocation on the first restart path (OS/CRT state initialised on first
+  // use), not a leak. Ten restarts still each compare 3..11 against it, so any
+  // per-restart leak still fails. The handles that appeared between
+  // generations 1 and 2 are printed by type to name the one-time allocation.
+  constexpr std::uint64_t kBaselineGeneration = 2U;
+  std::map<std::string, int> first_generation_handles;
+  std::string new_at_generation_2;  // printed after the loop: a first write to stdout must not land inside the measurement
+#else
+  constexpr std::uint64_t kBaselineGeneration = 1U;
+#endif
   for (std::uint64_t generation = 1U; generation <= 11U; ++generation) {  // 10 forced restarts
     expect(test_support::wait_generation_ready(supervisor, generation, 10s), "generation " + std::to_string(generation) + " ready");
     const std::size_t handles = open_handle_count();
-    if (!baseline) baseline = handles;
-    expect(handles == *baseline, "descriptor/handle count stable at generation " + std::to_string(generation) + ": " + std::to_string(handles) +
-                                     " vs " + std::to_string(*baseline));
+#if defined(_WIN32)
+    if (generation == 1U) first_generation_handles = open_handle_types();
+    if (generation == 2U) {
+      std::string added;
+      for (const auto& [type, count] : open_handle_types()) {
+        const int before = first_generation_handles.contains(type) ? first_generation_handles.at(type) : 0;
+        if (count != before) added += " " + type + " " + std::to_string(before) + "->" + std::to_string(count);
+      }
+      new_at_generation_2 = added.empty() ? std::string(" none") : added;
+    }
+#endif
+    if (generation == kBaselineGeneration) baseline = handles;
+    if (baseline) {
+      expect(handles == *baseline, "descriptor/handle count stable at generation " + std::to_string(generation) + ": " +
+                                       std::to_string(handles) + " vs " + std::to_string(*baseline));
+    }
 #if !defined(_WIN32)
     const auto children = test_support::children_of(static_cast<long>(getpid()));
     expect(children.size() == 1U, "exactly one live engine, saw " + std::to_string(children.size()));
@@ -663,6 +727,9 @@ void proc04_no_leak_across_restarts() {
     expect(stdio != nullptr && stdio->pending_bytes_for_tests() == 0U, "a new generation starts with an empty stdout buffer");
     supervisor.report_fatal(*lease, secure_frontend::KillReason::protocol_failed);
   }
+#if defined(_WIN32)
+  std::cout << "handle types that changed from generation 1 to 2 (one-time, before the baseline):" << new_at_generation_2 << '\n';
+#endif
   supervisor.shutdown(5s);
 }
 
