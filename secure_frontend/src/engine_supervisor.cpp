@@ -273,7 +273,12 @@ bool EngineSupervisor::end_generation(const std::shared_ptr<EngineInstance>& ins
 }
 
 bool EngineSupervisor::schedule_restart(const std::chrono::milliseconds healthy_for, const bool reaped) {
-  (void)reaped;
+  if (!reaped) {
+    // Spec V10 / K3: never spawn while a killed child is unreaped; past
+    // reap_timeout the circuit opens whatever the failure count.
+    set_state(SupervisorState::circuit_open, nullptr);
+    return false;
+  }
   const RestartDecision decision = tracker_.record_failure(healthy_for);
   if (decision.circuit_open) {
     set_state(SupervisorState::circuit_open, nullptr);

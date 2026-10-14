@@ -2,19 +2,29 @@
 #include "secure_frontend/engine_stdio_process.hpp"
 
 #include "support/fake_supervised_process.hpp"
+#include "support/server_harness.hpp"
 #include "support/test_paths.hpp"
 #include "support/test_tokenizer.hpp"
 
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <variant>
 #include <vector>
+
+#if defined(_WIN32)
+#include "secure_frontend/win32_prelude.hpp"
+#else
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -369,6 +379,74 @@ void proc04_drain_failure_kills_and_restarts() {
   supervisor.shutdown(5s);
 }
 
+std::size_t open_handle_count() {
+#if defined(_WIN32)
+  DWORD count = 0;
+  (void)GetProcessHandleCount(GetCurrentProcess(), &count);
+  return count;
+#else
+  std::size_t count = 0;
+  std::error_code error;
+  for (const auto& entry : std::filesystem::directory_iterator("/proc/self/fd", error)) {
+    (void)entry;
+    ++count;  // includes the iterator's own descriptor: the same on every call
+  }
+  return count;
+#endif
+}
+
+void proc04_no_leak_across_restarts() {
+  secure_frontend::SupervisorConfig config;
+  config.policy.max_consecutive_failures = 100U;
+  config.policy.backoff_initial = 1ms;
+  config.policy.backoff_max = 1ms;
+  secure_frontend::EngineSupervisor supervisor(config, secure_frontend::make_stdio_process_factory(fake_plan({})));
+  supervisor.start();
+  std::optional<std::size_t> baseline;
+  for (std::uint64_t generation = 1U; generation <= 11U; ++generation) {  // 10 forced restarts
+    expect(test_support::wait_generation_ready(supervisor, generation, 10s), "generation " + std::to_string(generation) + " ready");
+    const std::size_t handles = open_handle_count();
+    if (!baseline) baseline = handles;
+    expect(handles == *baseline, "descriptor/handle count stable at generation " + std::to_string(generation) + ": " + std::to_string(handles) +
+                                     " vs " + std::to_string(*baseline));
+#if !defined(_WIN32)
+    const auto children = test_support::children_of(static_cast<long>(getpid()));
+    expect(children.size() == 1U, "exactly one live engine, saw " + std::to_string(children.size()));
+    for (const long child : children) expect(test_support::process_alive(child), "no zombie among the children");
+#endif
+    auto lease = supervisor.acquire();
+    expect(lease.has_value(), "lease");
+    if (!lease) break;
+    auto* stdio = dynamic_cast<secure_frontend::EngineStdioProcess*>(&lease->process());
+    expect(stdio != nullptr && stdio->pending_bytes_for_tests() == 0U, "a new generation starts with an empty stdout buffer");
+    supervisor.report_fatal(*lease, secure_frontend::KillReason::protocol_failed);
+  }
+  supervisor.shutdown(5s);
+}
+
+void proc04_unreaped_child_opens_circuit() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) {
+    child.reapable = false;  // the kill lands, but the child can never be reaped
+    child.push_line("READY 4096 stop");
+  });
+  secure_frontend::SupervisorConfig config;
+  config.policy.reap_timeout = 100ms;
+  test_support::LogCapture log;
+  secure_frontend::EngineSupervisor supervisor(config, fakes.factory(), std::make_shared<test_support::ManualClock>(), log.sink());
+  supervisor.start();
+  expect(supervisor.wait_for_state(SupervisorState::ready, 5s), "ready");
+  {
+    auto lease = supervisor.acquire();
+    expect(lease.has_value(), "lease");
+    if (lease) supervisor.report_fatal(*lease, secure_frontend::KillReason::protocol_failed);
+  }
+  expect(supervisor.wait_for_state(SupervisorState::circuit_open, 2s), "an unreaped child opens the circuit");
+  expect(fakes.spawned() == 1U, "no respawn while the child is unreaped, although failures are below the limit");
+  expect(supervisor.snapshot().recovery == "exhausted", "recovery=exhausted");
+  expect(log.contains("engine generation 1 ended: unreaped"), "logged as unreaped");
+  supervisor.shutdown(5s);
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -385,5 +463,7 @@ int main(int argc, char* argv[]) {
                                                 {"proc04_fatal_prefix_kills_engine", proc04_fatal_prefix_kills_engine},
                                                 {"proc04_fatal_line_before_ready_kills_as_fatal_line", proc04_fatal_line_before_ready_kills_as_fatal_line},
                                                 {"proc04_ready_timeout_kills_and_counts", proc04_ready_timeout_kills_and_counts},
-                                                {"proc04_drain_failure_kills_and_restarts", proc04_drain_failure_kills_and_restarts}}, failures);
+                                                {"proc04_drain_failure_kills_and_restarts", proc04_drain_failure_kills_and_restarts},
+                                                {"proc04_no_leak_across_restarts", proc04_no_leak_across_restarts},
+                                                {"proc04_unreaped_child_opens_circuit", proc04_unreaped_child_opens_circuit}}, failures);
 }
