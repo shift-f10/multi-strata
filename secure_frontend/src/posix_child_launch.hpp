@@ -44,6 +44,11 @@ struct PreparedExec {
   PreparedExec() = default;
   PreparedExec(const PreparedExec&) = delete;
   PreparedExec& operator=(const PreparedExec&) = delete;
+  // The parent's copy of the cgroup descriptor closes when `start` returns.
+  // The forked child never runs this: it execs or _exits.
+  ~PreparedExec() {
+    if (cgroup_fd >= 0) (void)close(cgroup_fd);
+  }
 
   std::string executable;
   std::vector<std::string> argument_storage;
@@ -53,6 +58,9 @@ struct PreparedExec {
   int sweep_limit{kSweepDefault};
   // The forking process, recorded before fork(); the child compares getppid() to it.
   pid_t expected_parent{-1};
+  // Linux, delegated cgroup v2 only: the generation's cgroup.procs, opened
+  // before fork() by open_cgroup(); -1 = no cgroup.
+  int cgroup_fd{-1};
 };
 
 inline void prepare(PreparedExec& out, const EngineCommand& command, const bool insert_serve) {
@@ -72,6 +80,19 @@ inline void prepare(PreparedExec& out, const EngineCommand& command, const bool 
   out.envp.push_back(nullptr);
   const long open_max = sysconf(_SC_OPEN_MAX);
   out.sweep_limit = open_max > 0 ? static_cast<int>(std::min(open_max, kSweepCap)) : kSweepDefault;
+}
+
+// Opens the generation's cgroup.procs (close-on-exec) when the command names
+// one; called after prepare() (which stays void: SP4's seam calls it unchanged).
+// False = the cgroup cannot be joined; the caller refuses to start. A
+// prepare_generation() that returned nullopt leaves cgroup_procs empty, and
+// the generation runs without a cgroup.
+[[nodiscard]] inline bool open_cgroup(PreparedExec& out, const EngineCommand& command) {
+  if (command.cgroup_procs) {
+    out.cgroup_fd = open(command.cgroup_procs->c_str(), O_WRONLY | O_CLOEXEC);
+    if (out.cgroup_fd < 0) return false;
+  }
+  return true;
 }
 
 // Spec §3.12, parent side: every signal is blocked in the forking thread from
@@ -130,6 +151,8 @@ inline int lift(const int fd) noexcept { return fd < 0 ? -1 : fcntl(fd, F_DUPFD_
   if (getppid() != prepared.expected_parent) _exit(127);
 #endif
   if (setpgid(0, 0) != 0) fail(report_fd);
+  // Spec §3.7(d): join the generation's delegated cgroup before anything runs.
+  if (prepared.cgroup_fd >= 0 && write(prepared.cgroup_fd, "0", 1) != 1) fail(report_fd);
   const int report = lift(report_fd);
   if (report < 0) fail(report_fd);
   const int in = lift(stdin_fd);

@@ -1,5 +1,6 @@
 #include "secure_frontend/engine_stdio_process.hpp"
 
+#include "secure_frontend/cgroup_scope.hpp"
 #include "secure_frontend/config_defaults.hpp"
 #include "secure_frontend/deadline.hpp"
 
@@ -247,6 +248,9 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
   // Everything the child needs is built before fork(); the child body is async-signal-safe.
   posix_launch::PreparedExec prepared;
   posix_launch::prepare(prepared, command, /*insert_serve=*/true);
+  if (!posix_launch::open_cgroup(prepared, command)) {
+    return ProcessError{ProcessErrorCode::platform_failure, "engine cgroup setup failed"};
+  }
   // O_CLOEXEC on every pipe end: nothing created here can leak into this or any
   // other child.  The child's ends reach fds 0/1 through dup2, which clears it.
   int input[2]{-1, -1}; int output[2]{-1, -1}; int errors[2]{-1, -1};
@@ -260,7 +264,9 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
   if (child < 0) { for (int* pipe_fd : {input, output, errors}) { close_fd(pipe_fd[0]); close_fd(pipe_fd[1]); } return ProcessError{ProcessErrorCode::spawn_failed, "fork failed"}; }
   close_fd(input[0]); close_fd(output[1]); close_fd(errors[1]); int child_errno = 0; const ssize_t count = read(errors[0], &child_errno, sizeof(child_errno)); close_fd(errors[0]);
   if (count > 0) { close_fd(input[1]); close_fd(output[0]); int ignored = 0; (void)waitpid(child, &ignored, 0); return ProcessError{ProcessErrorCode::spawn_failed, std::string("execve failed: ") + std::strerror(child_errno)}; }
-  process_id_ = child; process_group_ = child; pidfd_ = open_pidfd(child); stdin_write_ = input[1]; stdout_read_ = output[0]; return std::nullopt;
+  process_id_ = child; process_group_ = child; pidfd_ = open_pidfd(child); stdin_write_ = input[1]; stdout_read_ = output[0];
+  cgroup_dir_ = command.cgroup_procs ? std::optional<std::filesystem::path>(command.cgroup_procs->parent_path()) : std::nullopt;
+  return std::nullopt;
 #endif
 }
 
@@ -486,6 +492,7 @@ void EngineStdioProcess::kill_group() noexcept {
 #if defined(_WIN32)
   if (job_handle_ != nullptr) (void)TerminateJobObject(static_cast<HANDLE>(job_handle_), kSupervisorKillExitCode);
 #else
+  if (cgroup_dir_) (void)kill_cgroup(*cgroup_dir_);  // escape-proof when delegated (spec §3.7d)
   // Spec §3.7a: the process-group id stays valid while any member lives, so
   // this reaches grandchildren even after the leader was reaped.
   if (process_group_ > 0) (void)kill(-process_group_, SIGKILL);
@@ -493,9 +500,14 @@ void EngineStdioProcess::kill_group() noexcept {
 }
 
 void EngineStdioProcess::release_resources(const std::chrono::milliseconds bound) noexcept {
-  (void)bound;
 #if !defined(_WIN32)
+  if (cgroup_dir_) {
+    (void)remove_cgroup(*cgroup_dir_, bound);
+    cgroup_dir_.reset();
+  }
   process_group_ = -1;  // never signal a group id the kernel may hand out again
+#else
+  (void)bound;
 #endif
 }
 

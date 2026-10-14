@@ -14,6 +14,10 @@ struct EngineCommand final {
   std::filesystem::path executable;
   std::vector<std::string> arguments;
   std::map<std::string, std::string, std::less<>> environment;
+  // Linux, delegated cgroup v2 only: the child writes itself into this
+  // cgroup.procs before execve, so even its escaping descendants stay inside.
+  // `{}`: existing designated initializers that omit it keep compiling (-Werror).
+  std::optional<std::filesystem::path> cgroup_procs{};
 };
 
 enum class ProcessErrorCode {

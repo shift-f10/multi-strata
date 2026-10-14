@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 
@@ -83,6 +84,8 @@ class EngineStdioProcess final : public EngineLineTransport, public SupervisedPr
   int stdin_write_{-1};
   int stdout_read_{-1};
   int pidfd_{-1};  // readable once the child exits (Linux 5.3+); -1: the supervisor polls
+  // The generation's delegated cgroup (spec §3.7d); nullopt when not delegated.
+  std::optional<std::filesystem::path> cgroup_dir_;
 #endif
   std::string pending_stdout_;
   std::optional<ExitStatus> exit_status_;

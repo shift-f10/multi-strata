@@ -1,3 +1,5 @@
+#include "secure_frontend/cgroup_scope.hpp"
+
 #include "support/fake_engine_dump.hpp"
 #include "support/server_harness.hpp"
 #include "support/test_paths.hpp"
@@ -159,10 +161,14 @@ void proc05_frontend_sigkill_kills_engine() {
   (void)server->wait_exit(5s);
   expect(test_support::wait_until_gone(children.front(), 2s), "the engine leader dies with a SIGKILLed frontend (PR_SET_PDEATHSIG)");
   if (grandchild) {
-    // Spec §3.7 residual risk: without a delegated cgroup the engine's own
-    // descendants survive a frontend SIGKILL. Logged, not asserted.
-    std::cout << "residual risk (spec 3.7): grandchild " << (test_support::wait_until_gone(*grandchild, 1s) ? "gone" : "survived")
-              << " after a frontend SIGKILL without a delegated cgroup\n";
+    if (secure_frontend::EngineCgroups::detect()) {
+      expect(test_support::wait_until_gone(*grandchild, 2s), "with a delegated cgroup the engine's descendants die too");
+    } else {
+      // Spec §3.7 residual risk: without a delegated cgroup the engine's own
+      // descendants survive a frontend SIGKILL. Logged, not asserted.
+      std::cout << "residual risk (spec 3.7): grandchild " << (test_support::wait_until_gone(*grandchild, 1s) ? "gone" : "survived")
+                << " after a frontend SIGKILL without a delegated cgroup\n";
+    }
     test_support::kill_process(*grandchild);
   }
 }

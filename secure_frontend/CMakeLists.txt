@@ -103,6 +103,7 @@ add_library(secure_frontend_engine_protocol_client
 )
 
 add_library(secure_frontend_engine_stdio_process
+    src/cgroup_scope.cpp
     src/engine_stdio_process.cpp
     src/exit_status.cpp
 )
@@ -542,6 +543,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
 
     secure_frontend_add_test_executable(secure_frontend_server_tests tests/server_test.cpp secure_frontend_test_support)
     secure_frontend_test_paths(secure_frontend_server_tests)
+    target_link_libraries(secure_frontend_server_tests PRIVATE secure_frontend_engine_stdio_process)
     # Later tasks append case names to these three set() lines only. Every
     # server-level test is windows-runtime on Windows: it relies on console
     # groups, Jobs, tokens and process exit codes.
@@ -589,7 +591,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # tasks append case names to these four set() lines only.
     set(SECURE_FRONTEND_SUPERVISOR_UNIT_CASES supervisor_health_literals_per_state proc04_restart_backoff_then_circuit_open proc04_healthy_window_resets_failure_count proc04_missing_engine_opens_circuit_without_spinning proc04_client_err_lines_open_circuit_until_restart supervisor_retires_ended_generation_on_its_own_thread proc04_monitor_fallback_without_pidfd proc04_backoff_survives_stale_wake proc04_fatal_line_before_ready_kills_as_fatal_line proc04_unreaped_child_opens_circuit supervisor_exception_opens_circuit supervisor_shutdown_sends_eof_first_then_kills supervisor_lease_outliving_shutdown_is_safe)
     set(SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES proc04_recovers_after_transient_crash proc04_monitor_detects_idle_crash proc04_fatal_prefix_kills_engine proc04_ready_timeout_kills_and_counts proc04_drain_failure_kills_and_restarts proc04_no_leak_across_restarts)
-    set(SECURE_FRONTEND_SUPERVISOR_LINUX_CASES proc05_setsid_grandchild_is_reaped proc05_setsid_grandchild_is_reaped_at_shutdown supervisor_start_refuses_without_wake shutdown_signal_preserves_errno)
+    set(SECURE_FRONTEND_SUPERVISOR_LINUX_CASES proc05_setsid_grandchild_is_reaped proc05_setsid_grandchild_is_reaped_at_shutdown supervisor_start_refuses_without_wake shutdown_signal_preserves_errno proc05_cgroup_kill_when_delegated)
     set(SECURE_FRONTEND_SUPERVISOR_WINDOWS_CASES proc04_windows_abort_does_not_stall proc04_windows_crash_does_not_stall proc04_windows_write_timeout_kills_engine)
     if(WIN32)
         list(APPEND SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES ${SECURE_FRONTEND_SUPERVISOR_WINDOWS_CASES})
@@ -603,6 +605,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     if(WIN32)
         # Tokenizing and writing a ~240 KB GEN line on a slow runner; the case itself ends in seconds.
         set_tests_properties(secure_frontend_engine_supervisor_tests.proc04_windows_write_timeout_kills_engine PROPERTIES TIMEOUT 300)
+    endif()
+    if(NOT WIN32)
+        set_tests_properties(secure_frontend_engine_supervisor_tests.proc05_cgroup_kill_when_delegated PROPERTIES SKIP_RETURN_CODE 77)
     endif()
 
     secure_frontend_add_test_executable(secure_frontend_http_policy_tests tests/http_policy_test.cpp secure_frontend_http_policy)

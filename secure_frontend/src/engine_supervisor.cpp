@@ -1,6 +1,7 @@
 #include "secure_frontend/engine_supervisor.hpp"
 
 #include "descendant_sweep.hpp"
+#include "secure_frontend/cgroup_scope.hpp"
 #include "secure_frontend/deadline.hpp"
 #include "secure_frontend/engine_stdio_process.hpp"
 #include "secure_frontend/shutdown_signal.hpp"
@@ -63,9 +64,13 @@ std::optional<ChatExecutionOutcome> execute_with_lease(EngineSupervisor& supervi
 }
 
 ProcessFactory make_stdio_process_factory(EngineLaunchPlan plan) {
-  return [plan = std::move(plan)](const std::uint64_t) -> SpawnResult {
+  std::optional<EngineCgroups> cgroups;
+  if (plan.use_delegated_cgroup) cgroups = EngineCgroups::detect();
+  return [plan = std::move(plan), cgroups](const std::uint64_t generation) -> SpawnResult {
+    EngineCommand command = plan.command;
+    if (cgroups) command.cgroup_procs = cgroups->prepare_generation(generation);
     auto process = std::make_unique<EngineStdioProcess>();
-    if (const auto error = process->start(plan.command); error.has_value()) return SpawnFailure{error->message};
+    if (const auto error = process->start(command); error.has_value()) return SpawnFailure{error->message};
     return std::unique_ptr<SupervisedProcess>(std::move(process));
   };
 }

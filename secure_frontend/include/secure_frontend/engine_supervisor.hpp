@@ -1,5 +1,6 @@
 #pragma once
 
+#include "secure_frontend/cgroup_scope.hpp"
 #include "secure_frontend/chat_execution.hpp"
 #include "secure_frontend/config_defaults.hpp"
 #include "secure_frontend/engine_process.hpp"
@@ -194,6 +195,7 @@ class EngineSupervisor final {
 // What the production factory launches for every generation.
 struct EngineLaunchPlan final {
   EngineCommand command;
+  bool use_delegated_cgroup{false};  // Linux: cgroup.kill when a delegated cgroup is detected
 };
 
 // Production factory: an EngineStdioProcess started from `plan` per generation.

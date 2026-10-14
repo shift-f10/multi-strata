@@ -1,4 +1,5 @@
 #include "secure_frontend/engine_supervisor.hpp"
+#include "secure_frontend/cgroup_scope.hpp"
 #include "secure_frontend/engine_stdio_process.hpp"
 #include "secure_frontend/shutdown_signal.hpp"
 
@@ -508,6 +509,38 @@ void proc05_setsid_grandchild_is_reaped_at_shutdown() {
   expect(test_support::wait_until_gone(*grandchild, 2s), "a setsid grandchild alive at shutdown is swept");
   expect_swept_and_reaped(*grandchild);
 }
+
+// C5 (spec §3.7d): with a delegated cgroup v2 each generation runs in its own
+// child cgroup, and cgroup.kill ends a setsid escape with the orphan sweep off.
+void proc05_cgroup_kill_when_delegated() {
+  const auto cgroups = secure_frontend::EngineCgroups::detect();
+  if (!cgroups) {
+    test_support::skip("no delegated cgroup v2 is writable here; run under `systemd-run --user --scope -p Delegate=yes` to exercise it");
+  }
+  const auto dir = test_support::make_temp_dir("c5");
+  const auto pidfile = dir / "grandchild.pid";
+  secure_frontend::SupervisorConfig config;
+  config.policy.max_consecutive_failures = 1U;
+  config.sweep_orphans = false;  // prove that cgroup.kill does the work, not the subreaper sweep
+  auto plan = fake_plan({"--spawn-grandchild", "--grandchild-setsid", "--grandchild-pidfile=" + test_support::utf8_path(pidfile)});
+  plan.use_delegated_cgroup = true;
+  secure_frontend::EngineSupervisor supervisor(config, secure_frontend::make_stdio_process_factory(plan));
+  expect(supervisor.start(), "the supervisor starts");
+  expect(test_support::wait_generation_ready(supervisor, 1U, 10s), "ready");
+  const auto grandchild = test_support::read_pidfile(pidfile, 5s);
+  expect(grandchild.has_value(), "grandchild started");
+  {
+    auto lease = supervisor.acquire();
+    if (lease) supervisor.report_fatal(*lease, secure_frontend::KillReason::protocol_failed);
+  }
+  expect(supervisor.wait_for_state(SupervisorState::circuit_open, 5s), "the generation ended");
+  if (grandchild) {
+    expect(test_support::wait_until_gone(*grandchild, 2s), "cgroup.kill ends a setsid grandchild with no sweep");
+    test_support::kill_process(*grandchild);
+  }
+  expect(!std::filesystem::exists(cgroups->root() / "strata-engine-1"), "the generation's cgroup is removed");
+  supervisor.shutdown(5s);
+}
 #endif
 
 #if defined(_WIN32)
@@ -761,6 +794,7 @@ int main(int argc, char* argv[]) {
                                                 {"supervisor_start_refuses_without_wake", supervisor_start_refuses_without_wake},
                                                 {"proc05_setsid_grandchild_is_reaped", proc05_setsid_grandchild_is_reaped},
                                                 {"proc05_setsid_grandchild_is_reaped_at_shutdown", proc05_setsid_grandchild_is_reaped_at_shutdown},
+                                                {"proc05_cgroup_kill_when_delegated", proc05_cgroup_kill_when_delegated},
 #endif
 #if defined(_WIN32)
                                                 {"proc04_windows_abort_does_not_stall", proc04_windows_abort_does_not_stall},

@@ -120,6 +120,9 @@ int run(const FrontendConfig& config) {
   const secure_frontend::SupervisorConfig supervisor_config = secure_frontend::supervisor_config(config);
   secure_frontend::EngineLaunchPlan plan{.command = {.executable = config.engine.executable.path(),
                                                      .arguments = std::move(*engine_arguments), .environment = {}}};
+  // Spec §3.7(d): detected, never configured; off unless this process runs in
+  // a writable delegated cgroup v2.
+  plan.use_delegated_cgroup = true;
   // The supervisor thread spawns, watches and restarts the engine (spec §3.1).
   // Declared before the listener and the router, so it outlives both; a Lease
   // lives only inside one execute_with_lease() call.

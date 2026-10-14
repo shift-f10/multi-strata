@@ -227,6 +227,9 @@ std::optional<ProcessError> EngineProcess::start(const EngineCommand& command) {
   // Everything the child needs is built before fork(); the child body is async-signal-safe.
   posix_launch::PreparedExec prepared;
   posix_launch::prepare(prepared, command, /*insert_serve=*/false);
+  if (!posix_launch::open_cgroup(prepared, command)) {
+    return ProcessError{ProcessErrorCode::platform_failure, "engine cgroup setup failed"};
+  }
   int error_pipe[2];
   if (pipe2(error_pipe, O_CLOEXEC) != 0) return ProcessError{ProcessErrorCode::platform_failure, "pipe failed"};
   pid_t child = -1;
