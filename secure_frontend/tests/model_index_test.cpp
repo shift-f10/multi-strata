@@ -1,5 +1,7 @@
 #include "secure_frontend/acquire_reason.hpp"
 #include "secure_frontend/canonical_path.hpp"
+#include "secure_frontend/catalog.hpp"
+#include "secure_frontend/engine_gate.hpp"
 #include "secure_frontend/manifest_json.hpp"
 #include "secure_frontend/model_index_model.hpp"
 #include "secure_frontend/model_index_store.hpp"
@@ -215,6 +217,65 @@ void index_rejects_bad_versions_and_retired_dirs() {
   expect(std::holds_alternative<secure_frontend::AcquireError>(installed), "a hand-built bad entry fails closed, never throws");
 }
 
+// SP4 Task 23 / F-58: one lookup for `strata` verbs and the managed launch (Task 24b).
+void find_installed_matches_name_and_tag() {
+  ModelIndex index = secure_frontend::with_installed({}, entry("m", "t", 1, 'a'));
+  const auto ref = [](const std::string_view text) { return *secure_frontend::parse_model_reference(text); };
+  const auto found = secure_frontend::find_installed(index, ref("m:t"));
+  expect(std::holds_alternative<IndexEntry>(found) && std::get<IndexEntry>(found).tag == "t", "name:tag");
+  expect(std::holds_alternative<IndexEntry>(secure_frontend::find_installed(index, ref("m"))), "name alone, one tag installed");
+  const auto unknown = secure_frontend::find_installed(index, ref("m:u"));
+  expect(std::holds_alternative<secure_frontend::AcquireError>(unknown) &&
+             std::get<secure_frontend::AcquireError>(unknown).reason == secure_frontend::AcquireReason::model_unknown,
+         "absent: model_unknown");
+  index = secure_frontend::with_installed(index, entry("m", "u", 1, 'b'));
+  const auto ambiguous = secure_frontend::find_installed(index, ref("m"));
+  expect(std::holds_alternative<secure_frontend::AcquireError>(ambiguous) &&
+             std::get<secure_frontend::AcquireError>(ambiguous).reason == secure_frontend::AcquireReason::usage_error,
+         "several tags: usage_error");
+}
+
+// SP4 §2.3 / F-58: the single gate list/show (Task 23) and run/serve (Task 24b, 27) share; it honours family.
+void engine_gate_honours_profile_family_and_version() {
+  secure_frontend::AcquireManifest m;
+  m.profile = secure_frontend::ManifestProfile::qwen;
+  m.family = secure_frontend::EngineFamily::strata;
+  m.min_version = secure_frontend::built_engine_version();
+  expect(!secure_frontend::engine_gate(m).has_value(), "qwen on strata at this release's version runs");
+  m.family = secure_frontend::EngineFamily::glm;
+  const auto wrong_family = secure_frontend::engine_gate(m);
+  expect(wrong_family && wrong_family->reason == secure_frontend::AcquireReason::engine_profile_unavailable, "family glm refused");
+  m.family = secure_frontend::EngineFamily::strata;
+  m.profile = secure_frontend::ManifestProfile::glm53;
+  const auto glm = secure_frontend::engine_gate(m);
+  expect(glm && glm->reason == secure_frontend::AcquireReason::engine_profile_unavailable, "glm53 until SP6");
+  m.profile = secure_frontend::ManifestProfile::qwen;
+  m.min_version = *secure_frontend::parse_engine_version("9999.0.0");
+  const auto old = secure_frontend::engine_gate(m);
+  expect(old && old->reason == secure_frontend::AcquireReason::engine_too_old &&
+             old->detail.find("needs engine strata >= 9999.0.0") != std::string::npos,
+         "a newer min_version: engine_too_old");
+  expect(secure_frontend::engine_state_text(m) == "needs engine strata >= 9999.0.0", "state text for list/show");
+  m.min_version = secure_frontend::built_engine_version();
+  expect(secure_frontend::engine_state_text(m) == "runnable", "runnable");
+}
+
+#if !defined(_WIN32)
+// Task 15 carry: what scan_model_root_files skips (links, non-P1 names) is counted for list --all / doctor.
+void scan_counts_skipped_entries() {
+  const auto root_path = secure_frontend_test::make_scratch_directory();
+  put(root_path / "m" / "t" / "v1-aaaaaaaaaaaa" / "w.gguf", "one");
+  std::filesystem::create_directory_symlink(root_path / "m", root_path / "link");
+  put(root_path / "m" / "bad:name", "x");
+  const auto root = models_root(root_path);
+  const auto scanned = secure_frontend::scan_model_root(root);
+  const auto* scan = std::get_if<secure_frontend::ModelRootScan>(&scanned);
+  expect(scan != nullptr && scan->files.size() == 1 && scan->skipped == 2, "one file; the link and the non-P1 name are counted");
+  const auto files = secure_frontend::scan_model_root_files(root);
+  expect(std::get<std::vector<secure_frontend::ModelRootFile>>(files).size() == 1, "scan_model_root_files unchanged");
+}
+#endif
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -228,5 +289,10 @@ int main(int argc, char** argv) {
       {"index_inconsistent_manifest_fails_closed", index_inconsistent_manifest_fails_closed},
       {"index_rejects_unknown_keys_and_bad_dirs", index_rejects_unknown_keys_and_bad_dirs},
       {"index_rejects_bad_versions_and_retired_dirs", index_rejects_bad_versions_and_retired_dirs},
+      {"find_installed_matches_name_and_tag", find_installed_matches_name_and_tag},
+      {"engine_gate_honours_profile_family_and_version", engine_gate_honours_profile_family_and_version},
+#if !defined(_WIN32)
+      {"scan_counts_skipped_entries", scan_counts_skipped_entries},
+#endif
   }, failures);
 }

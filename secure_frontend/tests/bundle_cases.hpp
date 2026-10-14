@@ -25,6 +25,11 @@ void make_bundle_tool_output_opens_verifies_and_imports();
 void pull_bundle_resumes_after_interrupt();
 void pull_bundle_incomplete_without_pack_sources();
 void pull_bundle_resume_rehashes_files_from_earlier_run();
+// bundle_cli_test.cpp (Task 23): strata import / verify / export.
+void import_works_without_downloader();
+void cli_verify_export_import_round_trip();
+void failed_export_says_to_remove_target();
+void import_blocked_by_orphan_says_how_to_clear_it();
 #if defined(_WIN32)
 void bundle_rejects_junction_entry_windows();
 #else

@@ -298,6 +298,16 @@ int main(int argc, char** argv) {
       {"pull_budgets_map_to_exit_classes", acquire_cases::pull_budgets_map_to_exit_classes},
       {"discard_partial_runs_only_after_confirmation", acquire_cases::discard_partial_runs_only_after_confirmation},
       {"unreadable_installed_license_requires_interactive_yes", acquire_cases::unreadable_installed_license_requires_interactive_yes},
+      {"program_update_exits_12_without_network", acquire_cases::program_update_exits_12_without_network},
+      {"cli_requires_config_and_known_verb", acquire_cases::cli_requires_config_and_known_verb},
+      {"list_and_show_report_installed_models", acquire_cases::list_and_show_report_installed_models},
+      {"list_all_reports_retired_orphaned_and_staging", acquire_cases::list_all_reports_retired_orphaned_and_staging},
+      {"rm_refuses_loaded_model", acquire_cases::rm_refuses_loaded_model},
+      {"rm_retired_deletes_unheld_versions", acquire_cases::rm_retired_deletes_unheld_versions},
+      {"rm_partials_deletes_other_staging", acquire_cases::rm_partials_deletes_other_staging},
+#if defined(SECURE_FRONTEND_TEST_HOOKS)
+      {"list_outdated_uses_catalog_sequence", acquire_cases::list_outdated_uses_catalog_sequence},
+#endif
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
       {"dl03_third_party_cannot_shadow_catalog", acquire_cases::dl03_third_party_cannot_shadow_catalog},
       {"pull_test_cacert_reaches_argv_in_hook_builds", acquire_cases::pull_test_cacert_reaches_argv_in_hook_builds},

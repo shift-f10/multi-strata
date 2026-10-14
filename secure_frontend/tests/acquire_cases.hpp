@@ -69,4 +69,15 @@ void already_installed_needs_no_network();
 void pull_budgets_map_to_exit_classes();
 void discard_partial_runs_only_after_confirmation();
 void unreadable_installed_license_requires_interactive_yes();
+// acquire_cli_test.cpp (Task 23)
+void program_update_exits_12_without_network();
+void cli_requires_config_and_known_verb();
+void list_and_show_report_installed_models();
+void list_all_reports_retired_orphaned_and_staging();
+void rm_refuses_loaded_model();
+void rm_retired_deletes_unheld_versions();
+void rm_partials_deletes_other_staging();
+#if defined(SECURE_FRONTEND_TEST_HOOKS)
+void list_outdated_uses_catalog_sequence();
+#endif
 }  // namespace acquire_cases

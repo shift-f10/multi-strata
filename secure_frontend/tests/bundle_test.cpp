@@ -85,6 +85,10 @@ int main(int argc, char** argv) {
       {"pull_bundle_resumes_after_interrupt", bundle_cases::pull_bundle_resumes_after_interrupt},
       {"pull_bundle_incomplete_without_pack_sources", bundle_cases::pull_bundle_incomplete_without_pack_sources},
       {"pull_bundle_resume_rehashes_files_from_earlier_run", bundle_cases::pull_bundle_resume_rehashes_files_from_earlier_run},
+      {"import_works_without_downloader", bundle_cases::import_works_without_downloader},
+      {"cli_verify_export_import_round_trip", bundle_cases::cli_verify_export_import_round_trip},
+      {"failed_export_says_to_remove_target", bundle_cases::failed_export_says_to_remove_target},
+      {"import_blocked_by_orphan_says_how_to_clear_it", bundle_cases::import_blocked_by_orphan_says_how_to_clear_it},
 #if defined(_WIN32)
       {"bundle_rejects_junction_entry_windows", bundle_cases::bundle_rejects_junction_entry_windows},
 #else

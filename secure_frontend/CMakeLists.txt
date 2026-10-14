@@ -482,7 +482,24 @@ target_include_directories(secure_frontend_model_store PRIVATE "${CMAKE_CURRENT_
 target_link_libraries(secure_frontend_model_store PUBLIC secure_frontend_manifest_core secure_frontend_json secure_frontend_paths)
 # SP4 §4.9 delta b.
 target_sources(secure_frontend_model_store PRIVATE src/model_index_store.cpp)
+# SP4 §2.3 / F-58: the one engine gate (list/show state, run, managed launch).
+target_sources(secure_frontend_model_store PRIVATE src/engine_gate.cpp)
 secure_frontend_set_warnings(secure_frontend_model_store)
+
+# SP4 Task 23 (spec §1.5): the strata CLI's verbs.
+add_library(secure_frontend_strata_cli src/strata_cli.cpp)
+target_compile_features(secure_frontend_strata_cli PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_strata_cli PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_acquire secure_frontend_typed_config)
+secure_frontend_set_warnings(secure_frontend_strata_cli)
+
+# PX §2: the one user-facing binary. SP4 provides only its acquisition verbs (Controller note 1);
+# strata-secure-server never links secure_frontend_acquire or secure_frontend_strata_cli (§7.1).
+add_executable(strata src/strata_main.cpp)
+target_link_libraries(strata PRIVATE secure_frontend_strata_cli)
+target_compile_features(strata PRIVATE cxx_std_20)
+secure_frontend_set_warnings(strata)
 
 if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     enable_testing()
@@ -857,9 +874,19 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         pull_budgets_map_to_exit_classes discard_partial_runs_only_after_confirmation
         unreadable_installed_license_requires_interactive_yes
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # SP4 Task 23 (spec §1.5, §4.5, §4.8, §6.2): the strata CLI's local verbs.
+    target_sources(secure_frontend_acquire_tests PRIVATE tests/acquire_cli_test.cpp)
+    target_link_libraries(secure_frontend_acquire_tests PRIVATE secure_frontend_strata_cli)
+    # Neither writes a models store: wine runs them; program update is release evidence too.
+    secure_frontend_add_cases(secure_frontend_acquire_tests program_update_exits_12_without_network LABELS release-also)
+    secure_frontend_add_cases(secure_frontend_acquire_tests cli_requires_config_and_known_verb)
+    secure_frontend_add_cases(secure_frontend_acquire_tests list_and_show_report_installed_models
+        list_all_reports_retired_orphaned_and_staging rm_refuses_loaded_model rm_retired_deletes_unheld_versions
+        rm_partials_deletes_other_staging LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     if(SECURE_FRONTEND_TEST_HOOKS)
         secure_frontend_add_cases(secure_frontend_acquire_tests dl03_third_party_cannot_shadow_catalog
-            pull_test_cacert_reaches_argv_in_hook_builds LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+            pull_test_cacert_reaches_argv_in_hook_builds list_outdated_uses_catalog_sequence
+            LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     endif()
     if(WIN32)
         secure_frontend_add_cases(secure_frontend_acquire_tests dl02_published_files_have_private_dacl_windows LABELS windows-runtime)
@@ -887,6 +914,12 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     target_sources(secure_frontend_bundle_tests PRIVATE tests/bundle_pull_test.cpp)
     secure_frontend_add_cases(secure_frontend_bundle_tests pull_bundle_resumes_after_interrupt pull_bundle_incomplete_without_pack_sources
         pull_bundle_resume_rehashes_files_from_earlier_run LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # SP4 Task 23 (spec §5): strata import / verify / export; these write a models store.
+    target_sources(secure_frontend_bundle_tests PRIVATE tests/bundle_cli_test.cpp)
+    target_link_libraries(secure_frontend_bundle_tests PRIVATE secure_frontend_strata_cli)
+    secure_frontend_add_cases(secure_frontend_bundle_tests import_works_without_downloader cli_verify_export_import_round_trip
+        failed_export_says_to_remove_target import_blocked_by_orphan_says_how_to_clear_it
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     if(WIN32)
         secure_frontend_add_cases(secure_frontend_bundle_tests bundle_rejects_junction_entry_windows LABELS windows-runtime)
     else()
@@ -909,6 +942,12 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     secure_frontend_add_cases(secure_frontend_model_index_tests index_inconsistent_manifest_fails_closed
         index_rejects_unknown_keys_and_bad_dirs index_rejects_bad_versions_and_retired_dirs)
+    # SP4 Task 23 / F-58: shared lookup and engine gate (pure); Task 15 carry: skipped-entry count.
+    secure_frontend_add_cases(secure_frontend_model_index_tests find_installed_matches_name_and_tag
+        engine_gate_honours_profile_family_and_version)
+    if(NOT WIN32)
+        secure_frontend_add_cases(secure_frontend_model_index_tests scan_counts_skipped_entries)
+    endif()
 
     secure_frontend_add_test_executable(secure_frontend_manifest_tests tests/manifest_test.cpp secure_frontend_model_store)
     secure_frontend_add_cases(secure_frontend_manifest_tests source_url_grammar_matrix dns_names_and_wildcards proxy_grammar)

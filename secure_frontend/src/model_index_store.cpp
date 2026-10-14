@@ -13,8 +13,8 @@
 
 namespace secure_frontend {
 
-std::variant<std::vector<ModelRootFile>, PathError> scan_model_root_files(const CanonicalRoot& root) {
-  std::vector<ModelRootFile> files;
+std::variant<ModelRootScan, PathError> scan_model_root(const CanonicalRoot& root) {
+  ModelRootScan scan;
   std::vector<std::optional<RelativePath>> pending{std::nullopt};
   while (!pending.empty()) {
     const auto directory = std::move(pending.back());
@@ -24,13 +24,36 @@ std::variant<std::vector<ModelRootFile>, PathError> scan_model_root_files(const 
     for (const auto& entry : std::get<std::vector<DirectoryEntry>>(listed)) {
       const std::string text = directory ? directory->generic() + "/" + entry.name : entry.name;
       auto relative = parse_relative_path(text);
-      if (!std::holds_alternative<RelativePath>(relative)) continue;  // not P1-portable: not ours
+      if (!std::holds_alternative<RelativePath>(relative)) {  // not P1-portable: not ours
+        ++scan.skipped;
+        continue;
+      }
       if (entry.type == EntryType::directory) pending.emplace_back(std::get<RelativePath>(std::move(relative)));
-      else if (entry.type == EntryType::regular_file) files.push_back(ModelRootFile{text, entry.size});
+      else if (entry.type == EntryType::regular_file) scan.files.push_back(ModelRootFile{text, entry.size});
+      else ++scan.skipped;  // link, junction, device, FIFO: never followed
     }
   }
-  std::sort(files.begin(), files.end(), [](const ModelRootFile& a, const ModelRootFile& b) { return a.path < b.path; });
-  return files;
+  std::sort(scan.files.begin(), scan.files.end(), [](const ModelRootFile& a, const ModelRootFile& b) { return a.path < b.path; });
+  return scan;
+}
+
+std::variant<std::vector<ModelRootFile>, PathError> scan_model_root_files(const CanonicalRoot& root) {
+  auto scanned = scan_model_root(root);
+  if (auto* failure = std::get_if<PathError>(&scanned)) return *failure;
+  return std::get<ModelRootScan>(std::move(scanned)).files;
+}
+
+std::variant<IndexEntry, AcquireError> find_installed(const ModelIndex& index, const ModelReference& reference) {
+  const IndexEntry* match = nullptr;
+  for (const auto& entry : index.models) {
+    if (entry.name != reference.name || (reference.tag && entry.tag != *reference.tag)) continue;
+    if (match != nullptr) return AcquireError{AcquireReason::usage_error, "several tags installed; name one as <name:tag>"};
+    match = &entry;
+  }
+  if (match == nullptr) {
+    return AcquireError{AcquireReason::model_unknown, reference.tag ? model_ref_text(reference.name, *reference.tag) : reference.name};
+  }
+  return *match;
 }
 
 namespace {
