@@ -41,6 +41,9 @@ struct ConfigKey final {
 // True for an object path that prefixes at least one key ("limits", "limits.http").
 [[nodiscard]] bool is_config_section(std::string_view path) noexcept;
 [[nodiscard]] std::string_view type_reason(ConfigValueType type) noexcept;
+// The README key table (secure_frontend/README.md, between the config-keys
+// markers); a test fails when they differ.
+[[nodiscard]] std::string render_config_schema_markdown();
 
 enum class ConfigSource { file, command_line };
 using ConfigDraftValue = std::variant<bool, std::int64_t, std::string, std::vector<std::string>>;

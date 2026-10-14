@@ -579,6 +579,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_typed_config_tests cfg06_config_has_no_secret_typed_member)
     secure_frontend_add_cases(secure_frontend_typed_config_tests cfg06_validated_config_bytes_do_not_contain_token
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # D3: the README key table equals render_config_schema_markdown().
+    secure_frontend_add_cases(secure_frontend_typed_config_tests readme_config_table_matches_schema
+        ARGS ${CMAKE_CURRENT_SOURCE_DIR}/README.md)
     if(WIN32)
         secure_frontend_add_cases(secure_frontend_typed_config_tests cfg01_config_with_everyone_write_ace_rejected
             LABELS windows-runtime)

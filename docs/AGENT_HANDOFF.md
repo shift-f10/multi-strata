@@ -27,7 +27,10 @@ without asking the owner.
 1. **Scope is the full release path**, split into sub-projects SP0–SP7:
    - SP0 — foundation and hardening of `secure_frontend`. **Done on branch
      `sp0-foundation-hardening`** (not yet pushed or merged).
-   - SP1 — typed configuration, canonical paths, CSPRNG tokens.
+   - SP1 — typed configuration, canonical paths, CSPRNG tokens. **Done on
+     branch `sp1-typed-config-paths-tokens`** (local commits, not pushed or
+     merged; no CI run yet, so every `windows-runtime` case is pending the
+     `windows-msys2-clang` job).
    - SP2 — child supervision (`PROC-*` tests).
    - SP3 — API concurrency, streaming, and `NET-*`/`WEB-*`/`DOS-*`/`EXT-*` tests.
    - SP4 — the explicit `acquire` command.
@@ -74,6 +77,7 @@ without asking the owner.
    fixes are listed under "Verification performed". The wine results below
    remain a smoke test only. After the submodule layout: run `38478775552`
    (branch `layout/upstream-submodule` @ `4aa742c9`), all blocking jobs green.
+   SP1 has not been pushed; no CI run covers it.
 
 ## Current baseline
 
@@ -219,6 +223,78 @@ says why it has none.
 | CI (T6) | `.github/workflows/secure-frontend.yml`: blocking `linux-gcc` (+ `pytest -q`), `linux-clang`, `windows-llvm-mingw-cross`, `windows-msys2-clang`, `top-level-integration` (root CMake, `STRATA_NATIVE_EXPERTS=OFF`, no llama.cpp clone); non-blocking `windows-msvc`. Green on run `38458255140` (all blocking jobs; `windows-msys2-clang` 19/19). `windows-msys2-clang` links with `-static` (preset) so a child launched with the allowlisted environment, which has no `PATH`, needs no runtime DLL. See [`secure-frontend-ci.md`](secure-frontend-ci.md). |
 | Docs (D1–D4) | `secure_frontend/README.md` build section and current behavior; `token_reader.hpp` comment describes the Windows checks that run, unreachable `protected_file_unsupported_on_platform` removed; this handoff; `secure-frontend-ci.md`; `engine-protocol-limits.md`. | Builds and tests re-run after the header change (below). |
 
+### SP1 deliverables (branch `sp1-typed-config-paths-tokens`)
+
+Spec: [`superpowers/specs/2026-10-13-sp1-typed-config-paths-tokens-design.md`](superpowers/specs/2026-10-13-sp1-typed-config-paths-tokens-design.md)
+(§8 lists every N/C/P/K/A/D item); plan:
+[`superpowers/plans/2026-10-13-sp1-typed-config-paths-tokens.md`](superpowers/plans/2026-10-13-sp1-typed-config-paths-tokens.md).
+Task 2 is a shared pre-task committed on `main` (SP2 consumes it); every other
+row is a commit on the SP1 branch (fix rounds are separate commits, listed in
+the same row). Each row names the regression tests from its commit message.
+Every test with the CTest label `windows-runtime` is **pending
+windows-msys2-clang**: that job is authoritative for Windows and has not run any
+SP1 commit; wine is a smoke test only (see "Verification performed", SP1).
+
+| Task / commit | Items | What changed | Regression tests / check |
+| --- | --- | --- | --- |
+| 2 — `17d2452d` (on `main`) | §3.10 | `secure_frontend_add_cases(<binary> <case>... [ARGS] [LABELS] [TIMEOUT])` registers one CTest test per case (`<binary>.<case>`), dispatched through `secure_frontend_test::run_cases` (`--case`, `--list`); label `windows-runtime` (empty off Windows), excluded by the `windows-llvm-mingw-cross` test preset; scratch directories via `mkdtemp` (0700) under `<build>/test-tmp` (Windows: explicit protected DACL), removed on every exit path. Helper names, `<binary>.<case>`, the label and the preset exclusion are frozen for SP2. | Linux 111/111, wine 102/102 at that commit |
+| 1 — `6be5042e` | N1, N2; defect a | Listener addresses are classified from the parsed bytes (`parse_listener_address`): every spelling of the unspecified address needs `--allow-wildcard-bind`; `::ffff:127.0.0.1` and the long loopback form are loopback; `localhost` (ASCII case-insensitive) maps to `127.0.0.1` without a resolver call; every other hostname is rejected; `bind()` uses the canonical text. `inet_ntop` runs during validation, before `WSAStartup` on Windows (wine passed; **pending windows-msys2-clang**). | `net03_wildcard_spellings_need_wildcard_opt_in`, `net03_remote_opt_in_alone_rejects_wildcard`, `net01_loopback_spellings_classified_from_bytes`, `net02_hostname_rejected_before_bind`, `net01_localhost_maps_to_ipv4_loopback` |
+| 3 — `828daac8` | C1 | One strict bounded JSON reader (`json.hpp`: duplicate keys, depth, size, integers only, BOM, trailing data) shared by the chat schema and the tokenizer pack. | `json_rejects_duplicate_keys`, `json_rejects_depth_over_limit`, `json_rejects_non_integer_numbers` (+ BOM/trailing/size cases) |
+| 4 — `95ca08ad`, fix `67634f81` | C2 | Typed `FrontendConfig`, the schema table `config_schema()` (one row per key: type, range, default, option, description) and `validate()` collecting every issue by key path with a fixed reason; `ready_timeout` 900 s; `limits.chat.max_body_bytes` default 49152. Fix: member names that are empty or contain `.` are unknown keys (no aliasing of nested keys); a duplicate path on insert is an error. | `cfg01_unknown_key_rejected`, `cfg01_duplicate_key_rejected`, `cfg01_type_confusion_rejected`, `cfg01_missing_required_rejected`, `cfg01_out_of_range_rejected`, `typed_config_cross_field_rules`, `typed_config_errors_never_contain_values` (all `windows-runtime` from Task 9: **pending windows-msys2-clang**) |
+| 5 — `67ac645a` | C6, C8 | `strata-secure-server --config FILE` and `--check` go through the one validator; an option wins over the file and `--check` reports each overridden key; option values are never echoed. End-to-end harness (process runner, HTTP client, server fixture, fake engine). | `cli_config_file_and_flags_share_validator`, `cli_flag_overrides_file_and_is_reported`, `cli_check_prints_no_token`, `cli_unknown_option_does_not_echo_value` (`windows-runtime` from Task 9: **pending windows-msys2-clang**) |
+| 6 — `2b0f83b4`, fix `e6e82aa1` | C3, N3, N4 | The server binds before it spawns the engine; process-level NET tests. Fix: the C3 guard is deterministic (an unstartable engine plus an unbindable address must report the bind error). | `cfg01_invalid_config_fails_before_listener_and_child`; acceptance `net01_default_listener_is_loopback_only` (`GetExtendedTcpTable`), `net02_remote_addresses_need_opt_in`, `net02_error_is_non_secret_and_exits_before_bind` — all four `windows-runtime` from Task 9: **pending windows-msys2-clang** (the C3 guard's RED was never shown on Windows) |
+| 7 — `d9613548` | C4, C5; defect d | Listener, parser, chat schema and chat execution take their limits from `FrontendConfig`; defaults live only in `config_defaults.hpp`. Accepted deviation: an over-bound declared `Content-Length` is answered `400` from the headers alone (`413` is for bytes actually received past the bound). | `parser_honors_configured_max_request_bytes`, `ready_timeout_is_configurable`, `ready_timeout_defaults_to_900_seconds`, `subsystem_limits_follow_config` (`windows-runtime` from Task 9: **pending windows-msys2-clang**) |
+| 8 — `51059af4` | P1 | One relative-path grammar (`RelativePath`) for secret sources and model artifacts; the two disagreeing grammars are deleted. | `cfg02_rejects_traversal_and_absolute`, `cfg02_rejects_nul_and_control_bytes`, `cfg04_rejects_reserved_and_device_names`, `cfg04_rejects_trailing_dot_space_and_8dot3`, `cfg04_rejects_ads_and_drive_forms`, `relative_path_accepts_portable_forms` |
+| 9 — `b36dd17a`, fix `5d6232e5` | P2, P3, P7; defect e | `CanonicalRoot`/`CanonicalFile` (`open_root`, `open_executable`); the engine receives the canonical models root; Windows root forms (UNC, device, `\\?\`) rejected and network/redirected final paths reported actionably. Fix: `roots.secret` defaults to the config file's folder only for a `file:` token source; an `env:` source never opens it. From here 24 cases that open real roots are `windows-runtime` (engine_arguments, typed_config, subsystem_limits, server_cli, server_e2e): **pending windows-msys2-clang**. | `cfg03_engine_receives_canonical_models_root`, `cfg02_rejects_relative_root`, `cfg02_rejects_shared_writable_root`, `cfg02_root_may_traverse_symlink`, `cfg02_sibling_prefix_root_rejected`, `cfg02_engine_executable_must_be_private_regular_file`, `cfg04_rejects_unc_device_and_extended_roots`, `cfg04_final_path_on_network_share_is_actionable`; fix: `cfg02_env_token_ignores_config_folder_permissions`, `cfg02_file_token_default_secret_root_reports_one_issue` (POSIX) |
+| 10 — `e07b0601` | P4 | Linux: `openat2(RESOLVE_BENEATH\|NO_SYMLINKS\|NO_MAGICLINKS\|NO_XDEV)` below a root, with an `openat(O_NOFOLLOW)` walk on `ENOSYS`/`EPERM`; the Linux token reader uses it; hard-linked token files rejected. | `cfg03_rejects_hardlinked_token_file`, `cfg03_rejects_symlinked_intermediate_directory`, `cfg03_rejects_symlinked_final_file`, `cfg03_fallback_walk_matches_openat2`, `cfg03_rejects_mount_crossing` |
+| 11 — `9d9b1fba` | P5; defect b | Windows: `READ_CONTROL` handle walk below the root with reparse-point and hard-link rejection; the Windows token reader uses it (the old reader is deleted). The defect-b fix (handles that can read the DACL) is verified by reading only. | `auth02_windows_token_file_reads_with_private_dacl`, `cfg03_rejects_junction_below_root`, `cfg03_rejects_symlink_below_root`, `paths_handle_non_ascii_and_long_names` (Review Focus 4; passes on Linux) — the Windows four are **pending windows-msys2-clang** (wine 0/4: `GetFinalPathNameByHandleW` beyond `MAX_PATH`, `D:P` dropped, no junctions, symlink seen as not-found) |
+| 12 — `ccd7c63b` | C7 | Config files and their folders are opened through the path module and refused when other users can write them (or when owned by neither euid nor root). | `cfg01_group_writable_config_rejected` (Linux), `cfg01_config_with_everyone_write_ace_rejected` (`windows-runtime`; wine passes but does not model DACLs: **pending windows-msys2-clang**) |
+| 13 — `96aaf699`, fix `56a60c5d` | P6 | Inventory and tokenizer pack enumerate (`list_directory`) and open through the canonical-path module; symlinks/junctions and case-folded duplicate IDs fail naming the entry; non-portable `.gguf` names and non-portable directory names fail; other non-portable non-model files are ignored. | `inventory_symlink_error_names_entry` (Review Focus 1), `inventory_duplicate_detection_is_case_insensitive` (Review Focus 5), `inventory_ignores_non_portable_non_model_names`, `inventory_rejects_non_portable_directory`, `cfg03_inventory_rejects_symlink_entry`, `cfg03_tokenizer_file_swapped_to_symlink_rejected`; Windows junction variants `cfg03_inventory_rejects_junction_entry`, `cfg03_tokenizer_file_swapped_to_junction_rejected` and the root-opening inventory/tokenizer cases: **pending windows-msys2-clang** (wine cannot create junctions) |
+| 14 — `264edde1` | P8, P9 | `create_directory_within` a root (symlinked components rejected); `roots.logs`/`roots.cache` are checked by `validate()` (absent-but-creatable under a private parent) and created 0700 only by serve and `init`; `--check` creates nothing; duplicate path checks outside the module removed (P9 grep). | `cfg02_create_within_root_writes_nothing_outside`, `cfg02_logs_and_cache_roots_are_created_private`, `cli_check_has_no_side_effects` (all `windows-runtime`: **pending windows-msys2-clang**; wine: the junction case fails, the other two pass) |
+| 15 — `5cc8a91f` | K1, K6 (type) | `SecretBytes` (fixed capacity, wiped on destroy and move), CSPRNG token generator (`getrandom`, fails closed; `BCryptGenRandom` on Windows), base64url; tokens are 43 characters. | `base64url_known_vectors`, `token_generate_is_43_base64url_chars`, `token_generate_differs_across_calls`, `secret_bytes_wiped_on_destroy_and_move`, `secret_bytes_rejects_over_capacity` (wine 5/5; BCryptGenRandom/SecureZeroMemory **pending windows-msys2-clang**) |
+| 16 — `e0f4294c`, fix `510617b5` | K2 | Linux token store: `O_EXCL\|O_NOFOLLOW` temp, `fsync`, `renameat2(RENAME_NOREPLACE)` (or replace with `--force`), 0600 file in a 0700 directory. Fix: rotate asserted; a target that cannot be inspected fails closed. | `token_store_creates_0600_file_in_0700_dir`, `token_store_rotate_is_atomic`, `token_store_refuses_symlinked_target` |
+| 17 — `25ba2270`, fix `013f540a` | K3 | Windows token store: DPAPI (user scope) `STRATAK1` + blob, protected DACL `O:<user>D:P(A;;FA;;;<user>)(A;;FA;;;SY)`, `CREATE_NEW` temp, `FlushFileBuffers`, `MoveFileExW(WRITE_THROUGH)`; the reader unwraps DPAPI and still reads plaintext operator files. Fix: the holding directory is opened with `open_beneath` and pinned (no `FILE_SHARE_DELETE`) across create and move; creation and move are still by path (handle-relative `NtCreateFile` deferred); protection against renaming an ancestor relies on NTFS refusing to rename directories with open handles below them — unverified. | `token_store_windows_round_trips_through_dpapi`, `token_store_windows_file_has_private_dacl`, `token_reader_windows_accepts_plaintext_under_private_dacl` — **pending windows-msys2-clang** (wine 0/3 at the `D:P` gate; a DPAPI probe round-trips under wine) |
+| 18 — `f9f146ac` | K4, K5, K6; defect c | `secure_frontend_token_reader_tests` runs on every platform; one trailing LF or CRLF; result is `SecretBytes`; 32-byte floor, 256-byte cap, 4 KiB file cap; quoted tokens rejected with a reason; read buffers wiped. | `auth02_token_file_with_trailing_lf_accepted`, `auth02_token_file_with_trailing_crlf_accepted`, `auth02_short_operator_token_rejected`, `auth02_token_file_over_4k_rejected`, `token_store_round_trips_through_reader`, `auth02_token_file_with_two_newlines_rejected`, `auth02_token_file_with_bom_rejected`, `auth02_notepad_edits_rejected_with_reason` (Review Focus 3); the 8 Windows file cases are **pending windows-msys2-clang** (wine fails on the DACL) |
+| 19 — `137f2b4a` | K6, K7 (AUTH-03, A3) | One `TokenVerifier` in the library; `detail::fixed_window_equals` compares zero-padded 256-byte windows, folds the length difference in, never matches an empty stored value. Reviewer disassembly: at `-O2` the compare is branch-free and both `explicit_bzero` calls survive. | `auth03_compare_touches_fixed_window`, `auth03_prefix_and_suffix_variants_rejected`, `auth03_router_uses_verifier` |
+| 20 — `2b480430` | K8, K9 | Environment token wiped and unset after reading; `install_process_defaults()` sets `RLIMIT_CORE` 0 and `PR_SET_DUMPABLE` 0 (Linux) or `SetErrorMode` (Windows) for every binary that calls it. Windows scrub: accepted deviation (gaps below). | `cfg05_env_token_absent_from_proc_environ`, `server_process_is_not_dumpable` (POSIX). Windows scrub has no ctest case (wine probe only: `getenv`/`_wgetenv` null, Win32 entry absent): **pending windows-msys2-clang** |
+| 21 — `92a8419a`, fix `dae07073` | K10 | `strata-secure-server init --config FILE [--force]` writes the token first, then an owner-only config, atomically; refuses to replace either without `--force`; never prints the token. Fix: one JSON tree renderer shared with the tests; a non-regular config target is refused before anything is written; nothing is created on bad input. | `init_writes_config_and_token_then_server_starts`, `init_refuses_to_overwrite_without_force`, `init_force_refuses_a_non_regular_config_target`, `init_failure_creates_nothing` (`windows-runtime`: **pending windows-msys2-clang**; wine fails three on the `D:P` gap) |
+| 22 — `792b7651` | K11, K12 | CFG-05 end to end; CFG-06 at the type level. | `cfg05_token_absent_from_child_argv_env_and_outputs`, `cfg06_config_has_no_secret_typed_member`, `cfg06_validated_config_bytes_do_not_contain_token` (the first and third `windows-runtime`: **pending windows-msys2-clang**) |
+| 23 — `3810a67b`, fix `1904f827` | A1, A2, A4 | AUTH acceptance. Fix: the AUTH-04 sweep derives flags and `STRATA_*` names from the schema and usage text; AUTH-01 also sends a tab separator and a duplicate `Authorization` header over TCP. | `auth01_every_route_rejects_missing_malformed_wrong_token`, `auth01_socket_rejects_missing_and_wrong_token_on_every_route`, `auth02_valid_token_succeeds_and_is_not_echoed`, `auth04_empty_token_rejected_on_loopback`, `auth04_no_switch_disables_auth` (the four socket/process cases `windows-runtime`, pass under direct wine: **pending windows-msys2-clang**) |
+| 24 — this commit | D1–D5 | `render_config_schema_markdown()` generates the README key table from `config_schema()`; `secure_frontend/README.md` "Configuration" section and updated security contract; `docs/security/deployment.md` token and Windows ACL bullets; `engine-protocol-limits.md` keys vs internal constants (and the `EngineProtocolLimits` classification); this handoff; `secure-frontend-ci.md` label note; `bootstrap-llvm-mingw.sh` deletes an archive whose digest does not match. | `readme_config_table_matches_schema` (unlabelled; runs under wine too); D4 probe on a scratch copy (no network): before `exit=1` with the corrupt archive kept, after `exit=1` and an empty `downloads` |
+
+Accepted deviations from the SP1 spec (controller and owner rulings):
+
+- `limits.chat.max_body_bytes` defaults to 49152, not 262144: the spec's own
+  cross-field rule (`≤ max_request_bytes − max_header_bytes` = 65536 − 16384)
+  rejects 262144.
+- `roots.tokenizer_pack` is required (spec §4 says optional) (R7).
+- A config file and its directory may be owned by root as well as by the
+  effective user (spec C7 says euid) (R7).
+- The Windows root is opened through its own link or junction and its final
+  path is taken (spec §3.4 says open with `OPEN_REPARSE_POINT`); every
+  component **below** the root is opened with `OPEN_REPARSE_POINT` and reparse
+  points are rejected (R7).
+- `install_process_defaults()` hardening (non-dumpable, `RLIMIT_CORE` 0,
+  `SetErrorMode`) applies to every binary that calls it, not only
+  `strata-secure-server` (R7).
+- Windows environment-token scrub: owner-ruled deviation from spec §3.6 (gap 3
+  below).
+- `parser_honors_configured_max_request_bytes` asserts `400`, not `413`, for
+  an over-bound declared `Content-Length` (Task 7).
+- `roots.secret` defaults to the config file's folder only for a `file:` token
+  source; an `env:` source never opens it (Task 9 fix).
+- `read_token(path)` and the smoke server's `--secret-root` must be absolute
+  (spec §3.4) (Task 10).
+- Under the models root, entries whose names fail the grammar are ignored only
+  when they are non-`.gguf` files; non-portable directory names, `.gguf` files
+  with bad names, symlinks and case-fold duplicates fail the inventory, naming
+  the entry (Task 13).
+- JSON config member names that are empty or contain `.` are rejected as
+  unknown keys (Task 4 fix).
+- `readme_config_table_matches_schema` strips `\r` before comparing, so a
+  Windows checkout with `core.autocrlf=true` (GitHub's `windows-latest`) does
+  not fail it (Task 24; the brief's version compared raw bytes).
+
 The native frontend enforces these in-process boundaries: configuration
 validation, secret-source metadata, Linux/Windows protected-file token reading,
 exact Host/Origin/CORS policy, bounded HTTP request parsing with a total request
@@ -231,18 +307,34 @@ upstream network-capable behavior.
 
 ## Current security behavior implemented in `secure_frontend`
 
-`secure_frontend::validate_config()` is the initial enforced boundary:
+Since SP1, `strata-secure-server` configuration is one typed, schema-validated
+`FrontendConfig` (`frontend_config.hpp`; every key is in the README key table,
+generated from `config_schema()`), read from built-in defaults, then an
+optional strict JSON file (`--config`), then command-line options:
 
 - Defaults to `127.0.0.1:8080`.
-- Requires a supplied, non-blank API key for every listener, including
-  loopback.
-- Requires `allow_remote=true` in addition to the API key for every
-  non-loopback literal or hostname.
-- Requires a separate `allow_wildcard_bind=true` for `0.0.0.0` or `::`; a
-  remote-listening opt-in alone cannot expose every interface.
-- Discards the plaintext key after validation; the validated configuration
-  retains only a boolean indicating that a non-blank key was supplied.
-- Rejects invalid hosts and ports outside `1..65535`.
+- The listener classifies its address from the parsed bytes (IPv4/IPv6
+  literals) and rejects every hostname except `localhost` (ASCII
+  case-insensitive), which maps to `127.0.0.1` with no resolver call.
+- Requires `listener.allow_remote` for every non-loopback address, and in
+  addition `listener.allow_wildcard_bind` for every spelling of the unspecified
+  address (`0.0.0.0`, `::`, `::0`, `0::0`, the long form, `::ffff:0.0.0.0`, …).
+- The whole configuration is validated, collecting every issue by key path
+  with a fixed reason (no values echoed), before the listener binds or the
+  engine starts. `--check` opens and inspects but never creates, writes,
+  renames or deletes anything; only serve and `init` create the logs/cache
+  roots. Config files (and their folders) writable by other users are refused.
+- The engine is spawned only after the listener is bound.
+- Roots and the engine executable are canonical (`CanonicalRoot`,
+  `CanonicalFile`); files below a root are opened with `openat2`/a no-follow
+  walk on Linux and a `READ_CONTROL` reparse-rejecting walk on Windows.
+- Every listener requires a token, including on loopback. `init` generates a
+  43-character CSPRNG base64url token; operator tokens must be 32–256 bytes.
+  The token is held in `SecretBytes`, compared in a fixed 256-byte window
+  (`TokenVerifier`), never stored in the config object and never passed to the
+  child. An environment token is wiped and removed from the environment after
+  it is read. The server is non-dumpable with a zero core limit (Linux).
+- Rejects ports outside `1..65535`.
 
 This is intentionally stricter than upstream. Do not weaken it to recover
 legacy behavior. Add an explicit, reviewed migration path if compatibility
@@ -260,12 +352,13 @@ The implemented primitives and their current runtime connections are:
   keeps CORS off by default, and only permits byte-for-byte configured CORS
   origins.
 - `TokenReader` resolves an environment source or a canonical-root,
-  owner-only regular protected file without symlinks/reparse points. The
-  Windows branch validates final handle paths, current-user ownership, and a
-  protected private DACL on the root and every component (see the comment in
-  `token_reader.hpp`). It is fail-closed, compiles in the cross build, and has
-  **no Windows runtime test**: `secure_frontend_token_reader_tests` is a
-  UNIX-only target.
+  owner-only regular protected file without symlinks/reparse points or extra
+  hard links, through the canonical-path module. The Windows branch validates
+  final handle paths, current-user ownership, and a protected private DACL on
+  the root and every component, and unwraps a DPAPI `STRATAK1` file. It is
+  fail-closed. Since SP1 `secure_frontend_token_reader_tests` builds and runs
+  on every platform; its Windows file cases are `windows-runtime` and **pending
+  windows-msys2-clang**.
 - `EngineProcess` and `EngineStdioProcess` start a child without a shell or
   inherited environment and reject embedded NUL in executable/argv/env values.
   On POSIX the child gets only stdio (argv/env prepared before `fork`,
@@ -282,8 +375,8 @@ The implemented primitives and their current runtime connections are:
   policy, bearer validation, strict CORS/preflight behavior, and a synchronous,
   bounded request-body dispatcher seam.
 - `HttpSocketServer` binds only a revalidated numeric configured address
-  (`::` as IPv6-only), reads one request under a 30 s total deadline and a
-  64 KiB cap (`413` above it), sends with a timeout, and survives clients that
+  (`::` as IPv6-only), reads one request under the configured total deadline
+  and size cap (`limits.http.*`; defaults 30 s and 64 KiB), sends with a timeout, and survives clients that
   close or reset early, and half-closes plus briefly drains before closing.
   `secure_frontend_http_socket_server_tests` (10 cases) runs on this Linux host
   and under wine; it is portable, so the MSYS2 job runs it on Windows.
@@ -355,16 +448,19 @@ owns it (see the decisions above).
 ### Phase 1 — native security primitives
 
 1. Extend `secure_frontend` with immutable typed configuration for request
-   time/concurrency limits and roots for models/logs/cache. **SP1.** (SP0 added
-   `HttpSocketServerLimits` as a defaulted parameter to be promoted.)
+   time/concurrency limits and roots for models/logs/cache. **Done (SP1)**:
+   `FrontendConfig`, `--config`/`--check`/`init`; concurrency stays 1 until SP3.
 2. Add canonical-path validation for Linux and Windows, including reparse
-   points, UNC/device/ADS forms, and traversal prevention. **SP1.**
+   points, UNC/device/ADS forms, and traversal prevention. **Done (SP1)**;
+   Windows runtime pending the `windows-msys2-clang` job.
 3. Add secure token generation/storage: CSPRNG; DPAPI-backed file on Windows;
    user-only permissions on Linux. Tokens must never reach log output,
-   environment, child command lines, or metrics. **SP1.**
+   environment, child command lines, or metrics. **Done (SP1)**; the Windows
+   DPAPI store is pending the `windows-msys2-clang` job.
 4. Implement all relevant `CFG-*` and `AUTH-*` tests from
    `tests/security/README.md` before connecting these primitives to a server.
-   **SP1.**
+   **Done (SP1)** for CFG-01..06 and AUTH-01..04 (plus NET-01..03); the
+   `windows-runtime` cases are pending the `windows-msys2-clang` job.
 
 ### Phase 2 — portable child supervision
 
@@ -400,7 +496,7 @@ owns it (see the decisions above).
 ### Phase 4 — verified, explicit artifact acquisition
 
 1. Implement an offline-by-default model inventory and local-file validation.
-   **Inventory done; canonical-root validation is SP1.**
+   **Inventory done; canonical-root validation done (SP1).**
 2. Implement the explicit `acquire` command with HTTPS-only sources, byte
    limits, SHA-256 verification, temporary staging, and atomic publish. **SP4.**
 3. Add `DL-*` tests using only local fixture servers. Never make tests fetch
@@ -429,6 +525,32 @@ owns it (see the decisions above).
    do not weaken the gate to make a source archive pass. **SP7.**
 
 ## Verification performed
+
+### SP1 (2026-10-14, Task 24 final verification, branch `sp1-typed-config-paths-tokens`)
+
+Dev host (Linux x86_64, no GPU), worktree `.worktrees/sp1`, `PATH` with
+`.venv-dev/bin` first; HEAD before the Task 24 commit was `1904f827`.
+
+| Command | Result |
+| --- | --- |
+| `.venv-dev/bin/pytest -q` (worktree root) | `13 passed` |
+| in `secure_frontend/`: `cmake --preset linux-gcc && cmake --build --preset linux-gcc && ctest --preset linux-gcc` | `100% tests passed out of 210` (`ctest -N`: `Total Tests: 210`; 209 before Task 24, plus `readme_config_table_matches_schema`) |
+| `ctest --preset linux-gcc -N \| grep -cE '\.(net0[123]\|auth0[1234]\|cfg0[123456])_'` | `58`; every `net0*`, `auth0*` and `cfg0*` case is listed individually as `<binary>.<case>` |
+| in `secure_frontend/`: `cmake --preset windows-llvm-mingw-cross && cmake --build --preset windows-llvm-mingw-cross` | builds with `-Werror` (incremental, 18 Ninja steps, no diagnostics); 30 `.exe` files in the build directory |
+| `ctest --preset windows-llvm-mingw-cross` (wine 6.0.3, `WINEPREFIX=secure_frontend/out/wineprefix`) | `100% tests passed out of 128`, 0 failed; 189 registered (`ctest -N`), the 61 `windows-runtime` cases excluded (list below). `readme_config_table_matches_schema` runs unlabelled under wine with the Linux-absolute README path and passes, so no label was needed (ruling R9) |
+| `wine …/strata-secure-server.exe --help` | `help exit=0` |
+| `wine …/strata-secure-server.exe --check --port 0 --models-root 'C:\x' --tokenizer-pack 'C:\y' --engine 'C:\e.exe' --model-id m --token-env X` | prints `Configuration error: listener.port: must be between 1 and 65535`, `roots.models: the root does not exist or cannot be opened`, `roots.tokenizer_pack: …`, `engine.executable: the engine executable does not exist`; `check exit=1` (spec §9.2) |
+| D4 probe: a scratch copy of `bootstrap-llvm-mingw.sh` under `secure_frontend/out/d4-*` with a corrupt archive in its own `.toolchains/downloads` (no network; the real `.toolchains` untouched) | before the fix `exit=1` and the archive kept; after `exit=1`, "digest mismatch; the downloaded archive was deleted", `downloads` empty |
+
+`windows-runtime` tests not run locally (61; each **pending
+windows-msys2-clang**; some were run directly under wine as recorded in the
+SP1 deliverables table, which is not evidence): `secure_frontend_paths_tests.paths_handle_non_ascii_and_long_names`, `secure_frontend_paths_tests.cfg02_create_within_root_writes_nothing_outside`, `secure_frontend_paths_tests.auth02_windows_token_file_reads_with_private_dacl`, `secure_frontend_paths_tests.cfg03_rejects_junction_below_root`, `secure_frontend_paths_tests.cfg03_rejects_symlink_below_root`, `secure_frontend_token_store_tests.token_store_windows_round_trips_through_dpapi`, `secure_frontend_token_store_tests.token_store_windows_file_has_private_dacl`, `secure_frontend_token_store_tests.token_reader_windows_accepts_plaintext_under_private_dacl`, `secure_frontend_token_reader_tests.reads_an_owner_only_regular_file_below_the_root`, `secure_frontend_token_reader_tests.rejects_control_characters_in_file_token`, `secure_frontend_token_reader_tests.auth02_token_file_with_trailing_lf_accepted`, `secure_frontend_token_reader_tests.auth02_token_file_with_trailing_crlf_accepted`, `secure_frontend_token_reader_tests.auth02_token_file_with_two_newlines_rejected`, `secure_frontend_token_reader_tests.auth02_token_file_with_bom_rejected`, `secure_frontend_token_reader_tests.auth02_token_file_over_4k_rejected`, `secure_frontend_token_reader_tests.auth02_notepad_edits_rejected_with_reason`, `secure_frontend_model_inventory_tests.inventories_only_local_gguf_artifacts`, `secure_frontend_model_inventory_tests.rejects_duplicate_ids`, `secure_frontend_model_inventory_tests.cfg03_inventory_rejects_junction_entry`, `secure_frontend_engine_arguments_tests.engine_receives_model_path_from_inventory`, `secure_frontend_engine_arguments_tests.engine_args_reject_owned_and_network_flags`, `secure_frontend_engine_arguments_tests.strata_profile_passes_pack_and_weight_flags_through`, `secure_frontend_engine_arguments_tests.rejects_invalid_relative_artifact_path`, `secure_frontend_engine_arguments_tests.glm_profile_passes_arguments_through_without_native`, `secure_frontend_typed_config_tests.typed_config_accepts_minimal_file_and_applies_defaults`, `secure_frontend_typed_config_tests.cfg01_unknown_key_rejected`, `secure_frontend_typed_config_tests.cfg01_duplicate_key_rejected`, `secure_frontend_typed_config_tests.cfg01_type_confusion_rejected`, `secure_frontend_typed_config_tests.cfg01_missing_required_rejected`, `secure_frontend_typed_config_tests.cfg01_out_of_range_rejected`, `secure_frontend_typed_config_tests.typed_config_cross_field_rules`, `secure_frontend_typed_config_tests.typed_config_errors_never_contain_values`, `secure_frontend_typed_config_tests.cfg02_logs_and_cache_roots_are_created_private`, `secure_frontend_typed_config_tests.cfg06_validated_config_bytes_do_not_contain_token`, `secure_frontend_typed_config_tests.cfg01_config_with_everyone_write_ace_rejected`, `secure_frontend_tokenizer_pack_tests.loads_validates_and_decodes_offline_pack`, `secure_frontend_tokenizer_pack_tests.rejects_ambiguous_or_incompatible_pack_assets`, `secure_frontend_tokenizer_pack_tests.rejects_malformed_json_and_special_literals_for_decode`, `secure_frontend_tokenizer_pack_tests.encoding_fails_closed_for_special_invalid_and_missing_tokens`, `secure_frontend_tokenizer_pack_tests.cfg03_tokenizer_file_swapped_to_junction_rejected`, `secure_frontend_subsystem_limits_tests.ready_timeout_defaults_to_900_seconds`, `secure_frontend_subsystem_limits_tests.subsystem_limits_follow_config`, `secure_frontend_server_cli_tests.cli_config_file_and_flags_share_validator`, `secure_frontend_server_cli_tests.cli_flag_overrides_file_and_is_reported`, `secure_frontend_server_cli_tests.cli_check_prints_no_token`, `secure_frontend_server_cli_tests.cli_unknown_option_does_not_echo_value`, `secure_frontend_server_cli_tests.auth04_empty_token_rejected_on_loopback`, `secure_frontend_server_cli_tests.auth04_no_switch_disables_auth`, `secure_frontend_server_cli_tests.cli_check_has_no_side_effects`, `secure_frontend_server_cli_tests.init_writes_config_and_token_then_server_starts`, `secure_frontend_server_cli_tests.init_refuses_to_overwrite_without_force`, `secure_frontend_server_cli_tests.init_force_refuses_a_non_regular_config_target`, `secure_frontend_server_cli_tests.init_failure_creates_nothing`, `secure_frontend_server_e2e_tests.cfg01_invalid_config_fails_before_listener_and_child`, `secure_frontend_server_e2e_tests.net02_remote_addresses_need_opt_in`, `secure_frontend_server_e2e_tests.net02_error_is_non_secret_and_exits_before_bind`, `secure_frontend_server_e2e_tests.ready_timeout_is_configurable`, `secure_frontend_server_e2e_tests.cfg05_token_absent_from_child_argv_env_and_outputs`, `secure_frontend_server_e2e_tests.auth01_socket_rejects_missing_and_wrong_token_on_every_route`, `secure_frontend_server_e2e_tests.auth02_valid_token_succeeds_and_is_not_echoed`, `secure_frontend_server_e2e_tests.net01_default_listener_is_loopback_only`.
+
+What this does **not** show: nothing in SP1 is Windows-runtime-verified. The
+`windows-msys2-clang` job (authoritative) has not run on any SP1 commit; wine
+does not model DACLs (`D:P` is stored as `D:`), junctions, long final paths or
+Job Objects faithfully. `linux-clang`, `windows-msvc` and the root build were
+not run for SP1. Nothing ran on a GPU or a real engine (fake engine only).
 
 ### Submodule layout (2026-10-13, branch `layout/upstream-submodule`)
 
@@ -553,25 +675,11 @@ sub-project named.
 - `send_all` returns `false` on `EINTR` instead of retrying. SP3.
 - The S6 skip condition is broad, and its port range 20000–20099 could collide
   with an unrelated IPv4 listener. SP3.
-- **SP1 (first task):** `is_wildcard_host` matches only the literal strings
-  `0.0.0.0` and `::`; alternate IPv6 spellings of the unspecified address
-  (`::0`, `0::0`, `0:0:0:0:0:0:0:0`, `::0.0.0.0`) parse as wildcard binds but
-  pass with `--allow-remote` alone, bypassing the dedicated
-  `--allow-wildcard-bind` opt-in (NET-03). Loopback detection has the mirror
-  issue in the safe direction (`0:0:0:0:0:0:0:1`, `::ffff:127.0.0.1` treated as
-  non-loopback). Fix by classifying from the parsed address bytes
-  (`IN6_IS_ADDR_UNSPECIFIED` / `LOOPBACK` / `V4MAPPED`). Low exposure today:
-  still requires `--allow-remote` and a token.
 - A small general backoff on any transient accept failure (not only resource
   exhaustion) is worth considering. SP3.
-- `bootstrap-llvm-mingw.sh` keeps a corrupt archive after a digest mismatch;
-  delete it by hand before re-running. Tooling / SP1.
 - `docs/security/threat-model.md` lists `acquire` as the sole future networked
   operation; it must be amended under review before `strata update` is
   designed. Product-experience spec / SP4.
-- The comment in `secure_frontend/CMakeLists.txt` above the UNIX-only
-  `token_reader_tests` still says "MSVC/Windows runtime coverage"; the plan for
-  that coverage is now the MSYS2 job. SP1.
 - Submodule layout: closed in the final fix wave. `top-level-integration`
   now first configures our root with no `-D` flags (`out/root-defaults`) and
   asserts `STRATA_NATIVE_EXPERTS`, `STRATA_ENABLE_CUDA`, `STRATA_ENABLE_HIP`
@@ -586,6 +694,70 @@ sub-project named.
   pointer bump ("Update upstream"). Since the final fix wave `extract()`
   raises ("upstream layout changed; re-verify the wrapper") when upstream did
   not write that file, instead of creating it.
+
+SP1 (2026-10-14, Task 24). Fixed and removed from this list: the wildcard-bind
+spelling bypass (Task 1, defect a), the corrupt-archive bootstrap gap (Task 24,
+D4) and the stale "MSVC/Windows runtime coverage" CMake comment (Task 18).
+
+1. The engine opens model files by path after validation: a swap below a
+   user-owned, non-shared-writable root is a same-user race, accepted until
+   SP2 decides on handle passing (spec §3.4).
+2. On Windows `strata-secure-server` takes `char** argv` in the ANSI code page,
+   so non-ASCII paths belong in the config file until the product `strata` CLI
+   uses `wmain`.
+3. Windows environment-token scrub — accepted deviation from spec §3.6,
+   owner-ruled: Windows has no `/proc/<pid>/environ` exposure, so the scrub
+   wipes the CRT copies in place (narrow through `getenv`'s pointer, wide
+   through `_wgetenv`'s), removes the CRT entry with `_putenv_s(name, "")` and
+   removes the Win32 environment-block entry with
+   `SetEnvironmentVariableW(name, nullptr)`; the block entry is removed, not
+   overwritten in place (no Win32 API overwrites it). No ctest case covers it
+   (wine probe only); pending windows-msys2-clang.
+4. The `docs/security/deployment.md` Windows token caveat ("treat the Windows
+   file path as unverified and prefer `--token-env` there") is removed in a
+   follow-up commit once the owner's push shows the `windows-msys2-clang` job
+   green for the `windows-runtime` token tests. Open.
+5. `cfg03_rejects_mount_crossing` skips where unprivileged user namespaces are
+   disabled (GitHub's ubuntu-24.04 images may skip it).
+6. Naming: the product-experience spec §4 sketches `listen.*`, flat `limits.*`
+   keys and `token_source`; SP1 supersedes those names with `listener.*`,
+   `limits.<section>.*` (`limits.http.*`, `limits.chat.*`, `limits.engine.*`,
+   `limits.concurrency.*`) and `token.source`, and the future `strata` CLI
+   follows SP1's names (the product spec §4 text is updated when that CLI is
+   planned).
+7. Configuration ranges wider than internal caps (recorded, not fixed):
+   `limits.chat.max_prompt_tokens` accepts up to 1048576 but
+   `EngineProtocolLimits` refuses prompts over 262144 tokens, and
+   `limits.chat.max_messages` accepts up to 1024 but the Qwen/GLM renderers
+   refuse more than 128 messages. `EngineProtocolLimits` (262144
+   prompt/generated/new tokens, built with `{}` in `secure_server_main.cpp`) is
+   classified as internal protocol backstops, not configuration keys; details
+   in `docs/security/engine-protocol-limits.md`. Narrow the ranges or derive the
+   caps from the validated configuration in the next task that touches chat
+   limits (SP3 or SP5).
+8. Windows `create_directory_within` does not check the DACL, owner or volume
+   of components that already exist (POSIX does). No SP1 caller reaches that
+   path with untrusted components (every caller ends in `open_existing_root`);
+   revisit if a caller is added.
+9. Windows token store (Task 17): the holding directory is pinned without
+   `FILE_SHARE_DELETE`, but the temp file is created and moved by path
+   (handle-relative `NtCreateFile` deferred); protection against renaming an
+   ancestor relies on NTFS refusing to rename directories with open handles
+   below them — unverified on real Windows.
+10. A plaintext Windows token file that starts with the bytes `STRATAK1` is
+    treated as DPAPI-wrapped and rejected as undecryptable (documented in
+    `deployment.md`).
+11. `ModelInventoryErrorCode::artifact_path_escapes_root` is unused since Task 13
+    (kept for API stability).
+12. The chat `model` field is bounded at 256 bytes (`chat_schema.cpp`
+    `kMaximumModelBytes`) while model IDs are at most 128; consistent (a longer
+    field is a model mismatch), noted in `engine-protocol-limits.md`.
+13. Socket-server tests still use fixed ports 20000–20099; they collide under
+    `ctest -j` and across concurrent worktrees (presets run serially). Parked
+    (SP3).
+14. The C3 bind-before-spawn guard's RED was shown on Linux only; on Windows the
+    guard (`cfg01_invalid_config_fails_before_listener_and_child`) is
+    `windows-runtime` and pending windows-msys2-clang.
 
 ## Collaboration and change rules
 

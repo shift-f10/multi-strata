@@ -414,6 +414,26 @@ void cfg06_validated_config_bytes_do_not_contain_token() {
   const std::string_view bytes{reinterpret_cast<const char*>(&validated->get()), sizeof(secure_frontend::FrontendConfig)};
   expect(bytes.find(secret->view()) == std::string_view::npos, "the object's own bytes never contain the token");
 }
+
+// D3: the README key table is generated from config_schema(); a schema change
+// that is not copied into the README fails here and prints the new table.
+void readme_config_table_matches_schema() {
+  const auto& args = secure_frontend_test::extra_arguments();
+  expect(!args.empty(), "the README path is passed as ARGS");
+  if (args.empty()) return;
+  std::string readme = secure_frontend_test::read_file(args.front());
+  // A Windows checkout with core.autocrlf=true (GitHub's windows-latest) has CRLF.
+  readme.erase(std::remove(readme.begin(), readme.end(), '\r'), readme.end());
+  const std::string begin = "<!-- config-keys:begin -->\n";
+  const std::string end = "<!-- config-keys:end -->";
+  const auto start = readme.find(begin);
+  const auto stop = readme.find(end);
+  expect(start != std::string::npos && stop != std::string::npos && start < stop, "README has the config-keys markers");
+  if (start == std::string::npos || stop == std::string::npos || start > stop) return;
+  const std::string table = readme.substr(start + begin.size(), stop - start - begin.size());
+  const std::string expected = secure_frontend::render_config_schema_markdown();
+  expect(table == expected, "README key table is stale; replace it with:\n" + expected);
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -429,6 +449,7 @@ int main(int argc, char** argv) {
       {"cfg02_logs_and_cache_roots_are_created_private", cfg02_logs_and_cache_roots_are_created_private},
       {"cfg06_config_has_no_secret_typed_member", cfg06_config_has_no_secret_typed_member},
       {"cfg06_validated_config_bytes_do_not_contain_token", cfg06_validated_config_bytes_do_not_contain_token},
+      {"readme_config_table_matches_schema", readme_config_table_matches_schema},
 #if !defined(_WIN32)
       {"cfg02_env_token_ignores_config_folder_permissions", cfg02_env_token_ignores_config_folder_permissions},
       {"cfg02_file_token_default_secret_root_reports_one_issue", cfg02_file_token_default_secret_root_reports_one_issue},

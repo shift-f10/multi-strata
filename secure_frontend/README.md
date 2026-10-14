@@ -14,41 +14,57 @@ service, download artifacts, or open outbound sockets.
 protected-file path. It deliberately cannot contain a resolved API token, so
 long-lived configuration never retains plaintext credentials.
 
-`read_token()` resolves a source only when required. On Linux it canonicalizes
-the configured root and target, opens every protected-file component with
-`O_NOFOLLOW`, and accepts only a current-user-owned regular file with no
-group/world permissions. On Windows it opens each component without following
-reparse points, verifies final paths remain beneath the root, and requires a
-current-user-owned protected DACL. The Windows branch is fail-closed and
-compiles in the llvm-mingw cross build, but it has no runtime test yet:
-`secure_frontend_token_reader_tests` is built only on UNIX, so not even the
-`windows-msys2-clang` CI job exercises it.
+`read_token()` resolves a source only when required and returns the token as
+`SecretBytes` (wiped on destruction). On Linux it opens the file below the
+canonical secret root with `openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS|RESOLVE_NO_XDEV)`
+(or an `openat(O_NOFOLLOW)` walk where `openat2` is unavailable) and accepts
+only a current-user-owned regular file with no group/world permissions. On
+Windows it opens every component with `READ_CONTROL` without following reparse
+points, checks the final path stays beneath the root, and requires a
+current-user-owned protected DACL; a `STRATAK1` file is unwrapped with DPAPI,
+anything else is read as a plaintext token under the same rules. The token may
+end in one LF or CRLF and must be at least 32 bytes. `secure_frontend_token_reader_tests`
+now builds and runs on every platform; its Windows file cases carry the
+`windows-runtime` label and are validated only by the `windows-msys2-clang` CI
+job (pending: that job has not yet run them).
 
 ## Security contract
 
 - The default bind is the IPv4 loopback literal `127.0.0.1:8080`.
-- Every listener requires an explicitly supplied, non-blank API key, including
-  literal loopback addresses. Hostnames, including `localhost`, are treated as
-  non-loopback because their address resolution is outside this module's
-  control.
+- Every listener requires a bearer token, including on loopback. `init`
+  generates it from the OS random generator (CSPRNG, base64url, 43
+  characters). An operator-made token must be at least 32 bytes (at most 256);
+  a token file may end in one LF or CRLF. Tokens are compared in a fixed
+  256-byte window, so the comparison time does not reveal the length.
 - Ports must be TCP ports in the inclusive range 1–65535.
-- Hosts must be an IP literal or a syntactically valid DNS hostname. Wildcards,
-  CIDR notation, bracketed IPv6 literals, whitespace, and malformed labels are
-  rejected.
-- A non-loopback bind additionally requires `allow_remote = true`; it defaults
-  to `false` and cannot be enabled implicitly by selecting a remote host.
-- Wildcard binds (`0.0.0.0` and `::`) additionally require
-  `allow_wildcard_bind = true`; a regular remote-listening opt-in is not enough.
+- The listener address is classified from its bytes: it must be an IPv4/IPv6
+  literal or `localhost` (ASCII case-insensitive), which maps to `127.0.0.1`
+  without a resolver call. Every other hostname is rejected, never resolved.
+  CIDR notation, bracketed IPv6 literals and whitespace are rejected.
+- A non-loopback bind additionally requires `listener.allow_remote = true`
+  (`--allow-remote`); it defaults to `false` and cannot be enabled implicitly
+  by selecting a remote host.
+- Wildcard binds (`0.0.0.0`, `::` and every other spelling of the unspecified
+  address) additionally require `listener.allow_wildcard_bind = true`
+  (`--allow-wildcard-bind`); a regular remote-listening opt-in is not enough.
+- The whole configuration is schema-validated before the listener binds or the
+  engine starts; `--check` opens and inspects but never creates, writes,
+  renames or deletes anything. The server binds before it spawns the engine.
+- An environment token (`token.source = env:NAME`) is wiped and removed from
+  the process environment after it is read (on Windows the CRT copies are
+  wiped and the Win32 environment entry is removed). The server is
+  non-dumpable with a zero core-file limit on Linux.
 - Protected-file token sources are portable relative paths only; traversal,
   absolute/UNC/device/drive/ADS forms and Windows reserved device names are
   rejected before a platform reader resolves the path below its canonical root.
 - HTTP messages are bounded, require exactly one trusted `Host`, reject
   untrusted or ambiguous browser `Origin`, keep CORS off by default, and require
   exactly one bearer token before reaching route dispatch.
-- The socket listener (`HttpSocketServerLimits`) gives each connection a 30 s
-  total deadline for the whole request and a send timeout, answers a request
-  over 64 KiB with `413`, binds `::` as IPv6-only, survives clients that close
-  or reset early, and stops only when the listening socket itself fails.
+- The socket listener (`HttpSocketServerLimits`, from `limits.http.*`) gives
+  each connection a total deadline for the whole request (default 30 s) and a
+  send timeout, rejects a request over `limits.http.max_request_bytes`
+  (default 64 KiB), binds `::` as IPv6-only, survives clients that close or
+  reset early, and stops only when the listening socket itself fails.
 - Engine children are started directly without a shell, with a minimal
   allowlisted environment. Embedded NUL bytes in the executable path, argv, or
   environment are rejected before the platform process API can truncate them.
@@ -104,10 +120,12 @@ wine on Linux. wine does not implement Job Objects or protected-file DACLs
 faithfully; Windows runtime behavior is validated only by the `windows-msys2-clang`
 CI job on a real Windows runner. The `windows-msvc` job is informational.
 
-On Windows (wine or CI) `ctest` runs 19 entries. Only
-`secure_frontend_token_reader_tests` is built on UNIX alone, so the Windows
-protected-file reader has no runtime test yet; the socket-server tests run on
-Windows too. `engine_process_tests` and `engine_stdio_process_tests` start and
+Each test case is its own CTest test (`<binary>.<case>`). Cases that need real
+Windows semantics (DACLs, junctions, DPAPI, Job Objects, private roots) carry
+the label `windows-runtime`: the `windows-llvm-mingw-cross` test preset
+excludes them under wine, and `windows-msys2-clang` runs everything. Every test
+binary, including `secure_frontend_token_reader_tests`, is built on Windows;
+the socket-server tests run on Windows too. `engine_process_tests` and `engine_stdio_process_tests` start and
 terminate through the Job on MSYS2; the grandchild assertion
 (`job_object_terminates_grandchild`) runs only there (wine passes it but is not
 authoritative for Job Objects). Both Windows presets link with `-static`: the
@@ -122,7 +140,7 @@ authenticated `GET /health` and `GET /v1/models` only; it does not start the
 inference engine and intentionally does not implement chat completion yet.
 
 ```sh
-export STRATA_SMOKE_API_KEY='choose-a-long-random-value'
+export STRATA_SMOKE_API_KEY='choose-a-long-random-value-of-32-bytes-or-more'
 ./secure-frontend-smoke --api-key-env STRATA_SMOKE_API_KEY --models-root /path/to/local/models
 curl -H "Authorization: Bearer $STRATA_SMOKE_API_KEY" http://127.0.0.1:8080/health
 curl -H "Authorization: Bearer $STRATA_SMOKE_API_KEY" http://127.0.0.1:8080/v1/models
@@ -160,11 +178,81 @@ For Linux protected-file tokens, create an owner-only file below a dedicated
 secret root and pass `--token-file token.txt --secret-root /path/to/root`.
 The relative token-file name is validated before the secure reader opens it.
 Windows protected-file tokens require an explicitly protected owner-only DACL;
-the implementation is fail-closed and has no Windows runtime test yet.
+the implementation is fail-closed, and its runtime tests (`windows-runtime`)
+are pending the `windows-msys2-clang` CI job. Tokens shorter than 32 bytes are
+rejected.
 
 Remote/wildcard binds are rejected unless the corresponding explicit flags are
 provided. CORS remains disabled, and the executable neither sends outbound
 traffic nor starts MCP, telemetry, analytics, update checks, or downloads.
+
+## Configuration
+
+`strata-secure-server` reads one strict JSON file (`--config FILE`) and the
+command-line options; an option wins over the file, and `--check` reports every
+key where that happened. Built-in defaults fill the rest. The file is UTF-8
+without BOM, no comments, no trailing commas, no duplicate keys, nesting at most
+4 levels, at most 64 KiB, integers only where a number is expected, and
+`schema_version: 1` is required. It must be owned by you and not writable by
+other users (its directory too). It never holds the token: `token.source` names
+an environment variable (`env:NAME`) or a file below `roots.secret`
+(`file:token`).
+
+    strata-secure-server init --config ~/.config/strata/config.json \
+        --models-root ~/models --tokenizer-pack ~/tok --engine ~/strata/strata --model-id qwen-local
+    strata-secure-server --check --config ~/.config/strata/config.json
+    strata-secure-server --config ~/.config/strata/config.json
+
+`init` writes the config (owner-only, atomic) and a 43-character token generated
+from the OS random generator (`0600` on Linux; DPAPI-wrapped with a private ACL on
+Windows). It refuses to replace either without `--force`. Where the files live by
+default and the `strata` command are defined by the product-experience spec, not
+here. On Windows, give non-ASCII paths in the config file: command-line arguments
+arrive in the ANSI code page.
+
+Every key (generated from the schema; `readme_config_table_matches_schema` keeps it current):
+
+<!-- config-keys:begin -->
+| Key | Type | Default | Range | Option | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `schema_version` | integer | `1` | 1-1 | - | Config format version; must be 1. Required in a config file. |
+| `listener.host` | string | `127.0.0.1` | - | `--host` | Bind address: an IPv4/IPv6 literal or localhost. Other hostnames are rejected (never resolved). |
+| `listener.port` | integer | `8080` | 1-65535 | `--port` | TCP port. |
+| `listener.allow_remote` | boolean | `false` | - | `--allow-remote` | Required for every non-loopback address. |
+| `listener.allow_wildcard_bind` | boolean | `false` | - | `--allow-wildcard-bind` | Also required for 0.0.0.0, :: and every other spelling of the unspecified address. |
+| `listener.backlog` | integer | `16` | 1-4096 | - | listen() backlog. |
+| `limits.http.request_deadline_ms` | integer | `30000` | 1-3600000 | - | Total time to read one request, header and body. |
+| `limits.http.max_request_bytes` | integer | `65536` | 4096-16777216 | - | Largest request (header and body) the listener and parser accept. |
+| `limits.http.max_header_bytes` | integer | `16384` | 1024-65536 | - | Largest header block; at most limits.http.max_request_bytes. |
+| `limits.http.max_headers` | integer | `64` | 8-256 | - | Most header fields. |
+| `limits.http.max_request_line_bytes` | integer | `4096` | 256-16384 | - | Longest request line; at most limits.http.max_header_bytes. |
+| `limits.chat.max_body_bytes` | integer | `49152` | 1-16777216 | - | Largest chat request body; at most max_request_bytes minus max_header_bytes. |
+| `limits.chat.max_messages` | integer | `128` | 1-1024 | - | Most messages in one chat request. |
+| `limits.chat.max_message_bytes` | integer | `65536` | 1-16777216 | - | Largest single message content. |
+| `limits.chat.max_prompt_tokens` | integer | `32768` | 1-1048576 | - | Largest tokenized prompt sent to the engine. |
+| `limits.chat.max_completion_tokens` | integer | `4096` | 1-16384 | - | Largest max_tokens a request may ask for. |
+| `limits.chat.default_max_tokens` | integer | `256` | 1-16384 | - | max_tokens when a request omits it; at most limits.chat.max_completion_tokens. |
+| `limits.chat.max_generated_bytes` | integer | `1048576` | 1-16777216 | - | Largest generated text returned. |
+| `limits.engine.ready_timeout_s` | integer | `900` | 1-86400 | - | How long the first request waits for the engine's READY (upstream STRATA_ENGINE_READY_S). |
+| `limits.engine.generation_timeout_s` | integer | `120` | 1-86400 | - | Total time for one generation before STOP. |
+| `limits.engine.stop_drain_timeout_s` | integer | `5` | 1-600 | - | Time to drain to DONE after STOP before the engine is marked failed. |
+| `limits.concurrency.max_concurrent_requests` | integer | `1` | 1-1 | - | Requests served at once; only 1 until SP3. |
+| `roots.models` | string | required | - | `--models-root` | Absolute directory of .gguf files. The root itself may be a symlink; nothing below it may be. |
+| `roots.tokenizer_pack` | string | required | - | `--tokenizer-pack` | Absolute directory with vocab.json, merges.txt, token_type.json. |
+| `roots.secret` | string | unset | - | `--secret-root` | Absolute directory holding the token file. Default: the config file's directory. |
+| `roots.logs` | string | unset | - | - | Absolute log directory (created 0700; unused in SP1). |
+| `roots.cache` | string | unset | - | - | Absolute cache directory (created 0700; unused in SP1). |
+| `token.source` | string | `file:token` | - | `--token-file, --token-env` | file:<relative path below roots.secret> or env:<NAME>. Metadata only; the token is never in the config. |
+| `engine.profile` | string | `qwen` | - | `--profile` | qwen or glm53. |
+| `engine.executable` | string | required | - | `--engine` | Absolute path of the engine; a regular file not writable by group or others. |
+| `engine.model_id` | string | required | - | `--model-id` | Model ID from the local inventory. |
+| `engine.args` | string array | `[]` | - | `--engine-arg (repeatable)` | Extra engine arguments; frontend-owned and unsupported flags are rejected. |
+<!-- config-keys:end -->
+
+`roots.secret` defaults to the config file's directory only for a `file:` token
+source; an `env:` source never opens it. `roots.logs` and `roots.cache` may be
+absent if their parent is a private directory; only serving and `init` create
+them. `--check` creates nothing.
 
 ## Run the native inference server
 
@@ -183,17 +271,24 @@ The server adds `--serve` and, for this default profile, supplies shard 1 via
 `--native <model>` built from the local inventory entry named by `--model-id`
 (appended last); never pass `--native` yourself. The expert pack (`--pack DIR`)
 and the other weight sources (`--ple-gguf`, `--embd-gguf`, `--native-head-gguf`,
-`--native-dense-gguf`, `--mtp`) are operator-supplied with `--engine-arg` until
-SP1/SP5 model the whole launch. The engine loads `--pack` unconditionally and
-its default is the cwd-relative `pack/full`, so a real run must pass it. Give
-every engine switch and value as its own `--engine-arg`. `--native`, `--serve`,
-`--batch`, `--slots` and `--vision` are rejected there, in both `--flag value`
-and `--flag=value` forms.
+`--native-dense-gguf`, `--mtp`) are operator-supplied with `--engine-arg`
+(`engine.args` in the config file) until SP5 models the whole launch. The
+engine loads `--pack` unconditionally and its default is the cwd-relative
+`pack/full`, so a real run must pass it. Give every engine switch and value as
+its own `--engine-arg` (its own array element in `engine.args`). With the
+`qwen` profile, `--native`, `--serve`, `--batch`, `--slots` and `--vision` are
+rejected there, in both `--flag value` and `--flag=value` forms, and
+`--check` names `engine.args` as the key at fault.
 The engine child receives an empty environment allowlist, so encode all
-required engine options explicitly.
+required engine options explicitly. The engine path (`engine.executable`)
+must be absolute and name a regular file not writable by group or others; the
+engine receives the canonical models root, never the configured spelling.
+
+The flags below can equally live in the config file (see
+[Configuration](#configuration)); the token must be at least 32 bytes.
 
 ```sh
-export STRATA_API_TOKEN='replace-with-a-long-random-token'
+export STRATA_API_TOKEN='replace-with-a-long-random-token-of-32-bytes-or-more'
 ./out/build/linux-gcc/strata-secure-server \
   --models-root /absolute/path/to/models \
   --model-id local-model-name \
@@ -233,7 +328,8 @@ fork. Build and audit a compatible `strata-glm-decode` executable separately,
 then pass that build's required positional engine arguments unchanged with
 repeated `--engine-arg`. The server adds only `--serve` immediately after the
 executable; it does not reinterpret or synthesize positional arguments, does
-not add `--native`, and rejects only `--serve` and NUL bytes in them. The
+not add `--native`, and rejects only `--serve` and NUL bytes in them. With
+`glm53`, `engine.args` must not be empty (`--check` reports it as required). The
 tokenizer pack must match that exact engine/model build and provide the fixed
 GLM framing markers as CONTROL tokens.
 

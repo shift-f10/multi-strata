@@ -23,7 +23,11 @@ else
       curl -sSL --fail -o "$dest/downloads/$archive" "$url"
     fi
   fi
-  echo "$sha256  $dest/downloads/$archive" | sha256sum -c -
+  if ! echo "$sha256  $dest/downloads/$archive" | sha256sum -c -; then
+    rm -f -- "$dest/downloads/$archive"
+    echo "bootstrap-llvm-mingw: digest mismatch; the downloaded archive was deleted, re-run to fetch it again" >&2
+    exit 1
+  fi
   tar -xJf "$dest/downloads/$archive" -C "$dest"
 fi
 ln -sfn "$name" "$dest/llvm-mingw"

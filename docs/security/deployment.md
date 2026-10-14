@@ -77,10 +77,17 @@ renaming a quarantined component.
   them on startup or request handling.
 - Create a dedicated model directory owned by the service user. Do not make it
   world-writable and do not allow symlink/junction escapes from it.
-- Generate a long, random API token outside command history. On Linux use an
-  owner-only protected token file where supported; on Windows use the current
-  environment-token route until DPAPI-backed storage is implemented and
-  validated.
+- Generate the token with `strata-secure-server init` (CSPRNG, 43 characters,
+  never printed). On Linux it is an owner-only `0600` file in a `0700`
+  directory. On Windows it is a DPAPI-wrapped file (`STRATAK1` + blob) with a
+  protected DACL for you and SYSTEM; the reader also accepts an operator-made
+  plaintext file under the same ACL rules. Until the `windows-msys2-clang` CI
+  job has passed the `windows-runtime` token tests, treat the Windows file path
+  as unverified and prefer `--token-env` there.
+- An operator-made token must be at least 32 bytes (at most 256) and may end
+  in one LF or CRLF. On Windows a plaintext token file must not start with the
+  bytes `STRATAK1`: such a file is treated as DPAPI-wrapped and rejected as
+  undecryptable.
 - Bind only to `127.0.0.1` initially. Remote and wildcard binding require the
   explicit runtime opt-ins defined in the threat model and their separate
   security review.
@@ -88,7 +95,9 @@ renaming a quarantined component.
   directly to clients. The frontend is the only public listener.
 - Start `strata-secure-server` with an already-local tokenizer pack, selected
   `.gguf` model, engine executable, and each engine option supplied as a
-  distinct `--engine-arg`. It appends `--serve` itself, runs exactly one child
+  distinct `--engine-arg` (or `engine.args` element in the `--config` file;
+  run `--check` first: it validates every key without side effects and lists
+  every problem by key path). It appends `--serve` itself, runs exactly one child
   with no inherited environment allowlist, and exposes only authenticated
   `GET /health`, `GET /v1/models`, and non-streaming text-only
   `POST /v1/chat/completions`. The request `model` must equal the startup
@@ -123,10 +132,12 @@ renaming a quarantined component.
 - Run under a standard user account. Do not request elevation. Store models in
   a user-owned directory outside broadly writable locations such as a shared
   temp directory.
-- Windows protected token files require a current-user-owned protected DACL;
-  the native reader rejects reparse points, path escapes, inherited/broad ACLs,
-  and non-regular files. Validate this path on Windows CI before release; use
-  `--token-env` only if the deployment cannot satisfy that strict ACL contract.
+- Windows token files require a current-user-owned protected DACL on the secret
+  directory and the file; the reader opens every component with `READ_CONTROL`
+  and rejects reparse points (junctions, symlinks), path escapes, extra hard
+  links, inherited or broad ACLs and non-regular files. Roots under OneDrive
+  Known Folder Move or a roaming profile resolve to a network path and are
+  rejected; keep models, secrets and config on a local disk.
 - Permit loopback through the local firewall if policy requires it. Do not add
   public inbound rules for the initial deployment. Remote/WAN operation needs
   an explicit firewall rule, explicit runtime opt-ins, and the remote-operation

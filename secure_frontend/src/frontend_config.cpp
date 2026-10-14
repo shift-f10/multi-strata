@@ -206,6 +206,40 @@ std::string_view type_reason(const ConfigValueType type) noexcept {
   return "has the wrong type";
 }
 
+std::string render_config_schema_markdown() {
+  std::string out = "| Key | Type | Default | Range | Option | Meaning |\n| --- | --- | --- | --- | --- | --- |\n";
+  for (const auto& key : kSchema) {
+    std::string type;
+    std::string fallback;
+    std::string range = "-";
+    switch (key.type) {
+      case ConfigValueType::boolean:
+        type = "boolean";
+        fallback = key.default_boolean ? "`true`" : "`false`";
+        break;
+      case ConfigValueType::integer:
+        type = "integer";
+        fallback = "`" + std::to_string(key.default_integer) + "`";
+        range = std::to_string(key.minimum) + "-" + std::to_string(key.maximum);
+        break;
+      case ConfigValueType::string:
+        type = "string";
+        fallback = !key.default_string.empty() ? "`" + std::string{key.default_string} + "`"
+                   : key.required             ? "required"
+                                              : "unset";
+        break;
+      case ConfigValueType::string_array:
+        type = "string array";
+        fallback = "`[]`";
+        break;
+    }
+    const std::string option = key.flag.empty() ? "-" : "`" + std::string{key.flag} + "`";
+    out += "| `" + std::string{key.path} + "` | " + type + " | " + fallback + " | " + range + " | " + option + " | " +
+           std::string{key.description} + " |\n";
+  }
+  return out;
+}
+
 std::string format_issue(const ConfigIssue& issue) { return issue.key_path + ": " + issue.reason; }
 
 std::optional<ModelId> make_model_id(const std::string_view text) {
