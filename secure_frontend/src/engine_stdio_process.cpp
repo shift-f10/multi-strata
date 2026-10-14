@@ -92,7 +92,7 @@ EngineStdioProcess::~EngineStdioProcess() { cleanup(); }
 std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& command) {
   if (running()) return ProcessError{ProcessErrorCode::already_running, "an engine process is already running"};
   if (const auto error = validate(command); error.has_value()) return error;
-  cleanup(); pending_stdout_.clear();
+  cleanup(); pending_stdout_.clear(); exit_status_.reset();
 #if defined(_WIN32)
   const std::wstring executable = command.executable.wstring();
   std::wstring line = quote(executable);
@@ -154,7 +154,7 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
   CloseHandle(child_stdin); CloseHandle(child_stdout); CloseHandle(child_stderr);
   if (!created) { CloseHandle(parent_stdin); CloseHandle(parent_stdout); CloseHandle(job); return ProcessError{ProcessErrorCode::spawn_failed, with_last_error("CreateProcessW failed")}; }
   if (!AssignProcessToJobObject(job, info.hProcess)) { TerminateProcess(info.hProcess, 1); /* still suspended: it never ran */ CloseHandle(info.hThread); CloseHandle(info.hProcess); CloseHandle(parent_stdin); CloseHandle(parent_stdout); CloseHandle(job); return ProcessError{ProcessErrorCode::platform_failure, with_last_error("AssignProcessToJobObject failed")}; }
-  if (ResumeThread(info.hThread) == static_cast<DWORD>(-1)) { TerminateJobObject(job, 1); CloseHandle(info.hThread); CloseHandle(info.hProcess); CloseHandle(parent_stdin); CloseHandle(parent_stdout); CloseHandle(job); return ProcessError{ProcessErrorCode::platform_failure, with_last_error("ResumeThread failed")}; }
+  if (ResumeThread(info.hThread) == static_cast<DWORD>(-1)) { TerminateJobObject(job, kSupervisorKillExitCode); CloseHandle(info.hThread); CloseHandle(info.hProcess); CloseHandle(parent_stdin); CloseHandle(parent_stdout); CloseHandle(job); return ProcessError{ProcessErrorCode::platform_failure, with_last_error("ResumeThread failed")}; }
   CloseHandle(info.hThread);
   process_handle_ = info.hProcess; job_handle_ = job; stdin_write_ = parent_stdin; stdout_read_ = parent_stdout; return std::nullopt;
 #else
@@ -174,20 +174,37 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
 #endif
 }
 
-bool EngineStdioProcess::running() {
+std::optional<ExitStatus> EngineStdioProcess::try_reap() {
+  if (exit_status_) return exit_status_;
 #if defined(_WIN32)
-  return process_handle_ != nullptr && WaitForSingleObject(static_cast<HANDLE>(process_handle_), 0) == WAIT_TIMEOUT;
+  if (process_handle_ == nullptr || WaitForSingleObject(static_cast<HANDLE>(process_handle_), 0) != WAIT_OBJECT_0) return std::nullopt;
+  DWORD code = 0;
+  if (!GetExitCodeProcess(static_cast<HANDLE>(process_handle_), &code)) code = 0xFFFFFFFFU;
+  exit_status_ = ExitStatus{false, static_cast<std::uint32_t>(code)};
+  return exit_status_;
 #else
-  if (process_id_ < 0) {
-    return false;
-  }
+  if (process_id_ < 0) return std::nullopt;
   int status = 0;
   const pid_t value = waitpid(process_id_, &status, WNOHANG);
-  if (value == process_id_ || (value < 0 && errno == ECHILD)) {
-    process_id_ = -1;
-    return false;
+  if (value == process_id_) {
+    exit_status_ = WIFSIGNALED(status) ? ExitStatus{true, static_cast<std::uint32_t>(WTERMSIG(status))}
+                                       : ExitStatus{false, static_cast<std::uint32_t>(WIFEXITED(status) ? WEXITSTATUS(status) : 255)};
+  } else if (value < 0 && errno == ECHILD) {
+    // Reaped by someone else: the status is unknown. Cannot happen while only the supervisor reaps.
+    exit_status_ = ExitStatus{false, 255U};
+  } else {
+    return std::nullopt;
   }
-  return true;
+  process_id_ = -1;
+  return exit_status_;
+#endif
+}
+
+bool EngineStdioProcess::running() {
+#if defined(_WIN32)
+  return process_handle_ != nullptr && !try_reap().has_value();
+#else
+  return process_id_ >= 0 && !try_reap().has_value();
 #endif
 }
 
@@ -285,7 +302,16 @@ EngineReadResult EngineStdioProcess::read_line(const std::chrono::milliseconds t
 
 bool EngineStdioProcess::terminate(const std::chrono::milliseconds grace) {
 #if defined(_WIN32)
-  if (!process_handle_) return true; if (!TerminateJobObject(static_cast<HANDLE>(job_handle_), 1)) return false; return WaitForSingleObject(static_cast<HANDLE>(process_handle_), static_cast<DWORD>(std::max<std::int64_t>(0, grace.count()))) == WAIT_OBJECT_0;
+  if (!process_handle_) return true;
+  if (!TerminateJobObject(static_cast<HANDLE>(job_handle_), kSupervisorKillExitCode)) return false;
+  if (WaitForSingleObject(static_cast<HANDLE>(process_handle_), static_cast<DWORD>(std::max<std::int64_t>(0, grace.count()))) !=
+      WAIT_OBJECT_0) {
+    return false;
+  }
+  // Keep the status of our own kill, so exit_status() is set and classify_exit()
+  // credits it to the supervisor ("a supervisor kill classifies as ours").
+  (void)try_reap();
+  return true;
 #else
   if (process_id_ < 0) {
     return true;

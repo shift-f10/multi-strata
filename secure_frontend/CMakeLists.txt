@@ -104,6 +104,7 @@ add_library(secure_frontend_engine_protocol_client
 
 add_library(secure_frontend_engine_stdio_process
     src/engine_stdio_process.cpp
+    src/exit_status.cpp
 )
 
 add_library(secure_frontend_http_socket_server
@@ -414,6 +415,20 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_test_paths(secure_frontend_deadline_tests)
     # Portable and unlabeled: it also runs under wine.
     secure_frontend_add_cases(secure_frontend_deadline_tests deadline_zero_timeout_is_immediate_everywhere TIMEOUT 120)
+
+    secure_frontend_add_test_executable(secure_frontend_engine_child_tests tests/engine_child_test.cpp
+        secure_frontend_engine_stdio_process secure_frontend_test_support)
+    secure_frontend_test_paths(secure_frontend_engine_child_tests)
+    set(SECURE_FRONTEND_CHILD_CASES proc04_exit_status_is_classified)
+    set(SECURE_FRONTEND_CHILD_LINUX_CASES)
+    set(SECURE_FRONTEND_CHILD_WINDOWS_CASES)
+    if(WIN32)
+        list(APPEND SECURE_FRONTEND_CHILD_CASES ${SECURE_FRONTEND_CHILD_WINDOWS_CASES})
+    else()
+        list(APPEND SECURE_FRONTEND_CHILD_CASES ${SECURE_FRONTEND_CHILD_LINUX_CASES})
+    endif()
+    secure_frontend_add_cases(secure_frontend_engine_child_tests ${SECURE_FRONTEND_CHILD_CASES}
+        TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     secure_frontend_add_test_executable(secure_frontend_http_policy_tests tests/http_policy_test.cpp secure_frontend_http_policy)
     secure_frontend_add_cases(secure_frontend_http_policy_tests

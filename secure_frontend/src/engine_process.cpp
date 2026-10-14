@@ -1,4 +1,5 @@
 #include "secure_frontend/engine_process.hpp"
+#include "secure_frontend/exit_status.hpp"
 
 #include <algorithm>
 #include <array>
@@ -194,7 +195,7 @@ std::optional<ProcessError> EngineProcess::start(const EngineCommand& command) {
     return ProcessError{ProcessErrorCode::platform_failure, "AssignProcessToJobObject failed"};
   }
   if (ResumeThread(info.hThread) == static_cast<DWORD>(-1)) {
-    TerminateJobObject(job, 1);
+    TerminateJobObject(job, kSupervisorKillExitCode);
     CloseHandle(info.hThread);
     CloseHandle(info.hProcess);
     CloseHandle(job);
@@ -280,7 +281,7 @@ bool EngineProcess::terminate(const std::chrono::milliseconds grace) {
   if (exit_code_.has_value()) return true;
 #if defined(_WIN32)
   if (process_handle_ == nullptr) return true;
-  if (TerminateJobObject(static_cast<HANDLE>(job_handle_), 1) == 0) return false;
+  if (TerminateJobObject(static_cast<HANDLE>(job_handle_), kSupervisorKillExitCode) == 0) return false;
   return wait_for(grace).has_value();
 #else
   if (process_id_ < 0) return true;

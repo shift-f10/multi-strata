@@ -2,6 +2,7 @@
 
 #include "secure_frontend/engine_process.hpp"
 #include "secure_frontend/engine_protocol_client.hpp"
+#include "secure_frontend/exit_status.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -28,14 +29,20 @@ class EngineStdioProcess final : public EngineLineTransport {
   // and is accepted by the original Strata command-line parser.
   [[nodiscard]] std::optional<ProcessError> start(const EngineCommand& command);
   [[nodiscard]] bool running();
-  // Sends SIGTERM to the child's process group (Windows: terminates the Job),
-  // waits up to `grace`, then SIGKILLs the group and reaps the leader for at
-  // most 500 ms. Returns true once the leader is reaped (or was never
-  // started). Returns false ONLY if the leader is still unreaped after that
+  // Sends SIGTERM to the child's process group, waits up to `grace`, then
+  // SIGKILLs the group and reaps the leader for at most 500 ms (Windows:
+  // terminates the Job with kSupervisorKillExitCode, waits up to `grace` for
+  // the process and records its status through try_reap()). Returns true once
+  // the leader is reaped (or was never started). Returns false ONLY if the leader is still unreaped after that
   // bound: the object is then "abandoned" — do not start() it again; the
   // supervisor applies spec V10 (no respawn until reaped; past reap_timeout
   // the circuit opens).
   [[nodiscard]] bool terminate(std::chrono::milliseconds grace);
+  // Non-blocking: reaps the child once it has ended and keeps its raw status
+  // (POSIX waitpid status; Windows GetExitCodeProcess). Later calls return the
+  // same status. Lifecycle call: only the owning (supervisor) thread uses it.
+  [[nodiscard]] std::optional<ExitStatus> try_reap();
+  [[nodiscard]] std::optional<ExitStatus> exit_status() const noexcept { return exit_status_; }
 
   [[nodiscard]] bool write_line(std::string_view line, std::string& error) override;
   [[nodiscard]] EngineReadResult read_line(std::chrono::milliseconds timeout) override;
@@ -57,6 +64,7 @@ class EngineStdioProcess final : public EngineLineTransport {
   int stdout_read_{-1};
 #endif
   std::string pending_stdout_;
+  std::optional<ExitStatus> exit_status_;
 
   // Removes and validates one complete line from pending_stdout_, or returns
   // nullopt when no newline has arrived yet.
