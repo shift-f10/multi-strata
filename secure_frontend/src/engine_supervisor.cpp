@@ -21,6 +21,18 @@ namespace {
 
 constexpr auto kReapPoll = std::chrono::milliseconds(10);
 
+// Polls try_reap() every kReapPoll until it yields a status or `limit` passes
+// (supervisor thread only). Shared by fail_closed and end_generation.
+std::optional<ExitStatus> reap_within(SupervisedProcess& process, const std::chrono::milliseconds limit) {
+  const auto deadline = deadline_after(limit);
+  std::optional<ExitStatus> status = process.try_reap();
+  while (!status && remaining_until(deadline).count() > 0) {
+    std::this_thread::sleep_for(kReapPoll);
+    status = process.try_reap();
+  }
+  return status;
+}
+
 void log_to_stderr(const std::string_view line) {
   std::cerr << line << '\n';
   std::cerr.flush();
@@ -279,12 +291,7 @@ void EngineSupervisor::fail_closed() noexcept {
     if (instance && instance->process) {
       SupervisedProcess& process = *instance->process;
       process.kill_group();
-      const auto deadline = deadline_after(config_.policy.reap_timeout);
-      bool reaped = process.try_reap().has_value();
-      while (!reaped && remaining_until(deadline).count() > 0) {
-        std::this_thread::sleep_for(kReapPoll);
-        reaped = process.try_reap().has_value();
-      }
+      const bool reaped = reap_within(process, config_.policy.reap_timeout).has_value();
       retire(instance, reaped);
       if (reaped) {
         // Spec §3.7(b): sweep after every generation, as end_generation and
@@ -403,12 +410,7 @@ EngineSupervisor::GenerationEnd EngineSupervisor::end_generation(const std::shar
   SupervisedProcess& process = *instance->process;
   const bool ended_on_its_own = process.try_reap().has_value();
   process.kill_group();  // spec §3.7a: always, even after the leader has ended
-  const auto deadline = deadline_after(config_.policy.reap_timeout);
-  std::optional<ExitStatus> status = process.try_reap();
-  while (!status && remaining_until(deadline).count() > 0) {
-    std::this_thread::sleep_for(kReapPoll);
-    status = process.try_reap();
-  }
+  const std::optional<ExitStatus> status = reap_within(process, config_.policy.reap_timeout);
   retire(instance, status.has_value());
   if (!status) {
     log_end(instance->number, "unreaped");

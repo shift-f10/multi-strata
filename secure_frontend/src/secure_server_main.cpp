@@ -172,7 +172,7 @@ int run(const FrontendConfig& config) {
   // is inherited from this server's environment.
   auto environment = secure_frontend::engine_environment_for(state_dir, config.roots.cache, std::move(lib_dirs));
   if (!prepare_state_dir(state_dir, environment)) {
-    std::cerr << "Unable to prepare --state-dir.\n";
+    std::cerr << "Unable to prepare the state or cache directory.\n";
     return EXIT_FAILURE;
   }
   plan.environment = std::move(environment);
