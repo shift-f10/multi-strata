@@ -5,7 +5,9 @@
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <utility>
 #include <variant>
+#include <vector>
 
 namespace {
 int failures = 0;
@@ -90,6 +92,28 @@ void json_string_escaper_round_trips() {
   expect(value != nullptr && value->if_string() != nullptr && *value->if_string() == std::string{"q\"b\\n\n\x01"},
          "escaped text parses back to the original");
 }
+
+void json_decimals_only_when_enabled() {
+  const secure_frontend::JsonLimits strict{.max_bytes = 1024, .max_depth = 4, .max_container_entries = 16, .max_string_bytes = 64};
+  auto relaxed = strict;
+  relaxed.allow_fractions = true;
+  const auto rejected = secure_frontend::parse_json("{\"t\":0.5}", strict);
+  expect(std::holds_alternative<secure_frontend::JsonError>(rejected) &&
+         std::get<secure_frontend::JsonError>(rejected).code == secure_frontend::JsonErrorCode::non_integer_number,
+         "the default (config) reader still rejects fractions");
+  for (const auto& [text, value] : std::vector<std::pair<std::string, double>>{{"0.5", 0.5}, {"1e0", 1.0}, {"-2.5E-1", -0.25}, {"1.0", 1.0}}) {
+    const auto parsed = secure_frontend::parse_json("{\"t\":" + text + "}", relaxed);
+    const auto* root = std::get_if<secure_frontend::JsonValue>(&parsed);
+    const auto* member = root != nullptr ? root->if_object() : nullptr;
+    expect(member != nullptr && member->front().value.if_decimal() != nullptr && *member->front().value.if_decimal() == value,
+           "decimal " + text);
+  }
+  const auto integer = secure_frontend::parse_json("{\"t\":2}", relaxed);
+  expect(std::get<secure_frontend::JsonValue>(integer).if_object()->front().value.if_integer() != nullptr, "integers stay integers");
+  for (const char* bad : {"{\"t\":.5}", "{\"t\":1.}", "{\"t\":1e}", "{\"t\":01.5}", "{\"t\":1e400}"}) {
+    expect(std::holds_alternative<secure_frontend::JsonError>(secure_frontend::parse_json(bad, relaxed)), std::string{"invalid "} + bad);
+  }
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -101,5 +125,6 @@ int main(int argc, char** argv) {
       {"json_rejects_bom_trailing_data_and_comments", json_rejects_bom_trailing_data_and_comments},
       {"json_enforces_size_entry_and_string_limits", json_enforces_size_entry_and_string_limits},
       {"json_string_escaper_round_trips", json_string_escaper_round_trips},
+      {"json_decimals_only_when_enabled", json_decimals_only_when_enabled},
   }, failures);
 }

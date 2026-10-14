@@ -1,6 +1,7 @@
 #include "secure_frontend/api_constants.hpp"
 #include "secure_frontend/api_errors.hpp"
 #include "secure_frontend/api_router.hpp"
+#include "secure_frontend/chat_schema.hpp"
 #include "secure_frontend/config.hpp"
 #include "secure_frontend/http_policy.hpp"
 #include "secure_frontend/http_request_head.hpp"
@@ -11,6 +12,7 @@
 #include "support/test_support.hpp"
 
 #include <chrono>
+#include <cstdint>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -371,6 +373,112 @@ void auth_and_route_order_follows_spec() {
   short_body.pop_back();
   expect(run(short_body).status == 400, "fewer bytes than Content-Length: 400");
 }
+
+// Task 7: chat request schema (spec §3.1, §7.2 param keys, B2, B6).
+const secure_frontend::ChatSchemaLimits kSchema{};
+std::string body_with(const std::string& members, const std::string& messages = R"([{"role":"user","content":"Hi"}])") {
+  return R"({"model":"fake-model","messages":)" + messages + (members.empty() ? "" : "," + members) + "}";
+}
+secure_frontend::ChatRequestResult parse(const std::string& json) { return secure_frontend::parse_chat_request(json, kSchema); }
+bool fails_with(const secure_frontend::ChatRequestResult& r, ApiError error, std::string_view param = {}) {
+  const auto* e = std::get_if<secure_frontend::ChatRequestError>(&r);
+  return e != nullptr && e->error == error && e->param == param;
+}
+const secure_frontend::ChatCompletionRequest* ok(const secure_frontend::ChatRequestResult& r) {
+  return std::get_if<secure_frontend::ChatCompletionRequest>(&r);
+}
+
+void dos01_json_depth_5_is_400() {
+  expect(fails_with(parse(body_with(R"("logit_bias":{"a":{"b":{"c":{"d":1}}}})")), ApiError::invalid_json), "depth 5 is invalid_json");
+  expect(fails_with(parse(body_with(R"("logit_bias":{"a":{"b":1}})")), ApiError::unsupported_parameter, "logit_bias"),
+         "depth 4 parses and reaches the schema");
+  expect(fails_with(parse("{\"model\":"), ApiError::invalid_json), "truncated JSON is invalid_json");
+  expect(fails_with(parse(body_with(R"("model":"x")")), ApiError::invalid_json), "duplicate key is invalid_json");
+}
+
+void dos01_json_limits() {
+  std::string many = "[";
+  for (int i = 0; i < 129; ++i) many += std::string{i ? "," : ""} + R"({"role":"user","content":"x"})";
+  expect(fails_with(parse(body_with("", many + "]")), ApiError::invalid_request) ||
+         fails_with(parse(body_with("", many + "]")), ApiError::invalid_json), "129 messages are refused");
+  expect(fails_with(parse(body_with("", "[]")), ApiError::invalid_request), "no messages");
+  expect(fails_with(parse(body_with("", R"([{"role":"user","content":")" + std::string(65537, 'a') + "\"}]")), ApiError::invalid_request) ||
+         fails_with(parse(body_with("", R"([{"role":"user","content":")" + std::string(65537, 'a') + "\"}]")), ApiError::invalid_json),
+         "a message over 64 KiB is refused");
+  expect(fails_with(parse(body_with(R"("max_tokens":0)")), ApiError::invalid_request), "max_tokens 0");
+  expect(fails_with(parse(body_with(R"("max_tokens":-1)")), ApiError::invalid_request), "max_tokens -1");
+  expect(fails_with(parse(body_with(R"("max_tokens":1.5)")), ApiError::invalid_request), "max_tokens 1.5");
+  expect(fails_with(parse(body_with(R"("max_tokens":1e3)")), ApiError::invalid_request), "max_tokens 1e3");
+  expect(fails_with(parse(body_with(R"("max_tokens":"8")")), ApiError::invalid_request), "max_tokens as a string");
+  expect(fails_with(parse(body_with(R"("max_tokens":01)")), ApiError::invalid_json), "leading zero is invalid JSON");
+  expect(fails_with(parse(body_with(R"("max_tokens":5,"max_completion_tokens":5)")), ApiError::invalid_request), "both names");
+  const auto big = parse(body_with(R"("max_tokens":99999999999)"));
+  expect(ok(big) != nullptr && ok(big)->max_tokens == std::optional<std::size_t>{4294967295U}, "huge max_tokens is accepted and clamped later");
+  const auto alias = parse(body_with(R"("max_completion_tokens":7)"));
+  expect(ok(alias) != nullptr && ok(alias)->max_tokens == std::optional<std::size_t>{7U}, "max_completion_tokens is max_tokens");
+  expect(fails_with(parse(body_with(R"("unknown":1)")), ApiError::invalid_request), "unknown key");
+  expect(fails_with(parse(body_with(R"("user":")" + std::string(257, 'u') + "\"")), ApiError::invalid_request), "user over 256 bytes");
+  expect(ok(parse(body_with(R"("user":"alice")"))) != nullptr, "user is accepted and ignored");
+  expect(fails_with(parse(body_with("", R"([{"role":"user","content":"https://x"}])")), ApiError::invalid_request), "remote scheme (SP0)");
+  expect(fails_with(parse(R"({"model":"pull:x","messages":[{"role":"user","content":"Hi"}]})"), ApiError::invalid_request), "model grammar");
+}
+
+void dos01_content_array_is_unsupported_parameter() {
+  // A content array is container depth 4 and reaches the schema. The OpenAI
+  // parts form nests an object inside it (depth 5 > kChatMaxJsonDepth), so the
+  // reader refuses it first as invalid_json (spec §3.1: depth <= 4).
+  expect(fails_with(parse(body_with("", R"([{"role":"user","content":["Hi"]}])")),
+                    ApiError::unsupported_parameter, "content"), "array content is unsupported_parameter content");
+  expect(fails_with(parse(body_with("", R"([{"role":"user","content":[]}])")),
+                    ApiError::unsupported_parameter, "content"), "empty array content is unsupported_parameter content");
+  expect(fails_with(parse(body_with("", R"([{"role":"user","content":[{"type":"text","text":"Hi"}]}])")), ApiError::invalid_json),
+         "content parts (depth 5) are invalid_json at the reader");
+  expect(fails_with(parse(body_with("", R"([{"role":"tool","content":"run"}])")), ApiError::extension_disabled, "role"), "role tool");
+  expect(fails_with(parse(body_with("", R"([{"role":"function","content":"run"}])")), ApiError::extension_disabled, "role"), "role function");
+  for (const char* key : {"tools", "tool_choice", "functions", "function_call", "parallel_tool_calls", "mcp_servers"}) {
+    expect(fails_with(parse(body_with(std::string{"\""} + key + "\":null,\"zzz\":1")), ApiError::extension_disabled, key),
+           std::string{"extension key wins over an unknown key: "} + key);
+  }
+  expect(fails_with(parse(body_with(R"("stream":true)")), ApiError::unsupported_parameter, "stream"), "stream:true is M2");
+  expect(ok(parse(body_with(R"("stream":false)"))) != nullptr, "stream:false is the complete response");
+  expect(fails_with(parse(body_with(R"("stream_options":{"include_usage":true})")), ApiError::invalid_request), "stream_options without stream");
+}
+
+void sampling_neutral_values_are_no_ops() {
+  const auto r = parse(body_with(R"("presence_penalty":0,"frequency_penalty":0.0,"logit_bias":{},"stop":null,"n":1,"logprobs":false)"));
+  expect(ok(r) != nullptr && ok(r)->sampling.empty(), "neutral values parse and change nothing");
+  expect(ok(parse(body_with(R"("stop":[])"))) != nullptr, "stop [] is a no-op");
+  expect(fails_with(parse(body_with(R"("presence_penalty":0.5)")), ApiError::unsupported_parameter, "presence_penalty"), "non-zero penalty");
+  expect(fails_with(parse(body_with(R"("frequency_penalty":-1)")), ApiError::unsupported_parameter, "frequency_penalty"), "negative penalty");
+  expect(fails_with(parse(body_with(R"("logit_bias":{"1":2})")), ApiError::unsupported_parameter, "logit_bias"), "non-empty logit_bias");
+  expect(fails_with(parse(body_with(R"("stop":"x")")), ApiError::unsupported_parameter, "stop"), "stop string");
+  expect(fails_with(parse(body_with(R"("stop":["x"])")), ApiError::unsupported_parameter, "stop"), "stop array");
+  expect(fails_with(parse(body_with(R"("n":2)")), ApiError::unsupported_parameter, "n"), "n 2");
+  expect(fails_with(parse(body_with(R"("logprobs":true)")), ApiError::unsupported_parameter, "logprobs"), "logprobs true");
+  for (const char* key : {"top_k", "min_p", "top_logprobs", "response_format"}) {
+    expect(fails_with(parse(body_with(std::string{"\""} + key + "\":1")), ApiError::unsupported_parameter, key), std::string{"SP5 key "} + key);
+  }
+  const auto passed = parse(body_with(R"("temperature":0.5,"top_p":0.9,"seed":42)"));
+  expect(ok(passed) != nullptr && ok(passed)->sampling.temperature == std::optional<double>{0.5} &&
+         ok(passed)->sampling.top_p == std::optional<double>{0.9} && ok(passed)->sampling.seed == std::optional<std::uint64_t>{42U},
+         "bounded sampling values pass through (B6 option e)");
+}
+
+void sampling_bounds_rejected() {
+  for (const char* member : {R"("temperature":-0.1)", R"("temperature":2.01)", R"("top_p":0)", R"("top_p":1.0001)",
+                             R"("seed":-1)", R"("seed":1.5)", R"("temperature":"1")", R"("top_p":null)"}) {
+    expect(fails_with(parse(body_with(member)), ApiError::invalid_request), std::string{"out of bounds: "} + member);
+  }
+  expect(ok(parse(body_with(R"("temperature":2,"top_p":1,"seed":9223372036854775807)"))) != nullptr, "upper bounds are inclusive");
+}
+
+void sampling_integer_forms_accepted() {
+  const auto r = parse(body_with(R"("temperature":1,"top_p":1,"presence_penalty":0,"frequency_penalty":0)"));
+  expect(ok(r) != nullptr && ok(r)->sampling.temperature == std::optional<double>{1.0} && ok(r)->sampling.top_p == std::optional<double>{1.0},
+         "integer-valued numbers are numbers");
+  const auto zero = parse(body_with(R"("temperature":0)"));
+  expect(ok(zero) != nullptr && ok(zero)->sampling.temperature == std::optional<double>{0.0}, "temperature 0 is valid");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -389,5 +497,11 @@ int main(int argc, char** argv) {
       {"dos01_status_matrix_415_417_505", dos01_status_matrix_415_417_505},
       {"content_type_variants_accepted", content_type_variants_accepted},
       {"auth_and_route_order_follows_spec", auth_and_route_order_follows_spec},
+      {"dos01_json_depth_5_is_400", dos01_json_depth_5_is_400},
+      {"dos01_json_limits", dos01_json_limits},
+      {"dos01_content_array_is_unsupported_parameter", dos01_content_array_is_unsupported_parameter},
+      {"sampling_neutral_values_are_no_ops", sampling_neutral_values_are_no_ops},
+      {"sampling_bounds_rejected", sampling_bounds_rejected},
+      {"sampling_integer_forms_accepted", sampling_integer_forms_accepted},
   }, failures);
 }

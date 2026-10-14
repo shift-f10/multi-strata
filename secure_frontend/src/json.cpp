@@ -1,6 +1,8 @@
 #include "secure_frontend/json.hpp"
 
 #include <algorithm>
+#include <charconv>
+#include <cmath>
 #include <limits>
 #include <numeric>
 #include <utility>
@@ -9,6 +11,7 @@ namespace secure_frontend {
 
 JsonValue JsonValue::make_boolean(const bool value) { JsonValue v; v.kind_ = JsonKind::boolean; v.boolean_ = value; return v; }
 JsonValue JsonValue::make_integer(const std::int64_t value) { JsonValue v; v.kind_ = JsonKind::integer; v.integer_ = value; return v; }
+JsonValue JsonValue::make_decimal(const double value) { JsonValue v; v.kind_ = JsonKind::decimal; v.decimal_ = value; return v; }
 JsonValue JsonValue::make_string(std::string value) { JsonValue v; v.kind_ = JsonKind::string; v.string_ = std::move(value); return v; }
 JsonValue JsonValue::make_array(std::vector<JsonValue> items) { JsonValue v; v.kind_ = JsonKind::array; v.array_ = std::move(items); return v; }
 JsonValue JsonValue::make_object(std::vector<JsonMember> members) { JsonValue v; v.kind_ = JsonKind::object; v.object_ = std::move(members); return v; }
@@ -121,7 +124,8 @@ class Parser final {
       while (!at_end() && text_[position_] >= '0' && text_[position_] <= '9') ++position_;
     }
     if (!at_end() && (text_[position_] == '.' || text_[position_] == 'e' || text_[position_] == 'E')) {
-      return fail(JsonErrorCode::non_integer_number, start);
+      if (!limits_.allow_fractions) return fail(JsonErrorCode::non_integer_number, start);
+      return parse_decimal_tail(start, out);
     }
     if (!at_end() && text_[position_] >= '0' && text_[position_] <= '9') return fail(JsonErrorCode::syntax, start);
     std::uint64_t magnitude = 0U;
@@ -142,6 +146,31 @@ class Parser final {
       value = static_cast<std::int64_t>(magnitude);
     }
     out = JsonValue::make_integer(value);
+    return true;
+  }
+
+  // RFC 8259 frac/exp after the integer part; the whole lexeme is converted
+  // with from_chars, so "1.", ".5" and "1e" fail and 1e400 (inf) fails.
+  bool parse_decimal_tail(const std::size_t start, JsonValue& out) {
+    if (!at_end() && text_[position_] == '.') {
+      ++position_;
+      const std::size_t digits = position_;
+      while (!at_end() && text_[position_] >= '0' && text_[position_] <= '9') ++position_;
+      if (position_ == digits) return fail(JsonErrorCode::syntax, start);
+    }
+    if (!at_end() && (text_[position_] == 'e' || text_[position_] == 'E')) {
+      ++position_;
+      if (!at_end() && (text_[position_] == '+' || text_[position_] == '-')) ++position_;
+      const std::size_t digits = position_;
+      while (!at_end() && text_[position_] >= '0' && text_[position_] <= '9') ++position_;
+      if (position_ == digits) return fail(JsonErrorCode::syntax, start);
+    }
+    double value = 0.0;
+    const char* first = text_.data() + start;
+    const char* last = text_.data() + position_;
+    const auto [ptr, ec] = std::from_chars(first, last, value);
+    if (ec != std::errc{} || ptr != last || !std::isfinite(value)) return fail(JsonErrorCode::integer_out_of_range, start);
+    out = JsonValue::make_decimal(value);
     return true;
   }
 

@@ -317,7 +317,7 @@ target_link_libraries(secure_frontend_engine_arguments PUBLIC secure_frontend_pa
 target_compile_features(secure_frontend_json PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_json PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
-target_link_libraries(secure_frontend_chat_schema PUBLIC secure_frontend_json)
+target_link_libraries(secure_frontend_chat_schema PUBLIC secure_frontend_json secure_frontend_api_core)
 target_link_libraries(secure_frontend_tokenizer_pack PUBLIC secure_frontend_json secure_frontend_paths)
 target_compile_features(secure_frontend_chat_schema PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_chat_schema
@@ -827,9 +827,11 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         dos01_request_line_over_limit_is_414 dos01_header_block_over_limit_is_431 dos01_too_many_headers_is_431
         dos01_transfer_encoding_variants_are_411 dos01_content_length_variants head_request_line_and_header_syntax
         wire_head_has_no_content_length route_result_seam_returns_complete_response
-        dos01_status_matrix_415_417_505 content_type_variants_accepted auth_and_route_order_follows_spec)
+        dos01_status_matrix_415_417_505 content_type_variants_accepted auth_and_route_order_follows_spec
+        dos01_json_depth_5_is_400 dos01_json_limits dos01_content_array_is_unsupported_parameter
+        sampling_neutral_values_are_no_ops sampling_bounds_rejected sampling_integer_forms_accepted)
     target_link_libraries(secure_frontend_http_parser_tests PRIVATE
-        secure_frontend_api_router secure_frontend_secrets secure_frontend_http_policy)
+        secure_frontend_api_router secure_frontend_secrets secure_frontend_http_policy secure_frontend_chat_schema)
 
     secure_frontend_add_test_executable(secure_frontend_http_request_handler_tests tests/http_request_handler_test.cpp
         secure_frontend_http_request_handler)
@@ -926,7 +928,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_json_tests
         json_accepts_strict_document json_rejects_duplicate_keys json_rejects_depth_over_limit
         json_rejects_non_integer_numbers json_rejects_bom_trailing_data_and_comments
-        json_enforces_size_entry_and_string_limits json_string_escaper_round_trips)
+        json_enforces_size_entry_and_string_limits json_string_escaper_round_trips json_decimals_only_when_enabled)
 
     secure_frontend_add_test_executable(secure_frontend_typed_config_tests tests/typed_config_test.cpp
         secure_frontend_typed_config)
