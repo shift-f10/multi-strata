@@ -1,9 +1,12 @@
 #include "secure_frontend/acquire_url.hpp"
 #include "secure_frontend/address_policy.hpp"
+#include "secure_frontend/download_response.hpp"
 #include "secure_frontend/downloader_command.hpp"
 #include "support/test_support.hpp"
 
+#include <cstddef>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -211,6 +214,101 @@ void curl_exit_codes_map_to_reasons() {
   for (const int code : {8, 22, 47, 99}) expect(map(code) == R::transport_failed, "other " + std::to_string(code));
 }
 
+using secure_frontend::HeadAction;
+using secure_frontend::ResponseHeadParser;
+
+secure_frontend::ResponseHead head_of(const std::string_view bytes) {
+  ResponseHeadParser parser;
+  const auto fed = parser.feed(bytes);
+  expect(fed.state == ResponseHeadParser::State::head_ready, "head parses");
+  return parser.head();
+}
+
+void informational_header_blocks_skipped() {
+  ResponseHeadParser parser;
+  const std::string bytes =
+      "HTTP/1.1 100 Continue\r\n\r\nHTTP/2 103\r\nlink: </x>; rel=preload\r\n\r\n"
+      "HTTP/2 200 \r\ncontent-length: 5\r\nX-Linked-Etag: \"abc\"\r\n\r\nhello";
+  const auto fed = parser.feed(bytes);
+  expect(fed.state == ResponseHeadParser::State::head_ready, "1xx blocks skipped, final head ready");
+  expect(parser.head().status == 200, "final status");
+  expect(bytes.substr(fed.consumed) == "hello", "consumed stops exactly at the body");
+  expect(secure_frontend::header_values(parser.head(), "x-linked-etag").size() == 1, "names lowercased");
+  ResponseHeadParser too_many;
+  std::string five;
+  for (int i = 0; i < 5; ++i) five += "HTTP/1.1 103 Early Hints\r\n\r\n";
+  expect(too_many.feed(five + "HTTP/1.1 200 OK\r\n\r\n").state == ResponseHeadParser::State::malformed,
+         "a fifth 1xx block is response_malformed");
+}
+
+void header_block_limits_enforced() {
+  ResponseHeadParser big;
+  expect(big.feed("HTTP/1.1 200 OK\r\nx: " + std::string(16400, 'a') + "\r\n\r\n").state ==
+             ResponseHeadParser::State::malformed,
+         "block over 16 KiB");
+  std::string lines = "HTTP/1.1 200 OK\r\n";
+  for (int i = 0; i < 64; ++i) lines += "x" + std::to_string(i) + ": v\r\n";
+  ResponseHeadParser many;
+  expect(many.feed(lines + "\r\n").state == ResponseHeadParser::State::malformed, "65 lines");
+  for (const auto* bad : {"HTTP/1.1 20 OK\r\n\r\n", "HTTP/3 200\r\n\r\n", "ICY 200 OK\r\n\r\n",
+                          "HTTP/1.1 200 OK\r\n folded: x\r\n\r\n", "HTTP/1.1 200 OK\r\nno colon\r\n\r\n",
+                          "HTTP/1.1 200 OK\r\nbad name: x\r\n\r\n"}) {
+    ResponseHeadParser parser;
+    expect(parser.feed(bad).state == ResponseHeadParser::State::malformed, std::string{"malformed head: "} + bad);
+  }
+  // Bare LF never terminates a block: it may stay need_more, but is never a ready head.
+  ResponseHeadParser bare_lf;
+  expect(bare_lf.feed("HTTP/1.1 200 OK\nx: y\n\n").state != ResponseHeadParser::State::head_ready, "bare LF block");
+}
+
+void split_feed_reports_exact_body_offset() {
+  const std::string bytes = "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 4-9/10\r\n\r\nbody!!";
+  for (std::size_t split = 1; split < bytes.size(); ++split) {
+    ResponseHeadParser parser;
+    const auto first = parser.feed(std::string_view{bytes}.substr(0, split));
+    std::size_t header_bytes = first.consumed;
+    if (first.state == ResponseHeadParser::State::need_more) {
+      const auto second = parser.feed(std::string_view{bytes}.substr(split));
+      expect(second.state == ResponseHeadParser::State::head_ready, "ready after second feed");
+      header_bytes += second.consumed;
+    }
+    expect(bytes.substr(header_bytes) == "body!!", "split at " + std::to_string(split));
+  }
+}
+
+void status_table_decisions() {
+  const secure_frontend::HopExpectation fresh{10, std::nullopt};
+  const secure_frontend::HopExpectation resume{10, 4};
+  expect(secure_frontend::classify_head(head_of("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n"), fresh).action ==
+             HeadAction::write_body, "200 without range");
+  const auto announced = secure_frontend::classify_head(head_of("HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n"), fresh);
+  expect(announced.action == HeadAction::fail && announced.reason == secure_frontend::AcquireReason::size_mismatch_announced,
+         "Content-Length must equal the remaining size");
+  expect(secure_frontend::classify_head(head_of("HTTP/1.1 200 OK\r\n\r\n"), resume).action == HeadAction::restart_from_zero,
+         "200 to a range request restarts from byte 0");
+  expect(secure_frontend::classify_head(head_of("HTTP/1.1 206 X\r\nContent-Range: bytes 4-9/10\r\n\r\n"), resume).action ==
+             HeadAction::write_body, "exact Content-Range");
+  for (const auto* range : {"bytes 0-9/10", "bytes 4-8/10", "bytes 4-9/11", "bytes 4-9/*", "bytes  4-9/10"}) {
+    const auto decision = secure_frontend::classify_head(
+        head_of(std::string{"HTTP/1.1 206 X\r\nContent-Range: "} + range + "\r\n\r\n"), resume);
+    expect(decision.reason == secure_frontend::AcquireReason::range_mismatch, std::string{"range_mismatch: "} + range);
+  }
+  expect(secure_frontend::classify_head(head_of("HTTP/1.1 206 X\r\nContent-Range: bytes 0-9/10\r\n\r\n"), fresh).reason ==
+             secure_frontend::AcquireReason::range_mismatch, "206 without a range request");
+  const auto redirect = secure_frontend::classify_head(head_of("HTTP/1.1 302 Found\r\nLocation: /x\r\n\r\n"), fresh);
+  expect(redirect.action == HeadAction::redirect && redirect.location == "/x", "302 with one Location");
+  expect(secure_frontend::classify_head(head_of("HTTP/1.1 307 X\r\nLocation: /a\r\nLocation: /b\r\n\r\n"), fresh).reason ==
+             secure_frontend::AcquireReason::response_malformed, "two Location headers");
+  expect(secure_frontend::classify_head(head_of("HTTP/1.1 416 X\r\n\r\n"), resume).reason ==
+             secure_frontend::AcquireReason::range_mismatch, "416");
+  const auto busy = secure_frontend::classify_head(head_of("HTTP/1.1 503 X\r\n\r\n"), fresh);
+  expect(busy.reason == secure_frontend::AcquireReason::http_status && busy.transient && busy.status == 503, "5xx transient");
+  expect(secure_frontend::classify_head(head_of("HTTP/1.1 429 X\r\n\r\n"), fresh).transient, "429 transient");
+  const auto missing = secure_frontend::classify_head(head_of("HTTP/1.1 404 X\r\n\r\n"), fresh);
+  expect(missing.reason == secure_frontend::AcquireReason::http_status && !missing.transient && missing.status == 404,
+         "404 is http_status, next source");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -228,5 +326,9 @@ int main(int argc, char** argv) {
       {"probe_argv_is_version_only", probe_argv_is_version_only},
       {"probe_output_parsing_and_floor", probe_output_parsing_and_floor},
       {"curl_exit_codes_map_to_reasons", curl_exit_codes_map_to_reasons},
+      {"informational_header_blocks_skipped", informational_header_blocks_skipped},
+      {"header_block_limits_enforced", header_block_limits_enforced},
+      {"split_feed_reports_exact_body_offset", split_feed_reports_exact_body_offset},
+      {"status_table_decisions", status_table_decisions},
   }, failures);
 }
