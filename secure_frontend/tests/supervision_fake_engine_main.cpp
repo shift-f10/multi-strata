@@ -8,6 +8,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <cwchar>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -20,12 +21,15 @@
 
 #if defined(_WIN32)
 #include "secure_frontend/win32_prelude.hpp"
+#include <sddl.h>
 #include <shellapi.h>
 #else
 #include <fcntl.h>
 #include <sys/resource.h>
 #include <sys/types.h>
 #include <unistd.h>
+
+extern char** environ;
 #endif
 
 namespace {
@@ -60,6 +64,7 @@ struct Options final {
   bool grandchild_ignore_term{false};
   std::string grandchild_pidfile;
   bool echo_cmdline{false};
+  std::string dump_file;
 };
 
 #if !defined(_WIN32)
@@ -101,6 +106,7 @@ Options parse_options(const int argc, char** argv) {
     else if (value_of(argument, "--counter-file", value)) options.counter_file = value;
     else if (value_of(argument, "--record-file", value)) options.record_file = value;
     else if (value_of(argument, "--grandchild-pidfile", value)) options.grandchild_pidfile = value;
+    else if (value_of(argument, "--dump-file", value)) options.dump_file = value;
   }
   return options;
 }
@@ -216,14 +222,115 @@ std::string open_descriptors() {
 }
 #endif
 
-// Protocol extension used by the PROC tests (Task 2 replaces this with the full report).
-void dump() {
+std::string join_hex(const std::vector<std::string>& items) {
+  std::string out;
+  for (const auto& item : items) {
+    if (!out.empty()) out += ',';
+    out += hex(item);
+  }
+  return out;
+}
+
 #if !defined(_WIN32)
-  std::cout << "FDS " << open_descriptors() << '\n';
-  std::cout << "ARGV";
-  for (int index = 0; index < g_argc; ++index) std::cout << '\x1f' << g_argv[index];
-  std::cout << '\n' << std::flush;
+std::string status_field(const std::string_view name) {
+  std::ifstream status("/proc/self/status");
+  std::string line;
+  while (std::getline(status, line)) {
+    if (line.size() > name.size() && line.compare(0, name.size(), name) == 0 && line[name.size()] == ':') {
+      const auto first = line.find_first_not_of(" \t", name.size() + 1U);
+      return first == std::string::npos ? std::string{} : line.substr(first);
+    }
+  }
+  return {};
+}
+#else
+std::string token_report() {
+  HANDLE token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return "sid=? elevated=? integrity=?";
+  std::string sid_text = "?";
+  DWORD size = 0;
+  (void)GetTokenInformation(token, TokenUser, nullptr, 0, &size);
+  std::vector<unsigned char> user(size);
+  if (size != 0 && GetTokenInformation(token, TokenUser, user.data(), size, &size)) {
+    LPWSTR sid = nullptr;
+    if (ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER*>(user.data())->User.Sid, &sid)) {
+      sid_text = utf8(sid);
+      LocalFree(sid);
+    }
+  }
+  TOKEN_ELEVATION elevation{};
+  DWORD elevation_size = sizeof(elevation);
+  const bool elevated = GetTokenInformation(token, TokenElevation, &elevation, elevation_size, &elevation_size) && elevation.TokenIsElevated != 0;
+  DWORD rid = 0;
+  size = 0;
+  (void)GetTokenInformation(token, TokenIntegrityLevel, nullptr, 0, &size);
+  std::vector<unsigned char> label(size);
+  if (size != 0 && GetTokenInformation(token, TokenIntegrityLevel, label.data(), size, &size)) {
+    PSID sid = reinterpret_cast<TOKEN_MANDATORY_LABEL*>(label.data())->Label.Sid;
+    rid = *GetSidSubAuthority(sid, static_cast<DWORD>(*GetSidSubAuthorityCount(sid) - 1U));
+  }
+  CloseHandle(token);
+  return "sid=" + sid_text + " elevated=" + (elevated ? "1" : "0") + " integrity=" + std::to_string(rid);
+}
 #endif
+
+// The DUMP report (SP2 plan, Task 2). Every list is hex so one record stays one line.
+std::vector<std::string> dump_lines() {
+  std::vector<std::string> lines;
+  std::vector<std::string> arguments;
+  std::vector<std::string> environment;
+  std::string cwd;
+#if defined(_WIN32)
+  lines.push_back("HANDLES " + std::to_string(GetCurrentProcessId()));
+  int count = 0;
+  LPWSTR* wide = CommandLineToArgvW(GetCommandLineW(), &count);
+  for (int index = 0; wide != nullptr && index < count; ++index) arguments.push_back(utf8(wide[index]));
+  if (wide != nullptr) LocalFree(wide);
+  LPWCH block = GetEnvironmentStringsW();
+  for (const wchar_t* entry = block; entry != nullptr && *entry != L'\0'; entry += std::wcslen(entry) + 1U) environment.push_back(utf8(entry));
+  if (block != nullptr) FreeEnvironmentStringsW(block);
+  std::vector<wchar_t> directory(32768);
+  const DWORD length = GetCurrentDirectoryW(static_cast<DWORD>(directory.size()), directory.data());
+  cwd = utf8(std::wstring_view(directory.data(), length));
+  lines.push_back("SIG none");
+#else
+  lines.push_back("FDS " + open_descriptors());
+  for (int index = 0; index < g_argc; ++index) arguments.emplace_back(g_argv[index]);
+  for (char** entry = environ; entry != nullptr && *entry != nullptr; ++entry) environment.emplace_back(*entry);
+  std::error_code ignored;
+  cwd = std::filesystem::current_path(ignored).string();
+  lines.push_back("SIG blk=" + status_field("SigBlk") + " ign=" + status_field("SigIgn"));
+#endif
+  std::sort(environment.begin(), environment.end());
+  lines.push_back("ARGV " + join_hex(arguments));
+  lines.push_back("ENV " + join_hex(environment));
+  lines.push_back("CWD " + hex(cwd));
+#if defined(_WIN32)
+  lines.push_back("IDS " + token_report());
+#else
+  lines.push_back("IDS uid=" + std::to_string(getuid()) + " gid=" + std::to_string(getgid()) + " euid=" + std::to_string(geteuid()) +
+                  " egid=" + std::to_string(getegid()) + " nnp=" + status_field("NoNewPrivs") + " capeff=" + status_field("CapEff"));
+#endif
+  lines.emplace_back("END");
+  return lines;
+}
+
+void dump() {
+  for (const auto& line : dump_lines()) std::cout << line << '\n';
+  std::cout << std::flush;
+}
+
+// Written to <path>.tmp and renamed, so a reader never sees a partial report.
+// The report is built before the file is opened, so FDS never lists it.
+void write_dump_file(const std::string& path) {
+  const auto lines = dump_lines();
+  const std::string temporary = path + ".tmp";
+  {
+    std::ofstream out(temporary, std::ios::trunc | std::ios::binary);
+    for (const auto& line : lines) out << line << '\n';
+  }
+  std::error_code ignored;
+  std::filesystem::rename(temporary, path, ignored);
 }
 
 void echo_cmdline() {
@@ -259,6 +366,7 @@ int serve(const Options& options) {
   // A real engine may emit human diagnostics on stderr before READY; they must
   // never reach the strict stdout protocol stream.
   std::cerr << "diagnostic: private engine startup\n" << std::flush;
+  if (!options.dump_file.empty()) write_dump_file(options.dump_file);
   if (options.exit_before_ready) return *options.exit_before_ready;
   if (options.hang_before_ready) sleep_forever();
   if (options.echo_cmdline) echo_cmdline();

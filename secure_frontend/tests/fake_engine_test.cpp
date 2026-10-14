@@ -1,6 +1,7 @@
 #include "secure_frontend/engine_process.hpp"
 #include "secure_frontend/engine_stdio_process.hpp"
 
+#include "support/fake_engine_dump.hpp"
 #include "support/test_paths.hpp"
 
 #include <chrono>
@@ -172,8 +173,46 @@ void fake_engine_modes_selftest() {
   }
 }
 
+void fake_engine_dump_is_parseable() {
+  const auto fake = test_support::fake_engine_path();
+  const std::string odd = "a b\nc \xE2\x9C\x93";
+  secure_frontend::EngineStdioProcess transport;
+  expect(!transport.start({.executable = fake, .arguments = {odd}, .environment = {{"STRATA_T", "1"}, {"ZZ", "z=z"}}}).has_value(),
+         "fake engine must start");
+  expect(transport.read_line(5s).line == "READY 4096 stop", "READY");
+  const auto dump = test_support::request_dump(transport, 5s);
+  expect(dump.has_value(), "DUMP must parse");
+  if (dump) {
+    expect(dump->argv == std::vector<std::string>{test_support::utf8_path(fake), "--serve", odd}, "argv round-trips through ARGV");
+    expect(dump->env == std::vector<std::string>{"STRATA_T=1", "ZZ=z=z"}, "ENV is the sorted child environment");
+    expect(!dump->cwd.empty(), "CWD is reported");
+#if defined(_WIN32)
+    expect(dump->windows_pid != 0, "HANDLES carries the child's own pid");
+    expect(dump->ids.count("sid") == 1 && dump->ids.count("elevated") == 1 && dump->ids.count("integrity") == 1, "Windows IDS fields");
+#else
+    expect(dump->fds == std::vector<int>{0, 1, 2}, "FDS lists exactly stdio");
+    expect(dump->sig_blocked.size() == 16U && dump->sig_ignored.size() == 16U, "SIG carries SigBlk/SigIgn masks");
+    for (const char* key : {"uid", "gid", "euid", "egid", "nnp", "capeff"}) expect(dump->ids.count(key) == 1, std::string("IDS has ") + key);
+#endif
+  }
+  (void)transport.terminate(std::chrono::milliseconds(250));
+
+  const auto dir = test_support::make_temp_dir("dump");
+  const auto file = dir / "dump.txt";
+  secure_frontend::EngineStdioProcess second;
+  expect(!second.start({.executable = fake, .arguments = {"--dump-file=" + test_support::utf8_path(file)}, .environment = {}}).has_value(),
+         "fake engine must start");
+  expect(second.read_line(5s).line == "READY 4096 stop", "READY after --dump-file");
+  const auto from_file = test_support::read_dump_file(file, 5s);
+  expect(from_file.has_value() && from_file->argv.size() == 3U, "--dump-file writes the same parseable report");
+  (void)second.terminate(std::chrono::milliseconds(250));
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
-  return secure_frontend_test::run_cases(argc, argv, {{"fake_engine_modes_selftest", fake_engine_modes_selftest}}, failures);
+  return secure_frontend_test::run_cases(argc, argv,
+                                         {{"fake_engine_modes_selftest", fake_engine_modes_selftest},
+                                          {"fake_engine_dump_is_parseable", fake_engine_dump_is_parseable}},
+                                         failures);
 }

@@ -1,6 +1,7 @@
 #include "secure_frontend/engine_protocol_client.hpp"
 #include "secure_frontend/engine_stdio_process.hpp"
 
+#include "support/fake_engine_dump.hpp"
 #include "support/test_paths.hpp"
 
 #include <chrono>
@@ -114,14 +115,11 @@ void child_inherits_only_stdio_descriptors(const std::filesystem::path& fake) {
   secure_frontend::EngineStdioProcess transport;
   expect(!transport.start({.executable = fake, .arguments = {"--fake-engine"}, .environment = {}}).has_value(),
          "fake engine must start");
-  std::string err;
   (void)transport.read_line(std::chrono::seconds(2));  // READY
-  expect(transport.write_line("DUMP", err), "DUMP must write");
-  const auto fds = transport.read_line(std::chrono::seconds(2));
-  (void)transport.read_line(std::chrono::seconds(2));  // ARGV
+  const auto dump = test_support::request_dump(transport, std::chrono::seconds(2));
   close(leak_a);
   close(leak_b);
-  expect(fds.kind == secure_frontend::EngineReadKind::line && fds.line == "FDS 0,1,2", "child must see only stdio, saw: " + fds.line);
+  expect(dump.has_value() && dump->fds == std::vector<int>{0, 1, 2}, "child must see only stdio descriptors");
   (void)transport.terminate(std::chrono::milliseconds(250));
 }
 
@@ -131,19 +129,13 @@ void child_receives_exact_argv_and_env(const std::filesystem::path& fake) {
   expect(!transport.start({.executable = fake, .arguments = {"--fake-engine", weird}, .environment = {{"STRATA_T", "1"}}})
               .has_value(),
          "fake engine must start");
-  std::string err;
   (void)transport.read_line(std::chrono::seconds(2));  // READY
-  expect(transport.write_line("DUMP", err), "DUMP must write");
-  (void)transport.read_line(std::chrono::seconds(2));  // FDS
-  const std::string expected = std::string("ARGV\x1f") + fake.string() + "\x1f--serve\x1f--fake-engine\x1f" + weird;
-  // The argument's embedded newline splits the ARGV record into protocol lines; rejoin them.
-  auto argv = transport.read_line(std::chrono::seconds(2));
-  std::string got = argv.line;
-  while (argv.kind == secure_frontend::EngineReadKind::line && got.size() < expected.size()) {
-    argv = transport.read_line(std::chrono::seconds(2));
-    if (argv.kind == secure_frontend::EngineReadKind::line) got += '\n' + argv.line;
+  const auto dump = test_support::request_dump(transport, std::chrono::seconds(2));
+  expect(dump.has_value(), "DUMP must parse");
+  if (dump) {
+    const std::vector<std::string> expected{fake.string(), "--serve", "--fake-engine", weird};
+    expect(dump->argv == expected, "argv must arrive literally, no shell");
   }
-  expect(got == expected, "argv must arrive literally, no shell: " + got);
   (void)transport.terminate(std::chrono::milliseconds(250));
 }
 

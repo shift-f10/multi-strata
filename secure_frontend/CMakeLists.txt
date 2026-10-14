@@ -378,7 +378,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         secure_frontend_engine_process secure_frontend_engine_stdio_process)
     secure_frontend_test_paths(secure_frontend_fake_engine_tests)
     # Crash exit codes are Windows runtime semantics: MSYS2 only.
-    secure_frontend_add_cases(secure_frontend_fake_engine_tests fake_engine_modes_selftest
+    secure_frontend_add_cases(secure_frontend_fake_engine_tests fake_engine_modes_selftest fake_engine_dump_is_parseable
         TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     secure_frontend_add_test_executable(secure_frontend_http_policy_tests tests/http_policy_test.cpp secure_frontend_http_policy)
