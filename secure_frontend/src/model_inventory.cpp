@@ -91,6 +91,9 @@ ModelInventoryResult enumerate_local_models(const CanonicalRoot& model_root) {
                                      " (" + failure->message + ")"};
     }
     for (const auto& entry : std::get<std::vector<DirectoryEntry>>(listed)) {
+      // SP4 §4.9 delta a: roots.models/.staging, .lock and every other dot entry at the root
+      // belong to acquisition, never to the inventory.
+      if (!directory.has_value() && !entry.name.empty() && entry.name.front() == '.') continue;
       const std::string relative_text = directory ? directory->generic() + "/" + entry.name : entry.name;
       const auto relative = parse_relative_path(relative_text);
       const auto* path = std::get_if<RelativePath>(&relative);

@@ -1,9 +1,15 @@
+#include "secure_frontend/canonical_path.hpp"
 #include "secure_frontend/model_index_model.hpp"
+#include "secure_frontend/model_index_store.hpp"
 #include "support/test_support.hpp"
 
 #include <cstdint>
+#include <filesystem>
 #include <iostream>
 #include <string>
+#include <string_view>
+#include <variant>
+#include <vector>
 
 namespace {
 
@@ -67,6 +73,39 @@ void downgrade_to_retired_version_leaves_it_live_only() {
   expect(index.retired.size() == 1, "repeated swaps leave no duplicate retired rows");
 }
 
+void make_dirs(const std::filesystem::path& directory) {
+  if (directory.empty() || std::filesystem::exists(directory)) return;
+  make_dirs(directory.parent_path());
+  secure_frontend_test::make_private_directory(directory);
+}
+
+void put(const std::filesystem::path& path, const std::string_view bytes) {
+  make_dirs(path.parent_path());
+  secure_frontend_test::write_file(path, bytes);
+}
+
+// Spec §4.9 delta b.
+void scan_tolerates_repeated_shard_names_across_versions() {
+  const auto root_path = secure_frontend_test::make_scratch_directory();
+  put(root_path / "m" / "t" / "v1-aaaaaaaaaaaa" / "weights" / "m-00001-of-00001.gguf", "one");
+  put(root_path / "m" / "t" / "v2-bbbbbbbbbbbb" / "weights" / "m-00001-of-00001.gguf", "two!");
+  put(root_path / ".staging" / std::string(32, 'c') / "weights" / "m-00001-of-00001.gguf.part", "x");
+  auto opened = secure_frontend::open_root(root_path);
+  const auto* root = std::get_if<secure_frontend::CanonicalRoot>(&opened);
+  expect(root != nullptr, "test setup: the scratch root opens");
+  if (root == nullptr) return;
+  const auto scanned = secure_frontend::scan_model_root_files(*root);
+  const auto* files = std::get_if<std::vector<secure_frontend::ModelRootFile>>(&scanned);
+  expect(files != nullptr && files->size() == 3, "every regular file, duplicate names included");
+  if (files != nullptr && files->size() == 3) {
+    expect((*files)[0].path == ".staging/" + std::string(32, 'c') + "/weights/m-00001-of-00001.gguf.part" &&
+               (*files)[0].size == 1,
+           "staging is scanned");
+    expect((*files)[1].path == "m/t/v1-aaaaaaaaaaaa/weights/m-00001-of-00001.gguf" && (*files)[1].size == 3, "sorted paths, sizes");
+    expect((*files)[2].size == 4, "second version");
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -75,5 +114,6 @@ int main(int argc, char** argv) {
       {"install_retires_previous_version", install_retires_previous_version},
       {"reinstall_same_version_does_not_retire", reinstall_same_version_does_not_retire},
       {"downgrade_to_retired_version_leaves_it_live_only", downgrade_to_retired_version_leaves_it_live_only},
+      {"scan_tolerates_repeated_shard_names_across_versions", scan_tolerates_repeated_shard_names_across_versions},
   }, failures);
 }

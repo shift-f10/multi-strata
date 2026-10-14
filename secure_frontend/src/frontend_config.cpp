@@ -7,14 +7,19 @@
 
 #include <algorithm>
 #include <array>
+#include <string>
 #include <utility>
+
+#if defined(_WIN32)
+#include "secure_frontend/win32_prelude.hpp"
+#endif
 
 namespace secure_frontend {
 namespace {
 namespace d = config_defaults;
 using T = ConfigValueType;
 
-constexpr std::array<ConfigKey, 32> kSchema{{
+constexpr std::array<ConfigKey, 39> kSchema{{
     {"schema_version", T::integer, false, 1, 1, d::kSchemaVersion, false, "", "",
      "Config format version; must be 1. Required in a config file."},
     {"listener.host", T::string, false, 0, 0, 0, false, "127.0.0.1", "--host",
@@ -72,6 +77,18 @@ constexpr std::array<ConfigKey, 32> kSchema{{
     {"engine.model_id", T::string, true, 0, 0, 0, false, "", "--model-id", "Model ID from the local inventory."},
     {"engine.args", T::string_array, false, 0, 0, 0, false, "", "--engine-arg (repeatable)",
      "Extra engine arguments; frontend-owned and unsupported flags are rejected."},
+    {"pull.downloader", T::string, false, 0, 0, 0, false, "", "",
+     "Absolute path of curl for pull/update. Default /usr/bin/curl (Windows: System32\\curl.exe). Validated when a "
+     "transfer or doctor --downloader runs, never at serve start."},
+    {"pull.proxy", T::string, false, 0, 0, 0, false, "", "",
+     "http://host:port or https://host:port; absent = --noproxy *. No credentials. Environment proxies are never read."},
+    {"pull.allow_private_addresses", T::boolean, false, 0, 0, 0, false, "", "",
+     "Allow sources that resolve to private or special-use addresses."},
+    {"pull.max_total_bytes", T::integer, false, 1048576, 17592186044416, 1099511627776, false, "", "",
+     "Largest manifest total a pull accepts (bytes)."},
+    {"pull.max_duration_s", T::integer, false, 60, 604800, 172800, false, "", "", "Time budget for a whole pull run."},
+    {"pull.stall_timeout_s", T::integer, false, 10, 3600, 120, false, "", "", "Abort a transfer slower than 1024 B/s for this long."},
+    {"pull.connect_timeout_s", T::integer, false, 1, 300, 30, false, "", "", "TCP/TLS connect timeout per request."},
 }};
 
 void add(ConfigErrors& errors, std::string key, const ConfigIssueCode code, std::string reason) {
@@ -182,6 +199,28 @@ std::string json_quoted(const std::string_view text) {
 }
 
 }  // namespace
+
+std::filesystem::path default_downloader_path() {
+#if defined(_WIN32)
+  // Pre-flight F-32: a failure or a directory longer than the buffer never
+  // yields the relative "curl.exe"; the buffer grows to the reported size once.
+  std::wstring system(MAX_PATH, L'\0');
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    const UINT length = GetSystemDirectoryW(system.data(), static_cast<UINT>(system.size()));
+    if (length == 0) return {};
+    if (length < system.size()) {
+      system.resize(length);
+      const std::filesystem::path directory(system);
+      if (!directory.is_absolute()) return {};
+      return directory / L"curl.exe";
+    }
+    system.assign(length, L'\0');  // length includes the terminator when the buffer was too small
+  }
+  return {};
+#else
+  return std::filesystem::path{"/usr/bin/curl"};
+#endif
+}
 
 std::span<const ConfigKey> config_schema() noexcept { return kSchema; }
 
@@ -370,6 +409,29 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
     add(errors, "engine.args", ConfigIssueCode::missing_required, "--profile glm53 requires at least one --engine-arg");
   }
 
+  // pull (SP4 §3.9)
+  std::filesystem::path downloader = default_downloader_path();
+  if (const auto text = read.string("pull.downloader")) {
+    const auto candidate = path_from_utf8(*text);
+    if (!candidate.is_absolute()) add(errors, "pull.downloader", ConfigIssueCode::invalid_value, "must be an absolute path");
+    else downloader = candidate;
+  }
+  std::optional<ProxySetting> proxy;
+  if (const auto text = read.string("pull.proxy")) {
+    auto parsed = parse_proxy(*text);
+    if (std::holds_alternative<UrlProblem>(parsed)) {
+      add(errors, "pull.proxy", ConfigIssueCode::invalid_value,
+          "must be http://host:port or https://host:port without credentials, path or query");
+    } else {
+      proxy = std::get<ProxySetting>(std::move(parsed));
+    }
+  }
+  const bool allow_private = read.boolean("pull.allow_private_addresses");
+  const auto max_total = read.integer("pull.max_total_bytes");
+  const auto max_duration = read.integer("pull.max_duration_s");
+  const auto stall = read.integer("pull.stall_timeout_s");
+  const auto connect = read.integer("pull.connect_timeout_s");
+
   if (!errors.empty() || !host || !models || !tokenizer || !token || !executable || !model_id) {
     if (errors.empty()) add(errors, "config file", ConfigIssueCode::invalid_value, "is incomplete");
     return errors;
@@ -385,7 +447,10 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   Roots roots{*models, *tokenizer, secret, logs, cache};
   EngineLaunch engine{profile, *executable, std::move(*model_id), args};
   return ValidatedConfig{std::shared_ptr<const FrontendConfig>(
-      new FrontendConfig(std::move(listener), limits, std::move(roots), std::move(*token), std::move(engine)))};
+      new FrontendConfig(std::move(listener), limits, std::move(roots), std::move(*token), std::move(engine),
+                         PullSettings{std::move(downloader), std::move(proxy), allow_private,
+                                      static_cast<std::uint64_t>(max_total), std::chrono::seconds(max_duration),
+                                      std::chrono::seconds(stall), std::chrono::seconds(connect)}))};
 }
 
 std::string describe(const FrontendConfig& c) {
@@ -435,6 +500,13 @@ std::string describe(const FrontendConfig& c) {
   std::string args = "[";
   for (const auto& arg : c.engine.args) args += (args.size() > 1U ? "," : "") + json_quoted(arg);
   line("engine.args", args + "]");
+  line("pull.downloader", json_quoted(path_to_utf8(c.pull.downloader)));
+  line("pull.proxy", c.pull.proxy ? json_quoted(render_proxy(*c.pull.proxy)) : std::string{"(unset)"});
+  line("pull.allow_private_addresses", c.pull.allow_private_addresses ? "true" : "false");
+  line("pull.max_total_bytes", std::to_string(c.pull.max_total_bytes));
+  line("pull.max_duration_s", std::to_string(c.pull.max_duration.count()));
+  line("pull.stall_timeout_s", std::to_string(c.pull.stall_timeout.count()));
+  line("pull.connect_timeout_s", std::to_string(c.pull.connect_timeout.count()));
   return out;
 }
 

@@ -250,6 +250,13 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `engine.executable` | string | required | - | `--engine` | Absolute path of the engine; a regular file not writable by group or others. |
 | `engine.model_id` | string | required | - | `--model-id` | Model ID from the local inventory. |
 | `engine.args` | string array | `[]` | - | `--engine-arg (repeatable)` | Extra engine arguments; frontend-owned and unsupported flags are rejected. |
+| `pull.downloader` | string | unset | - | - | Absolute path of curl for pull/update. Default /usr/bin/curl (Windows: System32\curl.exe). Validated when a transfer or doctor --downloader runs, never at serve start. |
+| `pull.proxy` | string | unset | - | - | http://host:port or https://host:port; absent = --noproxy *. No credentials. Environment proxies are never read. |
+| `pull.allow_private_addresses` | boolean | `false` | - | - | Allow sources that resolve to private or special-use addresses. |
+| `pull.max_total_bytes` | integer | `1099511627776` | 1048576-17592186044416 | - | Largest manifest total a pull accepts (bytes). |
+| `pull.max_duration_s` | integer | `172800` | 60-604800 | - | Time budget for a whole pull run. |
+| `pull.stall_timeout_s` | integer | `120` | 10-3600 | - | Abort a transfer slower than 1024 B/s for this long. |
+| `pull.connect_timeout_s` | integer | `30` | 1-300 | - | TCP/TLS connect timeout per request. |
 <!-- config-keys:end -->
 
 `roots.secret` defaults to the config file's directory only for a `file:` token

@@ -258,8 +258,9 @@ void auth04_no_switch_disables_auth() {
       strata_names_in(text, &strata_names);
     }
     if (key.type == secure_frontend::ConfigValueType::boolean) {
-      expect(path == "listener.allow_remote" || path == "listener.allow_wildcard_bind",
-             "the only switches are the two bind opt-ins: " + path);
+      // pull.allow_private_addresses (SP4 §3.5) widens the downloader's address policy; it never touches authentication.
+      expect(path == "listener.allow_remote" || path == "listener.allow_wildcard_bind" || path == "pull.allow_private_addresses",
+             "the only switches are the two bind opt-ins and the pull address opt-in: " + path);
     }
   }
   expect(flags.count("--allow-remote") == 1U && flags.count("--token-env") == 1U && flags.count("--check") == 1U,

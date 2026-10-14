@@ -8,7 +8,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
+#include <filesystem>
+#include <functional>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -456,6 +459,85 @@ void readme_config_table_matches_schema() {
   const std::string expected = secure_frontend::render_config_schema_markdown();
   expect(table == expected, "README key table is stale; replace it with:\n" + expected);
 }
+// A minimal valid draft over scratch roots; validate() opens them.
+secure_frontend::FrontendConfigDraft pull_minimal_draft(const std::filesystem::path& scratch) {
+  using secure_frontend::ConfigDraftEntry;
+  using secure_frontend::ConfigSource;
+  secure_frontend_test::make_private_directory(scratch / "models");
+  secure_frontend_test::make_private_directory(scratch / "tokenizer");
+  secure_frontend_test::make_private_directory(scratch / "bin");
+  secure_frontend_test::write_file(scratch / "bin" / "engine", "#!/bin/sh\n", 0700);
+  secure_frontend::FrontendConfigDraft draft;
+  draft.entries["roots.models"] = ConfigDraftEntry{(scratch / "models").string(), ConfigSource::file};
+  draft.entries["roots.tokenizer_pack"] = ConfigDraftEntry{(scratch / "tokenizer").string(), ConfigSource::file};
+  draft.entries["engine.executable"] =
+      ConfigDraftEntry{std::filesystem::canonical(scratch / "bin" / "engine").string(), ConfigSource::file};
+  draft.entries["engine.model_id"] = ConfigDraftEntry{std::string{"m"}, ConfigSource::file};
+  draft.entries["token.source"] = ConfigDraftEntry{std::string{"env:STRATA_TEST_TOKEN"}, ConfigSource::file};
+  return draft;
+}
+
+bool has_issue_for_key(const secure_frontend::ConfigValidationResult& result, const std::string& key) {
+  const auto* issues = std::get_if<secure_frontend::ConfigErrors>(&result);
+  if (issues == nullptr) return false;
+  for (const auto& issue : *issues) {
+    if (issue.key_path == key) return true;
+  }
+  return false;
+}
+
+// Spec §4.9 delta e: every pull.* key, table-driven like CFG-01.
+void cfg01_pull_keys_table_driven() {
+  using Value = secure_frontend::ConfigDraftValue;
+  struct Row final {
+    std::string key;
+    Value good;
+    std::vector<Value> bad;
+  };
+  // Pre-flight F-4: the case runs on Windows too, so absolute paths come from a
+  // scratch directory ("/opt/curl/bin/curl" is not absolute there).
+  const auto elsewhere = secure_frontend_test::make_scratch_directory();
+  const std::string good_downloader = (elsewhere / "opt" / "curl").string();
+  const std::string missing_downloader = (elsewhere / "nonexistent" / "curl").string();
+  const std::vector<Row> rows{
+      {"pull.downloader", Value{good_downloader}, {Value{std::string{"curl"}}, Value{std::int64_t{1}}}},
+      {"pull.proxy", Value{std::string{"http://proxy.corp:3128"}},
+       {Value{std::string{"http://u:p@proxy.corp:3128"}}, Value{std::string{"socks5://p:1"}}, Value{std::string{"http://p"}}}},
+      {"pull.allow_private_addresses", Value{true}, {Value{std::string{"yes"}}}},
+      {"pull.max_total_bytes", Value{std::int64_t{1} << 20}, {Value{(std::int64_t{1} << 20) - 1}, Value{(std::int64_t{1} << 44) + 1}}},
+      {"pull.max_duration_s", Value{std::int64_t{60}}, {Value{std::int64_t{59}}, Value{std::int64_t{604801}}}},
+      {"pull.stall_timeout_s", Value{std::int64_t{3600}}, {Value{std::int64_t{9}}, Value{std::int64_t{3601}}}},
+      {"pull.connect_timeout_s", Value{std::int64_t{1}}, {Value{std::int64_t{0}}, Value{std::int64_t{301}}}},
+  };
+  for (const auto& row : rows) {
+    const auto scratch = secure_frontend_test::make_scratch_directory();
+    auto draft = pull_minimal_draft(scratch);
+    draft.entries[row.key] = secure_frontend::ConfigDraftEntry{row.good, secure_frontend::ConfigSource::file};
+    const auto accepted = secure_frontend::validate(draft);
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(accepted),
+           row.key + " accepts a good value: " + issues_of(accepted));
+    for (const auto& bad : row.bad) {
+      draft.entries[row.key] = secure_frontend::ConfigDraftEntry{bad, secure_frontend::ConfigSource::file};
+      expect(has_issue_for_key(secure_frontend::validate(draft), row.key), row.key + " rejects a bad value");
+    }
+  }
+  const auto scratch = secure_frontend_test::make_scratch_directory();
+  auto defaults = pull_minimal_draft(scratch);
+  defaults.entries["pull.downloader"] = secure_frontend::ConfigDraftEntry{missing_downloader, secure_frontend::ConfigSource::file};
+  const auto validated = secure_frontend::validate(defaults);
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(validated),
+         "pull.downloader is validated lazily: a missing file does not fail validation (CFG-01 exception)");
+  if (const auto* config = std::get_if<secure_frontend::ValidatedConfig>(&validated)) {
+    const auto& pull = config->get().pull;
+    expect(pull.downloader == std::filesystem::path{missing_downloader}, "the configured downloader path is kept as written");
+    expect(pull.max_total_bytes == (std::uint64_t{1} << 40U) && pull.max_duration.count() == 172800 &&
+               pull.stall_timeout.count() == 120 && pull.connect_timeout.count() == 30 && !pull.allow_private_addresses &&
+               !pull.proxy.has_value(),
+           "spec §3.9 defaults");
+    expect(secure_frontend::describe(config->get()).find("pull.max_total_bytes = 1099511627776\n") != std::string::npos,
+           "--check lists the pull keys");
+  }
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -473,6 +555,7 @@ int main(int argc, char** argv) {
       {"cfg06_config_has_no_secret_typed_member", cfg06_config_has_no_secret_typed_member},
       {"cfg06_validated_config_bytes_do_not_contain_token", cfg06_validated_config_bytes_do_not_contain_token},
       {"readme_config_table_matches_schema", readme_config_table_matches_schema},
+      {"cfg01_pull_keys_table_driven", cfg01_pull_keys_table_driven},
 #if !defined(_WIN32)
       {"cfg02_env_token_ignores_config_folder_permissions", cfg02_env_token_ignores_config_folder_permissions},
       {"cfg02_file_token_default_secret_root_reports_one_issue", cfg02_file_token_default_secret_root_reports_one_issue},

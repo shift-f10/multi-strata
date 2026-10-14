@@ -100,6 +100,20 @@ void rejects_duplicate_ids() {
   std::filesystem::remove_all(duplicate_root);
 }
 
+// Spec §4.9 delta a.
+void dl04_staging_ignored_by_inventory_scan() {
+  const auto root = unique_temp_directory();
+  write_file(root / "real.gguf", "a");
+  write_file(root / ".staging" / "0123456789abcdef0123456789abcdef" / "weights" / "partial.gguf.part", "b");
+  write_file(root / ".staging" / "0123456789abcdef0123456789abcdef" / "weights" / "done.gguf", "c");
+  write_file(root / ".lock", "");
+  const auto result = secure_frontend::enumerate_local_models(root);
+  const auto* models = std::get_if<std::vector<secure_frontend::ModelManifest>>(&result);
+  expect(models != nullptr && models->size() == 1 && models->front().id == "real",
+         "staging, the lock and every other dot entry at the root are skipped");
+  std::filesystem::remove_all(root);
+}
+
 #if !defined(_WIN32)
 void cfg03_inventory_rejects_symlink_entry() {
   const auto root = unique_temp_directory();
@@ -203,6 +217,7 @@ int main(int argc, char** argv) {
       {"validates_portable_artifact_paths", validates_portable_artifact_paths},
       {"inventories_only_local_gguf_artifacts", inventories_only_local_gguf_artifacts},
       {"rejects_duplicate_ids", rejects_duplicate_ids},
+      {"dl04_staging_ignored_by_inventory_scan", dl04_staging_ignored_by_inventory_scan},
 #if !defined(_WIN32)
       {"cfg03_inventory_rejects_symlink_entry", cfg03_inventory_rejects_symlink_entry},
       {"inventory_symlink_error_names_entry", inventory_symlink_error_names_entry},

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "secure_frontend/acquire_url.hpp"
 #include "secure_frontend/canonical_path.hpp"
 #include "secure_frontend/config.hpp"
 #include "secure_frontend/secret_source.hpp"
@@ -141,6 +142,24 @@ struct EngineLaunch final {
   std::vector<std::string> args;
 };
 
+// SP4 §3.9. pull.downloader is only a syntactically absolute path here; the
+// file rules run lazily when a transferring verb or doctor --downloader runs
+// (a recorded CFG-01 exception: a box without curl can still serve and import).
+struct PullSettings final {
+  std::filesystem::path downloader;
+  std::optional<ProxySetting> proxy;
+  bool allow_private_addresses;
+  std::uint64_t max_total_bytes;
+  std::chrono::seconds max_duration;
+  std::chrono::seconds stall_timeout;
+  std::chrono::seconds connect_timeout;
+};
+
+// Linux /usr/bin/curl; Windows GetSystemDirectoryW() + "\curl.exe". Empty (so
+// not absolute, and refused when a transfer runs) if Windows cannot report its
+// system directory.
+[[nodiscard]] std::filesystem::path default_downloader_path();
+
 class ValidatedConfig;
 class FrontendConfig final {
  public:
@@ -149,13 +168,14 @@ class FrontendConfig final {
   const Roots roots;
   const SecretSource token;  // metadata only: env name or relative file path (CFG-06)
   const EngineLaunch engine;
+  const PullSettings pull;
 
  private:
   friend std::variant<ValidatedConfig, std::vector<ConfigIssue>> validate(const FrontendConfigDraft& draft);
   FrontendConfig(ListenerConfig listener_value, Limits limits_value, Roots roots_value, SecretSource token_value,
-                 EngineLaunch engine_value)
+                 EngineLaunch engine_value, PullSettings pull_value)
       : listener(std::move(listener_value)), limits(limits_value), roots(std::move(roots_value)),
-        token(std::move(token_value)), engine(std::move(engine_value)) {}
+        token(std::move(token_value)), engine(std::move(engine_value)), pull(std::move(pull_value)) {}
 };
 
 // Immutable after validation; subsystems derive their limits from it once.

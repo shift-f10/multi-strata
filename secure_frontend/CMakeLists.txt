@@ -144,6 +144,8 @@ target_include_directories(secure_frontend_typed_config PUBLIC
 target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_config secure_frontend_json
     secure_frontend_model_inventory secure_frontend_engine_arguments)
 target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_paths)
+# SP4 §3.9: pull.proxy is parsed by parse_proxy (ProxySetting).
+target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_manifest_core)
 
 add_library(secure_frontend_server_cli src/server_cli.cpp)
 target_sources(secure_frontend_server_cli PRIVATE src/frontend_init.cpp)
@@ -454,6 +456,8 @@ target_include_directories(secure_frontend_model_store PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
 target_include_directories(secure_frontend_model_store PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_link_libraries(secure_frontend_model_store PUBLIC secure_frontend_manifest_core secure_frontend_json secure_frontend_paths)
+# SP4 §4.9 delta b.
+target_sources(secure_frontend_model_store PRIVATE src/model_index_store.cpp)
 secure_frontend_set_warnings(secure_frontend_model_store)
 
 if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
@@ -620,6 +624,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     endif()
     secure_frontend_add_cases(secure_frontend_model_inventory_tests ${_inventory_root_cases}
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # SP4 §4.9 delta a; pre-flight F-5: a scratch inventory root, labelled like the cases above.
+    secure_frontend_add_cases(secure_frontend_model_inventory_tests dl04_staging_ignored_by_inventory_scan
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     secure_frontend_add_test_executable(secure_frontend_engine_arguments_tests tests/engine_arguments_test.cpp
         secure_frontend_engine_arguments)
@@ -663,6 +670,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # D3: the README key table equals render_config_schema_markdown().
     secure_frontend_add_cases(secure_frontend_typed_config_tests readme_config_table_matches_schema
         ARGS ${CMAKE_CURRENT_SOURCE_DIR}/README.md)
+    # SP4 §4.9 delta e: the pull.* keys (scratch roots, DACL-private on Windows).
+    secure_frontend_add_cases(secure_frontend_typed_config_tests cfg01_pull_keys_table_driven
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     if(WIN32)
         secure_frontend_add_cases(secure_frontend_typed_config_tests cfg01_config_with_everyone_write_ace_rejected
             LABELS windows-runtime)
@@ -780,10 +790,13 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_test_executable(secure_frontend_bundle_tests tests/bundle_test.cpp secure_frontend_acquire_core)
     secure_frontend_add_cases(secure_frontend_bundle_tests sha256sums_render_sorted_bytewise sha256sums_parse_is_strict
         sums_agreement_rules missing_list_names_sourceless_files)
-    secure_frontend_add_test_executable(secure_frontend_model_index_tests tests/model_index_test.cpp secure_frontend_manifest_core)
+    secure_frontend_add_test_executable(secure_frontend_model_index_tests tests/model_index_test.cpp secure_frontend_model_store)
     secure_frontend_add_cases(secure_frontend_model_index_tests index_render_is_deterministic
         install_retires_previous_version reinstall_same_version_does_not_retire
         downgrade_to_retired_version_leaves_it_live_only)
+    # SP4 §4.9 delta b: DACL-private scratch roots.
+    secure_frontend_add_cases(secure_frontend_model_index_tests scan_tolerates_repeated_shard_names_across_versions
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     secure_frontend_add_test_executable(secure_frontend_manifest_tests tests/manifest_test.cpp secure_frontend_model_store)
     secure_frontend_add_cases(secure_frontend_manifest_tests source_url_grammar_matrix dns_names_and_wildcards proxy_grammar)
