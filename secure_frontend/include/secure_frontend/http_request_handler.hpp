@@ -23,6 +23,7 @@ struct HttpResponse final {
   int status;
   std::vector<std::pair<std::string, std::string>> headers;
   std::string body;
+  std::string_view log_code{};   // §7.2 code for the request log (spec §8); never sent
 
   [[nodiscard]] std::optional<std::string_view> header_value(std::string_view name) const;
 };

@@ -179,6 +179,15 @@ void auth01_every_route_rejects_missing_malformed_wrong_token() {
   expect(allowed.status == 200 && allowed.body.find("local-model") != std::string::npos,
          "the same route answers with the right token (the negatives are not vacuous)");
 }
+
+void models_list_keeps_utf8_model_id() {
+  const secure_frontend::ApiRouter utf8_router([] { return true; },
+      [] { return std::vector<secure_frontend::ApiModel>{{.id = "mod\xc3\xa8le-\xc3\xbc", .owned_by = "local"}}; });
+  const auto response = utf8_router.dispatch("GET", "/v1/models");
+  expect(response.status == 200, "models answers 200");
+  expect(response.body.find("mod\xc3\xa8le-\xc3\xbc") != std::string::npos, "UTF-8 model id copied unchanged");
+  expect(response.body.find("\\u00") == std::string::npos, "no byte >= 0x80 is escaped as \\u00XX");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -192,5 +201,6 @@ int main(int argc, char** argv) {
       {"rejects_non_exact_routes", rejects_non_exact_routes},
       {"fails_closed_when_provider_throws_or_returns_invalid_model", fails_closed_when_provider_throws_or_returns_invalid_model},
       {"auth01_every_route_rejects_missing_malformed_wrong_token", auth01_every_route_rejects_missing_malformed_wrong_token},
+      {"models_list_keeps_utf8_model_id", models_list_keeps_utf8_model_id},
   }, failures);
 }

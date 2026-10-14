@@ -526,6 +526,7 @@ Baseline before Task 1: linux-gcc N₀ = 520 (+2 allowed skips) tests, wine W₀
 
 | Task | IDs | What changed | Tests (CTest names) | linux-gcc | wine |
 | --- | --- | --- | --- | --- | --- |
+| 1 | §3.9, §4.6, §5.3, §7 | api_constants.hpp, api_errors (§7.2 table), http_wire (security headers, Date), router uses the shared JSON writer | http_parser_tests.err_every_code_renders_fixed_body, …err_param_is_key_only, …wire_response_has_security_headers_and_date, api_router_tests.models_list_keeps_utf8_model_id | 100% tests passed out of 524 (+2 allowed skips) | 100% tests passed out of 260 (smoke; real Windows pending MSYS2) |
 
 #### SP1 addendum (recorded by SP3, spec §5.1, §5.3)
 

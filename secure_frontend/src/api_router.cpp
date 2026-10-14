@@ -1,5 +1,7 @@
 #include "secure_frontend/api_router.hpp"
 
+#include "secure_frontend/json.hpp"
+
 #include <cstddef>
 #include <string>
 #include <utility>
@@ -53,31 +55,6 @@ bool is_valid_model_field(std::string_view value) {
     if (character < 0x20U || character == 0x7fU) return false;
   }
   return true;
-}
-
-void append_json_string(std::string* output, std::string_view value) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  output->push_back('\"');
-  for (const unsigned char character : value) {
-    switch (character) {
-      case '\"': output->append("\\\""); break;
-      case '\\': output->append("\\\\"); break;
-      case '\b': output->append("\\b"); break;
-      case '\f': output->append("\\f"); break;
-      case '\n': output->append("\\n"); break;
-      case '\r': output->append("\\r"); break;
-      case '\t': output->append("\\t"); break;
-      default:
-        if (character < 0x20U || character >= 0x80U) {
-          output->append("\\u00");
-          output->push_back(kHex[(character >> 4U) & 0x0fU]);
-          output->push_back(kHex[character & 0x0fU]);
-        } else {
-          output->push_back(static_cast<char>(character));
-        }
-    }
-  }
-  output->push_back('\"');
 }
 
 HttpResponse model_list_response(const std::vector<ApiModel>& models) {

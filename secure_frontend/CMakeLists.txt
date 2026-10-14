@@ -82,6 +82,19 @@ function(secure_frontend_add_cases binary)
     endforeach()
 endfunction()
 
+# secure_frontend_add_library(<name> SOURCES <src>... [LINKS <lib>...])  (SP3)
+function(secure_frontend_add_library name)
+    cmake_parse_arguments(PARSE_ARGV 1 _sfal "" "" "SOURCES;LINKS")
+    add_library(${name} ${_sfal_SOURCES})
+    target_compile_features(${name} PUBLIC cxx_std_20)
+    target_include_directories(${name} PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+    if(_sfal_LINKS)
+        target_link_libraries(${name} PUBLIC ${_sfal_LINKS})
+    endif()
+    secure_frontend_set_warnings(${name})
+endfunction()
+
 add_library(secure_frontend_config
     src/config.cpp
     src/secret_source.cpp
@@ -98,6 +111,10 @@ add_library(secure_frontend_http_policy
 add_library(secure_frontend_http_request_handler
     src/http_request_handler.cpp
 )
+
+secure_frontend_add_library(secure_frontend_api_core
+    SOURCES src/api_errors.cpp src/http_wire.cpp
+    LINKS secure_frontend_json)
 
 add_library(secure_frontend_api_router
     src/api_router.cpp
@@ -239,6 +256,7 @@ target_include_directories(secure_frontend_http_request_handler
         $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(secure_frontend_http_request_handler PUBLIC secure_frontend_http_policy secure_frontend_secrets)
+target_link_libraries(secure_frontend_http_request_handler PUBLIC secure_frontend_api_core)
 
 target_compile_features(secure_frontend_http_socket_server PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_http_socket_server
@@ -255,6 +273,7 @@ target_include_directories(secure_frontend_api_router
         $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(secure_frontend_api_router PUBLIC secure_frontend_http_request_handler)
+target_link_libraries(secure_frontend_api_router PUBLIC secure_frontend_api_core)
 
 target_compile_features(secure_frontend_engine_process PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_engine_process
@@ -798,6 +817,11 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         accepts_exact_host_without_browser_origin rejects_ambiguous_or_untrusted_host requires_an_exact_same_origin
         rejects_duplicate_or_malformed_origin permits_only_configured_cors_origin_when_enabled)
 
+    secure_frontend_add_test_executable(secure_frontend_http_parser_tests tests/http_parser_test.cpp
+        secure_frontend_api_core secure_frontend_http_request_handler)
+    secure_frontend_add_cases(secure_frontend_http_parser_tests
+        err_every_code_renders_fixed_body err_param_is_key_only wire_response_has_security_headers_and_date)
+
     secure_frontend_add_test_executable(secure_frontend_http_request_handler_tests tests/http_request_handler_test.cpp
         secure_frontend_http_request_handler)
     secure_frontend_add_cases(secure_frontend_http_request_handler_tests
@@ -825,7 +849,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         health_is_503_with_engine_state_when_unavailable dispatches_exact_health_route
         dispatches_models_with_json_escaping rejects_non_exact_routes
         fails_closed_when_provider_throws_or_returns_invalid_model health_carries_recovery_only_with_failed
-        auth01_every_route_rejects_missing_malformed_wrong_token)
+        auth01_every_route_rejects_missing_malformed_wrong_token models_list_keeps_utf8_model_id)
     target_link_libraries(secure_frontend_api_router_tests PRIVATE secure_frontend_secrets)
 
     secure_frontend_add_test_executable(secure_frontend_engine_process_tests tests/engine_process_test.cpp
