@@ -1,3 +1,4 @@
+#include "secure_frontend/engine_process.hpp"
 #include "secure_frontend/engine_stdio_process.hpp"
 #include "secure_frontend/exit_status.hpp"
 
@@ -7,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstdlib>
 #include <iostream>
 #include <optional>
 #include <sstream>
@@ -190,6 +192,53 @@ void proc02_canary_descriptors_absent() {
   expect(dump && dump->fds == std::vector<int>{0, 1, 2}, "the engine sees only stdio: no canary descriptor");
   (void)child.terminate(250ms);
   for (const int fd : {token_fd, null_fd, listener}) (void)close(fd);
+}
+#endif
+
+#if !defined(_WIN32)
+std::optional<int> run_as_nobody(const std::vector<std::string>& command) {
+  std::vector<std::string> arguments{"-n", "-u", "nobody"};
+  arguments.insert(arguments.end(), command.begin(), command.end());
+  secure_frontend::EngineProcess process;
+  if (process.start({.executable = "/usr/bin/sudo", .arguments = arguments, .environment = {}}).has_value()) return std::nullopt;
+  return process.wait_for(10s);
+}
+
+void proc03_other_uid_cannot_open_engine_fd() {
+  const char* enabled = std::getenv("STRATA_TEST_SECOND_UID_SUDO");
+  if (enabled == nullptr || std::string(enabled) != "1") {
+    test_support::skip("needs a second uid: CI sets STRATA_TEST_SECOND_UID_SUDO=1 where `sudo -n -u nobody` is allowed");
+  }
+  if (run_as_nobody({"/bin/true"}) != 0) test_support::skip("`sudo -n -u nobody` is not permitted on this runner");
+  secure_frontend::EngineStdioProcess child;
+  expect(!child.start({.executable = test_support::fake_engine_path(), .arguments = {}, .environment = {}}).has_value(), "start");
+  expect(child.read_line(5s).line == "READY 4096 stop", "READY");
+  const std::string target = "/proc/" + std::to_string(child.pid()) + "/fd/0";
+  const auto opened = run_as_nobody({"/bin/sh", "-c", "exec 3>\"$0\"", target});
+  expect(opened.has_value() && *opened != 0, "another uid cannot open the engine's stdin through /proc");
+  (void)child.terminate(250ms);
+}
+
+void proc03_same_uid_reopen_is_accepted_risk() {
+  secure_frontend::EngineStdioProcess child;
+  expect(!child.start({.executable = test_support::fake_engine_path(), .arguments = {}, .environment = {}}).has_value(), "start");
+  expect(child.read_line(5s).line == "READY 4096 stop", "READY");
+  const std::string target = "/proc/" + std::to_string(child.pid()) + "/fd/0";
+  const int injected = open(target.c_str(), O_WRONLY | O_CLOEXEC);
+  // Spec §3.13: the same uid CAN reopen the engine's stdin through /proc and
+  // inject protocol lines. Recorded accepted risk (threat model, release
+  // record): the upstream engine cannot be made non-dumpable and its protocol
+  // has no nonce without engine changes. If this starts failing, a mitigation
+  // landed: update the threat model and flip this test.
+  expect(injected >= 0, "same-uid reopen of the engine's stdin still works (accepted risk, spec 3.13)");
+  if (injected >= 0) {
+    const std::string line = "DUMP\n";
+    expect(write(injected, line.data(), line.size()) == static_cast<ssize_t>(line.size()), "an injected line is accepted by the pipe");
+    (void)close(injected);
+    const auto reply = child.read_line(5s);
+    expect(reply.kind == secure_frontend::EngineReadKind::line && reply.line.rfind("FDS ", 0) == 0, "the engine acts on the injected line");
+  }
+  (void)child.terminate(250ms);
 }
 #endif
 
@@ -384,6 +433,8 @@ int main(int argc, char* argv[]) {
                                              {"proc05_group_killed_after_leader_reaped", proc05_group_killed_after_leader_reaped},
                                              {"proc02_child_signal_state_is_default", proc02_child_signal_state_is_default},
                                              {"proc02_canary_descriptors_absent", proc02_canary_descriptors_absent},
+                                             {"proc03_other_uid_cannot_open_engine_fd", proc03_other_uid_cannot_open_engine_fd},
+                                             {"proc03_same_uid_reopen_is_accepted_risk", proc03_same_uid_reopen_is_accepted_risk},
 #endif
 #if defined(_WIN32)
                                              {"proc02_canary_handles_absent", proc02_canary_handles_absent},

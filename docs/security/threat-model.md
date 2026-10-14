@@ -135,6 +135,14 @@ Trust boundaries:
 - The child is reached only by private stdio in the current profile; clients
   never receive an engine address. Any future private loopback/IPC bridge must
   be authenticated and blocked from non-frontend peers.
+- PROC-03 on Linux means "other user context": another uid cannot open the
+  engine's stdio (`proc03_other_uid_cannot_open_engine_fd`, run in CI). The
+  **same** uid can reopen the engine's stdin through `/proc/<pid>/fd/0` and
+  inject protocol lines; the upstream engine cannot be made non-dumpable after
+  exec and its protocol carries no nonce without engine changes. This is an
+  **accepted risk** for SP2 and must appear in the release record
+  (`proc03_same_uid_reopen_is_accepted_risk` pins today's behavior). On Windows
+  the stdin pipe is owner-only, single-instance and client-verified (N6, R1).
 - Windows uses restricted handle inheritance plus a Job Object so all child
   processes terminate with the service. Linux uses close-on-exec descriptors,
   a dedicated process group, and reliable `waitpid`/signal cleanup. Restart

@@ -14,6 +14,10 @@ name: secure-frontend
 # sha256-checked llvm-mingw tarball (scripts/dev/bootstrap-llvm-mingw.sh).
 # No models are downloaded and no GPU backend is enabled. Our root seeds
 # STRATA_NATIVE_EXPERTS=OFF, so no llama.cpp clone (FetchContent) occurs.
+# Privilege use, exactly: the Linux ctest step sets STRATA_TEST_SECOND_UID_SUDO=1
+# so proc03_other_uid_cannot_open_engine_fd (SP2 R2) runs `sudo -n -u nobody`
+# to try to open the engine's /proc/<pid>/fd/0 as another uid. Nothing else in
+# this workflow uses sudo, and the test never runs it outside CI.
 on:
   push:
     paths: ["secure_frontend/**", "CMakeLists.txt", "scripts/**", "pytest.ini", "conftest.py", "tools/**", "upstream", ".gitmodules", ".github/workflows/secure-frontend.yml"]
@@ -57,6 +61,9 @@ jobs:
         working-directory: secure_frontend
       - run: ctest --preset ${{ matrix.preset }}
         working-directory: secure_frontend
+        env:
+          # PROC-03: proc03_other_uid_cannot_open_engine_fd uses `sudo -n -u nobody` (allowed on GitHub runners).
+          STRATA_TEST_SECOND_UID_SUDO: "1"
       - name: upstream submodule pinned and unmodified
         run: |
           git submodule status

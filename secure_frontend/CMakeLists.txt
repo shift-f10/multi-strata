@@ -435,8 +435,10 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_test_executable(secure_frontend_engine_child_tests tests/engine_child_test.cpp
         secure_frontend_engine_stdio_process secure_frontend_test_support)
     secure_frontend_test_paths(secure_frontend_engine_child_tests)
+    target_link_libraries(secure_frontend_engine_child_tests PRIVATE secure_frontend_engine_process)
     set(SECURE_FRONTEND_CHILD_CASES proc04_exit_status_is_classified)
-    set(SECURE_FRONTEND_CHILD_LINUX_CASES proc05_group_killed_after_leader_reaped proc02_child_signal_state_is_default proc02_canary_descriptors_absent)
+    set(SECURE_FRONTEND_CHILD_LINUX_CASES proc05_group_killed_after_leader_reaped proc02_child_signal_state_is_default proc02_canary_descriptors_absent
+        proc03_other_uid_cannot_open_engine_fd proc03_same_uid_reopen_is_accepted_risk)
     set(SECURE_FRONTEND_CHILD_WINDOWS_CASES proc02_canary_handles_absent proc02_stdin_pipe_dacl_is_owner_only proc03_windows_pipe_second_open_fails proc01_windows_argv_round_trip)
     if(WIN32)
         list(APPEND SECURE_FRONTEND_CHILD_CASES ${SECURE_FRONTEND_CHILD_WINDOWS_CASES})
@@ -445,6 +447,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     endif()
     secure_frontend_add_cases(secure_frontend_engine_child_tests ${SECURE_FRONTEND_CHILD_CASES}
         TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    if(NOT WIN32)
+        set_tests_properties(secure_frontend_engine_child_tests.proc03_other_uid_cannot_open_engine_fd PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
 
     secure_frontend_add_test_executable(secure_frontend_engine_supervisor_tests tests/engine_supervisor_test.cpp
         secure_frontend_engine_supervisor secure_frontend_test_support)
