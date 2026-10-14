@@ -1,4 +1,5 @@
 #include "secure_frontend/engine_supervisor.hpp"
+#include "secure_frontend/engine_stdio_process.hpp"
 
 #include "support/fake_supervised_process.hpp"
 #include "support/test_paths.hpp"
@@ -193,6 +194,91 @@ void supervisor_retires_ended_generation_on_its_own_thread() {
   expect(first->destroyed_on == first->spawned_on, "generation 1 was destroyed on the supervisor thread");
 }
 
+void proc04_monitor_detects_idle_crash() {
+#if defined(__linux__)
+  {
+    // Prove the pidfd path, not just the 100 ms fallback: on Linux (5.3+; the
+    // dev host and CI run 5.15+) a started engine must offer a monitor handle.
+    secure_frontend::EngineStdioProcess probe;
+    expect(!probe.start({.executable = test_support::fake_engine_path(), .arguments = {}, .environment = {}}).has_value(), "probe start");
+    expect(probe.monitor_handle() != secure_frontend::kNoMonitorHandle,
+           "Linux: the monitor waits on a pidfd (pidfd_open), not the fallback poll");
+    (void)probe.terminate(250ms);
+  }
+#endif
+  secure_frontend::SupervisorConfig config;
+  config.policy.max_consecutive_failures = 1U;  // one end opens the circuit: nothing respawns during the check
+  test_support::LogCapture log;
+  secure_frontend::EngineSupervisor supervisor(
+      config, secure_frontend::make_stdio_process_factory(fake_plan({"--crash-after-ready=KILL", "--crash-delay-ms=300"})),
+      std::make_shared<secure_frontend::SteadySupervisorClock>(), log.sink());
+  supervisor.start();
+  expect(supervisor.wait_for_state(SupervisorState::ready, 10s), "ready");
+  const auto ready_seen = std::chrono::steady_clock::now();
+  expect(supervisor.wait_for_state(SupervisorState::circuit_open, 3s), "an idle death is noticed with no request");
+  const auto noticed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - ready_seen);
+  expect(noticed <= 1300ms, "within 1 s of the crash (which is 300 ms after READY); took " + std::to_string(noticed.count()) + " ms");
+#if defined(_WIN32)
+  expect(log.contains("engine generation 1 ended: error_exit"), "the fake's TerminateProcess(137) is an error exit");
+#else
+  expect(log.contains("engine generation 1 ended: killed_external"), "a SIGKILL we did not send is killed_external");
+#endif
+  supervisor.shutdown(5s);
+}
+
+void proc04_monitor_fallback_without_pidfd() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.push_line("READY 4096 stop"); });
+  secure_frontend::SupervisorConfig config;
+  config.policy.max_consecutive_failures = 1U;
+  config.monitor_poll = 20ms;
+  secure_frontend::EngineSupervisor supervisor(config, fakes.factory());
+  supervisor.start();
+  expect(supervisor.wait_for_state(SupervisorState::ready, 5s), "ready");
+  const auto started = std::chrono::steady_clock::now();
+  fakes.child(1U)->end({false, 0U});  // no monitor handle: only the fallback poll can see this
+  expect(supervisor.wait_for_state(SupervisorState::circuit_open, 2s), "the fallback poll notices the exit");
+  expect(std::chrono::steady_clock::now() - started < 500ms, "within a few poll intervals");
+  supervisor.shutdown(5s);
+}
+
+// Spec §3.3 / §3.1: a wake that is not shutdown (here: a Lease on the ended
+// generation let go during the backoff) neither shortens the delay nor waits
+// for it to sweep that generation.
+void proc04_backoff_survives_stale_wake() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.push_line("READY 4096 stop"); });
+  secure_frontend::EngineSupervisor supervisor({}, fakes.factory(), std::make_shared<secure_frontend::SteadySupervisorClock>(),
+                                               test_support::LogCapture{}.sink());
+  supervisor.start();
+  expect(test_support::wait_generation_ready(supervisor, 1U, 5s), "generation 1 ready");
+  auto lease = supervisor.acquire();
+  expect(lease.has_value(), "lease on generation 1");
+  if (!lease) {
+    supervisor.shutdown(5s);
+    return;
+  }
+  supervisor.report_fatal(*lease, secure_frontend::KillReason::protocol_failed);
+  expect(supervisor.wait_for_state(SupervisorState::backoff, 5s), "backoff after the first failure");
+  const auto backoff_seen = std::chrono::steady_clock::now();
+  std::this_thread::sleep_for(100ms);
+  lease.reset();  // wakes the supervisor mid-backoff
+  const auto first = fakes.child(1U);
+  const auto swept_by = std::chrono::steady_clock::now() + 300ms;
+  bool swept = false;
+  while (!swept && std::chrono::steady_clock::now() < swept_by) {
+    {
+      std::lock_guard lock(first->mutex);
+      swept = first->destroyed_on != std::thread::id{};
+    }
+    if (!swept) std::this_thread::sleep_for(5ms);
+  }
+  expect(swept, "the released generation is swept during the backoff, not after it");
+  expect(supervisor.generations_started() == 1U, "the wake did not end the backoff early");
+  expect(test_support::wait_generation_ready(supervisor, 2U, 5s), "generation 2 after the backoff");
+  const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - backoff_seen);
+  expect(waited >= 950ms, "the full 1 s backoff elapsed; took " + std::to_string(waited.count()) + " ms");
+  supervisor.shutdown(5s);
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -202,5 +288,8 @@ int main(int argc, char* argv[]) {
                                                 {"proc04_recovers_after_transient_crash", proc04_recovers_after_transient_crash},
                                                 {"proc04_missing_engine_opens_circuit_without_spinning", proc04_missing_engine_opens_circuit_without_spinning},
                                                 {"proc04_client_err_lines_open_circuit_until_restart", proc04_client_err_lines_open_circuit_until_restart},
-                                                {"supervisor_retires_ended_generation_on_its_own_thread", supervisor_retires_ended_generation_on_its_own_thread}}, failures);
+                                                {"supervisor_retires_ended_generation_on_its_own_thread", supervisor_retires_ended_generation_on_its_own_thread},
+                                                {"proc04_monitor_detects_idle_crash", proc04_monitor_detects_idle_crash},
+                                                {"proc04_monitor_fallback_without_pidfd", proc04_monitor_fallback_without_pidfd},
+                                                {"proc04_backoff_survives_stale_wake", proc04_backoff_survives_stale_wake}}, failures);
 }

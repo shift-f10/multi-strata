@@ -20,6 +20,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -50,6 +51,17 @@ std::optional<ProcessError> validate(const EngineCommand& command) {
 
 #if !defined(_WIN32)
 void close_fd(int& fd) noexcept { if (fd >= 0) { (void)close(fd); fd = -1; } }
+
+// A pidfd becomes readable when the child exits, so the supervisor can wait on
+// the child itself (kernel 5.3+). -1 means "poll instead".
+int open_pidfd(const pid_t pid) noexcept {
+#if defined(__linux__) && defined(SYS_pidfd_open)
+  return static_cast<int>(syscall(SYS_pidfd_open, pid, 0U));
+#else
+  (void)pid;
+  return -1;
+#endif
+}
 
 bool write_without_sigpipe(const int fd, const char* data, const std::size_t count, ssize_t& written) {
   sigset_t block{};
@@ -170,7 +182,7 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
   if (child == 0) posix_launch::exec_child(prepared, input[0], output[1], /*null_stderr=*/true, errors[1]);
   close_fd(input[0]); close_fd(output[1]); close_fd(errors[1]); int child_errno = 0; const ssize_t count = read(errors[0], &child_errno, sizeof(child_errno)); close_fd(errors[0]);
   if (count > 0) { close_fd(input[1]); close_fd(output[0]); int ignored = 0; (void)waitpid(child, &ignored, 0); return ProcessError{ProcessErrorCode::spawn_failed, std::string("execve failed: ") + std::strerror(child_errno)}; }
-  process_id_ = child; process_group_ = child; stdin_write_ = input[1]; stdout_read_ = output[0]; return std::nullopt;
+  process_id_ = child; process_group_ = child; pidfd_ = open_pidfd(child); stdin_write_ = input[1]; stdout_read_ = output[0]; return std::nullopt;
 #endif
 }
 
@@ -196,6 +208,7 @@ std::optional<ExitStatus> EngineStdioProcess::try_reap() {
     return std::nullopt;
   }
   process_id_ = -1;
+  close_fd(pidfd_);
   return exit_status_;
 #endif
 }
@@ -343,7 +356,13 @@ bool EngineStdioProcess::terminate(const std::chrono::milliseconds grace) {
 #endif
 }
 
-std::intptr_t EngineStdioProcess::monitor_handle() const noexcept { return kNoMonitorHandle; }
+std::intptr_t EngineStdioProcess::monitor_handle() const noexcept {
+#if defined(_WIN32)
+  return process_handle_ != nullptr ? reinterpret_cast<std::intptr_t>(process_handle_) : kNoMonitorHandle;
+#else
+  return pidfd_ >= 0 ? static_cast<std::intptr_t>(pidfd_) : kNoMonitorHandle;
+#endif
+}
 
 void EngineStdioProcess::close_stdin() noexcept {
 #if defined(_WIN32)
@@ -388,7 +407,7 @@ void EngineStdioProcess::cleanup() noexcept { (void)terminate(std::chrono::milli
 #if defined(_WIN32)
   close_handle(stdin_write_); close_handle(stdout_read_); close_handle(process_handle_); close_handle(job_handle_);
 #else
-  close_fd(stdin_write_); close_fd(stdout_read_);
+  close_fd(stdin_write_); close_fd(stdout_read_); close_fd(pidfd_);
 #endif
 }
 

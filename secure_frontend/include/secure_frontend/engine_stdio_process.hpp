@@ -76,6 +76,7 @@ class EngineStdioProcess final : public EngineLineTransport, public SupervisedPr
   int process_group_{-1};
   int stdin_write_{-1};
   int stdout_read_{-1};
+  int pidfd_{-1};  // readable once the child exits (Linux 5.3+); -1: the supervisor polls
 #endif
   std::string pending_stdout_;
   std::optional<ExitStatus> exit_status_;

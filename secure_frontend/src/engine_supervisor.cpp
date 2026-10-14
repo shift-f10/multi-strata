@@ -107,14 +107,20 @@ std::optional<Lease> EngineSupervisor::acquire() {
 }
 
 // The Lease's reference is dropped under the lock: current_ or retired_ still
-// holds the instance, so its destructor never runs on the serving thread.
+// holds the instance, so its destructor never runs on the serving thread. A
+// retired one wakes the supervisor thread so it is swept promptly.
 void EngineSupervisor::release(std::shared_ptr<EngineInstance> instance) noexcept {
-  std::lock_guard lock(mutex_);
-  if (state_ == SupervisorState::generating && current_ == instance) {
-    state_ = SupervisorState::ready;
-    changed_.notify_all();
+  bool retired = false;
+  {
+    std::lock_guard lock(mutex_);
+    if (state_ == SupervisorState::generating && current_ == instance) {
+      state_ = SupervisorState::ready;
+      changed_.notify_all();
+    }
+    retired = current_ != instance;
+    instance.reset();
   }
-  instance.reset();
+  if (retired) wake_.notify();
 }
 
 void EngineSupervisor::report_fatal(const Lease& lease, const KillReason reason) {
@@ -158,10 +164,11 @@ void EngineSupervisor::run() {
   for (;;) {
     sweep_retired();
     if (stop_requested()) break;
-    auto instance = spawn_generation();
     std::chrono::milliseconds healthy_for{0};
     bool reaped = true;
-    if (instance) {
+    // Scoped to the generation: once retired, only retired_ and Leases hold it,
+    // so the backoff and circuit_open sweeps can destroy it.
+    if (auto instance = spawn_generation()) {
       const KillReason reason = supervise(*instance, healthy_for);
       if (reason == KillReason::shutdown) {
         shutdown_generation(instance);
@@ -228,7 +235,10 @@ KillReason EngineSupervisor::watch(EngineInstance& instance) {
     if (stop_requested()) return KillReason::shutdown;
     if (instance.process->try_reap()) return KillReason::none;
     sweep_retired();
-    (void)wake_.wait(kNoMonitorHandle, std::chrono::milliseconds(-1));
+    // Spec V4: wait on the child itself, so a death between requests is seen
+    // at once; without a pidfd, poll every monitor_poll.
+    const std::intptr_t handle = instance.process->monitor_handle();
+    (void)wake_.wait(handle, handle == kNoMonitorHandle ? config_.monitor_poll : std::chrono::milliseconds(-1));
   }
 }
 
@@ -264,12 +274,22 @@ bool EngineSupervisor::schedule_restart(const std::chrono::milliseconds healthy_
     return false;
   }
   set_state(SupervisorState::backoff, nullptr);
-  (void)clock_->sleep_backoff(decision.delay, wake_);  // woken early only by shutdown; run() re-checks
+  // Spec §3.3: only shutdown cuts the delay short. Any other wake (a released
+  // Lease, a stale report_fatal notify) sweeps and sleeps out the remainder.
+  const auto restart_at = clock_->now() + decision.delay;
+  for (auto remaining = decision.delay; remaining.count() > 0 && !stop_requested();
+       remaining = std::chrono::ceil<std::chrono::milliseconds>(restart_at - clock_->now())) {
+    if (clock_->sleep_backoff(remaining, wake_)) break;
+    sweep_retired();
+  }
   return true;
 }
 
 void EngineSupervisor::wait_in_circuit_open() {
-  while (!stop_requested()) (void)wake_.wait(kNoMonitorHandle, std::chrono::milliseconds(-1));
+  while (!stop_requested()) {
+    sweep_retired();
+    (void)wake_.wait(kNoMonitorHandle, std::chrono::milliseconds(-1));
+  }
 }
 
 void EngineSupervisor::shutdown_generation(const std::shared_ptr<EngineInstance>& instance) {
