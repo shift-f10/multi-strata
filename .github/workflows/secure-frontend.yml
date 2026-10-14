@@ -27,7 +27,7 @@ permissions:
 jobs:
   linux:
     name: ${{ matrix.preset }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned: `ubuntu-latest` moves to Ubuntu 26 on 2026-10-19; re-verify the bootstrap before unpinning
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -68,7 +68,7 @@ jobs:
 
   windows-cross:
     name: windows-llvm-mingw-cross (compile+link on Linux)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned: `ubuntu-latest` moves to Ubuntu 26 on 2026-10-19; re-verify the bootstrap before unpinning
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -121,7 +121,7 @@ jobs:
 
   top-level-integration:
     name: top-level-integration (our root CMake + upstream/ engine)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned: `ubuntu-latest` moves to Ubuntu 26 on 2026-10-19; re-verify the bootstrap before unpinning
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4

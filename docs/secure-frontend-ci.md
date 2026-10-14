@@ -130,11 +130,11 @@ The bundle holds tag `v0.1.44.1` (tag object
 
 | Job | Runs on | Submodule | Blocking |
 | --- | --- | --- | --- |
-| `linux` (matrix `linux-gcc`, `linux-clang`) | ubuntu-latest; `linux-gcc` also checks that `pytest -q` collects `tools/secure/` only and runs it | yes (pytest) | yes |
-| `windows-cross` (`windows-llvm-mingw-cross`) | ubuntu-latest; uploads the `.exe` files | no | yes |
+| `linux` (matrix `linux-gcc`, `linux-clang`) | ubuntu-24.04 (pinned; `ubuntu-latest` becomes Ubuntu 26 on 2026-10-19); `linux-gcc` also checks that `pytest -q` collects `tools/secure/` only and runs it | yes (pytest) | yes |
+| `windows-cross` (`windows-llvm-mingw-cross`) | ubuntu-24.04 (pinned; `ubuntu-latest` becomes Ubuntu 26 on 2026-10-19); uploads the `.exe` files | no | yes |
 | `windows-msys2` (`windows-msys2-clang`) | windows-latest, MSYS2 CLANG64; runs `ctest` | no | yes |
 | `windows-msvc` | windows-latest | no | no |
-| `top-level-integration` | ubuntu-latest; first configures **our** root with no `-D` flags (`out/root-defaults`, configure only) and asserts `STRATA_NATIVE_EXPERTS`/`STRATA_ENABLE_CUDA`/`STRATA_ENABLE_HIP` `OFF`, `CMAKE_BUILD_TYPE=Release` and no `_deps`; then configures it with CUDA/HIP/native experts off, builds `strata-secure-server`, `secure_frontend_config_tests`, `strata-plan`, runs `ctest -R secure_frontend_config_tests`, checks no `out/root/_deps` | yes | yes |
+| `top-level-integration` | ubuntu-24.04 (pinned; `ubuntu-latest` becomes Ubuntu 26 on 2026-10-19); first configures **our** root with no `-D` flags (`out/root-defaults`, configure only) and asserts `STRATA_NATIVE_EXPERTS`/`STRATA_ENABLE_CUDA`/`STRATA_ENABLE_HIP` `OFF`, `CMAKE_BUILD_TYPE=Release` and no `_deps`; then configures it with CUDA/HIP/native experts off, builds `strata-secure-server`, `secure_frontend_config_tests`, `strata-plan`, runs `ctest -R secure_frontend_config_tests`, checks no `out/root/_deps` | yes | yes |
 
 The jobs that check out the submodule end with the step "upstream submodule
 pinned and unmodified": `git submodule status` must show no `+`/`-`/`U` prefix
