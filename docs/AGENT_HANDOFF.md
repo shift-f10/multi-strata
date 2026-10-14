@@ -163,6 +163,7 @@ Plan: `docs/superpowers/plans/2026-10-14-sp4-acquire.md`. One line per task.
 - Task 2: §8 reasons, exit classes and error text in `secure_frontend_manifest_core`; `acquire.exit_classes_match_spec_table`, `reason_table_is_complete_and_ordered`, `error_text_states_resumable`.
 - Task 3: URL/host/wildcard/proxy grammar (spec §2.2, §3.4, §3.8); manifest.source_url_grammar_matrix, dns_names_and_wildcards, proxy_grammar; fetch.dl03_location_with_glob_characters_rejected, location_resolution_and_host_normalization, location_query_characters.
 - Task 4: §3.5 address policy (`secure_frontend_acquire_core`); fetch.address_policy_* (5 cases).
+- Task 5: §3.3 argv/stdin, probe parsing, C3 floors, §3.4 curl exit map; fetch.transfer_argv_exact_order, config_line_is_single_quoted_url, probe_argv_is_version_only, probe_output_parsing_and_floor, curl_exit_codes_map_to_reasons.
 
 ### Upstream bump to `v0.1.44.1` (2026-10-14, branch `upstream/bump-v0.1.44.1`)
 

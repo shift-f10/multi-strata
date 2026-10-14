@@ -1,5 +1,6 @@
 #include "secure_frontend/acquire_url.hpp"
 #include "secure_frontend/address_policy.hpp"
+#include "secure_frontend/downloader_command.hpp"
 #include "support/test_support.hpp"
 
 #include <iostream>
@@ -136,6 +137,80 @@ void resolve_argument_brackets_ipv6() {
          "IPv6 in brackets, uncompressed");
 }
 
+void transfer_argv_exact_order() {
+  secure_frontend::TransferRequest request;
+  request.url = "https://huggingface.co/r/resolve/abc/f.gguf";
+  request.host = "huggingface.co";
+  request.pin = secure_frontend::make_ipv4(1, 2, 3, 4);
+  request.range_from = 1000;
+  request.connect_timeout_s = 30;
+  request.stall_timeout_s = 120;
+  request.max_time_s = 172800;
+  const std::vector<std::string> expected{
+      "/usr/bin/curl", "-q", "--config", "-", "--silent", "--include", "--suppress-connect-headers", "--globoff",
+      "--proto", "=https", "--max-redirs", "0", "--tlsv1.2", "--connect-timeout", "30", "--speed-limit", "1024",
+      "--speed-time", "120", "--max-time", "172800", "--user-agent", "strata", "--header", "Accept-Encoding: identity",
+      "--noproxy", "*", "--resolve", "huggingface.co:443:1.2.3.4", "--range", "1000-"};
+  expect(secure_frontend::build_transfer_argv("/usr/bin/curl", request) == expected, "argv is exactly spec §3.3");
+  for (const auto& argument : secure_frontend::build_transfer_argv("/usr/bin/curl", request)) {
+    expect(argument.find("resolve/abc") == std::string::npos, "no URL in argv");
+  }
+  secure_frontend::TransferRequest proxied = request;
+  proxied.proxy = secure_frontend::ProxySetting{false, "proxy.corp", 3128};
+  proxied.pin.reset();
+  proxied.range_from.reset();
+  const auto with_proxy = secure_frontend::build_transfer_argv("/usr/bin/curl", proxied);
+  expect(with_proxy[with_proxy.size() - 2] == "--proxy" && with_proxy.back() == "http://proxy.corp:3128",
+         "--proxy replaces --noproxy and no --resolve with a proxy");
+}
+
+void config_line_is_single_quoted_url() {
+  secure_frontend::TransferRequest request;
+  request.url = "https://huggingface.co/a/b.gguf";
+  expect(secure_frontend::build_config_stdin(request) == "url = \"https://huggingface.co/a/b.gguf\"\n", "one config line");
+}
+
+void probe_argv_is_version_only() {
+  expect((secure_frontend::build_probe_argv("C:\\Windows\\System32\\curl.exe") ==
+          std::vector<std::string>{"C:\\Windows\\System32\\curl.exe", "-q", "--version"}),
+         "probe argv is exactly <curl> -q --version");
+}
+
+void probe_output_parsing_and_floor() {
+  using secure_frontend::DownloaderPlatform;
+  const auto ubuntu = secure_frontend::parse_probe_output(
+      "curl 7.81.0 (x86_64-pc-linux-gnu) libcurl/7.81.0 OpenSSL/3.0.2 zlib/1.2.11 brotli/1.0.9 zstd/1.4.8\n"
+      "Release-Date: 2022-01-05\nProtocols: dict file ftp ftps http https\n");
+  expect(ubuntu.has_value() && ubuntu->major == 7 && ubuntu->minor == 81 && ubuntu->patch == 0, "version parsed");
+  expect(ubuntu.has_value() && ubuntu->tls_backend == "OpenSSL", "TLS backend parsed");
+  expect(ubuntu && secure_frontend::meets_version_floor(*ubuntu, DownloaderPlatform::linux_like), "7.81.0 meets the Linux floor");
+  expect(ubuntu && !secure_frontend::meets_version_floor(*ubuntu, DownloaderPlatform::windows), "7.81.0 is below the Windows floor");
+  const auto windows = secure_frontend::parse_probe_output("curl 8.4.0 (Windows) libcurl/8.4.0 Schannel WinIDN\r\n");
+  expect(windows.has_value() && windows->tls_backend == "Schannel", "Schannel parsed");
+  expect(windows && secure_frontend::meets_version_floor(*windows, DownloaderPlatform::windows), "8.4.0 meets the Windows floor");
+  const auto old = secure_frontend::parse_probe_output("curl 7.80.0 (x86_64-pc-linux-gnu) libcurl/7.80.0 OpenSSL/1.1.1\n");
+  expect(old && !secure_frontend::meets_version_floor(*old, DownloaderPlatform::linux_like), "7.80.0 below the Linux floor");
+  expect(!secure_frontend::parse_probe_output("wget 1.21\n").has_value(), "not curl");
+  expect(!secure_frontend::parse_probe_output("curl 8.5.0 (x) libcurl/8.5.0 zlib/1.3\n").has_value(), "no TLS backend");
+  const auto dev = secure_frontend::parse_probe_output("curl 8.11.1-DEV (x) libcurl/8.11.1-DEV rustls-ffi/0.14.0\n");
+  expect(dev.has_value() && dev->minor == 11 && dev->tls_backend == "rustls-ffi", "suffixes tolerated");
+}
+
+void curl_exit_codes_map_to_reasons() {
+  using R = secure_frontend::AcquireReason;
+  const auto map = [](const int code) { return secure_frontend::map_curl_exit(code, false); };
+  expect(!map(0).has_value(), "0 is decided by the status table");
+  expect(map(5) == R::dns_failed && map(6) == R::dns_failed, "5, 6");
+  expect(map(7) == R::connect_failed, "7");
+  for (const int code : {18, 52, 55, 56, 92}) expect(map(code) == R::size_short, "size_short " + std::to_string(code));
+  expect(map(28) == R::stalled, "28 stalled");
+  expect(secure_frontend::map_curl_exit(28, true) == R::time_budget_exceeded, "28 with the run budget used up");
+  expect(map(35) == R::tls_failed, "35");
+  for (const int code : {60, 58, 59, 77, 83, 90, 91}) expect(map(code) == R::tls_untrusted, "tls_untrusted " + std::to_string(code));
+  for (const int code : {1, 2, 3, 4, 43, 48}) expect(map(code) == R::downloader_unsupported, "unsupported " + std::to_string(code));
+  for (const int code : {8, 22, 47, 99}) expect(map(code) == R::transport_failed, "other " + std::to_string(code));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -148,5 +223,10 @@ int main(int argc, char** argv) {
       {"ipv6_only_answer_fails_closed", ipv6_only_answer_fails_closed},
       {"allow_private_addresses_pins_first_ipv4", allow_private_addresses_pins_first_ipv4},
       {"resolve_argument_brackets_ipv6", resolve_argument_brackets_ipv6},
+      {"transfer_argv_exact_order", transfer_argv_exact_order},
+      {"config_line_is_single_quoted_url", config_line_is_single_quoted_url},
+      {"probe_argv_is_version_only", probe_argv_is_version_only},
+      {"probe_output_parsing_and_floor", probe_output_parsing_and_floor},
+      {"curl_exit_codes_map_to_reasons", curl_exit_codes_map_to_reasons},
   }, failures);
 }
