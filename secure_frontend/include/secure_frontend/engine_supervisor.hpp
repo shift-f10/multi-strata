@@ -102,6 +102,10 @@ inline constexpr std::string_view kNoNewPrivilegesHint =
     "/dev/nvidia-uvm, create the device nodes at boot (as root: nvidia-modprobe -u -c=0, or enable nvidia-persistenced) "
     "or start the frontend with --allow-new-privileges";
 
+// Logged once by the supervisor thread when it stops with a generation it
+// could not reap (spec C4: exit 0 means no engine is left); main then exits 1.
+inline constexpr std::string_view kEngineLeftUnreapedLine = "engine supervisor stopped with an unreaped engine: exit 1";
+
 // Receives fixed-literal lines such as "engine generation 2 ended: abort".
 using SupervisorLog = std::function<void(std::string_view line)>;
 
@@ -176,6 +180,10 @@ class EngineSupervisor final {
   void shutdown(std::chrono::milliseconds bound);
   // True once shutdown() was called or a shutdown signal arrived.
   [[nodiscard]] bool stop_requested() const noexcept;
+  // After shutdown() has returned: true when a generation was never reaped
+  // (kEngineLeftUnreapedLine was logged). Spec C4: the process must not exit 0
+  // then; main returns 1.
+  [[nodiscard]] bool engine_left_unreaped() const noexcept { return engine_left_unreaped_.load(); }
   // The wake object install_shutdown_signals() fires.
   [[nodiscard]] SupervisorWake& wake() noexcept { return wake_; }
   // Called on the supervisor thread after every engine process is gone (main
@@ -231,6 +239,7 @@ class EngineSupervisor final {
   std::vector<std::shared_ptr<EngineInstance>> abandoned_;
   std::atomic<std::uint64_t> generations_started_{0};
   std::atomic<bool> shutdown_requested_{false};
+  std::atomic<bool> engine_left_unreaped_{false};  // set by finish(): abandoned_ was not empty
   std::shared_ptr<LeaseLink> lease_link_;
   std::function<void()> on_stopped_;
   // Spec §3.7 bound: set when the supervisor thread starts the orderly

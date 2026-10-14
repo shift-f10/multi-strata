@@ -687,6 +687,32 @@ void proc04_unreaped_child_opens_circuit() {
   expect(supervisor.snapshot().recovery == "exhausted", "recovery=exhausted");
   expect(log.contains("engine generation 1 ended: unreaped"), "logged as unreaped");
   supervisor.shutdown(5s);
+  // C4 (final review I2): the abandoned generation is still an engine left.
+  expect(supervisor.engine_left_unreaped(), "shutdown reports the engine left behind");
+  expect(log.contains(secure_frontend::kEngineLeftUnreapedLine), "the fixed-literal engine-left line is logged");
+}
+
+// C4 (final review I2): "exit 0 means no engine left". A generation that the
+// orderly shutdown cannot reap is reported (fixed-literal line), so main
+// returns 1 instead of 0.
+void supervisor_unreaped_at_shutdown_reports_engine_left() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) {
+    child.reapable = false;  // EOF and the kills land, but the child can never be reaped
+    child.push_line("READY 4096 stop");
+  });
+  secure_frontend::SupervisorConfig config;
+  config.shutdown_stdin_wait = 50ms;
+  config.shutdown_term_wait = 50ms;
+  test_support::LogCapture log;
+  secure_frontend::EngineSupervisor supervisor(config, fakes.factory(), std::make_shared<test_support::ManualClock>(), log.sink());
+  expect(supervisor.start(), "the supervisor starts");
+  expect(test_support::wait_generation_ready(supervisor, 1U, 5s), "generation 1 ready");
+  expect(!supervisor.engine_left_unreaped(), "nothing reported while serving");
+  supervisor.shutdown(5s);
+  expect(supervisor.snapshot().state == SupervisorState::stopped, "the shutdown still completes within its bound");
+  expect(log.contains("engine generation 1 ended: unreaped"), "the generation is logged as unreaped");
+  expect(supervisor.engine_left_unreaped(), "shutdown reports the engine left behind");
+  expect(log.contains(secure_frontend::kEngineLeftUnreapedLine), "the fixed-literal engine-left line is logged");
 }
 
 #if !defined(_WIN32)
@@ -969,6 +995,8 @@ void supervisor_shutdown_sends_eof_first_then_kills() {
   expect(child->exit.has_value() && !child->exit->signaled && child->exit->value == 0U, "the engine ended on stdin EOF (exit 0)");
   expect(child->kills == 1, "the group is SIGKILLed anyway (spec §3.7: always), saw " + std::to_string(child->kills));
   expect(log.contains("engine generation 1 ended: killed_by_supervisor(shutdown)"), "logged as the supervisor's shutdown");
+  expect(!supervisor.engine_left_unreaped() && !log.contains(secure_frontend::kEngineLeftUnreapedLine),
+         "a reaped engine is not reported as left (main exits 0)");
 }
 
 // RF4 / spec §3.7: a Lease still out at shutdown keeps engine stdin (no EOF
@@ -1562,6 +1590,7 @@ int main(int argc, char* argv[]) {
                                                 {"sp3_d2_uncounted_streak_is_bounded", sp3_d2_uncounted_streak_is_bounded},
                                                 {"sp3_d2_done_resets_uncounted_streak", sp3_d2_done_resets_uncounted_streak},
                                                 {"proc04_unreaped_child_opens_circuit", proc04_unreaped_child_opens_circuit},
+                                                {"supervisor_unreaped_at_shutdown_reports_engine_left", supervisor_unreaped_at_shutdown_reports_engine_left},
                                                 {"supervisor_exception_opens_circuit", supervisor_exception_opens_circuit},
                                                 {"supervisor_shutdown_sends_eof_first_then_kills", supervisor_shutdown_sends_eof_first_then_kills},
                                                 {"supervisor_lease_outliving_shutdown_is_safe", supervisor_lease_outliving_shutdown_is_safe},

@@ -260,7 +260,8 @@ int run(const FrontendConfig& config) {
     // Any other failure was one client's; keep serving.
   }
   supervisor.shutdown(secure_frontend::config_defaults::kShutdownBound);
-  return EXIT_SUCCESS;
+  // Spec C4: exit 0 means no engine is left; an unreaped one was logged.
+  return supervisor.engine_left_unreaped() ? EXIT_FAILURE : EXIT_SUCCESS;
 }
 
 }  // namespace

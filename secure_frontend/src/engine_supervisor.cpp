@@ -547,11 +547,22 @@ void EngineSupervisor::sweep_retired() {
   }
 }
 
-// Every engine process is gone: stop the listener, report `stopped`, release
-// a Windows console handler, then give main until the §3.7 bound to finish.
+// Every engine process we could reap is gone: stop the listener, report
+// `stopped`, release a Windows console handler, then give main until the §3.7
+// bound to finish. A generation left in abandoned_ (never reaped) is reported
+// so main exits 1, not 0 (spec C4, final review I2).
 void EngineSupervisor::finish() {
   note_shutdown_started();
   sweep_retired();
+  bool unreaped = false;
+  {
+    std::lock_guard lock(mutex_);
+    unreaped = !abandoned_.empty();
+  }
+  if (unreaped) {
+    engine_left_unreaped_.store(true);
+    log_(kEngineLeftUnreapedLine);
+  }
   set_state(SupervisorState::shutting_down, nullptr);
   if (on_stopped_) on_stopped_();
   set_state(SupervisorState::stopped);
