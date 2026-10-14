@@ -21,7 +21,10 @@
 //             kMaxKeepFds entries (the child cannot allocate).
 //   pre_exec  called after the sweep and the signal reset, immediately before
 //             execve, with the lifted numbers in keep_fds order and `ctx`. It
-//             must be async-signal-safe. 0 = go on; non-zero (an errno value) =
+//             must be async-signal-safe, and it must NOT close or dup2 onto
+//             any of fds 0..kReportFd: a hook that clobbers kReportFd could
+//             make a failure (its own or execve's) read as success (EOF).
+//             0 = go on; non-zero (an errno value) =
 //             the child writes kHookFailureMarker then that int (raw bytes) on
 //             kReportFd and _exits 127. A keep_fds entry that cannot be lifted
 //             is reported the same way with the fcntl errno (fail closed).
@@ -296,13 +299,15 @@ struct ChildReport final {
   int error{0};
 };
 
-// Reads the report pipe to EOF (EINTR retried), keeping at most 16 bytes:
-// longer is malformed anyway. Empty = the child's execve succeeded.
+// Reads the report pipe to EOF (EINTR retried), keeping at most 16 bytes (it
+// stops reading there; any report that long is malformed anyway, the largest
+// valid one is 1 + sizeof(int)). Empty = the child's execve succeeded.
 inline std::string read_report(const int fd) {
+  constexpr std::size_t kMaxReportBytes = 16;
   std::string bytes;
-  char buffer[16];
-  while (bytes.size() <= sizeof(buffer)) {
-    const ssize_t count = read(fd, buffer, sizeof(buffer));
+  char buffer[kMaxReportBytes];
+  while (bytes.size() < kMaxReportBytes) {
+    const ssize_t count = read(fd, buffer, kMaxReportBytes - bytes.size());
     if (count < 0 && errno == EINTR) continue;
     if (count <= 0) break;
     bytes.append(buffer, static_cast<std::size_t>(count));

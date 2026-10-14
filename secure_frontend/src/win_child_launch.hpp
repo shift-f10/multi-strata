@@ -19,10 +19,16 @@
 // On failure nothing is left running and every handle launch_in_job created is
 // closed; the caller's handles in the spec are never closed by it.
 //
-// Seam inputs (all default off = the engine's behaviour):
+// Seam inputs (token, extra handles and CRT block default off = the engine's
+// behaviour; the two Job options default ON, see below):
 //   primary_token            non-null: CreateProcessAsUserW with this token.
-//   extra_inherited_handles  each must be inheritable (HANDLE_FLAG_INHERIT);
-//                            appended after the three standard handles.
+//   extra_inherited_handles  each must be inheritable (HANDLE_FLAG_INHERIT),
+//                            else the launch fails with ERROR_INVALID_HANDLE at
+//                            step `attributes`; appended after the three standard
+//                            handles. Each must be distinct from the three standard
+//                            handles and from each other: a duplicate in the handle
+//                            list makes CreateProcess fail (ERROR_INVALID_PARAMETER,
+//                            step `create_process`). launch_in_job does not dedupe.
 //   crt_fd_block             copied into STARTUPINFO.cbReserved2/lpReserved2:
 //                            the Microsoft CRT descriptor-inheritance layout
 //                            (int n, n flag bytes, n HANDLEs, packed); SP4 builds
@@ -30,13 +36,18 @@
 //   limit_active_process_to_one / restrict_ui
 //                            SP4 spec §3.2 Windows column: JOB_OBJECT_LIMIT_ACTIVE_PROCESS
 //                            with ActiveProcessLimit = 1, and every
-//                            JOB_OBJECT_UILIMIT_* restriction. The engine's Job
-//                            sets neither (its own children must be allowed).
+//                            JOB_OBJECT_UILIMIT_* restriction. Both default to
+//                            TRUE (controller ruling RF11, amended in R4 fix
+//                            round 1): a new caller is confined by default, and
+//                            SP4's positional 10-field initialiser gets this Job.
+//                            The engine sets both to false explicitly, so its Job
+//                            is unchanged (its own children must be allowed).
 // Owned containers (not spans) so a spec never dangles; SP4's positional
 // aggregate initialisation (sp4 plan Task 26) compiles unchanged against it.
 //
 // Result: WinLaunched (process, primary thread, Job; the caller owns and closes
-// all three; the thread is already resumed) or the GetLastError() of the failing
+// all three — SP4 must close WinLaunched::thread after launch_in_job; the
+// thread is already resumed) or the GetLastError() of the failing
 // call. `failed_step`, when given, names that call. ERROR_ELEVATION_REQUIRED
 // (740) from create_process means the image demands elevation: the launch is
 // never retried via runas, and the engine maps it to spawn_failed ("engine
@@ -69,8 +80,8 @@ struct WinLaunchSpec final {
   HANDLE primary_token{nullptr};                // CreateProcessAsUserW when set
   std::vector<HANDLE> extra_inherited_handles;  // appended to PROC_THREAD_ATTRIBUTE_HANDLE_LIST
   std::vector<std::uint8_t> crt_fd_block;       // STARTUPINFO cbReserved2/lpReserved2
-  bool limit_active_process_to_one{false};      // JOB_OBJECT_LIMIT_ACTIVE_PROCESS, ActiveProcessLimit = 1
-  bool restrict_ui{false};                      // JobObjectBasicUIRestrictions = kAllUiRestrictions
+  bool limit_active_process_to_one{true};       // JOB_OBJECT_LIMIT_ACTIVE_PROCESS, ActiveProcessLimit = 1 (engine: false)
+  bool restrict_ui{true};                       // JobObjectBasicUIRestrictions = kAllUiRestrictions (engine: false)
 };
 
 struct WinLaunched final {

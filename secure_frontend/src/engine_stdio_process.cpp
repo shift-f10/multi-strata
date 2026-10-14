@@ -201,7 +201,8 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
   if (child_stderr == INVALID_HANDLE_VALUE) { CloseHandle(child_stdin); CloseHandle(parent_stdin); CloseHandle(child_stdout); CloseHandle(parent_stdout); return ProcessError{ProcessErrorCode::platform_failure, with_last_error("stderr sink setup failed")}; }
   // The Job, creation flags, handle list, cwd and error mode live in
   // win_launch::launch_in_job (SP2 R4: shared with SP4's downloader); the
-  // engine passes none of the SP4 seam inputs, so its launch is unchanged:
+  // engine passes none of the SP4 seam inputs and turns the two Job options
+  // (default ON for new callers, RF11 amended) off explicitly, so its launch is unchanged:
   // Job = KILL_ON_JOB_CLOSE | DIE_ON_UNHANDLED_EXCEPTION, created suspended,
   // assigned, resumed; CREATE_NO_WINDOW (SP2 Task 15 ruling). Authoritative in MSYS2.
   // Spec §3.12: the engine's cwd-relative files land in <state_dir>/engine; empty: inherit.

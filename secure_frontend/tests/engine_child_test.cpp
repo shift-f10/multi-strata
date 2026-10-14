@@ -742,6 +742,16 @@ void sp4_seam_hook_failure_is_distinct_from_execve_failure() {
   expect(launch::describe_report(exec_failure) != launch::describe_report(classified), "the two failures read distinctly");
   expect(launch::classify_report("").kind == launch::ChildReportKind::none, "no bytes: execve succeeded");
   expect(launch::classify_report("xyz").kind == launch::ChildReportKind::malformed, "anything else is malformed, never success");
+  // read_report keeps at most 16 bytes, however much the pipe holds.
+  int flood[2]{-1, -1};
+  expect(pipe2(flood, O_CLOEXEC) == 0, "pipe");
+  const std::string forty(40, 'x');
+  expect(write(flood[1], forty.data(), forty.size()) == static_cast<ssize_t>(forty.size()), "fill");
+  (void)close(flood[1]);
+  const auto bounded = launch::read_report(flood[0]);
+  (void)close(flood[0]);
+  expect(bounded.size() == 16U, "read_report stops at 16 bytes, read " + std::to_string(bounded.size()));
+  expect(launch::classify_report(bounded).kind == launch::ChildReportKind::malformed, "and a long report is malformed");
 
   // Lifting fails closed: an fd that is not open cannot be lifted (EBADF); the hook never runs.
   // (A high number nothing here opens: a just-closed low number would be reused by the launch's own open.)
@@ -795,12 +805,16 @@ void sp4_seam_launch_in_job_handle_and_crt_block() {
   environment.push_back(L'\0');
   environment.push_back(L'\0');
 
-  const auto run = [&](const bool with_extra, const bool limits) -> std::optional<DWORD> {
-    // SP4 Task 26's positional shape: executable .. crt_fd_block; the job options follow.
+  // engine_job = false: SP4 Task 26's exact positional shape (executable ..
+  // crt_fd_block), so the Job options keep their defaults, which are ON (RF11
+  // amended). engine_job = true: both turned off, as the engine's start() does.
+  const auto run = [&](const bool with_extra, const bool engine_job) -> std::optional<DWORD> {
     wl::WinLaunchSpec spec{executable, line, environment, L"", in, out, err, nullptr,
                            with_extra ? std::vector<HANDLE>{record_handle} : std::vector<HANDLE>{}, block};
-    spec.limit_active_process_to_one = limits;
-    spec.restrict_ui = limits;
+    if (engine_job) {
+      spec.limit_active_process_to_one = false;
+      spec.restrict_ui = false;
+    }
     const auto launched = wl::launch_in_job(spec);
     if (const auto* code = std::get_if<DWORD>(&launched)) {
       expect(false, "launch_in_job failed (Win32 error " + std::to_string(*code) + ")");
@@ -812,17 +826,21 @@ void sp4_seam_launch_in_job_handle_and_crt_block() {
       DWORD code = 0;
       if (GetExitCodeProcess(child.process, &code)) exit_code = code;
     }
-    if (limits) {
-      JOBOBJECT_EXTENDED_LIMIT_INFORMATION extended{};
-      JOBOBJECT_BASIC_UI_RESTRICTIONS ui{};
-      expect(QueryInformationJobObject(child.job, JobObjectExtendedLimitInformation, &extended, sizeof(extended), nullptr) != FALSE &&
-                 (extended.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_ACTIVE_PROCESS) != 0 &&
-                 extended.BasicLimitInformation.ActiveProcessLimit == 1 &&
-                 (extended.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE) != 0,
-             "the Job carries ACTIVE_PROCESS = 1 and KILL_ON_JOB_CLOSE when the spec asks");
-      expect(QueryInformationJobObject(child.job, JobObjectBasicUIRestrictions, &ui, sizeof(ui), nullptr) != FALSE &&
-                 ui.UIRestrictionsClass == wl::kAllUiRestrictions,
-             "and every UI restriction");
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION extended{};
+    JOBOBJECT_BASIC_UI_RESTRICTIONS ui{};
+    const bool queried =
+        QueryInformationJobObject(child.job, JobObjectExtendedLimitInformation, &extended, sizeof(extended), nullptr) != FALSE &&
+        QueryInformationJobObject(child.job, JobObjectBasicUIRestrictions, &ui, sizeof(ui), nullptr) != FALSE;
+    const DWORD flags = extended.BasicLimitInformation.LimitFlags;
+    expect(queried && (flags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE) != 0 && (flags & JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION) != 0,
+           "every Job is KILL_ON_JOB_CLOSE | DIE_ON_UNHANDLED_EXCEPTION");
+    if (engine_job) {
+      expect(queried && (flags & JOB_OBJECT_LIMIT_ACTIVE_PROCESS) == 0 && ui.UIRestrictionsClass == 0,
+             "the engine's spec (both options false) keeps the engine Job: no ACTIVE_PROCESS limit, no UI restriction");
+    } else {
+      expect(queried && (flags & JOB_OBJECT_LIMIT_ACTIVE_PROCESS) != 0 && extended.BasicLimitInformation.ActiveProcessLimit == 1,
+             "the default spec (SP4's positional shape) gets ACTIVE_PROCESS = 1");
+      expect(queried && ui.UIRestrictionsClass == wl::kAllUiRestrictions, "and every UI restriction");
     }
     (void)TerminateJobObject(child.job, 1);
     CloseHandle(child.thread);
@@ -834,13 +852,40 @@ void sp4_seam_launch_in_job_handle_and_crt_block() {
     std::ifstream input(record, std::ios::binary);
     return std::string{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
   };
-  const auto with_handle = run(true, true);
+  const auto with_handle = run(true, false);
   expect(with_handle == 0U, "the fake found the handle at CRT entry 4 and wrote through it (exit 0)");
   expect(read_record() == "INHERITED 4\n", "the extra handle and the CRT block reached the child");
-  const auto without_handle = run(false, false);
+  const auto without_handle = run(false, true);
   expect(without_handle.has_value() && *without_handle != 0U, "without the extra handle in the list the child cannot write");
   expect(read_record() == "INHERITED 4\n", "and nothing more was written");
   for (HANDLE handle : {record_handle, in, out, err}) CloseHandle(handle);
+}
+
+// An extra handle that is not inheritable is refused before anything is
+// created: ERROR_INVALID_HANDLE at step `attributes` (header contract).
+void sp4_seam_launch_in_job_rejects_non_inheritable_handle() {
+  namespace wl = secure_frontend::win_launch;
+  SECURITY_ATTRIBUTES inherit{sizeof(inherit), nullptr, TRUE};
+  HANDLE in = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit, OPEN_EXISTING, 0, nullptr);
+  HANDLE out = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit, OPEN_EXISTING, 0, nullptr);
+  HANDLE private_handle = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+  expect(in != INVALID_HANDLE_VALUE && out != INVALID_HANDLE_VALUE && private_handle != INVALID_HANDLE_VALUE, "handles opened");
+  DWORD flags = 0;
+  expect(GetHandleInformation(private_handle, &flags) != FALSE && (flags & HANDLE_FLAG_INHERIT) == 0, "precondition: not inheritable");
+  const std::wstring executable = test_support::fake_engine_path().wstring();
+  const std::wstring line = L"\"" + executable + L"\" --exit-before-ready=0";
+  std::wstring environment{L'\0'};
+  wl::WinLaunchSpec spec{executable, line, environment, L"", in, out, out, nullptr, std::vector<HANDLE>{private_handle}, {}};
+  wl::WinLaunchStep step = wl::WinLaunchStep::none;
+  const auto launched = wl::launch_in_job(spec, &step);
+  const auto* code = std::get_if<DWORD>(&launched);
+  expect(code != nullptr && *code == ERROR_INVALID_HANDLE && step == wl::WinLaunchStep::attributes,
+         "a non-inheritable extra handle is ERROR_INVALID_HANDLE at the attributes step");
+  if (const auto* child = std::get_if<wl::WinLaunched>(&launched)) {
+    (void)TerminateJobObject(child->job, 1);
+    for (HANDLE handle : {child->thread, child->process, child->job}) CloseHandle(handle);
+  }
+  for (HANDLE handle : {in, out, private_handle}) CloseHandle(handle);
 }
 #endif
 
@@ -867,6 +912,7 @@ int main(int argc, char* argv[]) {
                                              {"proc03_windows_pipe_second_open_fails", proc03_windows_pipe_second_open_fails},
                                              {"proc01_windows_argv_round_trip", proc01_windows_argv_round_trip},
                                              {"sp4_seam_launch_in_job_handle_and_crt_block", sp4_seam_launch_in_job_handle_and_crt_block},
+                                             {"sp4_seam_launch_in_job_rejects_non_inheritable_handle", sp4_seam_launch_in_job_rejects_non_inheritable_handle},
                                              // G3: in the case list only, never registered with CTest.
                                              {"proc06_elevation_required_is_spawn_failed", proc06_elevation_required_is_spawn_failed},
 #endif
