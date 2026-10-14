@@ -38,7 +38,60 @@ void add_optional(EnvironmentBlock& block, const EngineEnvironment& environment)
   if (environment.watchdog_io_s) block.emplace("STRATA_WATCHDOG_IO_S", std::to_string(*environment.watchdog_io_s));
 }
 
+// The per-family tables. strata forces nothing: its rendering is exactly the
+// §3.9 allowlist. glm stays empty until SP6 fills it (§4.9: STRATA_GLM_* safety
+// constants, STRATA_WATCHDOG_S=0, the CUDA selectors); no GLM value renders yet.
+constexpr std::array<ForcedEnvironmentValue, 0> kStrataForced{};
+constexpr std::array<ForcedEnvironmentValue, 0> kGlmForced{};
+
+constexpr bool contains(const std::span<const std::string_view> names, const std::string_view name) noexcept {
+  for (const auto candidate : names) {
+    if (candidate == name) return true;
+  }
+  return false;
+}
+
+// The same validation for every table, shipped or test-only (R5 requirement 2).
+constexpr bool forced_environment_is_valid(const std::span<const ForcedEnvironmentValue> forced) noexcept {
+  for (std::size_t i = 0; i < forced.size(); ++i) {
+    const auto& entry = forced[i];
+    if (!contains(kFamilyForcibleEnvironment, entry.name)) return false;
+    if (contains(kNeverForwardedEnvironment, entry.name) && !contains(kFamilyGpuSelectors, entry.name)) return false;
+    if (entry.value.find('\0') != std::string_view::npos) return false;
+    for (std::size_t j = 0; j < i; ++j) {
+      if (forced[j].name == entry.name) return false;
+    }
+  }
+  return true;
+}
+
+static_assert(forced_environment_is_valid(kStrataForced) && forced_environment_is_valid(kGlmForced),
+              "every shipped family table passes the forced-values validation");
+
+// Never fails for a shipped table (static_assert above); a rejected table
+// would render nothing at all rather than a partial environment.
+EnvironmentBlock with_family(EnvironmentBlock block, const EngineFamily family) {
+  if (!merge_forced_environment(block, family_forced_environment(family))) return {};
+  return block;
+}
+
 }  // namespace
+
+std::span<const ForcedEnvironmentValue> family_forced_environment(const EngineFamily family) noexcept {
+  switch (family) {
+    case EngineFamily::strata:
+      return kStrataForced;
+    case EngineFamily::glm:
+      return kGlmForced;
+  }
+  return {};
+}
+
+bool merge_forced_environment(EnvironmentBlock& block, const std::span<const ForcedEnvironmentValue> forced) {
+  if (!forced_environment_is_valid(forced)) return false;
+  for (const auto& entry : forced) block.insert_or_assign(std::string(entry.name), std::string(entry.value));
+  return true;
+}
 
 EnvironmentBlock render_posix_environment(const EngineEnvironment& environment) {
   EnvironmentBlock block;
@@ -47,7 +100,7 @@ EnvironmentBlock render_posix_environment(const EngineEnvironment& environment) 
   block.emplace("TMPDIR", native(environment.temp_dir));
   block.emplace("CUDA_CACHE_PATH", native(environment.cuda_cache_dir));
   add_optional(block, environment);
-  return block;
+  return with_family(std::move(block), environment.family);
 }
 
 EnvironmentBlock render_windows_environment(const EngineEnvironment& environment, const WindowsSystemValues& system) {
@@ -64,7 +117,7 @@ EnvironmentBlock render_windows_environment(const EngineEnvironment& environment
   block.emplace("SystemDrive", system.system_drive);
   block.emplace("NUMBER_OF_PROCESSORS", std::to_string(system.processors));
   add_optional(block, environment);
-  return block;
+  return with_family(std::move(block), environment.family);
 }
 
 WindowsSystemValues query_windows_system_values() {

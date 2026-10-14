@@ -12,6 +12,7 @@
 #include "support/test_tokenizer.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -1276,6 +1277,136 @@ void engine_environment_uses_cache_root_when_set() {
   expect(cached.cuda_cache_dir == std::filesystem::path{"/var/cache/strata"} / "cuda", "roots.cache holds the CUDA cache when set");
 }
 
+// SP6 env family (R5): the byte pin of the strata rendering, captured before
+// the family field existed. Every member is set so every rendered row is pinned.
+secure_frontend::EngineEnvironment representative_posix_environment() {
+  return {.lib_dirs = {"/opt/strata/lib", "/opt/strata/cuda"},
+          .temp_dir = "/srv/state/engine-tmp/7",
+          .cuda_cache_dir = "/srv/cache/cuda",
+          .hipblaslt_tuning = std::filesystem::path{"/opt/strata/tuning.txt"},
+          .watchdog_s = 30U,
+          .watchdog_io_s = 5U};
+}
+
+// Backslash paths render the same bytes on both hosts (one file name on POSIX).
+secure_frontend::EngineEnvironment representative_windows_environment() {
+  return {.lib_dirs = {"C:\\strata\\lib", "C:\\strata\\cuda"},
+          .temp_dir = "C:\\state\\engine-tmp\\7",
+          .cuda_cache_dir = "C:\\cache\\cuda",
+          .hipblaslt_tuning = std::filesystem::path{"C:\\strata\\tuning.txt"},
+          .watchdog_s = 30U,
+          .watchdog_io_s = 5U};
+}
+
+const secure_frontend::WindowsSystemValues kPinnedSystem{.system_root = "C:\\Windows", .system_drive = "C:", .processors = 8U};
+
+const secure_frontend::EnvironmentBlock kPinnedPosixBlock{{"CUDA_CACHE_PATH", "/srv/cache/cuda"},
+                                                          {"LD_LIBRARY_PATH", "/opt/strata/lib:/opt/strata/cuda"},
+                                                          {"PATH", "/usr/bin:/bin"},
+                                                          {"STRATA_HIPBLASLT_TUNING", "/opt/strata/tuning.txt"},
+                                                          {"STRATA_WATCHDOG_IO_S", "5"},
+                                                          {"STRATA_WATCHDOG_S", "30"},
+                                                          {"TMPDIR", "/srv/state/engine-tmp/7"}};
+
+const secure_frontend::EnvironmentBlock kPinnedWindowsBlock{{"CUDA_CACHE_PATH", "C:\\cache\\cuda"},
+                                                            {"NUMBER_OF_PROCESSORS", "8"},
+                                                            {"PATH", "C:\\strata\\lib;C:\\strata\\cuda;C:\\Windows\\System32"},
+                                                            {"STRATA_HIPBLASLT_TUNING", "C:\\strata\\tuning.txt"},
+                                                            {"STRATA_WATCHDOG_IO_S", "5"},
+                                                            {"STRATA_WATCHDOG_S", "30"},
+                                                            {"SystemDrive", "C:"},
+                                                            {"SystemRoot", "C:\\Windows"},
+                                                            {"TEMP", "C:\\state\\engine-tmp\\7"},
+                                                            {"TMP", "C:\\state\\engine-tmp\\7"},
+                                                            {"WINDIR", "C:\\Windows"}};
+
+void sp6_env_strata_family_renders_unchanged() {
+#if !defined(_WIN32)
+  expect(secure_frontend::render_posix_environment(representative_posix_environment()) == kPinnedPosixBlock,
+         "POSIX strata rendering is byte-identical to the pin");
+#endif
+  expect(secure_frontend::render_windows_environment(representative_windows_environment(), kPinnedSystem) == kPinnedWindowsBlock,
+         "Windows strata rendering is byte-identical to the pin");
+  // The family defaults to strata, and naming it explicitly changes nothing.
+  expect(representative_posix_environment().family == secure_frontend::EngineFamily::strata, "the family defaults to strata");
+  expect(secure_frontend::family_forced_environment(secure_frontend::EngineFamily::strata).empty(), "the strata table is empty");
+  auto strata_posix = representative_posix_environment();
+  strata_posix.family = secure_frontend::EngineFamily::strata;
+  auto strata_windows = representative_windows_environment();
+  strata_windows.family = secure_frontend::EngineFamily::strata;
+#if !defined(_WIN32)
+  expect(secure_frontend::render_posix_environment(strata_posix) == kPinnedPosixBlock, "explicit strata: POSIX pin");
+#endif
+  expect(secure_frontend::render_windows_environment(strata_windows, kPinnedSystem) == kPinnedWindowsBlock, "explicit strata: Windows pin");
+  // glm is reserved for SP6: its table is empty, so it renders no GLM value yet.
+  expect(secure_frontend::family_forced_environment(secure_frontend::EngineFamily::glm).empty(), "the glm table is empty until SP6");
+  auto glm_windows = representative_windows_environment();
+  glm_windows.family = secure_frontend::EngineFamily::glm;
+  expect(secure_frontend::render_windows_environment(glm_windows, kPinnedSystem) == kPinnedWindowsBlock, "glm renders no GLM value yet");
+  // The config path builds the strata family.
+  expect(secure_frontend::engine_environment_for("/srv/state", std::nullopt, {}).family == secure_frontend::EngineFamily::strata,
+         "engine_environment_for builds the strata family");
+}
+
+// A test-only family table: overrides a generic row and adds the two GPU selectors.
+constexpr std::array<secure_frontend::ForcedEnvironmentValue, 3> kTestGpuTable{{{"STRATA_WATCHDOG_S", "0"},
+                                                                                 {"CUDA_DEVICE_ORDER", "PCI_BUS_ID"},
+                                                                                 {"CUDA_VISIBLE_DEVICES", "1"}}};
+
+void sp6_env_forced_values_override_and_add() {
+  // The Windows rendering of backslash paths is byte-stable on both hosts.
+  auto block = secure_frontend::render_windows_environment(representative_windows_environment(), kPinnedSystem);
+  expect(secure_frontend::merge_forced_environment(block, kTestGpuTable), "a valid table merges");
+  auto expected = kPinnedWindowsBlock;
+  expected["STRATA_WATCHDOG_S"] = "0";  // override: replaces the generic value 30
+  expected.emplace("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
+  expected.emplace("CUDA_VISIBLE_DEVICES", "1");
+  expect(block == expected, "forced values override and add; every other row is untouched");
+  // Deterministic: the table's order does not change the result.
+  const std::array<secure_frontend::ForcedEnvironmentValue, 3> reversed{{kTestGpuTable[2], kTestGpuTable[1], kTestGpuTable[0]}};
+  auto again = secure_frontend::render_windows_environment(representative_windows_environment(), kPinnedSystem);
+  expect(secure_frontend::merge_forced_environment(again, reversed) && again == expected, "table order does not matter");
+  // Merging the same table twice is idempotent; an empty table changes nothing.
+  expect(secure_frontend::merge_forced_environment(again, kTestGpuTable) && again == expected, "a second merge is idempotent");
+  auto untouched = kPinnedWindowsBlock;
+  expect(secure_frontend::merge_forced_environment(untouched, {}) && untouched == kPinnedWindowsBlock, "an empty table changes nothing");
+}
+
+void sp6_env_forced_values_reject_never_list() {
+  using secure_frontend::ForcedEnvironmentValue;
+  const std::array<std::array<ForcedEnvironmentValue, 2>, 11> rejected{{
+      {{{"CUDA_VISIBLE_DEVICES", "0"}, {"LD_PRELOAD", "/tmp/x.so"}}},  // a valid row first: all-or-nothing
+      {{{"CUDA_DEVICE_ORDER", "PCI_BUS_ID"}, {"LD_AUDIT", "/tmp/x.so"}}},
+      {{{"CUDA_VISIBLE_DEVICES", "0"}, {"HIP_VISIBLE_DEVICES", "0"}}},
+      {{{"CUDA_VISIBLE_DEVICES", "0"}, {"STRATA_API_KEY", "k"}}},
+      {{{"CUDA_VISIBLE_DEVICES", "0"}, {"HOME", "/home/x"}}},
+      {{{"CUDA_VISIBLE_DEVICES", "0"}, {"HTTPS_PROXY", "http://p"}}},
+      {{{"CUDA_VISIBLE_DEVICES", "0"}, {"STRATA_GLM_DFLASH", "1"}}},  // not on the forcible list
+      {{{"CUDA_VISIBLE_DEVICES", "0"}, {"PATH", "/tmp"}}},             // generic base rows are not forcible
+      {{{"CUDA_VISIBLE_DEVICES", "0"}, {"CUDA_VISIBLE_DEVICES", "1"}}},  // a duplicate name is ambiguous
+      {{{"CUDA_VISIBLE_DEVICES", "0"}, {"STRATA_WATCHDOG_S", std::string_view{"0\0x", 3}}}},  // NUL in a value
+      {{{"CUDA_VISIBLE_DEVICES", "0"}, {"", "x"}}},
+  }};
+  for (const auto& table : rejected) {
+    auto block = kPinnedPosixBlock;
+    expect(!secure_frontend::merge_forced_environment(block, table),
+           "rejected table (second row " + std::string(table[1].name) + ")");
+    expect(block == kPinnedPosixBlock, "a rejected table leaves the block unchanged (" + std::string(table[1].name) + ")");
+  }
+  // Every never-list name except the two frontend-rendered GPU selectors (RF9) is refused.
+  for (const std::string_view banned : secure_frontend::kNeverForwardedEnvironment) {
+    const std::array<ForcedEnvironmentValue, 1> table{{{banned, "x"}}};
+    auto block = kPinnedPosixBlock;
+    const bool gpu_selector = banned == "CUDA_DEVICE_ORDER" || banned == "CUDA_VISIBLE_DEVICES";
+    expect(secure_frontend::merge_forced_environment(block, table) == gpu_selector, "never-list name: " + std::string(banned));
+  }
+  // Every shipped family table passes the same validation.
+  for (const auto family : {secure_frontend::EngineFamily::strata, secure_frontend::EngineFamily::glm}) {
+    auto block = kPinnedPosixBlock;
+    expect(secure_frontend::merge_forced_environment(block, secure_frontend::family_forced_environment(family)), "family table validates");
+  }
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -1310,6 +1441,9 @@ int main(int argc, char* argv[]) {
                                                 {"supervisor_serving_api_is_thread_safe", supervisor_serving_api_is_thread_safe},
                                                 {"proc06_refuses_privileged_start", proc06_refuses_privileged_start},
                                                 {"engine_environment_uses_cache_root_when_set", engine_environment_uses_cache_root_when_set},
+                                                {"sp6_env_strata_family_renders_unchanged", sp6_env_strata_family_renders_unchanged},
+                                                {"sp6_env_forced_values_override_and_add", sp6_env_forced_values_override_and_add},
+                                                {"sp6_env_forced_values_reject_never_list", sp6_env_forced_values_reject_never_list},
                                                 {"proc02_child_env_is_exact_allowlist", proc02_child_env_is_exact_allowlist},
 #if !defined(_WIN32)
                                                 {"shutdown_signal_preserves_errno", shutdown_signal_preserves_errno},
