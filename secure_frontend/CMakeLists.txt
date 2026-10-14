@@ -416,7 +416,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # server-level test is windows-runtime on Windows: it relies on console
     # groups, Jobs, tokens and process exit codes.
     set(SECURE_FRONTEND_SERVER_CASES harness_server_lifecycle_selftest)
-    set(SECURE_FRONTEND_SERVER_LINUX_CASES)
+    set(SECURE_FRONTEND_SERVER_LINUX_CASES proc05_frontend_sigkill_kills_engine)
     set(SECURE_FRONTEND_SERVER_WINDOWS_CASES)
     if(WIN32)
         list(APPEND SECURE_FRONTEND_SERVER_CASES ${SECURE_FRONTEND_SERVER_WINDOWS_CASES})

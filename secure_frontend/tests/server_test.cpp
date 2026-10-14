@@ -41,8 +41,45 @@ void harness_server_lifecycle_selftest() {
   expect(server->wait_exit(5s).has_value(), "a killed server is reaped");
 }
 
+#if !defined(_WIN32)
+void proc05_frontend_sigkill_kills_engine() {
+  const auto dir = test_support::make_temp_dir("c3");
+  const auto pidfile = dir / "grandchild.pid";
+  test_support::ServerOptions options;
+  // --stall-stdin keeps the engine alive after stdin EOF, so only PDEATHSIG can end it.
+  options.engine_args = {"--spawn-grandchild", "--grandchild-pidfile=" + test_support::utf8_path(pidfile), "--stall-stdin"};
+  auto server = ServerProcess::start(options);
+  expect(server != nullptr && server->wait_until_listening(10s), "the server listens");
+  if (!server) return;
+  // The fake writes the grandchild's pidfile after READY: the engine is up
+  // whether or not the server has consumed READY yet (SP0 waits lazily).
+  const auto grandchild = test_support::read_pidfile(pidfile, 10s);
+  expect(grandchild.has_value(), "the engine is past READY");
+  const auto children = test_support::children_of(server->pid());
+  expect(children.size() == 1U, "one engine");
+  if (children.size() != 1U) return;
+  server->stop(ServerProcess::Stop::kill);
+  (void)server->wait_exit(5s);
+  expect(test_support::wait_until_gone(children.front(), 2s), "the engine leader dies with a SIGKILLed frontend (PR_SET_PDEATHSIG)");
+  if (grandchild) {
+    // Spec §3.7 residual risk: without a delegated cgroup the engine's own
+    // descendants survive a frontend SIGKILL. Logged, not asserted.
+    std::cout << "residual risk (spec 3.7): grandchild " << (test_support::wait_until_gone(*grandchild, 1s) ? "gone" : "survived")
+              << " after a frontend SIGKILL without a delegated cgroup\n";
+    test_support::kill_process(*grandchild);
+  }
+}
+#endif
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
-  return secure_frontend_test::run_cases(argc, argv, {{"harness_server_lifecycle_selftest", harness_server_lifecycle_selftest}}, failures);
+  return secure_frontend_test::run_cases(argc, argv,
+                                         {
+                                             {"harness_server_lifecycle_selftest", harness_server_lifecycle_selftest},
+#if !defined(_WIN32)
+                                             {"proc05_frontend_sigkill_kills_engine", proc05_frontend_sigkill_kills_engine},
+#endif
+                                         },
+                                         failures);
 }

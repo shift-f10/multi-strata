@@ -4,7 +4,7 @@
 //
 // Everything that allocates (argv, envp, the executable path, the descriptor
 // sweep limit) is prepared BEFORE fork().  The child body, exec_child(), uses
-// only async-signal-safe calls (setpgid, open, fcntl, dup2, close, syscall,
+// only async-signal-safe calls (prctl, getppid, setpgid, open, fcntl, dup2, close, syscall,
 // execve, write, _exit), so it is safe even when other parent threads held the
 // allocator lock at the moment of fork().
 
@@ -14,12 +14,16 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <csignal>
 #include <string>
 #include <vector>
 
 #include <fcntl.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <sys/prctl.h>
+#endif
 
 namespace secure_frontend::posix_launch {
 
@@ -46,9 +50,12 @@ struct PreparedExec {
   std::vector<std::string> environment_storage;
   std::vector<char*> envp;
   int sweep_limit{kSweepDefault};
+  // The forking process, recorded before fork(); the child compares getppid() to it.
+  pid_t expected_parent{-1};
 };
 
 inline void prepare(PreparedExec& out, const EngineCommand& command, const bool insert_serve) {
+  out.expected_parent = getpid();
   out.executable = command.executable.string();
   out.argument_storage.reserve(command.arguments.size() + 2);
   out.argument_storage.push_back(out.executable);
@@ -79,6 +86,14 @@ inline int lift(const int fd) noexcept { return fd < 0 ? -1 : fcntl(fd, F_DUPFD_
 // kReportFd is closed before execve, and kReportFd itself is close-on-exec.
 [[noreturn]] inline void exec_child(const PreparedExec& prepared, const int stdin_fd, const int stdout_fd,
                                     const bool null_stderr, const int report_fd) noexcept {
+#if defined(__linux__)
+  // Spec §3.7(c): the leader dies with the frontend. PDEATHSIG fires when the
+  // forking *thread* exits, which is why only the long-lived supervisor thread
+  // forks engines. If the parent already died between fork() and here,
+  // getppid() differs and the child exits instead of running orphaned.
+  if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0) fail(report_fd);
+  if (getppid() != prepared.expected_parent) _exit(127);
+#endif
   if (setpgid(0, 0) != 0) fail(report_fd);
   const int report = lift(report_fd);
   if (report < 0) fail(report_fd);
