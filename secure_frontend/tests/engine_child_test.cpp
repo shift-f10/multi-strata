@@ -11,10 +11,16 @@
 #include <thread>
 #include <vector>
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#include "secure_frontend/win32_prelude.hpp"
+#else
 #include <csignal>
+#include <fcntl.h>
+#include <netinet/in.h>
 #include <pthread.h>
+#include <sys/socket.h>
 #include <sys/types.h>
+#include <unistd.h>
 #endif
 
 namespace {
@@ -157,6 +163,108 @@ void proc02_child_signal_state_is_default() {
 }
 #endif
 
+#if !defined(_WIN32)
+void proc02_canary_descriptors_absent() {
+  // What a careless launcher would leak: a non-CLOEXEC fd, a listening socket, an open token file.
+  const auto dir = test_support::make_temp_dir("n5");
+  const auto token = dir / "token";
+  secure_frontend_test::write_file(token, "secret-token", 0600);
+  const int token_fd = open(token.c_str(), O_RDONLY);
+  const int null_fd = open("/dev/null", O_RDONLY);
+  const int listener = socket(AF_INET, SOCK_STREAM, 0);
+  sockaddr_in address{};
+  address.sin_family = AF_INET;
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  const bool listening = listener >= 0 && bind(listener, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0 && listen(listener, 1) == 0;
+  expect(token_fd >= 0 && null_fd >= 0 && listening, "canaries opened");
+  for (const int fd : {token_fd, null_fd, listener}) expect(fcntl(fd, F_GETFD) == 0, "precondition: canary " + std::to_string(fd) + " is inheritable");
+  secure_frontend::EngineStdioProcess child;
+  expect(!child.start({.executable = test_support::fake_engine_path(), .arguments = {}, .environment = {}}).has_value(), "start");
+  expect(child.read_line(5s).line == "READY 4096 stop", "READY");
+  const auto dump = test_support::request_dump(child, 5s);
+  expect(dump && dump->fds == std::vector<int>{0, 1, 2}, "the engine sees only stdio: no canary descriptor");
+  (void)child.terminate(250ms);
+  for (const int fd : {token_fd, null_fd, listener}) (void)close(fd);
+}
+#endif
+
+#if defined(_WIN32)
+template <typename Function>
+Function resolve(const wchar_t* module, const char* name) {
+  const HMODULE handle = GetModuleHandleW(module);
+  if (handle == nullptr) return nullptr;
+  return reinterpret_cast<Function>(reinterpret_cast<void (*)()>(GetProcAddress(handle, name)));
+}
+
+struct HandleEntry {
+  HANDLE HandleValue;
+  ULONG_PTR HandleCount;
+  ULONG_PTR PointerCount;
+  ULONG GrantedAccess;
+  ULONG ObjectTypeIndex;
+  ULONG HandleAttributes;
+  ULONG Reserved;
+};
+struct HandleSnapshot {
+  ULONG_PTR NumberOfHandles;
+  ULONG_PTR Reserved;
+  HandleEntry Handles[1];
+};
+
+void proc02_canary_handles_absent() {
+  SECURITY_ATTRIBUTES inherit{sizeof(inherit), nullptr, TRUE};
+  const auto dir = test_support::make_temp_dir("n5w");
+  HANDLE file = CreateFileW((dir / "token").wstring().c_str(), GENERIC_WRITE, 0, &inherit, CREATE_ALWAYS, 0, nullptr);
+  HANDLE event = CreateEventW(&inherit, TRUE, FALSE, nullptr);
+  WSADATA data{};
+  (void)WSAStartup(MAKEWORD(2, 2), &data);
+  const SOCKET socket_handle = WSASocketW(AF_INET, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, 0);
+  (void)SetHandleInformation(reinterpret_cast<HANDLE>(socket_handle), HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+  const std::vector<HANDLE> canaries{file, event, reinterpret_cast<HANDLE>(socket_handle)};
+  for (HANDLE canary : canaries) {
+    DWORD flags = 0;
+    expect(canary != nullptr && canary != INVALID_HANDLE_VALUE && GetHandleInformation(canary, &flags) && (flags & HANDLE_FLAG_INHERIT) != 0U,
+           "precondition: the canary is inheritable");
+  }
+  secure_frontend::EngineStdioProcess child;
+  expect(!child.start({.executable = test_support::fake_engine_path(), .arguments = {}, .environment = {}}).has_value(), "start");
+  expect(child.read_line(5s).line == "READY 4096 stop", "READY");
+  // Parent-side inspection (spec §3.11): snapshot the child's handle table,
+  // duplicate each entry and compare objects; assert canary absence, not a count.
+  using QueryFn = LONG(WINAPI*)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+  using CompareFn = BOOL(WINAPI*)(HANDLE, HANDLE);
+  const auto query = resolve<QueryFn>(L"ntdll.dll", "NtQueryInformationProcess");
+  const auto compare = resolve<CompareFn>(L"kernelbase.dll", "CompareObjectHandles");
+  HANDLE process = OpenProcess(PROCESS_DUP_HANDLE | PROCESS_QUERY_INFORMATION, FALSE, static_cast<DWORD>(child.pid()));
+  expect(process != nullptr && query != nullptr && compare != nullptr, "inspection APIs are available (Windows 10 1607+)");
+  if (process != nullptr && query != nullptr && compare != nullptr) {
+    std::vector<unsigned char> buffer(1U << 16U);
+    ULONG needed = 0;
+    LONG status = query(process, 51 /* ProcessHandleInformation */, buffer.data(), static_cast<ULONG>(buffer.size()), &needed);
+    if (status != 0 && needed > buffer.size()) {
+      buffer.resize(needed + 4096U);
+      status = query(process, 51, buffer.data(), static_cast<ULONG>(buffer.size()), &needed);
+    }
+    expect(status == 0, "handle snapshot of the engine");
+    if (status == 0) {
+      const auto* snapshot = reinterpret_cast<const HandleSnapshot*>(buffer.data());
+      const HandleEntry* entries = snapshot->Handles;
+      for (ULONG_PTR index = 0; index < snapshot->NumberOfHandles; ++index) {
+        HANDLE duplicate = nullptr;
+        if (!DuplicateHandle(process, entries[index].HandleValue, GetCurrentProcess(), &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS)) continue;
+        for (HANDLE canary : canaries) expect(!compare(duplicate, canary), "a parent canary handle reached the engine");
+        CloseHandle(duplicate);
+      }
+    }
+    CloseHandle(process);
+  }
+  (void)child.terminate(250ms);
+  CloseHandle(file);
+  CloseHandle(event);
+  (void)closesocket(socket_handle);
+}
+#endif
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -166,6 +274,10 @@ int main(int argc, char* argv[]) {
 #if !defined(_WIN32)
                                              {"proc05_group_killed_after_leader_reaped", proc05_group_killed_after_leader_reaped},
                                              {"proc02_child_signal_state_is_default", proc02_child_signal_state_is_default},
+                                             {"proc02_canary_descriptors_absent", proc02_canary_descriptors_absent},
+#endif
+#if defined(_WIN32)
+                                             {"proc02_canary_handles_absent", proc02_canary_handles_absent},
 #endif
                                          },
                                          failures);
