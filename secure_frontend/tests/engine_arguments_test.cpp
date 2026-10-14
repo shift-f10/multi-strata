@@ -1,5 +1,7 @@
 #include "secure_frontend/canonical_path.hpp"
 #include "secure_frontend/engine_arguments.hpp"
+#include "secure_frontend/launch_composition.hpp"
+#include "support/cli_harness.hpp"
 #include "support/test_support.hpp"
 
 #include <cstdlib>
@@ -130,6 +132,110 @@ void glm_profile_passes_arguments_through_without_native() {
   const auto batch = secure_frontend::build_engine_arguments(kGlm, manifest(), root, {"--batch", "2"});
   expect(std::holds_alternative<std::vector<std::string>>(batch), "GLM: the Strata deny-list does not apply");
 }
+
+// SP4 Task 24b. The expected argv for the fixture model m:t installed in `h`.
+std::vector<std::string> managed_argv(secure_frontend_test::cli::CliHarness& h, const secure_frontend::IndexEntry& entry) {
+  const auto base = h.models().path() / "m" / "t" / entry.dir;
+  const auto utf8 = [](std::filesystem::path p) { return secure_frontend::path_to_utf8(p.make_preferred()); };
+  return {"--native", utf8(base / "weights" / "fx-00001-of-00002.gguf"), "--pack", utf8(base / "pack"),
+          "--ple-gguf", utf8(base / "weights" / "fx-00002-of-00002.gguf")};
+}
+
+// Spec §4.9 delta c: the managed launch comes from the manifest's launch block.
+void launch_composed_from_manifest_qwen() {
+  secure_frontend_test::cli::CliHarness h;
+  const auto entry = secure_frontend_test::cli::install(h);
+  h.make_managed("m:t");
+  const auto config = h.validated_config();
+  const auto composed = secure_frontend::compose_engine_launch(config.get(), false);
+  const auto* launch = std::get_if<secure_frontend::ComposedLaunch>(&composed);
+  expect(launch != nullptr && launch->managed, "managed launch");
+  if (launch == nullptr) {
+    for (const auto& m : std::get<secure_frontend::LaunchFailure>(composed).messages) std::cerr << "  " << m << '\n';
+    return;
+  }
+  const auto base = h.models().path() / "m" / "t" / entry.dir;
+  expect(launch->engine_args == managed_argv(h, entry), "--native/--pack/--ple-gguf joined to the canonical version directory (SP1 P7)");
+  expect(launch->tokenizer_root && launch->tokenizer_root->path() == base / "pack" / "tokenizer", "frontend tokenizer root from the manifest");
+  expect((launch->served_models == std::vector<std::string>{"m:t"}), "/v1/models lists the managed model");
+  expect(launch->model_id == "m:t" && launch->profile == secure_frontend::EngineProfile::qwen, "profile from the manifest");
+  // A bare name resolves the single installed tag.
+  std::string text = secure_frontend_test::read_file(h.config);
+  text.replace(text.find("\"m:t\""), 5, "\"M\"");
+  secure_frontend_test::write_file(h.config, text);
+  const auto bare = secure_frontend::compose_engine_launch(h.validated_config().get(), false);
+  const auto* bare_launch = std::get_if<secure_frontend::ComposedLaunch>(&bare);
+  expect(bare_launch != nullptr && bare_launch->model_id == "m:t", "a bare (case-folded) name serves its one installed tag as name:tag");
+}
+
+// F-7 (SP1 rule, engine_arguments.cpp): every engine argv path is UTF-8, never path::string().
+void managed_launch_argv_is_utf8_for_non_ascii_models_root() {
+  secure_frontend_test::cli::CliHarness h("Jos\xC3\xA9-models");
+  const auto entry = secure_frontend_test::cli::install(h);
+  h.make_managed("m:t");
+  const auto composed = secure_frontend::compose_engine_launch(h.validated_config().get(), false);
+  const auto* launch = std::get_if<secure_frontend::ComposedLaunch>(&composed);
+  expect(launch != nullptr, "a non-ASCII roots.models launches");
+  if (launch == nullptr) return;
+  expect(launch->engine_args.size() == 6U && launch->engine_args[1].find("Jos\xC3\xA9-models") != std::string::npos &&
+             launch->engine_args[3].find("Jos\xC3\xA9-models") != std::string::npos,
+         "the root's non-ASCII name is UTF-8 in --native and --pack");
+  expect(launch->engine_args == managed_argv(h, entry), "every argv path is path_to_utf8 of the canonical path");
+}
+
+// Spec §2.3: a model the index names but whose files are not runnable never reaches the engine.
+void launch_refuses_model_not_installed() {
+  secure_frontend_test::cli::CliHarness h;
+  h.make_managed("absent:t");
+  const auto composed = secure_frontend::compose_engine_launch(h.validated_config().get(), false);
+  const auto* failure = std::get_if<secure_frontend::LaunchFailure>(&composed);
+  expect(failure != nullptr && failure->exit == secure_frontend::ExitCode::manifest &&
+             failure->messages.front().find("absent:t") != std::string::npos &&
+             failure->messages.front().find("strata pull") != std::string::npos,
+         "an uninstalled model names itself and how to install it (exit 5)");
+}
+
+void engine_args_reject_weight_flags_for_managed_model() {
+  secure_frontend_test::cli::CliHarness h;
+  (void)secure_frontend_test::cli::install(h);
+  h.make_managed("m:t", ", \"args\": [\"--pack=/elsewhere\"]");
+  const auto config = h.validated_config();
+  const auto composed = secure_frontend::compose_engine_launch(config.get(), false);
+  const auto* failure = std::get_if<secure_frontend::LaunchFailure>(&composed);
+  expect(failure != nullptr && failure->exit == secure_frontend::ExitCode::usage &&
+             failure->messages.front().find("engine.args") != std::string::npos,
+         "weight flags are refused for a managed model (--flag=value spelling too)");
+  const auto expert = secure_frontend::compose_engine_launch(config.get(), true);
+  expect(std::holds_alternative<secure_frontend::LaunchFailure>(expert) &&
+             std::get<secure_frontend::LaunchFailure>(expert).messages.front().find("roots.tokenizer_pack") != std::string::npos,
+         "--expert is the operator path and needs the operator's roots.tokenizer_pack");
+  // --native is already refused by validate() (frontend-owned since SP1); the other six, both spellings.
+  for (const std::string flag : {"--pack", "--ple-gguf", "--embd-gguf", "--native-head-gguf", "--native-dense-gguf", "--mtp"}) {
+    for (const std::string& args : {"\"" + flag + "\", \"x\"", "\"" + flag + "=x\""}) {
+      h.write_config("");
+      h.make_managed("m:t", ", \"args\": [\"--max-context\", \"8192\", " + args + "]");
+      const auto issues = secure_frontend::managed_config_issues(h.validated_config().get());
+      expect(issues.size() == 1U && issues.front().rfind("engine.args", 0) == 0, "weight flag refused: " + args);
+    }
+  }
+  h.write_config("");
+  h.make_managed("m:t", ", \"args\": [\"--max-context\", \"8192\", \"--packet\", \"x\"]");
+  expect(secure_frontend::managed_config_issues(h.validated_config().get()).empty(), "a flag that only starts like one is not a weight flag");
+}
+
+void launch_refuses_engine_too_old() {
+  secure_frontend::AcquireManifest future;
+  future.profile = secure_frontend::ManifestProfile::qwen;
+  future.family = secure_frontend::EngineFamily::strata;
+  future.min_version = *secure_frontend::parse_engine_version("99.0.0");
+  const auto gate = secure_frontend::engine_gate(future);
+  expect(gate && gate->reason == secure_frontend::AcquireReason::engine_too_old &&
+             secure_frontend::exit_class(gate->reason) == secure_frontend::ExitCode::engine, "exit 11");
+  future.profile = secure_frontend::ManifestProfile::glm53;
+  future.family = secure_frontend::EngineFamily::glm;
+  const auto glm = secure_frontend::engine_gate(future);
+  expect(glm && glm->reason == secure_frontend::AcquireReason::engine_profile_unavailable, "glm53 until SP6");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -140,5 +246,10 @@ int main(int argc, char** argv) {
       {"strata_profile_passes_pack_and_weight_flags_through", strata_profile_passes_pack_and_weight_flags_through},
       {"rejects_invalid_relative_artifact_path", rejects_invalid_relative_artifact_path},
       {"glm_profile_passes_arguments_through_without_native", glm_profile_passes_arguments_through_without_native},
+      {"launch_composed_from_manifest_qwen", launch_composed_from_manifest_qwen},
+      {"managed_launch_argv_is_utf8_for_non_ascii_models_root", managed_launch_argv_is_utf8_for_non_ascii_models_root},
+      {"launch_refuses_model_not_installed", launch_refuses_model_not_installed},
+      {"engine_args_reject_weight_flags_for_managed_model", engine_args_reject_weight_flags_for_managed_model},
+      {"launch_refuses_engine_too_old", launch_refuses_engine_too_old},
   }, failures);
 }

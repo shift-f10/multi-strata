@@ -486,12 +486,24 @@ target_sources(secure_frontend_model_store PRIVATE src/model_index_store.cpp)
 target_sources(secure_frontend_model_store PRIVATE src/engine_gate.cpp)
 secure_frontend_set_warnings(secure_frontend_model_store)
 
+# SP4 Task 24b (spec §2.3, §2.4, §4.9 c/d): the engine launch composed from the installed
+# manifest (or SP1's inventory path under --expert). Server-safe: no acquisition library.
+add_library(secure_frontend_launch src/launch_composition.cpp)
+target_compile_features(secure_frontend_launch PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_launch PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_link_libraries(secure_frontend_launch PUBLIC secure_frontend_model_store secure_frontend_typed_config
+    secure_frontend_engine_arguments secure_frontend_model_inventory)
+secure_frontend_set_warnings(secure_frontend_launch)
+target_link_libraries(strata-secure-server PRIVATE secure_frontend_launch)
+
 # SP4 Task 23 (spec §1.5): the strata CLI's verbs.
 add_library(secure_frontend_strata_cli src/strata_cli.cpp)
 target_compile_features(secure_frontend_strata_cli PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_strata_cli PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
 target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_acquire secure_frontend_typed_config)
+target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_launch)
 secure_frontend_set_warnings(secure_frontend_strata_cli)
 
 # PX §2: the one user-facing binary. SP4 provides only its acquisition verbs (Controller note 1);
@@ -680,6 +692,13 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         strata_profile_passes_pack_and_weight_flags_through rejects_invalid_relative_artifact_path
         glm_profile_passes_arguments_through_without_native
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # SP4 Task 24b (spec §2.3, §4.9 c): the managed launch over a scratch models store.
+    target_link_libraries(secure_frontend_engine_arguments_tests PRIVATE secure_frontend_launch secure_frontend_strata_cli)
+    secure_frontend_add_cases(secure_frontend_engine_arguments_tests launch_composed_from_manifest_qwen
+        managed_launch_argv_is_utf8_for_non_ascii_models_root launch_refuses_model_not_installed
+        engine_args_reject_weight_flags_for_managed_model LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # Pure in-memory (F-63): wine runs it too.
+    secure_frontend_add_cases(secure_frontend_engine_arguments_tests launch_refuses_engine_too_old)
 
     secure_frontend_add_test_executable(secure_frontend_chat_schema_tests tests/chat_schema_test.cpp secure_frontend_chat_schema)
     secure_frontend_add_cases(secure_frontend_chat_schema_tests
@@ -703,7 +722,13 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     # SP4 §4.9 c, d: engine.model_id is name or name:tag; roots.tokenizer_pack is optional.
     secure_frontend_add_cases(secure_frontend_typed_config_tests typed_config_model_reference_accepts_name_tag
-        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+        describe_reports_unset_expert_keys LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # SP4 Task 24b (spec §4.9 c/d; F-8): managed-model config errors, also through strata-secure-server --check.
+    target_link_libraries(secure_frontend_typed_config_tests PRIVATE secure_frontend_launch secure_frontend_strata_cli)
+    add_dependencies(secure_frontend_typed_config_tests strata-secure-server)
+    secure_frontend_add_cases(secure_frontend_typed_config_tests cfg01_engine_profile_rejected_for_managed_model
+        cfg01_tokenizer_pack_root_rejected_for_managed_model cfg01_model_reference_rejected_for_managed_model
+        ARGS $<TARGET_FILE:strata-secure-server> LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     if(NOT WIN32)
         # chmod-based: the config folder's mode decides the roots.secret default.
         secure_frontend_add_cases(secure_frontend_typed_config_tests
@@ -788,6 +813,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_server_cli_tests cli_check_has_no_side_effects
         ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
     target_link_libraries(secure_frontend_server_cli_tests PRIVATE secure_frontend_token_reader secure_frontend_server_cli)
+    # SP4 §4.9 d: pure argv parsing, so wine runs it too.
+    secure_frontend_add_cases(secure_frontend_server_cli_tests cli_expert_flag_parsing)
     secure_frontend_add_cases(secure_frontend_server_cli_tests
         init_writes_config_and_token_then_server_starts init_refuses_to_overwrite_without_force
         init_force_refuses_a_non_regular_config_target init_failure_creates_nothing

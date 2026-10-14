@@ -1,5 +1,6 @@
 #pragma once
 // SP4 Task 23: drives run_strata in-process against a private scratch tree.
+#include "secure_frontend/config_file.hpp"
 #include "secure_frontend/strata_cli.hpp"
 #include "support/acquire_fixtures.hpp"
 
@@ -10,8 +11,9 @@ namespace secure_frontend_test::cli {
 // A private scratch tree with roots.models, a tokenizer root, a fake engine
 // file and a config whose pull.downloader does not exist (local verbs never need it).
 struct CliHarness final {
-  CliHarness() : scratch(secure_frontend_test::make_scratch_directory()) {
-    models_path = scratch / "models";
+  // `models_dir` is UTF-8 (Task 24b: a non-ASCII roots.models proves the engine argv is UTF-8).
+  explicit CliHarness(const std::string_view models_dir = "models") : scratch(secure_frontend_test::make_scratch_directory()) {
+    models_path = scratch / secure_frontend::path_from_utf8(models_dir);
     secure_frontend_test::make_private_directory(models_path);
     secure_frontend_test::make_private_directory(scratch / "tokenizer");
     secure_frontend_test::make_private_directory(scratch / "bin");
@@ -29,7 +31,8 @@ struct CliHarness final {
 
   void write_config(const std::string& extra_members) {
     const auto quote = [](const std::filesystem::path& p) {
-      std::string text = std::filesystem::canonical(p).generic_string();
+      // UTF-8, never path::string() (a non-ASCII root must survive on Windows too).
+      std::string text = secure_frontend::path_to_utf8(std::filesystem::canonical(p));
       std::string out;
       for (const char c : text) out += c == '\\' ? std::string{"\\\\"} : std::string(1, c);
       return "\"" + out + "\"";
@@ -40,6 +43,23 @@ struct CliHarness final {
                                                  "  \"engine\": {\"executable\": " + quote(scratch / "bin" / "engine") +
                                                  ", \"model_id\": \"m\"},\n"
                                                  "  \"pull\": {\"downloader\": " + missing_downloader() + extra_members + "}\n}\n");
+  }
+
+  // A managed config (SP4 §4.9 c/d): roots.tokenizer_pack removed, engine.model_id = model_ref,
+  // `engine_extra` appended inside the engine object (e.g. `, "profile": "qwen"`).
+  void make_managed(const std::string& model_ref, const std::string& engine_extra = "") {
+    std::string text = secure_frontend_test::read_file(config);
+    const auto start = text.find(", \"tokenizer_pack\"");
+    text.erase(start, text.find('}', start) - start);
+    const std::string from = "\"model_id\": \"m\"";
+    text.replace(text.find(from), from.size(), "\"model_id\": \"" + model_ref + "\"" + engine_extra);
+    secure_frontend_test::write_file(config, text);
+  }
+
+  secure_frontend::ValidatedConfig validated_config() const {
+    auto draft = secure_frontend::read_config_file(config);
+    return std::get<secure_frontend::ValidatedConfig>(
+        secure_frontend::validate(std::get<secure_frontend::FrontendConfigDraft>(draft)));
   }
 
   // strata --config <config> <args...>

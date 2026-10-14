@@ -8,15 +8,15 @@
 #include "secure_frontend/frontend_init.hpp"
 #include "secure_frontend/http_request_handler.hpp"
 #include "secure_frontend/http_socket_server.hpp"
-#include "secure_frontend/model_inventory.hpp"
+#include "secure_frontend/launch_composition.hpp"
 #include "secure_frontend/process_defaults.hpp"
 #include "secure_frontend/server_cli.hpp"
 #include "secure_frontend/subsystem_limits.hpp"
+#include "secure_frontend/test_hooks.hpp"
 #include "secure_frontend/token_reader.hpp"
 #include "secure_frontend/token_verifier.hpp"
 #include "secure_frontend/tokenizer_pack.hpp"
 
-#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -48,10 +48,16 @@ secure_frontend::TokenReadResult read_configured_token(const FrontendConfig& con
   return secure_frontend::read_token(config.token, std::filesystem::path{"."});
 }
 
-int check(const FrontendConfig& config, const std::vector<std::string>& overridden) {
+int check(const FrontendConfig& config, const std::vector<std::string>& overridden, const bool expert) {
   std::cout << secure_frontend::describe(config);
   for (const auto& key : overridden) std::cout << key << ": the command line overrides the config file\n";
   std::cout.flush();
+  // SP4 §4.9 c/d (F-8): the launch-related config errors serve would refuse, for
+  // the same mode (managed, or --expert). Pure: roots.models is not read.
+  if (const auto issues = secure_frontend::launch_config_issues(config, expert); !issues.empty()) {
+    for (const auto& issue : issues) std::cerr << "Configuration error: " << issue << '\n';
+    return EXIT_FAILURE;
+  }
   // The verdict follows the token read: a configuration whose token cannot be
   // read is not reported valid first.
   const auto token = read_configured_token(config);
@@ -85,39 +91,27 @@ int run(const FrontendConfig& config, const bool expert) {
   // Derived once, before bind/spawn; each subsystem keeps its own const copy.
   const auto schema_limits = secure_frontend::chat_schema_limits(config);
   const auto listener_limits = secure_frontend::http_socket_server_limits(config);
-  if (!config.roots.tokenizer_pack) {
-    std::cerr << "Unable to load local tokenizer pack (roots.tokenizer_pack): not set; managed models arrive with SP4 Task 24b\n";
-    return EXIT_FAILURE;
+  // SP4 §2.3/§4.9 (Task 24b): managed models launch from the installed manifest;
+  // --expert keeps SP1's operator path (inventory, roots.tokenizer_pack).
+  auto composed = secure_frontend::compose_engine_launch(config, expert);
+  if (const auto* failure = std::get_if<secure_frontend::LaunchFailure>(&composed)) {
+    for (const auto& message : failure->messages) std::cerr << message << '\n';
+    return failure->exit == secure_frontend::ExitCode::usage ? EXIT_FAILURE : secure_frontend::exit_code_value(failure->exit);
   }
-  (void)expert;
-  const auto tokenizer_result = secure_frontend::load_local_tokenizer_pack(*config.roots.tokenizer_pack);
+  auto& launch = std::get<secure_frontend::ComposedLaunch>(composed);
+  const auto tokenizer_result = secure_frontend::load_local_tokenizer_pack(*launch.tokenizer_root);
   const auto* tokenizer = std::get_if<secure_frontend::TokenizerPack>(&tokenizer_result);
   if (tokenizer == nullptr) {
-    std::cerr << "Unable to load local tokenizer pack (roots.tokenizer_pack): "
-              << std::get<secure_frontend::TokenizerPackError>(tokenizer_result).message << '\n';
+    std::cerr << "Unable to load local tokenizer pack (" << (launch.managed ? "the model's tokenizer" : "roots.tokenizer_pack")
+              << "): " << std::get<secure_frontend::TokenizerPackError>(tokenizer_result).message << '\n';
     return EXIT_FAILURE;
   }
-  const auto models_result = secure_frontend::enumerate_local_models(config.roots.models);
-  const auto* manifests = std::get_if<std::vector<secure_frontend::ModelManifest>>(&models_result);
-  if (manifests == nullptr) {
-    std::cerr << "Unable to inventory local models (roots.models): "
-              << std::get<secure_frontend::ModelInventoryError>(models_result).message << '\n';
-    return EXIT_FAILURE;
-  }
-  const std::string& model_id = config.engine.model_id.value();
-  const auto selected = std::find_if(manifests->begin(), manifests->end(),
-                                     [&model_id](const auto& model) { return model.id == model_id; });
-  if (selected == manifests->end()) { std::cerr << "Selected model is not present in roots.models.\n"; return EXIT_FAILURE; }
-  const bool glm = config.engine.profile.value_or(EngineProfile::qwen) == EngineProfile::glm53;
-  const auto arguments_profile = glm ? secure_frontend::EngineArgumentsProfile::lighttransport_glm53
-                                     : secure_frontend::EngineArgumentsProfile::strata_0143;
-  auto engine_arguments_result =
-      secure_frontend::build_engine_arguments(arguments_profile, *selected, config.roots.models, config.engine.args);
-  auto* engine_arguments = std::get_if<std::vector<std::string>>(&engine_arguments_result);
-  if (engine_arguments == nullptr) { std::cerr << "Engine arguments rejected.\n"; return EXIT_FAILURE; }
+  const std::string& model_id = launch.model_id;
+  const bool glm = launch.profile == EngineProfile::glm53;
+  auto* engine_arguments = &launch.engine_args;
   std::vector<secure_frontend::ApiModel> models;
-  models.reserve(manifests->size());
-  for (const auto& manifest : *manifests) models.push_back({.id = manifest.id, .owned_by = manifest.owned_by});
+  models.reserve(launch.served_models.size());
+  for (const auto& id : launch.served_models) models.push_back({.id = id, .owned_by = "local"});
 
   secure_frontend::EngineStdioProcess engine;
   const secure_frontend::EngineCommand command{.executable = config.engine.executable.path(),
@@ -184,6 +178,9 @@ int run(const FrontendConfig& config, const bool expert) {
 }  // namespace
 
 int main(int argc, char* argv[]) {
+#if defined(SECURE_FRONTEND_TEST_HOOKS)
+  std::cerr << "warning: test hooks compiled in (" << secure_frontend::kTestHooksMarker << "); never ship this binary\n";
+#endif
   secure_frontend::install_process_defaults();
   const auto parsed = secure_frontend::parse_server_command_line(argc, argv);
   if (const auto* error = std::get_if<secure_frontend::CliError>(&parsed)) {
@@ -212,6 +209,6 @@ int main(int argc, char* argv[]) {
     return EXIT_FAILURE;
   }
   const auto config = std::get<secure_frontend::ValidatedConfig>(loaded).shared();
-  if (invocation.command == secure_frontend::ServerCommand::check) return check(*config, overridden);
+  if (invocation.command == secure_frontend::ServerCommand::check) return check(*config, overridden, invocation.expert);
   return run(*config, invocation.expert);
 }

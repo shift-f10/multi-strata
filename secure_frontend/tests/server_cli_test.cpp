@@ -39,7 +39,7 @@ void cli_config_file_and_flags_share_validator() {
   auto literals = f.base_literals();
   literals["listener.port"] = "0";
   f.write_config(literals);
-  const auto from_file = f.run({"--check", "--config", f.config.string()});
+  const auto from_file = f.run({"--check", "--expert", "--config", f.config.string()});
   const auto from_flag = f.run(with(without_port(f.base_flags()), {"--check", "--port", "0"}));
   const std::string expected = "listener.port: must be between 1 and 65535";
   expect(from_file.exit_code != 0 && contains(from_file.err, expected), "file value is validated: " + from_file.err);
@@ -50,7 +50,7 @@ void cli_flag_overrides_file_and_is_reported() {
   ServerFixture f;
   f.write_config(f.base_literals());
   const std::string other_port = std::to_string(f.port == 65535 ? 65534 : f.port + 1);
-  const auto result = f.run({"--check", "--config", f.config.string(), "--port", other_port});
+  const auto result = f.run({"--check", "--expert", "--config", f.config.string(), "--port", other_port});
   expect(result.exit_code == 0, "a valid file plus a flag passes --check: " + result.err);
   expect(contains(result.out, "listener.port = " + other_port), "the flag wins: " + result.out);
   expect(contains(result.out, "listener.port: the command line overrides the config file"),
@@ -61,7 +61,7 @@ void cli_check_prints_no_token() {
   ServerFixture f;
   f.write_config(f.base_literals());
   const auto before = secure_frontend_test::snapshot_tree(f.dir);
-  const auto result = f.run({"--check", "--config", f.config.string()});
+  const auto result = f.run({"--check", "--expert", "--config", f.config.string()});
   expect(result.exit_code == 0, "--check on a valid config exits 0: " + result.err);
   expect(secure_frontend_test::snapshot_tree(f.dir) == before, "--check has no side effects below the fixture");
   expect(contains(result.out, "token.source = \"env:SF_TEST_TOKEN\""), "the token source is shown as metadata");
@@ -80,7 +80,7 @@ void cli_check_unreadable_token_is_not_reported_valid() {
   f.write_config(f.base_literals());
   const std::string short_token = "short-token-value";
   const auto result = secure_frontend_test::run_to_completion(secure_frontend_test::ProcessSpec{
-      f.server_executable, {"--check", "--config", f.config.string()},
+      f.server_executable, {"--check", "--expert", "--config", f.config.string()},
       {{secure_frontend_test::kTestTokenVariable, short_token}}});
   expect(result.exit_code != 0, "--check with an unreadable token exits 1");
   expect(!contains(result.out, "Configuration is valid."), "no valid verdict before the failure: " + result.out);
@@ -110,7 +110,7 @@ void cli_check_has_no_side_effects() {
   literals["roots.cache"] = secure_frontend_test::json_literal((f.dir / "cache").string());
   f.write_config(literals);
   const auto before = secure_frontend_test::snapshot_tree(f.dir);
-  const auto checked = f.run({"--check", "--config", f.config.string()});
+  const auto checked = f.run({"--check", "--expert", "--config", f.config.string()});
   expect(checked.exit_code == 0, "--check accepts absent-but-creatable logs/cache roots: " + checked.err);
   expect(secure_frontend_test::snapshot_tree(f.dir) == before, "--check created, wrote, renamed or removed nothing");
   expect(!std::filesystem::exists(f.dir / "logs") && !std::filesystem::exists(f.dir / "cache"), "--check created no root");
@@ -288,6 +288,28 @@ void auth04_no_switch_disables_auth() {
   const auto response = f.request("GET", "/v1/models", "");
   expect(response.rfind("HTTP/1.1 401", 0) == 0, "no environment variable disables authentication");
 }
+// SP4 §4.9 d (Task 24a/24b addendum): --expert parses once, with serve, --check and init.
+void cli_expert_flag_parsing() {
+  const auto parse = [](std::vector<const char*> argv) {
+    argv.insert(argv.begin(), "strata-secure-server");
+    return secure_frontend::parse_server_command_line(static_cast<int>(argv.size()), argv.data());
+  };
+  const auto twice = parse({"--expert", "--expert"});
+  const auto* error = std::get_if<secure_frontend::CliError>(&twice);
+  expect(error != nullptr && error->message == "duplicate --expert", "a second --expert is rejected");
+  for (const auto& [argv, command] : std::vector<std::pair<std::vector<const char*>, secure_frontend::ServerCommand>>{
+           {{"--expert"}, secure_frontend::ServerCommand::serve},
+           {{"--check", "--expert"}, secure_frontend::ServerCommand::check},
+           {{"--expert", "--check"}, secure_frontend::ServerCommand::check},
+           {{"init", "--config", "c.json", "--expert"}, secure_frontend::ServerCommand::init}}) {
+    const auto parsed = parse(argv);
+    const auto* invocation = std::get_if<secure_frontend::ServerInvocation>(&parsed);
+    expect(invocation != nullptr && invocation->expert && invocation->command == command, "--expert accepted");
+  }
+  const auto plain = parse({"--check"});
+  const auto* invocation = std::get_if<secure_frontend::ServerInvocation>(&plain);
+  expect(invocation != nullptr && !invocation->expert, "--expert is off by default");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -297,6 +319,7 @@ int main(int argc, char** argv) {
       {"cli_check_prints_no_token", cli_check_prints_no_token},
       {"cli_check_unreadable_token_is_not_reported_valid", cli_check_unreadable_token_is_not_reported_valid},
       {"cli_check_has_no_side_effects", cli_check_has_no_side_effects},
+      {"cli_expert_flag_parsing", cli_expert_flag_parsing},
       {"cli_unknown_option_does_not_echo_value", cli_unknown_option_does_not_echo_value},
       {"init_writes_config_and_token_then_server_starts", init_writes_config_and_token_then_server_starts},
       {"init_refuses_to_overwrite_without_force", init_refuses_to_overwrite_without_force},

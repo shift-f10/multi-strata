@@ -199,9 +199,17 @@ an environment variable (`env:NAME`) or a file below `roots.secret`
 (`file:token`).
 
     strata-secure-server init --config ~/.config/strata/config.json \
-        --models-root ~/models --tokenizer-pack ~/tok --engine ~/strata/strata --model-id qwen-local
+        --models-root ~/models --engine ~/strata/strata --model-id NAME:TAG
     strata-secure-server --check --config ~/.config/strata/config.json
-    strata-secure-server --expert --config ~/.config/strata/config.json
+    strata-secure-server --config ~/.config/strata/config.json
+
+`engine.model_id` names a model installed in `roots.models` (`strata pull` or
+`strata import`; `strata list` shows them). Its manifest supplies the engine
+profile, `--native`, `--pack`, `--ple-gguf` and the tokenizer, so
+`engine.profile`, `roots.tokenizer_pack` and those weight flags in
+`engine.args` are configuration errors that `--check` and serve both report. A
+model this release cannot run stops serve with exit 11. `--expert` (below)
+is the operator bring-up path instead.
 
 `init` writes the config (owner-only, atomic). For a file token source
 (`file:…`, the default) it also writes a 43-character token generated from the
@@ -276,9 +284,11 @@ documented below. It deliberately rejects streaming, tools, images, URLs, MCP,
 downloads, and a request whose `model` is not the one model selected at startup.
 
 The launch described in this section is the `--expert` bring-up mode: the
-operator supplies `engine.profile`, `roots.tokenizer_pack` and the weight flags
-other than `--native` in `engine.args` (no managed model). Pass `--expert` when
-serving; `init` and `--check` accept it and ignore it.
+operator supplies `engine.profile`, `roots.tokenizer_pack` (required) and the
+weight flags other than `--native` in `engine.args`, and `engine.model_id`
+names a `.gguf` in the local inventory (no managed model; `/v1/models` lists
+the whole inventory). Pass `--expert` when serving and with `--check` (which
+then validates this mode); `init` accepts it and ignores it.
 
 The model directory must already contain the selected `.gguf`; the tokenizer
 pack must already contain `vocab.json`, `merges.txt`, and `token_type.json`.
@@ -344,7 +354,7 @@ then pass that build's required positional engine arguments unchanged with
 repeated `--engine-arg`. The server adds only `--serve` immediately after the
 executable; it does not reinterpret or synthesize positional arguments, does
 not add `--native`, and rejects only `--serve` and NUL bytes in them. With
-`glm53`, `engine.args` must not be empty (`--check` reports it as required). The
+`glm53`, `engine.args` must not be empty (`--check --expert` reports it as required). The
 tokenizer pack must match that exact engine/model build and provide the fixed
 GLM framing markers as CONTROL tokens.
 

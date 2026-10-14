@@ -1,9 +1,12 @@
 #include "secure_frontend/config_file.hpp"
 #include "secure_frontend/frontend_config.hpp"
+#include "secure_frontend/launch_composition.hpp"
 #include "secure_frontend/secret_bytes.hpp"
 #include "secure_frontend/secret_source.hpp"
 #include "secure_frontend/token_reader.hpp"
+#include "support/cli_harness.hpp"
 #include "support/config_json.hpp"
+#include "support/process_runner.hpp"
 #include "support/test_support.hpp"
 
 #include <algorithm>
@@ -550,10 +553,91 @@ void cfg01_pull_keys_table_driven() {
            "--check lists the pull keys");
   }
 }
+// SP4 Task 24b (spec §4.9 c/d; F-8): the managed-model rejections are config errors that
+// strata-secure-server --check reports too. ARGS: <strata-secure-server>.
+secure_frontend_test::ProcessResult server_check(const secure_frontend_test::cli::CliHarness& h, const bool expert) {
+  const auto& args = secure_frontend_test::extra_arguments();
+  if (args.empty()) return {-2, {}, "needs ARGS <strata-secure-server>"};
+  std::vector<std::string> argv{"--check", "--config", secure_frontend::path_to_utf8(h.config)};
+  if (expert) argv.insert(argv.begin(), "--expert");
+  return secure_frontend_test::run_to_completion(secure_frontend_test::ProcessSpec{
+      args[0], argv, {{"STRATA_TEST_TOKEN", "check-token-0123456789abcdefghijklmnop"}}});
+}
+
+using secure_frontend_test::contains;
+
+void cfg01_engine_profile_rejected_for_managed_model() {
+  secure_frontend_test::cli::CliHarness h;
+  (void)secure_frontend_test::cli::install(h);
+  h.make_managed("m:t", ", \"profile\": \"qwen\"");
+  const auto composed = secure_frontend::compose_engine_launch(h.validated_config().get(), false);
+  const auto* failure = std::get_if<secure_frontend::LaunchFailure>(&composed);
+  expect(failure != nullptr && failure->messages.front().find("engine.profile") != std::string::npos &&
+             failure->messages.front().find("engine_profile_conflicts_with_manifest") != std::string::npos,
+         "engine.profile is rejected for a managed model unless --expert");
+  const auto checked = server_check(h, false);
+  expect(checked.exit_code == 1 && contains(checked.err, "Configuration error: engine.profile") &&
+             !contains(checked.out, "Configuration is valid."),
+         "--check reports engine.profile as a config error: " + checked.err);
+}
+
+void cfg01_tokenizer_pack_root_rejected_for_managed_model() {
+  secure_frontend_test::cli::CliHarness h;
+  (void)secure_frontend_test::cli::install(h);
+  std::string text = secure_frontend_test::read_file(h.config);
+  text.replace(text.find("\"model_id\": \"m\""), 15, "\"model_id\": \"m:t\"");  // roots.tokenizer_pack stays set
+  secure_frontend_test::write_file(h.config, text);
+  const auto composed = secure_frontend::compose_engine_launch(h.validated_config().get(), false);
+  const auto* failure = std::get_if<secure_frontend::LaunchFailure>(&composed);
+  expect(failure != nullptr && failure->messages.front().find("roots.tokenizer_pack") != std::string::npos,
+         "roots.tokenizer_pack together with a managed model is a config error (no silent ignore)");
+  const auto checked = server_check(h, false);
+  expect(checked.exit_code == 1 && contains(checked.err, "Configuration error: roots.tokenizer_pack") &&
+             !contains(checked.out, "Configuration is valid."),
+         "--check reports roots.tokenizer_pack as a config error: " + checked.err);
+  const auto expert = server_check(h, true);
+  expect(expert.exit_code == 0 && contains(expert.out, "Configuration is valid."),
+         "--check --expert accepts the operator's tokenizer root: " + expert.err);
+}
+
+// make_model_id accepts "index.json"; the model index grammar never names it (two grammars, F-8).
+void cfg01_model_reference_rejected_for_managed_model() {
+  secure_frontend_test::cli::CliHarness h;
+  h.make_managed("index.json");
+  const auto issues = secure_frontend::managed_config_issues(h.validated_config().get());
+  expect(issues.size() == 1U && issues.front().rfind("engine.model_id", 0) == 0, "a model id that is not a name[:tag] reference");
+  const auto checked = server_check(h, false);
+  expect(checked.exit_code == 1 && contains(checked.err, "Configuration error: engine.model_id"),
+         "--check reports engine.model_id: " + checked.err);
+  const auto expert = server_check(h, true);
+  expect(expert.exit_code == 1 && contains(expert.err, "Configuration error: roots.tokenizer_pack") &&
+             !contains(expert.err, "engine.model_id"),
+         "--check --expert needs roots.tokenizer_pack and takes an inventory id: " + expert.err);
+}
+// SP4 §4.9 c/d (Task 24a addendum): --check prints "(unset)" for the --expert-only keys.
+void describe_reports_unset_expert_keys() {
+  ConfigFixture f;
+  auto literals = f.literals;
+  literals.erase("roots.tokenizer_pack");
+  literals.erase("engine.profile");
+  literals["engine.model_id"] = secure_frontend_test::json_literal("m:t");
+  const auto result = validate_text(render_config_json(literals), f.dir);
+  const auto* config = std::get_if<secure_frontend::ValidatedConfig>(&result);
+  expect(config != nullptr, "a managed config validates: " + issues_of(result));
+  if (config == nullptr) return;
+  const auto text = secure_frontend::describe(config->get());
+  expect(text.find("\nroots.tokenizer_pack = (unset)\n") != std::string::npos, "roots.tokenizer_pack = (unset): " + text);
+  expect(text.find("\nengine.profile = (unset)\n") != std::string::npos, "engine.profile = (unset)");
+  expect(text.find("\nengine.model_id = \"m:t\"\n") != std::string::npos, "engine.model_id as given");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
+      {"cfg01_engine_profile_rejected_for_managed_model", cfg01_engine_profile_rejected_for_managed_model},
+      {"cfg01_tokenizer_pack_root_rejected_for_managed_model", cfg01_tokenizer_pack_root_rejected_for_managed_model},
+      {"cfg01_model_reference_rejected_for_managed_model", cfg01_model_reference_rejected_for_managed_model},
+      {"describe_reports_unset_expert_keys", describe_reports_unset_expert_keys},
       {"typed_config_accepts_minimal_file_and_applies_defaults", typed_config_accepts_minimal_file_and_applies_defaults},
       {"cfg01_unknown_key_rejected", cfg01_unknown_key_rejected},
       {"cfg01_duplicate_key_rejected", cfg01_duplicate_key_rejected},

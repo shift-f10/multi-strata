@@ -159,7 +159,8 @@ std::string server_usage() {
       "                           (never the token) and exit\n"
       "  --expert                 Bring-up mode: engine.profile, roots.tokenizer_pack and\n"
       "                           weight flags other than --native (always frontend-owned)\n"
-      "                           in engine.args are the operator's (no managed model)\n"
+      "                           in engine.args are the operator's (no managed model);\n"
+      "                           --check then validates that mode\n"
       "  --help                   Print this help\n"
       "\n"
       "init writes FILE (owner-only, atomic) from the options given and generates a\n"
@@ -183,9 +184,13 @@ std::string server_usage() {
       "The server starts exactly one local --serve child with no shell and an empty\n"
       "environment. It serves authenticated GET /health, GET /v1/models and\n"
       "non-streaming text-only POST /v1/chat/completions. Streaming, tools, downloads,\n"
-      "remote URLs, telemetry and MCP are disabled. With --expert and the qwen profile\n"
-      "the frontend supplies --native from engine.model_id; the operator passes --pack\n"
-      "and other weight flags with --engine-arg and sets roots.tokenizer_pack.\n";
+      "remote URLs, telemetry and MCP are disabled. By default engine.model_id names\n"
+      "an installed model (name[:tag], see `strata list`): its manifest supplies the\n"
+      "profile, the weight flags and the tokenizer, and engine.profile,\n"
+      "roots.tokenizer_pack and weight flags in engine.args are config errors. With\n"
+      "--expert and the qwen profile the frontend supplies --native from the local\n"
+      "inventory entry engine.model_id; the operator passes --pack and other weight\n"
+      "flags with --engine-arg and sets roots.tokenizer_pack.\n";
   return text;
 }
 
