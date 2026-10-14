@@ -49,7 +49,7 @@ int main(int argc, char** argv) {
   const auto* source = std::get_if<secure_frontend::SecretSource>(&source_result);
   if (source == nullptr) { std::cerr << "invalid API-key environment variable name\n"; return EXIT_FAILURE; }
   const auto token_result = secure_frontend::read_token(*source, {});
-  const auto* token = std::get_if<std::string>(&token_result);
+  const auto* token = std::get_if<secure_frontend::SecretBytes>(&token_result);
   if (token == nullptr) { std::cerr << "API key is unavailable\n"; return EXIT_FAILURE; }
   const auto config_result = secure_frontend::validate_config({.host = options->host, .port = options->port,
       .api_key = std::string{"provided"}, .allow_remote = false, .allow_wildcard_bind = false});
@@ -73,7 +73,7 @@ int main(int argc, char** argv) {
   std::string error;
   auto server = secure_frontend::HttpSocketServer::bind(*config, {.allowed_hosts = {host_header},
       .same_origin_origins = {origin}, .cors_allowed_origins = {}, .cors_enabled = false},
-      [expected = *token](std::string_view candidate) {
+      [expected = std::string{token->view()}](std::string_view candidate) {
         return secure_frontend::constant_time_token_equals(candidate, expected);
       }, [router](std::string_view method, std::string_view target, std::string_view) {
         return router.dispatch(method, target);

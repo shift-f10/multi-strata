@@ -81,9 +81,9 @@ int run(const FrontendConfig& config) {
     return EXIT_FAILURE;
   }
   auto token_result = read_configured_token(config);
-  auto* token = std::get_if<std::string>(&token_result);
+  auto* token = std::get_if<secure_frontend::SecretBytes>(&token_result);
   if (token == nullptr) { std::cerr << "Unable to read API token.\n"; return EXIT_FAILURE; }
-  auto verifier = std::make_shared<TokenVerifier>(std::move(*token));
+  auto verifier = std::make_shared<TokenVerifier>(std::string{token->view()});
 
   const secure_frontend::Config listener = secure_frontend::listener_config(config);
   // Derived once, before bind/spawn; each subsystem keeps its own const copy.

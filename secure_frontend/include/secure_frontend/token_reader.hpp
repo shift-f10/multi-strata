@@ -1,8 +1,10 @@
 #pragma once
 
-#include "secure_frontend/secret_source.hpp"
 #include "secure_frontend/canonical_path.hpp"
+#include "secure_frontend/secret_bytes.hpp"
+#include "secure_frontend/secret_source.hpp"
 
+#include <cstddef>
 #include <filesystem>
 #include <string>
 #include <string_view>
@@ -14,6 +16,14 @@ namespace secure_frontend {
 // CryptProtectData blob (user scope). Plaintext files under a private DACL are
 // accepted too (operator-made).
 inline constexpr std::string_view kDpapiTokenMagic = "STRATAK1";
+
+// A token file larger than this is rejected before any token byte is examined.
+inline constexpr std::size_t kMaximumTokenFileBytes = 4096U;
+// The token itself (after the one optional trailing newline is removed).
+inline constexpr std::size_t kMaximumTokenBytes = 256U;  // == kTokenWindowBytes
+static_assert(kMaximumTokenBytes == kTokenWindowBytes, "a token must fit SecretBytes");
+// Owner decision (spec §10): operator tokens shorter than this are rejected.
+inline constexpr std::size_t kMinimumOperatorTokenBytes = 32U;
 
 enum class TokenReadErrorCode {
   environment_variable_not_set,
@@ -29,6 +39,7 @@ enum class TokenReadErrorCode {
   read_failed,
   token_too_large,
   hard_link_not_allowed,
+  token_too_short,
 };
 
 struct TokenReadError final {
@@ -36,10 +47,16 @@ struct TokenReadError final {
   std::string message;
 };
 
-// The successful value is intentionally short-lived. Callers must pass it directly
-// to the authentication component, redact it from logs/errors, and overwrite it
-// as soon as their allocator/API permits.
-using TokenReadResult = std::variant<std::string, TokenReadError>;
+// The token is held in SecretBytes: inline, move-only, wiped on destruction and
+// move-from. Every read buffer is wiped before it goes out of scope.
+using TokenReadResult = std::variant<SecretBytes, TokenReadError>;
+
+// Format rule (both OSes): 1-256 printable ASCII bytes 0x21-0x7E; a file may end
+// in exactly one "\n" or "\r\n" (allow_trailing_newline). A UTF-8 BOM,
+// whitespace, a second newline, or a token wrapped in quotes is invalid_token
+// with a message naming the problem; fewer than 32 bytes is token_too_short.
+[[nodiscard]] std::variant<SecretBytes, TokenReadError> token_from_bytes(std::string_view raw,
+                                                                         bool allow_trailing_newline);
 
 // Resolves a SecretSource at the last responsible moment. For a protected file
 // the root is opened once (open_root) and the file is opened below it with

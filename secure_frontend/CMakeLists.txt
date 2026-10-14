@@ -417,7 +417,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         secure_frontend_token_store)
     if(NOT WIN32)
         secure_frontend_add_cases(secure_frontend_token_store_tests
-            token_store_creates_0600_file_in_0700_dir token_store_rotate_is_atomic token_store_refuses_symlinked_target)
+            token_store_creates_0600_file_in_0700_dir token_store_rotate_is_atomic token_store_refuses_symlinked_target
+            token_store_round_trips_through_reader)
     endif()
     target_link_libraries(secure_frontend_token_store_tests PRIVATE secure_frontend_token_reader)
     if(WIN32)
@@ -442,14 +443,23 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         rejects_unsafe_environment_variable_names rejects_blank_or_control_containing_file_paths
         rejects_paths_that_escape_or_trigger_platform_special_handling)
 
-    if(UNIX)
-        # POSIX-only until SP1 Task 18 un-gates it for the windows-msys2-clang job.
-        secure_frontend_add_test_executable(secure_frontend_token_reader_tests tests/token_reader_test.cpp
-            secure_frontend_token_reader)
+    # Built and run on every platform (SP1 K4). Protected-file cases need real
+    # Windows ACL semantics: windows-runtime there, run by the windows-msys2-clang
+    # job and excluded under wine.
+    secure_frontend_add_test_executable(secure_frontend_token_reader_tests tests/token_reader_test.cpp
+        secure_frontend_token_reader)
+    secure_frontend_add_cases(secure_frontend_token_reader_tests
+        reads_the_named_environment_variable rejects_control_characters_in_environment_token
+        auth02_short_operator_token_rejected)
+    secure_frontend_add_cases(secure_frontend_token_reader_tests
+        reads_an_owner_only_regular_file_below_the_root rejects_control_characters_in_file_token
+        auth02_token_file_with_trailing_lf_accepted auth02_token_file_with_trailing_crlf_accepted
+        auth02_token_file_with_two_newlines_rejected auth02_token_file_with_bom_rejected
+        auth02_token_file_over_4k_rejected auth02_notepad_edits_rejected_with_reason
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    if(NOT WIN32)
         secure_frontend_add_cases(secure_frontend_token_reader_tests
-            reads_an_owner_only_regular_file_below_the_root reads_the_named_environment_variable
-            rejects_control_characters_in_resolved_tokens rejects_a_group_or_world_accessible_file
-            rejects_a_symlink_that_escapes_the_root rejects_a_non_regular_file
+            rejects_a_group_or_world_accessible_file rejects_a_symlink_that_escapes_the_root rejects_a_non_regular_file
             cfg03_rejects_hardlinked_token_file)
     endif()
 

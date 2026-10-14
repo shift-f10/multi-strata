@@ -2,6 +2,7 @@
 
 #include "secure_frontend/secret_bytes.hpp"
 
+#include <array>
 #include <cstdlib>
 #include <string>
 #include <string_view>
@@ -18,18 +19,20 @@
 namespace secure_frontend {
 namespace {
 
-constexpr std::size_t kMaximumTokenBytes = 1024U * 1024U;
-
 TokenReadError error(const TokenReadErrorCode code, std::string message) {
   return TokenReadError{.code = code, .message = std::move(message)};
 }
 
-bool contains_control_character(const std::string_view value) {
-  for (const unsigned char character : value) {
-    if (character <= 0x1FU || character == 0x7FU) return true;
-  }
-  return false;
-}
+// A stack buffer that is wiped when it leaves scope, whatever the exit path.
+// One byte over the file cap, so a file that grew past the cap after the size
+// check is seen as too large rather than silently truncated.
+struct WipedBuffer final {
+  std::array<char, kMaximumTokenFileBytes + 1U> bytes{};
+  WipedBuffer() = default;
+  WipedBuffer(const WipedBuffer&) = delete;
+  WipedBuffer& operator=(const WipedBuffer&) = delete;
+  ~WipedBuffer() { secure_wipe(bytes.data(), bytes.size()); }
+};
 
 TokenReadResult read_protected_file(const SecretSource& source, const CanonicalRoot& root) {
   const auto parsed = parse_relative_path(source.location());
@@ -40,28 +43,36 @@ TokenReadResult read_protected_file(const SecretSource& source, const CanonicalR
                                          .reject_hard_links = true});
   if (const auto* failure = std::get_if<PathError>(&opened)) return token_error_from(*failure);
   const auto& file = std::get<OpenedFile>(opened);
-  if (file.size() > kMaximumTokenBytes) return error(TokenReadErrorCode::token_too_large, "The protected token exceeds the size limit.");
-  auto text = file.read_all(kMaximumTokenBytes);
-  if (std::holds_alternative<PathError>(text)) return error(TokenReadErrorCode::read_failed, "The protected token file could not be read.");
-  std::string token = std::get<std::string>(std::move(text));
+  if (file.size() > kMaximumTokenFileBytes) return error(TokenReadErrorCode::token_too_large, "The token file is larger than 4 KiB.");
+  // Read straight into wiped storage, not OpenedFile::read_all: its 64 KiB chunk
+  // and std::string reallocations would leave token bytes behind unwiped.
+  WipedBuffer buffer;
+  std::size_t used = 0U;
+  while (used < buffer.bytes.size()) {
+    auto got = file.read_some(buffer.bytes.data() + used, buffer.bytes.size() - used);
+    if (std::holds_alternative<PathError>(got)) return error(TokenReadErrorCode::read_failed, "The protected token file could not be read.");
+    const std::size_t count = std::get<std::size_t>(got);
+    if (count == 0U) break;
+    used += count;
+  }
+  // A file that grew past the cap after the size check is too large, not a read failure.
+  if (used > kMaximumTokenFileBytes) return error(TokenReadErrorCode::token_too_large, "The token file is larger than 4 KiB.");
+  const std::string_view raw{buffer.bytes.data(), used};
 #if defined(_WIN32)
-  if (token.rfind(kDpapiTokenMagic, 0) == 0) {
-    DATA_BLOB input{static_cast<DWORD>(token.size() - kDpapiTokenMagic.size()),
-                    reinterpret_cast<BYTE*>(token.data() + kDpapiTokenMagic.size())};
+  if (raw.substr(0, kDpapiTokenMagic.size()) == kDpapiTokenMagic) {
+    const std::string_view blob = raw.substr(kDpapiTokenMagic.size());
+    DATA_BLOB input{static_cast<DWORD>(blob.size()), reinterpret_cast<BYTE*>(const_cast<char*>(blob.data()))};
     DATA_BLOB output{};
-    const BOOL ok = CryptUnprotectData(&input, nullptr, nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &output);
-    secure_wipe(token.data(), token.size());
-    if (ok == 0) return error(TokenReadErrorCode::invalid_token, "The token file could not be decrypted for the current user.");
-    token.assign(reinterpret_cast<const char*>(output.pbData), output.cbData);
+    if (CryptUnprotectData(&input, nullptr, nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &output) == 0) {
+      return error(TokenReadErrorCode::invalid_token, "The token file could not be decrypted for the current user.");
+    }
+    auto result = token_from_bytes(std::string_view{reinterpret_cast<const char*>(output.pbData), output.cbData}, false);
     SecureZeroMemory(output.pbData, output.cbData);
     LocalFree(output.pbData);
+    return result;
   }
 #endif
-  if (token.empty()) return error(TokenReadErrorCode::empty_token, "The resolved token must not be empty.");
-  if (contains_control_character(token)) {
-    return error(TokenReadErrorCode::invalid_token, "The resolved token must not contain control characters.");
-  }
-  return token;
+  return token_from_bytes(raw, true);
 }
 
 TokenReadResult read_environment_token(const SecretSource& source) {
@@ -70,16 +81,45 @@ TokenReadResult read_environment_token(const SecretSource& source) {
     return error(TokenReadErrorCode::environment_variable_not_set,
                  "The configured token environment variable is not set.");
   }
-  if (*value == '\0') {
-    return error(TokenReadErrorCode::empty_token, "The resolved token must not be empty.");
-  }
-  if (contains_control_character(value)) {
-    return error(TokenReadErrorCode::invalid_token, "The resolved token must not contain control characters.");
-  }
-  return std::string{value};
+  return token_from_bytes(value, false);
 }
 
 }  // namespace
+
+std::variant<SecretBytes, TokenReadError> token_from_bytes(const std::string_view raw, const bool allow_trailing_newline) {
+  if (raw.size() >= 3U && raw.substr(0, 3) == "\xEF\xBB\xBF") {
+    return error(TokenReadErrorCode::invalid_token, "The token file starts with a UTF-8 byte order mark; save it without one.");
+  }
+  std::string_view value = raw;
+  if (allow_trailing_newline) {
+    if (value.size() >= 2U && value.substr(value.size() - 2U) == "\r\n") value.remove_suffix(2U);
+    else if (!value.empty() && value.back() == '\n') value.remove_suffix(1U);
+  }
+  if (value.empty()) return error(TokenReadErrorCode::empty_token, "The resolved token must not be empty.");
+  if (value.size() > kMaximumTokenBytes) return error(TokenReadErrorCode::token_too_large, "The token is longer than 256 bytes.");
+  for (const char c : value) {
+    const auto b = static_cast<unsigned char>(c);
+    if (b >= 0x21U && b <= 0x7eU) continue;
+    if (c == ' ' || c == '\t') {
+      return error(TokenReadErrorCode::invalid_token, "The token contains whitespace; only one trailing newline is allowed.");
+    }
+    if (c == '\n' || c == '\r') {
+      return error(TokenReadErrorCode::invalid_token,
+                   "The token file has more than one trailing newline (or a line break inside the token).");
+    }
+    return error(TokenReadErrorCode::invalid_token, "The token must be printable ASCII.");
+  }
+  if (value.size() >= 2U && ((value.front() == '"' && value.back() == '"') || (value.front() == '\'' && value.back() == '\''))) {
+    return error(TokenReadErrorCode::invalid_token, "The token is wrapped in quotes; remove them.");
+  }
+  if (value.size() < kMinimumOperatorTokenBytes) {
+    return error(TokenReadErrorCode::token_too_short,
+                 "Tokens must be at least 32 bytes; run strata-secure-server init to generate one.");
+  }
+  SecretBytes token;
+  (void)token.assign(value);
+  return token;
+}
 
 TokenReadError token_error_from(const PathError& failure) {
   switch (failure.code) {

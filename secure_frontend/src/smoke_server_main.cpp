@@ -164,12 +164,12 @@ int run(const Options& options) {
   }
   const std::filesystem::path secret_root = options.secret_root.value_or(std::filesystem::path{"."});
   auto token_result = secure_frontend::read_token(*source, secret_root);
-  auto* token = std::get_if<std::string>(&token_result);
+  auto* token = std::get_if<secure_frontend::SecretBytes>(&token_result);
   if (token == nullptr) {
     std::cerr << "Unable to read API token.\n";
     return EXIT_FAILURE;
   }
-  auto verifier = std::make_shared<TokenVerifier>(std::move(*token));
+  auto verifier = std::make_shared<TokenVerifier>(std::string{token->view()});
 
   const secure_frontend::ConfigInput input{
       .host = options.host,

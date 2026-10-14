@@ -114,6 +114,20 @@ void token_store_refuses_symlinked_target() {
   expect(secure_frontend_test::read_file(outside / "victim") == "unchanged", "the link target is untouched");
   expect(std::filesystem::is_symlink(dir / "token"), "the symlink itself is not replaced either");
 }
+
+// Defect (c): store_token writes the token plus one LF; the reader must accept
+// exactly that file and hand back the token without the newline.
+void token_store_round_trips_through_reader() {
+  const auto dir = secure_frontend_test::make_scratch_directory();
+  const auto token = fresh_token();
+  expect(!secure_frontend::store_token(root_at(dir), rel("token"), token, secure_frontend::TokenStoreMode::create_new), "stored");
+  const auto source = std::get<secure_frontend::SecretSource>(secure_frontend::make_protected_file_secret_source("token"));
+  const auto read = secure_frontend::read_token(source, dir);
+  const auto* error = std::get_if<secure_frontend::TokenReadError>(&read);
+  expect(error == nullptr, "a stored token reads back: " + (error ? error->message : std::string{}));
+  const auto* value = std::get_if<secure_frontend::SecretBytes>(&read);
+  expect(value != nullptr && value->view() == token.view(), "the value read back equals the stored token, without the LF");
+}
 #endif
 
 #if defined(_WIN32)
@@ -135,8 +149,8 @@ void token_store_windows_round_trips_through_dpapi() {
   const auto read = secure_frontend::read_token(source, dir);
   const auto* error = std::get_if<secure_frontend::TokenReadError>(&read);
   expect(error == nullptr, "the DPAPI file reads back: " + (error ? error->message : std::string{}));
-  const auto* value = std::get_if<std::string>(&read);
-  expect(value != nullptr && *value == std::string{token.view()}, "the value read back is the token that was stored");
+  const auto* value = std::get_if<secure_frontend::SecretBytes>(&read);
+  expect(value != nullptr && value->view() == token.view(), "the value read back is the token that was stored");
 }
 
 void token_store_windows_file_has_private_dacl() {
@@ -192,8 +206,8 @@ void token_reader_windows_accepts_plaintext_under_private_dacl() {
   const auto source = std::get<secure_frontend::SecretSource>(secure_frontend::make_protected_file_secret_source("token"));
   const auto read = secure_frontend::read_token(source, dir);
   expect(!std::holds_alternative<secure_frontend::TokenReadError>(read), "an operator-made plaintext file is accepted");
-  const auto* value = std::get_if<std::string>(&read);
-  expect(value != nullptr && *value == token, "the plaintext value read back is the operator's token");
+  const auto* value = std::get_if<secure_frontend::SecretBytes>(&read);
+  expect(value != nullptr && value->view() == token, "the plaintext value read back is the operator's token");
 }
 #endif
 }  // namespace
@@ -204,6 +218,7 @@ int main(int argc, char** argv) {
       {"token_store_creates_0600_file_in_0700_dir", token_store_creates_0600_file_in_0700_dir},
       {"token_store_rotate_is_atomic", token_store_rotate_is_atomic},
       {"token_store_refuses_symlinked_target", token_store_refuses_symlinked_target},
+      {"token_store_round_trips_through_reader", token_store_round_trips_through_reader},
 #else
       {"token_store_windows_round_trips_through_dpapi", token_store_windows_round_trips_through_dpapi},
       {"token_store_windows_file_has_private_dacl", token_store_windows_file_has_private_dacl},
