@@ -130,6 +130,12 @@ target_include_directories(secure_frontend_typed_config PUBLIC
 target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_config secure_frontend_json
     secure_frontend_model_inventory secure_frontend_engine_arguments)
 
+add_library(secure_frontend_server_cli src/server_cli.cpp)
+target_compile_features(secure_frontend_server_cli PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_server_cli PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_link_libraries(secure_frontend_server_cli PUBLIC secure_frontend_typed_config)
+
 add_library(secure_frontend_chat_schema
     src/chat_schema.cpp
 )
@@ -294,6 +300,7 @@ target_link_libraries(strata-secure-server PRIVATE secure_frontend_config secure
     secure_frontend_api_router secure_frontend_model_inventory secure_frontend_tokenizer_pack
     secure_frontend_engine_protocol_client secure_frontend_engine_stdio_process secure_frontend_chat_schema
     secure_frontend_chat_generation_plan secure_frontend_chat_execution secure_frontend_engine_arguments)
+target_link_libraries(strata-secure-server PRIVATE secure_frontend_server_cli secure_frontend_typed_config)
 target_compile_features(strata-secure-server PRIVATE cxx_std_20)
 
 target_compile_features(secure_frontend_config PUBLIC cxx_std_20)
@@ -322,7 +329,7 @@ foreach(_target IN ITEMS
         secure_frontend_http_request_handler secure_frontend_api_router secure_frontend_engine_process
         secure_frontend_engine_protocol_client secure_frontend_engine_stdio_process
         secure_frontend_http_socket_server secure_frontend_model_inventory secure_frontend_engine_arguments
-        secure_frontend_json secure_frontend_typed_config secure_frontend_chat_schema
+        secure_frontend_json secure_frontend_typed_config secure_frontend_server_cli secure_frontend_chat_schema
         secure_frontend_tokenizer_pack secure_frontend_qwen_prompt_renderer secure_frontend_glm_prompt_renderer
         secure_frontend_chat_generation_plan secure_frontend_chat_execution
         secure-frontend-smoke strata-secure-smoke-server strata-secure-server)
@@ -478,6 +485,19 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         chat_rejects_nonfinite_done_and_stays_ready health_reflects_protocol_state
         health_is_failed_after_engine_closed_mid_generation health_is_failed_when_engine_closes_before_ready
         chat_applies_engine_context_rule_with_eight_token_margin)
+
+    add_executable(secure_frontend_fake_engine tests/fake_engine_main.cpp)
+    target_compile_features(secure_frontend_fake_engine PRIVATE cxx_std_20)
+    secure_frontend_set_warnings(secure_frontend_fake_engine)
+    set(SECURE_FRONTEND_SERVER_ARGS ARGS $<TARGET_FILE:strata-secure-server> $<TARGET_FILE:secure_frontend_fake_engine>)
+
+    secure_frontend_add_test_executable(secure_frontend_server_cli_tests tests/server_cli_test.cpp
+        secure_frontend_typed_config)
+    add_dependencies(secure_frontend_server_cli_tests strata-secure-server secure_frontend_fake_engine)
+    secure_frontend_add_cases(secure_frontend_server_cli_tests
+        cli_config_file_and_flags_share_validator cli_flag_overrides_file_and_is_reported cli_check_prints_no_token
+        cli_unknown_option_does_not_echo_value
+        ${SECURE_FRONTEND_SERVER_ARGS} TIMEOUT 120)
 
     add_test(NAME strata_secure_server_help COMMAND strata-secure-server --help)
     # The GLM runner takes positional arguments: glm53 without any --engine-arg is a usage error.

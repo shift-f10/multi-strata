@@ -16,4 +16,13 @@ inline constexpr std::size_t kMaxConfigFileBytes = 64U * 1024U;
 [[nodiscard]] std::variant<FrontendConfigDraft, ConfigErrors> parse_config_text(
     std::string_view text, const std::filesystem::path& config_directory);
 
+// Reads a config file (bounded at kMaxConfigFileBytes) and parses it; the
+// file's directory becomes the draft's config_directory. Task 12 replaces the
+// read with a trusted, handle-based open.
+[[nodiscard]] std::variant<FrontendConfigDraft, ConfigErrors> read_config_file(const std::filesystem::path& file);
+
+// Overlays command-line entries on a file draft: flags win, and every key set
+// in both is listed in overridden_by_command_line.
+[[nodiscard]] FrontendConfigDraft merge_drafts(FrontendConfigDraft file, const FrontendConfigDraft& flags);
+
 }  // namespace secure_frontend

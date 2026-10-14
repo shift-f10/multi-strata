@@ -2,8 +2,10 @@
 
 #include "secure_frontend/json.hpp"
 
+#include <fstream>
 #include <optional>
 #include <string>
+#include <system_error>
 
 namespace secure_frontend {
 namespace {
@@ -76,6 +78,29 @@ std::variant<FrontendConfigDraft, ConfigErrors> parse_config_text(const std::str
   collect(*members, "", draft, errors);
   if (!errors.empty()) return errors;
   return draft;
+}
+
+std::variant<FrontendConfigDraft, ConfigErrors> read_config_file(const std::filesystem::path& file) {
+  std::error_code error;
+  const auto absolute = std::filesystem::absolute(file, error);
+  if (error) return ConfigErrors{ConfigIssue{"config file", ConfigIssueCode::file_unavailable, "cannot be resolved"}};
+  std::ifstream input(absolute, std::ios::binary);
+  if (!input) return ConfigErrors{ConfigIssue{"config file", ConfigIssueCode::file_unavailable, "cannot be opened"}};
+  std::string text(kMaxConfigFileBytes + 1U, '\0');
+  input.read(text.data(), static_cast<std::streamsize>(text.size()));
+  text.resize(static_cast<std::size_t>(input.gcount()));
+  if (text.size() > kMaxConfigFileBytes) {
+    return ConfigErrors{ConfigIssue{"config file", ConfigIssueCode::malformed_document, "is larger than 64 KiB"}};
+  }
+  return parse_config_text(text, absolute.parent_path());
+}
+
+FrontendConfigDraft merge_drafts(FrontendConfigDraft file, const FrontendConfigDraft& flags) {
+  for (const auto& [key, entry] : flags.entries) {
+    if (file.entries.find(key) != file.entries.end()) file.overridden_by_command_line.push_back(key);
+    file.entries[key] = entry;
+  }
+  return file;
 }
 
 }  // namespace secure_frontend

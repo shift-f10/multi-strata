@@ -4,21 +4,20 @@
 #include "secure_frontend/config.hpp"
 #include "secure_frontend/engine_arguments.hpp"
 #include "secure_frontend/engine_stdio_process.hpp"
+#include "secure_frontend/frontend_config.hpp"
 #include "secure_frontend/http_request_handler.hpp"
 #include "secure_frontend/http_socket_server.hpp"
 #include "secure_frontend/model_inventory.hpp"
 #include "secure_frontend/process_defaults.hpp"
-#include "secure_frontend/secret_source.hpp"
+#include "secure_frontend/server_cli.hpp"
 #include "secure_frontend/token_reader.hpp"
 #include "secure_frontend/tokenizer_pack.hpp"
 
 #include <algorithm>
-#include <charconv>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <memory>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -27,187 +26,8 @@
 
 namespace {
 
-using secure_frontend::SecretSource;
-
-struct Options final {
-  secure_frontend::NativeChatProfile profile{secure_frontend::NativeChatProfile::qwen};
-  bool profile_specified{false};
-  std::optional<std::string> host;
-  std::optional<std::uint32_t> port;
-  std::optional<std::string> token_environment;
-  std::optional<std::string> token_file;
-  std::optional<std::filesystem::path> secret_root;
-  std::optional<std::filesystem::path> models_root;
-  std::optional<std::filesystem::path> tokenizer_pack;
-  std::optional<std::filesystem::path> engine;
-  std::optional<std::string> model_id;
-  std::vector<std::string> engine_arguments;
-  bool allow_remote{false};
-  bool allow_wildcard_bind{false};
-};
-
-void usage(std::ostream& output) {
-  output << "Usage: strata-secure-server --models-root PATH --tokenizer-pack PATH --engine PATH "
-            "--model-id ID [--engine-arg ARG ...] "
-            "(--token-env NAME | --token-file RELATIVE --secret-root PATH) [options]\n"
-            "\n"
-            "Options:\n"
-            "  --profile qwen|glm53     Fixed local prompt profile (default: qwen)\n"
-            "  --host IP                 Bind IP literal (default: 127.0.0.1)\n"
-            "  --port PORT               TCP port 1-65535 (default: 8080)\n"
-            "  --allow-remote            Required for every non-loopback bind\n"
-            "  --allow-wildcard-bind     Also required for 0.0.0.0 or ::\n"
-            "  --models-root PATH        Existing local directory of .gguf files\n"
-            "  --model-id ID             Local model ID selected for this engine process\n"
-            "  --tokenizer-pack PATH     Local directory with vocab.json, merges.txt, token_type.json\n"
-            "  --engine PATH             Local Strata engine executable\n"
-            "  --engine-arg ARG          Literal engine argument; repeat as needed. Optional\n"
-            "                            for qwen; glm53 requires at least one (its runner\n"
-            "                            takes positional arguments). --serve is always\n"
-            "                            rejected; with the qwen profile --native, --batch,\n"
-            "                            --slots and --vision are rejected too\n"
-            "  --token-env NAME          Read bearer token from one environment variable\n"
-            "  --token-file RELATIVE     Read token from owner-only file below --secret-root\n"
-            "  --secret-root PATH        Required with --token-file\n"
-            "  --help                     Print this help\n"
-            "\n"
-            "The server starts exactly one local --serve child with no shell and an empty "
-            "environment allowlist. It serves authenticated GET /health, GET /v1/models, "
-            "and non-streaming text-only POST /v1/chat/completions. Streaming, tools, "
-            "downloads, remote URLs, telemetry, and MCP are disabled.\n"
-            "\n"
-            "With the qwen (Strata) profile the frontend supplies shard 1 via --native from "
-            "--model-id (the local inventory), so --native is never passed with --engine-arg; "
-            "the expert pack (--pack) and other weight sources (--ple-gguf, --embd-gguf, "
-            "--native-head-gguf, --native-dense-gguf, --mtp) are operator-supplied with "
-            "--engine-arg until SP1/SP5 model the whole launch. The engine loads --pack "
-            "unconditionally (default: cwd-relative pack/full), so a real run must pass it.\n"
-            "\n"
-            "The glm53 profile requires a separately built LightTransport-compatible "
-            "strata-glm-decode engine. Supply its required positional engine arguments "
-            "unchanged using repeated --engine-arg; for glm53 this server adds only --serve "
-            "(--native is Strata-only) and --model-id is checked against the inventory.\n";
-}
-
-bool next_value(const int argc, char* argv[], int* index, std::string* output, std::string* error) {
-  if (*index + 1 >= argc) {
-    *error = std::string{"missing value for "} + argv[*index];
-    return false;
-  }
-  *output = argv[++*index];
-  if (output->empty()) {
-    *error = "empty command-line option value";
-    return false;
-  }
-  return true;
-}
-
-bool parse_port(const std::string_view value, std::uint32_t* output) {
-  std::uint32_t parsed = 0;
-  const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
-  if (result.ec != std::errc{} || result.ptr != value.data() + value.size()) return false;
-  *output = parsed;
-  return true;
-}
-
-bool parse_profile(const std::string_view value, secure_frontend::NativeChatProfile* output) {
-  if (value == "qwen") {
-    *output = secure_frontend::NativeChatProfile::qwen;
-    return true;
-  }
-  if (value == "glm53") {
-    *output = secure_frontend::NativeChatProfile::glm53;
-    return true;
-  }
-  return false;
-}
-
-bool parse_options(const int argc, char* argv[], Options* options, bool* help, std::string* error) {
-  *help = false;
-  for (int index = 1; index < argc; ++index) {
-    const std::string_view argument{argv[index]};
-    if (argument == "--help") {
-      *help = true;
-      return true;
-    }
-    if (argument == "--allow-remote") {
-      if (options->allow_remote) { *error = "duplicate --allow-remote"; return false; }
-      options->allow_remote = true;
-      continue;
-    }
-    if (argument == "--allow-wildcard-bind") {
-      if (options->allow_wildcard_bind) { *error = "duplicate --allow-wildcard-bind"; return false; }
-      options->allow_wildcard_bind = true;
-      continue;
-    }
-    std::string value;
-    if (!next_value(argc, argv, &index, &value, error)) return false;
-    if (argument == "--host") {
-      if (options->host.has_value()) { *error = "duplicate --host"; return false; }
-      options->host = std::move(value);
-    } else if (argument == "--profile") {
-      if (options->profile_specified || !parse_profile(value, &options->profile)) {
-        *error = "--profile must be exactly qwen or glm53 and may be supplied once";
-        return false;
-      }
-      options->profile_specified = true;
-    } else if (argument == "--port") {
-      std::uint32_t port = 0;
-      if (options->port.has_value() || !parse_port(value, &port)) {
-        *error = "--port must be an unsigned decimal integer";
-        return false;
-      }
-      options->port = port;
-    } else if (argument == "--models-root") {
-      if (options->models_root.has_value()) { *error = "duplicate --models-root"; return false; }
-      options->models_root = std::filesystem::path{std::move(value)};
-    } else if (argument == "--tokenizer-pack") {
-      if (options->tokenizer_pack.has_value()) { *error = "duplicate --tokenizer-pack"; return false; }
-      options->tokenizer_pack = std::filesystem::path{std::move(value)};
-    } else if (argument == "--engine") {
-      if (options->engine.has_value()) { *error = "duplicate --engine"; return false; }
-      options->engine = std::filesystem::path{std::move(value)};
-    } else if (argument == "--model-id") {
-      if (options->model_id.has_value()) { *error = "duplicate --model-id"; return false; }
-      options->model_id = std::move(value);
-    } else if (argument == "--engine-arg") {
-      options->engine_arguments.push_back(std::move(value));
-    } else if (argument == "--token-env") {
-      if (options->token_environment.has_value()) { *error = "duplicate --token-env"; return false; }
-      options->token_environment = std::move(value);
-    } else if (argument == "--token-file") {
-      if (options->token_file.has_value()) { *error = "duplicate --token-file"; return false; }
-      options->token_file = std::move(value);
-    } else if (argument == "--secret-root") {
-      if (options->secret_root.has_value()) { *error = "duplicate --secret-root"; return false; }
-      options->secret_root = std::filesystem::path{std::move(value)};
-    } else {
-      *error = std::string{"unknown option: "} + std::string{argument};
-      return false;
-    }
-  }
-  if (!options->models_root || !options->tokenizer_pack || !options->engine || !options->model_id) {
-    *error = "--models-root, --tokenizer-pack, --engine, and --model-id are required";
-    return false;
-  }
-  if (options->token_environment.has_value() == options->token_file.has_value()) {
-    *error = "supply exactly one of --token-env or --token-file";
-    return false;
-  }
-  if (options->token_file.has_value() != options->secret_root.has_value()) {
-    *error = "--token-file and --secret-root must be supplied together";
-    return false;
-  }
-  if (options->profile == secure_frontend::NativeChatProfile::glm53 && options->engine_arguments.empty()) {
-    *error = "--profile glm53 requires at least one --engine-arg";
-    return false;
-  }
-  if (!std::holds_alternative<std::string>(secure_frontend::validate_model_id(*options->model_id))) {
-    *error = "--model-id is not portable or valid";
-    return false;
-  }
-  return true;
-}
+using secure_frontend::EngineProfile;
+using secure_frontend::FrontendConfig;
 
 std::string host_header(const secure_frontend::Config& config) {
   const bool ipv6 = config.host.find(':') != std::string::npos;
@@ -224,6 +44,7 @@ class TokenVerifier final {
   [[nodiscard]] bool matches(const std::string_view candidate) const {
     return secure_frontend::constant_time_token_equals(candidate, token_);
   }
+
  private:
   std::string token_;
 };
@@ -234,38 +55,44 @@ secure_frontend::HttpResponse json_error(const int status, const char* message) 
           .body = std::string{"{\"error\":\""} + message + "\"}\n"};
 }
 
-int run(const Options& options) {
-  const auto source_result = options.token_environment ? secure_frontend::make_environment_secret_source(*options.token_environment)
-                                                        : secure_frontend::make_protected_file_secret_source(*options.token_file);
-  const auto* source = std::get_if<SecretSource>(&source_result);
-  if (source == nullptr) { std::cerr << "Invalid token source.\n"; return EXIT_FAILURE; }
-  auto token_result = secure_frontend::read_token(*source, options.secret_root.value_or(std::filesystem::path{"."}));
+secure_frontend::TokenReadResult read_configured_token(const FrontendConfig& config) {
+  return secure_frontend::read_token(config.token, config.roots.secret.value_or(std::filesystem::path{"."}));
+}
+
+int check(const FrontendConfig& config, const std::vector<std::string>& overridden) {
+  std::cout << "Configuration is valid.\n" << secure_frontend::describe(config);
+  for (const auto& key : overridden) std::cout << key << ": the command line overrides the config file\n";
+  const auto token = read_configured_token(config);
+  if (const auto* error = std::get_if<secure_frontend::TokenReadError>(&token)) {
+    std::cout << "token: unavailable: " << error->message << '\n';
+    return EXIT_FAILURE;
+  }
+  std::cout << "token: available (value not shown)\n";
+  return EXIT_SUCCESS;
+}
+
+int run(const FrontendConfig& config) {
+  auto token_result = read_configured_token(config);
   auto* token = std::get_if<std::string>(&token_result);
   if (token == nullptr) { std::cerr << "Unable to read API token.\n"; return EXIT_FAILURE; }
   auto verifier = std::make_shared<TokenVerifier>(std::move(*token));
 
-  const secure_frontend::ConfigInput input{.host = options.host, .port = options.port,
-                                             .api_key = std::string{"configured"}, .allow_remote = options.allow_remote,
-                                             .allow_wildcard_bind = options.allow_wildcard_bind};
-  const auto config_result = secure_frontend::validate_config(input);
-  const auto* config = std::get_if<secure_frontend::Config>(&config_result);
-  if (config == nullptr) { std::cerr << "Invalid listener configuration.\n"; return EXIT_FAILURE; }
-
-  const auto tokenizer_result = secure_frontend::load_local_tokenizer_pack(*options.tokenizer_pack);
+  const secure_frontend::Config listener = secure_frontend::listener_config(config);
+  const auto tokenizer_result = secure_frontend::load_local_tokenizer_pack(config.roots.tokenizer_pack);
   const auto* tokenizer = std::get_if<secure_frontend::TokenizerPack>(&tokenizer_result);
   if (tokenizer == nullptr) { std::cerr << "Unable to load local tokenizer pack.\n"; return EXIT_FAILURE; }
-  const auto models_result = secure_frontend::enumerate_local_models(*options.models_root);
+  const auto models_result = secure_frontend::enumerate_local_models(config.roots.models);
   const auto* manifests = std::get_if<std::vector<secure_frontend::ModelManifest>>(&models_result);
   if (manifests == nullptr) { std::cerr << "Unable to inventory local models.\n"; return EXIT_FAILURE; }
-  const auto selected = std::find_if(manifests->begin(), manifests->end(), [&options](const auto& model) {
-    return model.id == *options.model_id;
-  });
-  if (selected == manifests->end()) { std::cerr << "Selected model is not present in --models-root.\n"; return EXIT_FAILURE; }
-  const auto arguments_profile = options.profile == secure_frontend::NativeChatProfile::glm53
-      ? secure_frontend::EngineArgumentsProfile::lighttransport_glm53
-      : secure_frontend::EngineArgumentsProfile::strata_0143;
-  auto engine_arguments_result = secure_frontend::build_engine_arguments(arguments_profile, *selected, *options.models_root,
-                                                                         options.engine_arguments);
+  const std::string& model_id = config.engine.model_id.value();
+  const auto selected = std::find_if(manifests->begin(), manifests->end(),
+                                     [&model_id](const auto& model) { return model.id == model_id; });
+  if (selected == manifests->end()) { std::cerr << "Selected model is not present in roots.models.\n"; return EXIT_FAILURE; }
+  const bool glm = config.engine.profile == EngineProfile::glm53;
+  const auto arguments_profile = glm ? secure_frontend::EngineArgumentsProfile::lighttransport_glm53
+                                     : secure_frontend::EngineArgumentsProfile::strata_0143;
+  auto engine_arguments_result =
+      secure_frontend::build_engine_arguments(arguments_profile, *selected, config.roots.models, config.engine.args);
   auto* engine_arguments = std::get_if<std::vector<std::string>>(&engine_arguments_result);
   if (engine_arguments == nullptr) { std::cerr << "Engine arguments rejected.\n"; return EXIT_FAILURE; }
   std::vector<secure_frontend::ApiModel> models;
@@ -273,18 +100,18 @@ int run(const Options& options) {
   for (const auto& manifest : *manifests) models.push_back({.id = manifest.id, .owned_by = manifest.owned_by});
 
   secure_frontend::EngineStdioProcess engine;
-  const secure_frontend::EngineCommand command{.executable = *options.engine, .arguments = std::move(*engine_arguments), .environment = {}};
+  const secure_frontend::EngineCommand command{.executable = config.engine.executable,
+                                               .arguments = std::move(*engine_arguments), .environment = {}};
   if (engine.start(command).has_value()) { std::cerr << "Unable to start local engine.\n"; return EXIT_FAILURE; }
-  const auto protocol_flavor = options.profile == secure_frontend::NativeChatProfile::glm53
-      ? secure_frontend::EngineProtocolFlavor::lighttransport_glm53
-      : secure_frontend::EngineProtocolFlavor::strata_0143;
+  const auto protocol_flavor = glm ? secure_frontend::EngineProtocolFlavor::lighttransport_glm53
+                                   : secure_frontend::EngineProtocolFlavor::strata_0143;
   secure_frontend::EngineProtocolClient protocol(engine, {}, protocol_flavor);
-  secure_frontend::ChatExecutionService chat(protocol, {}, options.profile);
+  const auto chat_profile = glm ? secure_frontend::NativeChatProfile::glm53 : secure_frontend::NativeChatProfile::qwen;
+  secure_frontend::ChatExecutionService chat(protocol, {}, chat_profile);
 
-  const std::string authority = host_header(*config);
+  const std::string authority = host_header(listener);
   secure_frontend::HttpPolicy policy{.allowed_hosts = {authority}, .same_origin_origins = {"http://" + authority},
                                      .cors_allowed_origins = {}, .cors_enabled = false};
-  // One snapshot of (child running, protocol state) per call.
   const auto engine_state = [&engine, &chat]() -> std::string_view {
     if (!engine.running()) return "failed";
     switch (chat.health()) {
@@ -297,33 +124,26 @@ int run(const Options& options) {
   };
   std::string_view health_snapshot{"failed"};
   const secure_frontend::ApiRouter router(
-      // Healthy unless failed. starting stays 200: READY is consumed lazily on
-      // the first chat request (eager READY is SP2), so 503 there would
-      // deadlock a readiness probe. The bool is derived from the same single
-      // snapshot as the reported state.
-      // The router calls the bool provider first and the state provider
-      // second, once each per /health request (api_router.hpp), and the
-      // listener is serial: the state reported is the snapshot just taken.
       [&engine_state, &health_snapshot] { health_snapshot = engine_state(); return health_snapshot != "failed"; },
-      [models] { return models; },
-      [&health_snapshot] { return health_snapshot; });
+      [models] { return models; }, [&health_snapshot] { return health_snapshot; });
   auto server = secure_frontend::HttpSocketServer::bind(
-      *config, std::move(policy), [verifier](const std::string_view supplied) { return verifier->matches(supplied); },
-      [&router, &chat, &engine, &tokenizer, &options](const std::string_view method, const std::string_view target,
-                                                        const std::string_view body) {
+      listener, std::move(policy), [verifier](const std::string_view supplied) { return verifier->matches(supplied); },
+      [&router, &chat, &engine, &tokenizer, &model_id](const std::string_view method, const std::string_view target,
+                                                       const std::string_view body) {
         if (method == "GET") return router.dispatch(method, target);
         if (method != "POST" || target != "/v1/chat/completions") return json_error(404, "Not Found");
         if (!engine.running()) return json_error(503, "Service Unavailable");
         const auto request = secure_frontend::parse_chat_completion_request(body);
-        if (!request || request->model != *options.model_id) return json_error(400, "Bad Request");
+        if (!request || request->model != model_id) return json_error(400, "Bad Request");
         const auto result = chat.execute(*request, *tokenizer);
         const auto* completion = std::get_if<secure_frontend::ChatExecutionResult>(&result);
         if (completion == nullptr) return json_error(503, "Service Unavailable");
         const auto response = secure_frontend::render_chat_completion_response(*request, completion->text);
         if (!response) return json_error(503, "Service Unavailable");
-        return secure_frontend::HttpResponse{.status = 200,
-                                              .headers = {{"Content-Type", "application/json; charset=utf-8"}, {"Cache-Control", "no-store"}},
-                                              .body = *response};
+        return secure_frontend::HttpResponse{
+            .status = 200,
+            .headers = {{"Content-Type", "application/json; charset=utf-8"}, {"Cache-Control", "no-store"}},
+            .body = *response};
       },
       nullptr);
   if (!server) { std::cerr << "Unable to bind secure listener.\n"; return EXIT_FAILURE; }
@@ -335,7 +155,6 @@ int run(const Options& options) {
       std::cerr << "listener stopped: " << error << '\n';
       return EXIT_FAILURE;
     }
-    // Any other failure was one client's; keep serving.
   }
 }
 
@@ -343,14 +162,23 @@ int run(const Options& options) {
 
 int main(int argc, char* argv[]) {
   secure_frontend::install_process_defaults();
-  Options options;
-  bool help = false;
-  std::string error;
-  if (!parse_options(argc, argv, &options, &help, &error)) {
-    std::cerr << "Error: " << error << '\n';
-    usage(std::cerr);
+  const auto parsed = secure_frontend::parse_server_command_line(argc, argv);
+  if (const auto* error = std::get_if<secure_frontend::CliError>(&parsed)) {
+    std::cerr << "Error: " << error->message << "\nRun strata-secure-server --help for usage.\n";
     return EXIT_FAILURE;
   }
-  if (help) { usage(std::cout); return EXIT_SUCCESS; }
-  return run(options);
+  const auto& invocation = std::get<secure_frontend::ServerInvocation>(parsed);
+  if (invocation.command == secure_frontend::ServerCommand::help) {
+    std::cout << secure_frontend::server_usage();
+    return EXIT_SUCCESS;
+  }
+  std::vector<std::string> overridden;
+  const auto loaded = secure_frontend::load_server_config(invocation, &overridden);
+  if (const auto* issues = std::get_if<secure_frontend::ConfigErrors>(&loaded)) {
+    for (const auto& issue : *issues) std::cerr << "Configuration error: " << secure_frontend::format_issue(issue) << '\n';
+    return EXIT_FAILURE;
+  }
+  const auto config = std::get<secure_frontend::ValidatedConfig>(loaded).shared();
+  if (invocation.command == secure_frontend::ServerCommand::check) return check(*config, overridden);
+  return run(*config);
 }
