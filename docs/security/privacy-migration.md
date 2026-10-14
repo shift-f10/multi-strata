@@ -3,7 +3,7 @@
 ## Purpose
 
 This is a deliberately narrow inventory of known network-capable paths in the
-Strata `v0.1.43` baseline. It prevents the native frontend migration from
+Strata `v0.1.44.1` baseline. It prevents the native frontend migration from
 accidentally retaining an implicit outbound behavior. It is not an assertion
 that these paths are malicious: several are normal, user-visible installer or
 optional image/MCP features. They are incompatible with the secure release
@@ -31,6 +31,9 @@ from the server and its HTTP API.
 | `upstream/serve/mcp.py` | Can contact configured MCP HTTP endpoints and launch tool servers. | Exclude from default native build. MCP, tools, and plugins remain disabled. |
 | `upstream/serve/telemetry.py`, `upstream/serve/prometheus.py` | Local hardware/request monitoring and metrics surfaces. | These are not evidence of outbound analytics, but the native release must make local metrics opt-in, token-protected, and documented. |
 | `upstream/serve/web/` | Browser UI includes static external links. | Do not ship a web UI in the initial native boundary; if reintroduced, use only bundled assets and no third-party runtime resources. |
+| `upstream/setup.sh` (macOS branch, since `v0.1.44`) | Downloads a standalone Python from `github.com/astral-sh/python-build-standalone` (SHA-256 pinned). | Same as `START-HERE.bat`: not used in secure packaging. |
+| `upstream/metal/setup_mac.py` (new in `v0.1.44`, run by `setup.py` on macOS) | Downloads Apple's metal-cpp zip, model shards and the vision mmproj; builds the engine. | Same as `setup.py`. macOS is not a target of this project. |
+| Image generation (`upstream/tools/image/`, `upstream/serve/images.py`, `setup.py --images`, new in `v0.1.44`) | Setup downloads stable-diffusion.cpp/ggml zips (GitHub), the LunarG Vulkan SDK and image models (Hugging Face); the server adds `POST /v1/images/generations` and `GET /v1/images/files/<id>` and runs a local `sd-cli` subprocess when the config has an `images` section. | Exclude from the native build; no image generation in the first secure release. |
 
 ## Verification work required before release
 
@@ -49,7 +52,7 @@ from the server and its HTTP API.
 ## Evidence baseline
 
 The current inventory was derived from direct source review on 2026-10-11
-Pacific time. Representative network-capable references include
+Pacific time and re-reviewed against `v0.1.44.1` on 2026-10-14 (three rows added). Representative network-capable references include
 `upstream/START-HERE.bat`, `upstream/setup.py`, `upstream/UPDATE.bat`, `upstream/update.sh`, `upstream/serve/server.py`, and
 `upstream/serve/mcp.py` (the baseline is the `upstream/` submodule). Future agents must update this inventory when adding or
 removing a network-capable code path.

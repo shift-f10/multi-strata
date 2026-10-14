@@ -90,8 +90,8 @@ defaults `CMAKE_BUILD_TYPE` to `Release` before upstream sees it and declares
 `SECURE_FRONTEND_WERROR=ON`, so `-DSTRATA_WERROR=OFF` does not drop the
 frontend's `-Werror`. `-DSECURE_STRATA_BUILD_ENGINE=OFF` builds only the
 frontend and works with an empty `upstream/`. From clean: 94 Ninja steps, 0
-warnings, `ctest` 20/20 (the frontend's tests; upstream registers none at
-`v0.1.43` because `STRATA_BUILD_TESTS` is `OFF`).
+warnings, `ctest` 111/111 at `v0.1.44.1` (the frontend's tests; upstream registers none at
+`v0.1.44.1` because `STRATA_BUILD_TESTS` is `OFF`).
 
 ## Python tests
 
@@ -103,81 +103,26 @@ Upstream's own suites run only after a submodule bump ("Updating upstream").
 
 ## Updating upstream
 
-The order and the exact commands are in `docs/PROVENANCE.md`, "Updating the
-baseline" (the single source of truth); in short:
-
-1. `git -C upstream fetch --tags origin`, then
-   `git -C upstream checkout --detach <tag>`.
-2. Run the gates, each with its working directory:
-
-       pytest -q                                   # repo root
-       ( cd secure_frontend && cmake --preset linux-gcc && cmake --build --preset linux-gcc \
-         && ctest --preset linux-gcc )             # subshell: the shell stays at the repo root
-       # in secure_frontend/: the windows-llvm-mingw-cross build (and wine ctest), above
-       cmake -S . -B out/root -G Ninja && cmake --build out/root \
-         && ctest --test-dir out/root && test ! -e out/root/_deps   # repo root, fresh dir
-
-   Then upstream's own suites in a separate venv (upstream's pins win there).
-   `python3 -m venv` may lack `ensurepip`, so create it without pip and fill
-   it with the dev venv's pip (repo root):
-
-       python3 -m venv --without-pip out/venv-upstream
-       .venv-dev/bin/pip --python out/venv-upstream/bin/python install \
-         -r scripts/dev/requirements-dev.txt -r upstream/requirements.txt
-
-   and run them **from `upstream/`** (four `tools/` tests resolve `tools/...`
-   against the working directory; our root `pytest.ini` stays the rootdir, so
-   the `--deselect` ids keep the `upstream/tools/` prefix):
-
-       ( cd upstream && ../out/venv-upstream/bin/pytest -q tools \
-         --ignore=tools/test_iq_pack.py \
-         --ignore=tools/test_setup_engine_hash.py \
-         --deselect upstream/tools/test_setup_choices.py::HipVision::test_the_cpu_encoder_is_built_once \
-         --deselect upstream/tools/test_setup_choices.py::HipVision::test_without_images_nothing_changes \
-         --deselect upstream/tools/test_setup_choices.py::CudaVision::test_the_encoder_is_built_native \
-         && ../out/venv-upstream/bin/pytest -q serve )   # about 4.5 minutes; subshell keeps the cwd
-
-   At `v0.1.43`: `616 passed, 2 skipped, 3 deselected` and `695 passed, 11
-   skipped`. The two ignores need llama.cpp's `gguf` module and GitHub
-   respectively; the three deselects are recorded upstream drift against its
-   `setup.py`. Drop an exclusion once the new tag no longer needs it.
-
-   Re-audit upstream's top-level CMake assumptions (layout spec §3 table):
-   new `FetchContent`, option defaults, a `tests/CMakeLists.txt` that would
-   flip `STRATA_BUILD_TESTS`. Re-check the SP5 pass-through table against the
-   new engine's flags and protocol, and the upstream internals
-   `tools/secure/secure_tokenizer.py` relies on (listed in its module
-   docstring: `Tokenizer._re`, the `__init__` argument order, the `extract()`
-   output path `tokenizer/tokenizer.json`, which `extract()` now refuses to
-   create if upstream did not write it).
-3. `git -C upstream status --porcelain` is empty and `git submodule status`
-   shows no `-`/`U` (`+` is expected until the pointer is staged).
-4. Update `docs/PROVENANCE.md` "Baseline", then run
-   `git grep -n '<old tag>\|<old short sha>' -- ':!docs/superpowers' ':!upstream'`
-   and update every current-pin hit; leave verification history (rows that
-   record what was verified at an older pin) untouched. The authoritative
-   list of pin sites is `docs/PROVENANCE.md` step 4.
-5. `git add upstream docs/PROVENANCE.md` plus every file touched in step 4;
-   one commit: `upstream: bump to <tag>`.
+The runbook (gates at the old pin, bump, gates incl. upstream's own suites with their recorded exclusions and expected counts, pin sites, one commit) lives only in [`PROVENANCE.md`](PROVENANCE.md), "Updating the baseline".
 
 ## Offline checkout
 
 An offline box cannot fetch the submodule. The offline kit carries a git bundle
 of the pinned upstream commit next to the bundle of our repository:
 
-    git -C upstream bundle create ../out/upstream-v0.1.43-7695859a.bundle v0.1.43
-    git bundle verify out/upstream-v0.1.43-7695859a.bundle
+    git -C upstream bundle create ../out/upstream-v0.1.44.1-296b59d2.bundle v0.1.44.1
+    git bundle verify out/upstream-v0.1.44.1-296b59d2.bundle
 
 On the offline box, after cloning our repository from its bundle:
 
     git submodule init
-    git config submodule.upstream.url /path/to/upstream-v0.1.43-7695859a.bundle
+    git config submodule.upstream.url /path/to/upstream-v0.1.44.1-296b59d2.bundle
     git -c protocol.file.allow=always submodule update
-    git submodule status   # 7695859aa13afb248bdb4d36f9b2e95707db079d upstream (v0.1.43)
+    git submodule status   # 296b59d2f73c8f04a805df29c2fa97655adace78 upstream (v0.1.44.1)
 
-The bundle holds tag `v0.1.43` (tag object
-`16374b3e6dfe452a163c3a961ae5faa3b4aec84b`, commit
-`7695859aa13afb248bdb4d36f9b2e95707db079d`).
+The bundle holds tag `v0.1.44.1` (tag object
+`9791ea335ba2001c87b5f783146d6eb08fdd9e5e`, commit
+`296b59d2f73c8f04a805df29c2fa97655adace78`).
 
 ## Workflow
 

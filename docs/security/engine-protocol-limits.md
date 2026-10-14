@@ -1,6 +1,8 @@
-# Engine protocol limits (Strata v0.1.43, `upstream/src/program/generate.cpp`)
+# Engine protocol limits (Strata v0.1.44.1, `upstream/src/program/generate.cpp`)
 
-Facts the frontend relies on; verified against the engine source on 2026-10-13.
+Facts the frontend relies on; verified against the engine source on 2026-10-13
+(`v0.1.43`) and re-verified for `v0.1.44.1` on 2026-10-14: every row below holds
+for `generate.cpp` unchanged. The last two rows are new at `v0.1.44.1`.
 
 | Fact | Engine behavior | Frontend consequence |
 | --- | --- | --- |
@@ -15,3 +17,5 @@ Facts the frontend relies on; verified against the engine source on 2026-10-13.
 | Network | None in the engine; no host/port/bind/http flags | Deny-list covers only frontend-owned flags |
 | Unsupported modes | `--batch` and its alias `--slots` (BT/BDONE), `--vision` (GENI) | Rejected in `--engine-arg` until the frontend implements their protocol |
 | Windows stdin writes | Engine reads stdin with blocking `getline` | The stdin pipe buffer is requested at kMaxWriteLineBytes + 4096 so one GEN record should not block; Win32 treats the size as advisory, and only the `windows-msys2-clang` CI job can confirm it; overlapped writes are SP2 work |
+| `qwen35moe` family switch (new at `v0.1.44.1`, CUDA/HIP builds only) | When the GGUF named by `--native`/`--model` declares `general.architecture = qwen35moe`, `main` hands the whole argv to a separate engine (`upstream/src/qwen35/q36_engine.cu`, `strata::qwen35::run`) before normal parsing. Its serve loop differs: context rule `n + max_new > ctx` (no `+ 8`), only `GEN` (no `GENI`/batch), no `nonfinite` finish, no `QUIT` handling (exits on stdin EOF), no `--pack`, and unknown `--flags` are skipped instead of fatal | Our `+ 8` check is stricter, so still safe. Not yet modeled: the frontend must not assume a `qwen35moe` model behaves as above (QUIT alone does not end it; deny-listed flags would be ignored rather than rejected by the engine). Open until SP5 |
+| `strata_kq` shared library (new at `v0.1.44.1`, CUDA builds only) | With `STRATA_MMQ_KQ=1` (set by default by the `qwen35moe` path unless already set) the engine opens `strata_kq.dll` / `libstrata_kq.so` by full path from its own executable's folder (`LoadLibraryA` / `dlopen`, `upstream/src/prefill/mmq_kq_loader.cpp`); missing file falls back to FP16. Its own DLL dependencies use the default Windows search order | Packaging/inventory must ship or exclude it explicitly and verify it like the engine binary; the engine folder must not be writable by the service user |

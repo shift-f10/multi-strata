@@ -4,7 +4,7 @@
 
 This repository is a Windows-and-Linux, security- and privacy-first successor
 to Strata. It must retain the model/backend flexibility of upstream Strata
-`v0.1.43` while replacing its public service boundary with a small portable
+`v0.1.44.1` while replacing its public service boundary with a small portable
 native frontend. UnbiasedStrata is a security-design reference, not a direct
 code base.
 
@@ -52,7 +52,7 @@ without asking the owner.
    lands in SP1 and SP7.
 6. **Upstream-trackability.** Upstream Strata is the git submodule `upstream/`
    (`https://github.com/Niko1221/Strata.git`), pinned by its gitlink at
-   `7695859aa13afb248bdb4d36f9b2e95707db079d` (tag `v0.1.43`) and never
+   `296b59d2f73c8f04a805df29c2fa97655adace78` (tag `v0.1.44.1`) and never
    edited, inside or outside the submodule. The repository root holds only our
    code; our additions to upstream behavior are wrappers that import upstream
    (`tools/secure/secure_tokenizer.py`). The upstream Python service stays in
@@ -64,7 +64,7 @@ without asking the owner.
    `tools/secure/` with no ignores or deselects. Upstream's own suites
    (`pytest upstream/tools` with its recorded exclusions, `pytest
    upstream/serve`) run explicitly after each submodule bump; the exact
-   commands are in "Update upstream" below.
+   commands are in [`PROVENANCE.md`](PROVENANCE.md), "Updating the baseline".
 8. **Pre-push hook.** The owner's pre-push hook runs `pytest -q`. With
    `pytest.ini` it collects `tools/secure/` only (13 tests). `conftest.py`
    stops the run with "run `git submodule update --init`" when `upstream/` is
@@ -79,7 +79,7 @@ without asking the owner.
 ## Current baseline
 
 - Upstream baseline: the `upstream` submodule gitlink, `Niko1221/Strata` tag
-  `v0.1.43`, commit `7695859aa13afb248bdb4d36f9b2e95707db079d`
+  `v0.1.44.1`, commit `296b59d2f73c8f04a805df29c2fa97655adace78`
   (`git submodule status`).
 - Git remotes: `origin` is the owner's repository. Only the owner pushes. The
   older `upstream` remote of this repository is no longer used for tracking;
@@ -108,7 +108,7 @@ without asking the owner.
 Upstream Strata is the git submodule `upstream/`; the repository root holds
 only our code. Deleting `upstream/` leaves exactly our code.
 
-| Ours, at the root | Pristine, under `upstream/` (submodule @ `7695859a`, tag `v0.1.43`) |
+| Ours, at the root | Pristine, under `upstream/` (submodule @ `296b59d2`, tag `v0.1.44.1`) |
 | --- | --- |
 | `CMakeLists.txt` (builds `secure_frontend/` and, by default, the engine from `upstream/`) | `upstream/CMakeLists.txt`, `upstream/src/`, `upstream/include/`, `upstream/cmake/`, `upstream/third_party/`, `upstream/sycl/` |
 | `secure_frontend/` (own `CMakePresets.json`; builds without `upstream/`) | `upstream/serve/`, `upstream/setup.py`, `upstream/setup.sh`, `upstream/requirements.txt`, `upstream/chat.py`, the launchers |
@@ -131,47 +131,47 @@ Ninja && cmake --build out/root && ctest --test-dir out/root`.
 
 ### Update upstream
 
-The order matches [`PROVENANCE.md`](PROVENANCE.md), "Updating the baseline"
-(the single source of truth; the exact commands are there).
-
-1. `git -C upstream fetch --tags origin`, then `git -C upstream checkout
-   --detach <tag>`.
-2. Gates, each with its working directory: `pytest -q` (repo root);
-   `ctest --preset linux-gcc` (in `secure_frontend/`) and the
-   `windows-llvm-mingw-cross` build and wine `ctest` (in `secure_frontend/`);
-   the root configure, build and `ctest` from a fresh build directory (repo
-   root), plus `test ! -e out/root/_deps`. Then upstream's own suites in a
-   separate venv created with `python3 -m venv --without-pip
-   out/venv-upstream` and filled with `.venv-dev/bin/pip --python
-   out/venv-upstream/bin/python install -r scripts/dev/requirements-dev.txt -r
-   upstream/requirements.txt`, run **from `upstream/`**: `cd upstream &&
-   ../out/venv-upstream/bin/pytest -q tools
-   --ignore=tools/test_iq_pack.py --ignore=tools/test_setup_engine_hash.py`
-   with `--deselect upstream/tools/test_setup_choices.py::…` for the three
-   recorded drift cases (the ids keep the `upstream/tools/` prefix because our
-   root `pytest.ini` stays the rootdir), `&& ../out/venv-upstream/bin/pytest -q
-   serve`. At `v0.1.43`: 616 passed / 2 skipped / 3 deselected, and 695
-   passed. Re-audit upstream's top-level CMake assumptions (layout spec §3
-   table): new `FetchContent`, option defaults, a `tests/CMakeLists.txt` that
-   would flip `STRATA_BUILD_TESTS`. Re-check the SP5 pass-through table
-   against the new engine's flags and protocol, and the upstream internals
-   `tools/secure/secure_tokenizer.py` relies on (listed in its module
-   docstring).
-3. `git -C upstream status --porcelain` is empty and `git submodule status`
-   is clean (no `-`/`U`; `+` is expected until the pointer is staged).
-4. Update `PROVENANCE.md` "Baseline", then run `git grep -n '<old tag>\|<old
-   short sha>' -- ':!docs/superpowers' ':!upstream'` and update every hit.
-   Known pin sites: `README.md` (revision column and the pinned
-   `github.com/Niko1221/Strata/blob/<tag>/…` links),
-   `.github/workflows/secure-frontend.yml` (header comment), this file (owner
-   decision 6, the "Repository layout" table header, "Current baseline"),
-   `secure-frontend-ci.md` (the "Root build" note and the offline-bundle
-   commands), `PROVENANCE.md` (the `[strata]` reference and the pinned
-   license links), and the `docs/security/` pages that name the version.
-5. `git add upstream docs/PROVENANCE.md` plus every file touched in step 4;
-   one commit: `upstream: bump to <tag>`.
+Follow [`PROVENANCE.md`](PROVENANCE.md), "Updating the baseline" (the only copy of the runbook: gates at the old pin, bump, gates, pin sites, one commit).
 
 ## What has changed
+
+### Upstream bump to `v0.1.44.1` (2026-10-14, branch `upstream/bump-v0.1.44.1`)
+
+`7695859a` (`v0.1.43`) → `296b59d2` (`v0.1.44.1`), 315 commits. Gates old →
+new: `pytest -q` 13 → 13; `secure_frontend` linux-gcc 111/111 → 111/111;
+`windows-llvm-mingw-cross` (-Werror, wine) 102/102 → 102/102; root build
+94/94 steps, 0 warnings, ctest 111/111, no `_deps` → identical (same engine
+targets); upstream `tools` 616/2/3 → 760/2/5 (two `test_setup_golden.py`
+deselects added: upstream `12be1059` recorded `strata-vision.exe` on
+Windows); upstream `serve` 695/11 → 774/11. CMake: no new FetchContent, no
+`tests/CMakeLists.txt`, ggml/llama.cpp pin unchanged (`3cf03257`);
+`STRATA_NATIVE_EXPERTS` moved up to L107 (our seed still wins);
+`STRATA_MMQ_KQUANTS` and `STRATA_Q6K_EXPERTS` now default ON (CUDA/HIP only).
+`strata_tokenizer.py` byte-identical. Main engine CLI/protocol: additive only
+(`--prefill-head-alias`, `--families`, new ERR texts, GENI `img_keys=`), no
+network code. Upstream changes that matter to the frontend:
+
+- `qwen35moe` family switch (CUDA/HIP builds): such a GGUF runs a separate
+  serve loop (`upstream/src/qwen35/q36_engine.cu`) — QUIT ignored (exits on
+  stdin EOF), unknown flags skipped instead of fatal, no `--pack`, no
+  `nonfinite`, context rule without the `+ 8` margin (our stricter check keeps
+  us safe). See [`security/engine-protocol-limits.md`](security/engine-protocol-limits.md).
+- Runtime-loaded `strata_kq` library (`strata_kq.dll` / `libstrata_kq.so`
+  from the engine's folder when `STRATA_MMQ_KQ=1`, forced on by the qwen35
+  path): a DLL search-order and packaging question for GPU builds.
+- New family check: the engine refuses any `general.architecture` other than
+  `qwen4exp` / `qwen35moe` — affects the SP6 GLM port.
+- Open item for the controller (pre-existing since `v0.1.43`, not fixed here):
+  the engine emits `PP <done> <total> <ms> <tok/s>` during batched prompt
+  reads, and `engine_protocol_client.cpp` rejects `PP` outside the GLM
+  profile, so such a Strata-profile request would fail. Not observed at run
+  time (no GPU).
+
+The runbook in `PROVENANCE.md` was corrected on its first real run (gates at
+the old pin first, per-run `out/<name>-<L>` dirs, rule for new upstream test
+failures, tag object and CMake line numbers in the pin sweep, history rows
+left alone, `docs/security` facts re-checked) and is now the only copy.
+
 
 ### Submodule layout (branch `layout/upstream-submodule`)
 
