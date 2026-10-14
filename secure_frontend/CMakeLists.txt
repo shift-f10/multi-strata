@@ -473,18 +473,23 @@ if(WIN32)
 endif()
 secure_frontend_set_warnings(secure_frontend_acquire)
 
-# SP4 Task 25 (spec §3.1-§3.3): the confined system curl. Linked only by
+# SP4 Tasks 25/26 (spec §3.1-§3.3): the confined system curl. Linked only by
 # secure_frontend_strata_cli and tests; strata-secure-server never links it (§7.1).
-# POSIX-only until Task 26 adds the Windows source (the cross build does not build it).
-if(NOT WIN32)
-    add_library(secure_frontend_downloader src/downloader_common.cpp src/downloader_posix.cpp)
-    target_compile_features(secure_frontend_downloader PUBLIC cxx_std_20)
-    target_include_directories(secure_frontend_downloader PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+add_library(secure_frontend_downloader src/downloader_common.cpp)
+target_compile_features(secure_frontend_downloader PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_downloader PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_link_libraries(secure_frontend_downloader PUBLIC secure_frontend_acquire)
+if(WIN32)
+    # Task 26: win_launch::launch_in_job lives in secure_frontend_engine_stdio_process (ruling B3).
+    target_sources(secure_frontend_downloader PRIVATE src/downloader_windows.cpp)
+    target_link_libraries(secure_frontend_downloader PUBLIC secure_frontend_engine_stdio_process advapi32)
+else()
+    target_sources(secure_frontend_downloader PRIVATE src/downloader_posix.cpp)
     # secure_frontend_engine_process provides EngineCommand for posix_launch::prepare.
-    target_link_libraries(secure_frontend_downloader PUBLIC secure_frontend_acquire secure_frontend_engine_process)
-    secure_frontend_set_warnings(secure_frontend_downloader)
+    target_link_libraries(secure_frontend_downloader PUBLIC secure_frontend_engine_process)
 endif()
+secure_frontend_set_warnings(secure_frontend_downloader)
 
 # SP4 §2.3 / ruling R-1: the engine version is the committed ../upstream.version
 # (one line, "v<x.y.z[.n]>"). When upstream/ has a reachable exact tag it must equal
@@ -1258,11 +1263,22 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     target_sources(secure_frontend_fetch_tests PRIVATE tests/fetch_pull_test.cpp)
     secure_frontend_add_cases(secure_frontend_fetch_tests dl03_wrong_digest_rejected_prior_version_intact
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
-    # SP4 Task 25 (spec §3.1-§3.3, §10.3): the confined downloader on Linux. The
-    # library is POSIX-only until Task 26 adds the Windows source.
-    if(NOT WIN32)
+    # SP4 Tasks 25/26 (spec §3.1-§3.3, §10.3): the confined downloader on Linux and Windows.
+    target_link_libraries(secure_frontend_fetch_tests PRIVATE secure_frontend_downloader)
+    if(WIN32)
+        # Task 26 (spec §3.2 Windows column). Ruling I11: two unconditional cases, the two
+        # record-reading cases hooks-only. All windows-runtime: MSYS2 CI is authoritative.
+        target_sources(secure_frontend_fetch_tests PRIVATE tests/fetch_spawn_windows_test.cpp)
+        secure_frontend_add_cases(secure_frontend_fetch_tests downloader_transfer_through_job_windows
+            dl03_default_windows_curl_path_accepted_windows ARGS $<TARGET_FILE:secure_frontend_fake_curl>
+            LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+        if(SECURE_FRONTEND_TEST_HOOKS)
+            secure_frontend_add_cases(secure_frontend_fetch_tests dl03_downloader_runs_at_low_integrity_windows
+                priv04_downloader_env_is_systemroot_only_windows ARGS $<TARGET_FILE:secure_frontend_fake_curl>
+                LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+        endif()
+    else()
         target_sources(secure_frontend_fetch_tests PRIVATE tests/fetch_spawn_test.cpp)
-        target_link_libraries(secure_frontend_fetch_tests PRIVATE secure_frontend_downloader)
         secure_frontend_add_cases(secure_frontend_fetch_tests downloader_spawn_report_classified)
         # Record-channel and hook-switch cases (plan Global Constraints).
         if(SECURE_FRONTEND_TEST_HOOKS)

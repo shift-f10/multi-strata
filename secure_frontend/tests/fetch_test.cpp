@@ -624,5 +624,13 @@ int main(int argc, char** argv) {
       {"confinement_reduced_is_announced_without_landlock", fetch_cases::confinement_reduced_is_announced_without_landlock},
 #endif
 #endif
+#if defined(_WIN32)
+      {"downloader_transfer_through_job_windows", fetch_cases::downloader_transfer_through_job_windows},
+      {"dl03_default_windows_curl_path_accepted_windows", fetch_cases::dl03_default_windows_curl_path_accepted_windows},
+#if defined(SECURE_FRONTEND_TEST_HOOKS)
+      {"dl03_downloader_runs_at_low_integrity_windows", fetch_cases::dl03_downloader_runs_at_low_integrity_windows},
+      {"priv04_downloader_env_is_systemroot_only_windows", fetch_cases::priv04_downloader_env_is_systemroot_only_windows},
+#endif
+#endif
   }, secure_frontend_test::failures);
 }
