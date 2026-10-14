@@ -12,6 +12,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -213,6 +214,56 @@ void serve_requires_state_root() {
   expect(!std::filesystem::exists(marker), "no engine was spawned");
 }
 
+// Task 29: each SP2 option sets exactly one SP1 schema key (a regression pin
+// for the rows Tasks 18, 19 and 26 landed).
+void cli_sp2_flags_map_to_schema_keys() {
+  const char* argv[] = {"strata-secure-server", "--state-dir", "/srv/state", "--engine-lib-dir", "/opt/a",
+                        "--engine-lib-dir", "/opt/b", "--gpu", "0,1", "--allow-new-privileges"};
+  const auto parsed = secure_frontend::parse_server_command_line(static_cast<int>(std::size(argv)), argv);
+  const auto* invocation = std::get_if<secure_frontend::ServerInvocation>(&parsed);
+  expect(invocation != nullptr, "the SP2 options parse");
+  if (invocation == nullptr) return;
+  const auto& entries = invocation->flags.entries;
+  const auto text = [&entries](const std::string_view key) {
+    const auto found = entries.find(key);
+    return found != entries.end() && std::holds_alternative<std::string>(found->second.value) ? std::get<std::string>(found->second.value)
+                                                                                              : std::string{"<missing>"};
+  };
+  expect(text("roots.state") == "/srv/state", "--state-dir sets roots.state");
+  expect(text("engine.gpu") == "0,1", "--gpu sets engine.gpu");
+  const auto libs = entries.find("engine.lib_dirs");
+  expect(libs != entries.end() && std::holds_alternative<std::vector<std::string>>(libs->second.value) &&
+             std::get<std::vector<std::string>>(libs->second.value) == std::vector<std::string>{"/opt/a", "/opt/b"},
+         "--engine-lib-dir appends to engine.lib_dirs");
+  const auto nnp = entries.find("engine.allow_new_privileges");
+  expect(nnp != entries.end() && std::holds_alternative<bool>(nnp->second.value) && std::get<bool>(nnp->second.value),
+         "--allow-new-privileges sets engine.allow_new_privileges");
+  for (const char* key : {"roots.state", "engine.lib_dirs", "engine.gpu", "engine.allow_new_privileges"}) {
+    expect(secure_frontend::find_config_key(key) != nullptr, std::string("schema key ") + key);
+  }
+  // Issues (key_path, code) that load_server_config reports for a flag-only invocation.
+  const auto issues_for = [](const std::vector<const char*>& arguments) {
+    const auto bad_parsed = secure_frontend::parse_server_command_line(static_cast<int>(arguments.size()), arguments.data());
+    const auto* bad_invocation = std::get_if<secure_frontend::ServerInvocation>(&bad_parsed);
+    const auto validated = bad_invocation != nullptr ? secure_frontend::load_server_config(*bad_invocation, nullptr)
+                                                     : secure_frontend::ConfigValidationResult{secure_frontend::ConfigErrors{}};
+    const auto* errors = std::get_if<secure_frontend::ConfigErrors>(&validated);
+    return errors != nullptr ? *errors : secure_frontend::ConfigErrors{};
+  };
+  bool gpu_issue = false;
+  for (const auto& issue : issues_for({"strata-secure-server", "--gpu", "0,0"})) {
+    gpu_issue = gpu_issue || (issue.key_path == "engine.gpu" && issue.reason.find("0,0") == std::string::npos);
+  }
+  expect(gpu_issue, "a malformed engine.gpu is a validation issue that never echoes the value");
+  // The production refusal path for GPUs under the GLM profile (spec §3.9).
+  bool glm_conflict = false;
+  for (const auto& issue : issues_for({"strata-secure-server", "--profile", "glm53", "--gpu", "0"})) {
+    glm_conflict = glm_conflict || (issue.key_path == "engine.gpu" &&
+                                    issue.code == secure_frontend::ConfigIssueCode::conflicting_values);
+  }
+  expect(glm_conflict, "engine.gpu with engine.profile glm53 is an engine.gpu conflicting_values issue");
+}
+
 void auth04_empty_token_rejected_on_loopback() {
   ServerFixture f;
   const auto marker = f.dir / "engine-started";
@@ -327,5 +378,6 @@ int main(int argc, char** argv) {
       {"auth04_empty_token_rejected_on_loopback", auth04_empty_token_rejected_on_loopback},
       {"auth04_no_switch_disables_auth", auth04_no_switch_disables_auth},
       {"serve_requires_state_root", serve_requires_state_root},
+      {"cli_sp2_flags_map_to_schema_keys", cli_sp2_flags_map_to_schema_keys},
   }, failures);
 }

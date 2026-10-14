@@ -879,6 +879,17 @@ void proc06_refuses_privileged_start() {
 #endif
 }
 
+// Task 29 Step 5a: the CUDA cache follows roots.cache when it is set.
+void engine_environment_uses_cache_root_when_set() {
+  const std::filesystem::path state{"/srv/state"};
+  const auto plain = secure_frontend::engine_environment_for(state, std::nullopt, {"/opt/engine"});
+  expect(plain.cuda_cache_dir == state / "cache" / "cuda", "without roots.cache the CUDA cache stays below the state dir");
+  expect(plain.temp_dir == state / "engine-tmp", "the per-generation temp root is <state>/engine-tmp");
+  expect(plain.lib_dirs == std::vector<std::filesystem::path>{"/opt/engine"}, "lib dirs pass through");
+  const auto cached = secure_frontend::engine_environment_for(state, std::filesystem::path{"/var/cache/strata"}, {});
+  expect(cached.cuda_cache_dir == std::filesystem::path{"/var/cache/strata"} / "cuda", "roots.cache holds the CUDA cache when set");
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -902,6 +913,7 @@ int main(int argc, char* argv[]) {
                                                 {"supervisor_shutdown_sends_eof_first_then_kills", supervisor_shutdown_sends_eof_first_then_kills},
                                                 {"supervisor_lease_outliving_shutdown_is_safe", supervisor_lease_outliving_shutdown_is_safe},
                                                 {"proc06_refuses_privileged_start", proc06_refuses_privileged_start},
+                                                {"engine_environment_uses_cache_root_when_set", engine_environment_uses_cache_root_when_set},
                                                 {"proc02_child_env_is_exact_allowlist", proc02_child_env_is_exact_allowlist},
 #if !defined(_WIN32)
                                                 {"shutdown_signal_preserves_errno", shutdown_signal_preserves_errno},

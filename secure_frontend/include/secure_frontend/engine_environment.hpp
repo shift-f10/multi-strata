@@ -46,6 +46,11 @@ inline constexpr std::array<std::string_view, 16> kNeverForwardedEnvironment{
 [[nodiscard]] WindowsSystemValues query_windows_system_values();
 // The native rendering (POSIX or Windows).
 [[nodiscard]] EnvironmentBlock render_engine_environment(const EngineEnvironment& environment);
+// The engine environment for a validated config: temp root <state>/engine-tmp,
+// CUDA cache <cache root>/cuda when roots.cache is set, else <state>/cache/cuda.
+[[nodiscard]] EngineEnvironment engine_environment_for(const std::filesystem::path& state_dir,
+                                                       const std::optional<std::filesystem::path>& cache_root,
+                                                       std::vector<std::filesystem::path> lib_dirs);
 
 // POSIX: creates `path` (and parents) and makes it 0700; true only if it is
 // then an owner-only directory. Windows: creates it (DACL checks are SP1's).

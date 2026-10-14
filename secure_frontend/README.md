@@ -244,7 +244,7 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `roots.tokenizer_pack` | string | required | - | `--tokenizer-pack` | Absolute directory with vocab.json, merges.txt, token_type.json. |
 | `roots.secret` | string | unset | - | `--secret-root` | Absolute directory holding the token file. Default: the config file's directory. |
 | `roots.logs` | string | unset | - | - | Absolute log directory (created 0700; unused in SP1). |
-| `roots.cache` | string | unset | - | - | Absolute cache directory (created 0700; unused in SP1). |
+| `roots.cache` | string | unset | - | - | Absolute cache directory (created 0700); when set, it holds the engine's CUDA cache in its cuda subdirectory. |
 | `roots.state` | string | unset | - | `--state-dir` | Absolute, existing owner-only directory for engine state: the engine's cwd, per-generation temp and (without roots.cache) the CUDA cache. Required to serve. |
 | `token.source` | string | `file:token` | - | `--token-file, --token-env` | file:<relative path below roots.secret> or env:<NAME>. Metadata only; the token is never in the config. |
 | `engine.profile` | string | `qwen` | - | `--profile` | qwen or glm53. |

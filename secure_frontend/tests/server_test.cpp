@@ -4,6 +4,7 @@
 #include "support/server_harness.hpp"
 #include "support/test_paths.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -11,6 +12,7 @@
 #include <iterator>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <utility>
@@ -78,6 +80,11 @@ void proc01_server_passes_literal_argv() {
                                             "--dump-file=" + test_support::utf8_path(dump_file), weird, "--max-context", "8192",
                                             "--gpu", "0,1", "--native", test_support::utf8_path(model)};
     expect(dump->argv == expected, "every value arrives literally as one argv entry, in order, with no shell");
+    // Spec §3.12: the server pins the engine's cwd to <state>/engine (the
+    // harness default --state-dir is <root>/state).
+    std::error_code error;
+    expect(std::filesystem::equivalent(dump->cwd, server->root() / "state" / "engine", error),
+           "the engine's working directory is <state>/engine");
   }
 #if !defined(_WIN32)
   expect(test_support::children_of(server->pid()).size() == 1U, "exactly one child process: no shell in between");
@@ -450,8 +457,6 @@ void proc06_nnp_startup_hint_names_nvidia_uvm_fix() {
 }
 #endif
 
-}  // namespace
-
 void ext01_extension_fields_spawn_nothing() {
   const auto dir = test_support::make_temp_dir("x1");
   const auto record = dir / "record.txt";
@@ -473,10 +478,18 @@ void ext01_extension_fields_spawn_nothing() {
     expect(response && response->status == 400 && response->body == test_support::kBadRequest,
            "refused with the fixed response: " + describe(response));
   }
-  std::ifstream recorded(record);
-  const std::string content((std::istreambuf_iterator<char>(recorded)), std::istreambuf_iterator<char>());
-  expect(content.find("GEN") == std::string::npos, "the engine received no GEN");
+  const auto recorded_text = [&record] {
+    std::ifstream recorded(record);
+    expect(recorded.is_open(), "the engine's record file exists (the fake truncates it at startup)");
+    return std::string((std::istreambuf_iterator<char>(recorded)), std::istreambuf_iterator<char>());
+  };
+  expect(recorded_text().find("GEN") == std::string::npos, "the engine received no GEN");
   expect(server->active_processes() == processes_before, "no process started or ended");
+  // Positive control: the record file does capture GEN for a valid chat, so
+  // the absence above is meaningful.
+  const auto valid = server->post_chat(test_support::kChatBody, 10s);
+  expect(valid && valid->status == 200, "a valid chat completes: " + describe(valid));
+  expect(recorded_text().find("GEN") != std::string::npos, "a valid chat is recorded as GEN");
 }
 
 void ext02_extension_env_never_reaches_child() {
@@ -492,6 +505,12 @@ void ext02_extension_env_never_reaches_child() {
   const auto dump = test_support::read_dump_file(dir / "dump.txt", 10s);
   expect(dump.has_value(), "the engine reported its environment");
   if (!dump) return;
+  // The dump is real: the frontend's own CUDA cache entry is present (the
+  // harness default --state-dir is <root>/state).
+  std::filesystem::path cuda_cache = server->root() / "state" / "cache" / "cuda";
+  cuda_cache.make_preferred();
+  expect(std::find(dump->env.begin(), dump->env.end(), "CUDA_CACHE_PATH=" + test_support::utf8_path(cuda_cache)) != dump->env.end(),
+         "the dumped environment holds the allowlisted CUDA_CACHE_PATH");
   for (const auto& entry : dump->env) {
     for (const std::string_view banned :
          {"STRATA_FOO=", "STRATA_ENABLE_MCP=", "LD_PRELOAD=", "CUDA_LAUNCH_BLOCKING=", "STRATA_HARNESS_TOKEN="}) {
@@ -502,22 +521,68 @@ void ext02_extension_env_never_reaches_child() {
 
 void ext02_rejected_before_spawn() {
   const auto dir = test_support::make_temp_dir("x2b");
-  const std::vector<std::pair<std::string, test_support::ServerOptions>> attempts{
-      {"--vision via --engine-arg", {.engine_args = {"--vision=/m.gguf"}, .extra_args = {}, .extra_env = {}, .engine = {}}},
-      {"--batch via --engine-arg", {.engine_args = {"--batch", "2"}, .extra_args = {}, .extra_env = {}, .engine = {}}},
-      {"--gpu via --engine-arg", {.engine_args = {"--gpu=0"}, .extra_args = {}, .extra_env = {}, .engine = {}}},
-      {"unknown option", {.engine_args = {}, .extra_args = {"--enable-mcp", "1"}, .extra_env = {}, .engine = {}}}};
+  // {name, options, the fixed stderr line naming what was rejected}
+  struct Attempt final {
+    std::string name;
+    test_support::ServerOptions options;
+    std::string_view message;
+  };
+  const std::vector<Attempt> attempts{
+      {"--vision via --engine-arg", {.engine_args = {"--vision=/m.gguf"}, .extra_args = {}, .extra_env = {}, .engine = {}},
+       "Configuration error: engine.args: engine mode is not supported by the frontend"},
+      {"--batch via --engine-arg", {.engine_args = {"--batch", "2"}, .extra_args = {}, .extra_env = {}, .engine = {}},
+       "Configuration error: engine.args: engine mode is not supported by the frontend"},
+      {"--gpu via --engine-arg", {.engine_args = {"--gpu=0"}, .extra_args = {}, .extra_env = {}, .engine = {}},
+       "Configuration error: engine.args: engine argument is owned by the frontend"},
+      {"unknown option", {.engine_args = {}, .extra_args = {"--enable-mcp", "1"}, .extra_env = {}, .engine = {}},
+       "Error: unknown option: --enable-mcp"}};
   int index = 0;
-  for (auto [name, options] : attempts) {
+  for (auto [name, options, message] : attempts) {
     const auto record = dir / ("record-" + std::to_string(index++) + ".txt");
     options.engine_args.push_back("--record-file=" + test_support::utf8_path(record));
     auto server = ServerProcess::start(options);
     expect(server != nullptr, name + ": launched");
     if (!server) continue;
     expect(server->wait_exit(10s) == 1, name + ": rejected at startup");
+    const std::string err = server->stderr_text();
+    expect(err.find(message) != std::string::npos, name + ": stderr names what was rejected: " + err);
     expect(!std::filesystem::exists(record), name + ": no engine was ever started");
   }
 }
+
+// Task 29 Step 5a: with roots.cache set (config file only; it has no flag),
+// the engine's CUDA cache is <roots.cache>/cuda and nothing is created at
+// <state>/cache.
+void engine_cuda_cache_follows_roots_cache() {
+  const auto dir = test_support::make_temp_dir("cc");
+  const auto cache = dir / "cache";
+  std::string cache_json;
+  for (const char c : test_support::utf8_path(cache)) {
+    if (c == '\\' || c == '"') cache_json.push_back('\\');
+    cache_json.push_back(c);
+  }
+  const auto config = dir / "config.json";
+  secure_frontend_test::write_file(config, "{\"schema_version\":1,\"roots\":{\"cache\":\"" + cache_json + "\"}}\n");
+  test_support::ServerOptions options;
+  options.engine_args = {"--dump-file=" + test_support::utf8_path(dir / "dump.txt")};
+  options.extra_args = {"--config", test_support::utf8_path(config)};
+  auto server = ServerProcess::start(options);
+  expect(server != nullptr, "the server starts");
+  if (!server) return;
+  const bool listening = server->wait_until_listening(10s);
+  expect(listening, "the server listens: " + server->stderr_text());
+  const auto dump = test_support::read_dump_file(dir / "dump.txt", 10s);
+  expect(dump.has_value(), "the engine reported its environment");
+  if (!dump) return;
+  std::filesystem::path cuda_cache = cache / "cuda";
+  cuda_cache.make_preferred();
+  expect(std::find(dump->env.begin(), dump->env.end(), "CUDA_CACHE_PATH=" + test_support::utf8_path(cuda_cache)) != dump->env.end(),
+         "CUDA_CACHE_PATH is <roots.cache>/cuda");
+  expect(std::filesystem::is_directory(cache / "cuda"), "the server created <roots.cache>/cuda");
+  expect(!std::filesystem::exists(server->root() / "state" / "cache"), "nothing is created at <state>/cache");
+}
+
+}  // namespace
 
 int main(int argc, char* argv[]) {
   return secure_frontend_test::run_cases(argc, argv,
@@ -533,6 +598,7 @@ int main(int argc, char* argv[]) {
                                              {"ext01_extension_fields_spawn_nothing", ext01_extension_fields_spawn_nothing},
                                              {"ext02_extension_env_never_reaches_child", ext02_extension_env_never_reaches_child},
                                              {"ext02_rejected_before_spawn", ext02_rejected_before_spawn},
+                                             {"engine_cuda_cache_follows_roots_cache", engine_cuda_cache_follows_roots_cache},
 #if !defined(_WIN32)
                                              {"proc05_frontend_sigkill_kills_engine", proc05_frontend_sigkill_kills_engine},
                                              {"proc05_frontend_sigterm_stops_all_descendants", proc05_frontend_sigterm_stops_all_descendants},

@@ -88,14 +88,20 @@ bool state_dir_is_usable(const FrontendConfig& config) {
   return true;
 }
 
-// Creates <state>/engine, engine-tmp and cache/cuda owner-only and clears
-// engine-tmp: no engine runs yet, so temp directories a previous frontend left
-// behind are stale.
-bool prepare_state_dir(const std::filesystem::path& state_dir) {
-  for (const auto& directory : {state_dir / "engine", state_dir / "engine-tmp", state_dir / "cache", state_dir / "cache" / "cuda"}) {
+// Creates <state>/engine, the temp root and the CUDA cache owner-only and
+// clears the temp root: no engine runs yet, so temp directories a previous
+// frontend left behind are stale. The CUDA cache is <roots.cache>/cuda when
+// roots.cache is set (create_runtime_roots() already created that root 0700),
+// else <state>/cache/cuda.
+bool prepare_state_dir(const std::filesystem::path& state_dir, const secure_frontend::EngineEnvironment& environment,
+                       const bool cache_below_state) {
+  std::vector<std::filesystem::path> directories{state_dir / "engine", environment.temp_dir};
+  if (cache_below_state) directories.push_back(state_dir / "cache");
+  directories.push_back(environment.cuda_cache_dir);
+  for (const auto& directory : directories) {
     if (!secure_frontend::create_owner_only_directory(directory)) return false;
   }
-  return secure_frontend::clear_directory_contents(state_dir / "engine-tmp");
+  return secure_frontend::clear_directory_contents(environment.temp_dir);
 }
 
 int run(const FrontendConfig& config) {
@@ -154,18 +160,18 @@ int run(const FrontendConfig& config) {
   // the validated config (limits.engine.ready_timeout_s drives the policy).
   secure_frontend::SupervisorConfig supervisor_config = secure_frontend::supervisor_config(config);
   const std::filesystem::path& state_dir = *config.roots.state;
-  if (!prepare_state_dir(state_dir)) {
-    std::cerr << "Unable to prepare --state-dir.\n";
-    return EXIT_FAILURE;
-  }
   std::vector<std::filesystem::path> lib_dirs = config.engine.lib_dirs;
   if (lib_dirs.empty()) lib_dirs.push_back(config.engine.executable.path().parent_path());
   secure_frontend::EngineLaunchPlan plan{.command = {.executable = config.engine.executable.path(),
                                                      .arguments = std::move(*engine_arguments), .environment = {}}};
   // Spec §3.9: the engine's whole environment, rendered per generation; nothing
   // is inherited from this server's environment.
-  plan.environment = secure_frontend::EngineEnvironment{
-      .lib_dirs = std::move(lib_dirs), .temp_dir = state_dir / "engine-tmp", .cuda_cache_dir = state_dir / "cache" / "cuda"};
+  auto environment = secure_frontend::engine_environment_for(state_dir, config.roots.cache, std::move(lib_dirs));
+  if (!prepare_state_dir(state_dir, environment, !config.roots.cache.has_value())) {
+    std::cerr << "Unable to prepare --state-dir.\n";
+    return EXIT_FAILURE;
+  }
+  plan.environment = std::move(environment);
   // Spec §3.12: the engine's cwd-relative files (`pack/full`, stall dumps)
   // land in <state_dir>/engine, created by prepare_state_dir() above.
   plan.command.working_directory = state_dir / "engine";

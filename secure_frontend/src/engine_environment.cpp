@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <system_error>
+#include <utility>
 
 #if defined(_WIN32)
 #include "secure_frontend/win32_prelude.hpp"
@@ -126,6 +127,15 @@ bool is_private_state_root(const std::filesystem::path& path) {
 #else
   return is_owner_only_directory(path);
 #endif
+}
+
+EngineEnvironment engine_environment_for(const std::filesystem::path& state_dir, const std::optional<std::filesystem::path>& cache_root,
+                                         std::vector<std::filesystem::path> lib_dirs) {
+  EngineEnvironment environment;
+  environment.lib_dirs = std::move(lib_dirs);
+  environment.temp_dir = state_dir / "engine-tmp";
+  environment.cuda_cache_dir = cache_root ? *cache_root / "cuda" : state_dir / "cache" / "cuda";
+  return environment;
 }
 
 bool create_owner_only_directory(const std::filesystem::path& path) {
