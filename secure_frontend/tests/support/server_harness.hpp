@@ -105,10 +105,19 @@ class ServerProcess final {
   [[nodiscard]] std::optional<int> wait_exit(std::chrono::milliseconds timeout);
   [[nodiscard]] bool port_refuses() const;
   [[nodiscard]] std::string stderr_text() const;
-  // POSIX: every descendant. Windows: every process in the harness Job except the server.
+  // POSIX: every descendant. Windows: every process in the harness Job except
+  // the server and the console hosts (see active_processes()).
   [[nodiscard]] std::vector<long> descendants() const;
-  // Windows: the harness Job's ActiveProcesses. POSIX: 1 + descendants() while the server lives, else 0.
+  // Windows: the processes in the harness Job, not counting console hosts
+  // (%SystemRoot%\System32\conhost.exe). Windows starts a conhost for the
+  // engine's own windowless console (CREATE_NO_WINDOW, spec §3.7 / C6), and it
+  // runs in the engine's Job tree, so the harness Job holds it too; it is the
+  // OS's console server, not a process the frontend or the engine spawned.
+  // POSIX: 1 + descendants() while the server lives, else 0.
   [[nodiscard]] unsigned long active_processes();
+  // Diagnostics for a failed count: every process in the harness Job as
+  // "pid:image" (console hosts included). POSIX: the descendants' pids.
+  [[nodiscard]] std::string describe_processes() const;
 
  private:
   ServerProcess() = default;

@@ -154,7 +154,7 @@ void proc04_health_leaves_ready_after_idle_engine_death() {
   expect(server != nullptr && server->wait_until_listening(10s) && server->wait_for_health(test_support::kHealthReady, 10s), "ready");
   if (!server) return;
   const auto engines = server->descendants();
-  expect(engines.size() == 1U, "exactly one engine process");
+  expect(engines.size() == 1U, "exactly one engine process, saw " + server->describe_processes());
   if (engines.size() != 1U) return;
   test_support::kill_process(engines.front());
   const auto killed = std::chrono::steady_clock::now();
@@ -442,7 +442,7 @@ void proc05_windows_ctrl_break_stops_all_descendants() {
   expect(server != nullptr && server->wait_until_listening(10s) && server->wait_for_health(test_support::kHealthReady, 10s), "ready");
   if (!server) return;
   expect(test_support::read_pidfile(dir / "grandchild.pid", 5s).has_value(), "grandchild started");
-  expect(server->active_processes() == 3U, "server, engine and grandchild are in the harness Job");
+  expect(server->active_processes() == 3U, "server, engine and grandchild are in the harness Job, saw " + server->describe_processes());
   server->stop(ServerProcess::Stop::ctrl_break);  // to the server's console group only
   const auto code = server->wait_exit(6s);
   expect(code == 0, "CTRL_BREAK runs the orderly shutdown and the frontend exits 0");
@@ -477,7 +477,7 @@ void proc05_windows_terminate_frontend_kills_job() {
   expect(server != nullptr && server->wait_until_listening(10s) && server->wait_for_health(test_support::kHealthReady, 10s), "ready");
   if (!server) return;
   const auto before = server->descendants();
-  expect(before.size() == 2U, "engine and grandchild running, saw " + std::to_string(before.size()));
+  expect(before.size() == 2U, "engine and grandchild running, saw " + std::to_string(before.size()) + " " + server->describe_processes());
   server->stop(ServerProcess::Stop::kill);  // TerminateProcess: no handler runs
   (void)server->wait_exit(5s);
   for (const long pid : before) expect(test_support::wait_until_gone(pid, 2s), "the engine Job (kill-on-close) takes every descendant down");

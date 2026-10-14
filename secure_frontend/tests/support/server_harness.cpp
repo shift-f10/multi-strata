@@ -74,6 +74,45 @@ std::filesystem::path final_path(const std::filesystem::path& path) {
   if (resolved.size() >= 7U && resolved.compare(0, 4, L"\\\\?\\") == 0 && resolved[5] == L':') resolved.erase(0, 4);
   return std::filesystem::path{resolved};
 }
+
+// Full Win32 image path of `pid`; empty when it cannot be read.
+std::wstring process_image(const DWORD pid) {
+  HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+  if (process == nullptr) return {};
+  std::wstring image(32768, L'\0');
+  DWORD size = static_cast<DWORD>(image.size());
+  const bool queried = QueryFullProcessImageNameW(process, 0, image.data(), &size) != 0;
+  CloseHandle(process);
+  if (!queried) return {};
+  image.resize(size);
+  return image;
+}
+
+// Windows' console server, %SystemRoot%\System32\conhost.exe (exact path,
+// case-insensitive). A process whose image cannot be read is not one.
+bool is_console_host(const DWORD pid) {
+  const std::wstring image = process_image(pid);
+  std::wstring system(MAX_PATH, L'\0');
+  const UINT length = GetSystemDirectoryW(system.data(), static_cast<UINT>(system.size()));
+  if (image.empty() || length == 0U || length >= system.size()) return false;
+  system.resize(length);
+  const std::wstring conhost = system + L"\\conhost.exe";
+  return CompareStringOrdinal(image.c_str(), static_cast<int>(image.size()), conhost.c_str(), static_cast<int>(conhost.size()), TRUE) ==
+         CSTR_EQUAL;
+}
+
+// Every process currently in `job` (JobObjectBasicProcessIdList).
+std::vector<DWORD> job_members(HANDLE job) {
+  std::vector<unsigned char> buffer(sizeof(JOBOBJECT_BASIC_PROCESS_ID_LIST) + 256U * sizeof(ULONG_PTR));
+  auto* list = reinterpret_cast<JOBOBJECT_BASIC_PROCESS_ID_LIST*>(buffer.data());
+  list->NumberOfAssignedProcesses = 256U;
+  std::vector<DWORD> pids;
+  if (QueryInformationJobObject(job, JobObjectBasicProcessIdList, list, static_cast<DWORD>(buffer.size()), nullptr)) {
+    const ULONG_PTR* ids = list->ProcessIdList;
+    for (DWORD index = 0; index < list->NumberOfProcessIdsInList; ++index) pids.push_back(static_cast<DWORD>(ids[index]));
+  }
+  return pids;
+}
 #else
 using Socket = int;
 constexpr Socket kInvalidSocket = -1;
@@ -479,16 +518,9 @@ std::string ServerProcess::stderr_text() const {
 
 std::vector<long> ServerProcess::descendants() const {
 #if defined(_WIN32)
-  std::vector<unsigned char> buffer(sizeof(JOBOBJECT_BASIC_PROCESS_ID_LIST) + 256U * sizeof(ULONG_PTR));
-  auto* list = reinterpret_cast<JOBOBJECT_BASIC_PROCESS_ID_LIST*>(buffer.data());
-  list->NumberOfAssignedProcesses = 256U;
   std::vector<long> pids;
-  if (QueryInformationJobObject(static_cast<HANDLE>(job_), JobObjectBasicProcessIdList, list, static_cast<DWORD>(buffer.size()), nullptr)) {
-    const ULONG_PTR* ids = list->ProcessIdList;
-    for (DWORD index = 0; index < list->NumberOfProcessIdsInList; ++index) {
-      const long pid = static_cast<long>(ids[index]);
-      if (pid != pid_) pids.push_back(pid);
-    }
+  for (const DWORD pid : job_members(static_cast<HANDLE>(job_))) {
+    if (static_cast<long>(pid) != pid_ && !is_console_host(pid)) pids.push_back(static_cast<long>(pid));
   }
   return pids;
 #else
@@ -499,16 +531,30 @@ std::vector<long> ServerProcess::descendants() const {
 
 unsigned long ServerProcess::active_processes() {
 #if defined(_WIN32)
-  JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting{};
-  if (!QueryInformationJobObject(static_cast<HANDLE>(job_), JobObjectBasicAccountingInformation, &accounting, sizeof(accounting), nullptr)) {
-    return 0;
+  unsigned long count = 0;
+  for (const DWORD pid : job_members(static_cast<HANDLE>(job_))) {
+    if (!is_console_host(pid)) ++count;
   }
-  return accounting.ActiveProcesses;
+  return count;
 #else
   if (wait_exit(std::chrono::milliseconds(0)).has_value()) return 0;
   remember_descendants();
   return 1U + static_cast<unsigned long>(descendants_of(pid_).size());
 #endif
+}
+
+std::string ServerProcess::describe_processes() const {
+  std::string text;
+#if defined(_WIN32)
+  for (const DWORD pid : job_members(static_cast<HANDLE>(job_))) {
+    const std::wstring image = process_image(pid);
+    const auto name = std::filesystem::path(image).filename().u8string();
+    text += (text.empty() ? "" : ", ") + std::to_string(pid) + ":" + (image.empty() ? std::string("?") : std::string(name.begin(), name.end()));
+  }
+#else
+  for (const long pid : descendants_of(pid_)) text += (text.empty() ? "" : ", ") + std::to_string(pid);
+#endif
+  return "[" + text + "]";
 }
 
 }  // namespace test_support
