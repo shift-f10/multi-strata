@@ -251,7 +251,6 @@ int main(int argc, char** argv) {
       {"staging_plan_classifies_partials", staging_plan_classifies_partials},
       {"abandoned_keys_match_same_model_only", abandoned_keys_match_same_model_only},
       {"update_diff_lists_changed_files_and_license", update_diff_lists_changed_files_and_license},
-#if defined(SECURE_FRONTEND_HAVE_MODELS_STORE)  // F-34: until Task 17 adds the Windows store
       {"concurrent_pull_same_manifest_second_is_models_busy", acquire_cases::concurrent_pull_same_manifest_second_is_models_busy},
       {"part_file_create_append_resume_truncate", acquire_cases::part_file_create_append_resume_truncate},
       {"rename_within_never_replaces", acquire_cases::rename_within_never_replaces},
@@ -260,6 +259,8 @@ int main(int argc, char** argv) {
       {"hash_into_rejects_hard_links_and_counts_bytes", acquire_cases::hash_into_rejects_hard_links_and_counts_bytes},
       {"store_environment_seams_report_space_and_fs_kind", acquire_cases::store_environment_seams_report_space_and_fs_kind},
       {"overlong_joined_paths_fail_closed_without_throwing", acquire_cases::overlong_joined_paths_fail_closed_without_throwing},
+#if defined(_WIN32)
+      {"store_primitives_windows", acquire_cases::store_primitives_windows},
 #endif
   }, secure_frontend_test::failures);
 }

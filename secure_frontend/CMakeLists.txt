@@ -412,26 +412,22 @@ target_include_directories(secure_frontend_acquire_core PUBLIC
 target_link_libraries(secure_frontend_acquire_core PUBLIC secure_frontend_manifest_core)
 secure_frontend_set_warnings(secure_frontend_acquire_core)
 
-# Models store primitives (spec §4). F-34: the Windows implementation arrives in
-# Task 17; until its source exists the library (and its test cases) are skipped
-# on WIN32 so the cross build stays green. Task 17 removes this guard.
+# Models store primitives (spec §4; Windows parity spec §11).
 if(WIN32)
     set(_sf_models_store_platform src/models_store_windows.cpp)
 else()
     set(_sf_models_store_platform src/models_store_posix.cpp)
 endif()
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_sf_models_store_platform}")
-    set(SECURE_FRONTEND_HAVE_MODELS_STORE ON)
-    add_library(secure_frontend_acquire src/models_store_common.cpp ${_sf_models_store_platform})
-    target_compile_features(secure_frontend_acquire PUBLIC cxx_std_20)
-    target_include_directories(secure_frontend_acquire PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
-    target_link_libraries(secure_frontend_acquire PUBLIC secure_frontend_acquire_core secure_frontend_model_store
-        secure_frontend_token_store secure_frontend_tokenizer_pack)
-    secure_frontend_set_warnings(secure_frontend_acquire)
-else()
-    set(SECURE_FRONTEND_HAVE_MODELS_STORE OFF)
+add_library(secure_frontend_acquire src/models_store_common.cpp ${_sf_models_store_platform})
+target_compile_features(secure_frontend_acquire PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_acquire PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_link_libraries(secure_frontend_acquire PUBLIC secure_frontend_acquire_core secure_frontend_model_store
+    secure_frontend_token_store secure_frontend_tokenizer_pack)
+if(WIN32)
+    target_link_libraries(secure_frontend_acquire PUBLIC advapi32)
 endif()
+secure_frontend_set_warnings(secure_frontend_acquire)
 
 # SP4 §2.3 / ruling R-1: the engine version is the committed ../upstream.version
 # (one line, "v<x.y.z[.n]>"). When upstream/ has a reachable exact tag it must equal
@@ -808,14 +804,15 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         reason_table_is_complete_and_ordered error_text_states_resumable
         version_dir_name_unique_for_same_version_label staging_plan_classifies_partials
         abandoned_keys_match_same_model_only update_diff_lists_changed_files_and_license)
-    if(SECURE_FRONTEND_HAVE_MODELS_STORE)
-        target_sources(secure_frontend_acquire_tests PRIVATE tests/acquire_store_test.cpp)
-        target_link_libraries(secure_frontend_acquire_tests PRIVATE secure_frontend_acquire)
-        target_compile_definitions(secure_frontend_acquire_tests PRIVATE SECURE_FRONTEND_HAVE_MODELS_STORE=1)
-        secure_frontend_add_cases(secure_frontend_acquire_tests concurrent_pull_same_manifest_second_is_models_busy
-            part_file_create_append_resume_truncate rename_within_never_replaces rename_fallback_never_replaces
-            remove_tree_removes_links_without_following hash_into_rejects_hard_links_and_counts_bytes
-            store_environment_seams_report_space_and_fs_kind overlong_joined_paths_fail_closed_without_throwing
+    target_sources(secure_frontend_acquire_tests PRIVATE tests/acquire_store_test.cpp tests/acquire_store_windows_test.cpp)
+    target_link_libraries(secure_frontend_acquire_tests PRIVATE secure_frontend_acquire)
+    secure_frontend_add_cases(secure_frontend_acquire_tests concurrent_pull_same_manifest_second_is_models_busy
+        part_file_create_append_resume_truncate rename_within_never_replaces rename_fallback_never_replaces
+        remove_tree_removes_links_without_following hash_into_rejects_hard_links_and_counts_bytes
+        store_environment_seams_report_space_and_fs_kind overlong_joined_paths_fail_closed_without_throwing
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    if(WIN32)
+        secure_frontend_add_cases(secure_frontend_acquire_tests store_primitives_windows
             LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     endif()
     secure_frontend_add_test_executable(secure_frontend_bundle_tests tests/bundle_test.cpp secure_frontend_acquire_core)

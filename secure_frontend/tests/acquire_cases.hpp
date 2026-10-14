@@ -10,4 +10,8 @@ void remove_tree_removes_links_without_following();
 void hash_into_rejects_hard_links_and_counts_bytes();
 void store_environment_seams_report_space_and_fs_kind();
 void overlong_joined_paths_fail_closed_without_throwing();
+#if defined(_WIN32)
+// acquire_store_windows_test.cpp (Task 17)
+void store_primitives_windows();
+#endif
 }  // namespace acquire_cases
