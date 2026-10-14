@@ -121,7 +121,7 @@ Getting the code: `git clone --recurse-submodules`, or `git submodule update
 submodule update --init` once as well. After a `git pull` that moves the
 gitlink, run `git submodule update --init` again (or set `git config
 submodule.recurse true` once); `git submodule status` showing a `+` prefix
-means the `upstream/` checkout is behind the recorded gitlink. The presets need no submodule;
+means the `upstream/` checkout differs from the recorded gitlink (either direction). The presets need no submodule;
 `pytest -q` and the root build do, and both say so when it is missing.
 
 Root build (GPU backends off, nothing fetched): `cmake -S . -B out/root -G

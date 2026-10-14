@@ -51,7 +51,13 @@ This is the canonical order (the single source of truth); the runbooks in
    - `pytest -q` (repo root): our `tools/secure/` tests.
    - `ctest --preset linux-gcc` (in `secure_frontend/`, after
      `cmake --preset linux-gcc && cmake --build --preset linux-gcc`), and the
-     `windows-llvm-mingw-cross` build (in `secure_frontend/`).
+     `windows-llvm-mingw-cross` build (in `secure_frontend/`), then its wine
+     `ctest`. The test preset sets `WINEPREFIX` itself:
+
+         ctest --preset windows-llvm-mingw-cross
+
+     A direct `wine` call from `secure_frontend/` needs the prefix spelled out:
+     `WINEPREFIX=$PWD/out/wineprefix WINEDLLOVERRIDES=mscoree,mshtml= wine ...`.
    - Root configure, build and `ctest` (repo root), from a fresh build
      directory, then confirm nothing was fetched:
 
@@ -70,12 +76,14 @@ This is the canonical order (the single source of truth); the runbooks in
      `tools/...` against the working directory). Our root `pytest.ini` stays
      the rootdir, so `--deselect` ids keep the `upstream/tools/` prefix:
 
-         cd upstream && ../out/venv-upstream/bin/pytest -q tools \
+         ( cd upstream && ../out/venv-upstream/bin/pytest -q tools \
            --ignore=tools/test_iq_pack.py --ignore=tools/test_setup_engine_hash.py \
            --deselect upstream/tools/test_setup_choices.py::HipVision::test_the_cpu_encoder_is_built_once \
            --deselect upstream/tools/test_setup_choices.py::HipVision::test_without_images_nothing_changes \
            --deselect upstream/tools/test_setup_choices.py::CudaVision::test_the_encoder_is_built_native \
-           && ../out/venv-upstream/bin/pytest -q serve
+           && ../out/venv-upstream/bin/pytest -q serve )
+
+     The subshell keeps the shell at the repo root for step 3.
 
      At `v0.1.43`: `616 passed, 2 skipped, 3 deselected` and `695 passed,
      11 skipped`. The two ignores need llama.cpp's `gguf` module and GitHub
@@ -91,7 +99,8 @@ This is the canonical order (the single source of truth); the runbooks in
 3. `git -C upstream status --porcelain` is empty and `git submodule status`
    shows no `-`/`U` (`+` is expected until the pointer is staged).
 4. Update "Baseline" above (commit, tag object, tag), then find every other
-   pin site and update each hit:
+   pin site and update each *current-pin* hit (leave verification history,
+   i.e. rows that record what was verified at an older pin, untouched):
 
        git grep -n '<old tag>\|<old short sha>' -- ':!docs/superpowers' ':!upstream'
 

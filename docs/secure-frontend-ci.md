@@ -33,8 +33,8 @@ with "run `git submodule update --init`" when `upstream/` is empty.
 
 After a `git pull` that moves the gitlink, run `git submodule update --init`
 again (or set `git config submodule.recurse true` once). A `+` at the start of
-the `git submodule status` line means the `upstream/` checkout is behind the
-recorded gitlink.
+the `git submodule status` line means the checked-out `upstream/` commit differs
+from the recorded gitlink (behind, ahead or elsewhere).
 
 ## Building locally (Linux)
 
@@ -111,8 +111,8 @@ baseline" (the single source of truth); in short:
 2. Run the gates, each with its working directory:
 
        pytest -q                                   # repo root
-       cd secure_frontend && cmake --preset linux-gcc && cmake --build --preset linux-gcc \
-         && ctest --preset linux-gcc && cd ..      # in secure_frontend/
+       ( cd secure_frontend && cmake --preset linux-gcc && cmake --build --preset linux-gcc \
+         && ctest --preset linux-gcc )             # subshell: the shell stays at the repo root
        # in secure_frontend/: the windows-llvm-mingw-cross build (and wine ctest), above
        cmake -S . -B out/root -G Ninja && cmake --build out/root \
          && ctest --test-dir out/root && test ! -e out/root/_deps   # repo root, fresh dir
@@ -129,13 +129,13 @@ baseline" (the single source of truth); in short:
    against the working directory; our root `pytest.ini` stays the rootdir, so
    the `--deselect` ids keep the `upstream/tools/` prefix):
 
-       cd upstream && ../out/venv-upstream/bin/pytest -q tools \
+       ( cd upstream && ../out/venv-upstream/bin/pytest -q tools \
          --ignore=tools/test_iq_pack.py \
          --ignore=tools/test_setup_engine_hash.py \
          --deselect upstream/tools/test_setup_choices.py::HipVision::test_the_cpu_encoder_is_built_once \
          --deselect upstream/tools/test_setup_choices.py::HipVision::test_without_images_nothing_changes \
          --deselect upstream/tools/test_setup_choices.py::CudaVision::test_the_encoder_is_built_native \
-         && ../out/venv-upstream/bin/pytest -q serve   # about 4.5 minutes
+         && ../out/venv-upstream/bin/pytest -q serve )   # about 4.5 minutes; subshell keeps the cwd
 
    At `v0.1.43`: `616 passed, 2 skipped, 3 deselected` and `695 passed, 11
    skipped`. The two ignores need llama.cpp's `gguf` module and GitHub
@@ -154,13 +154,9 @@ baseline" (the single source of truth); in short:
    shows no `-`/`U` (`+` is expected until the pointer is staged).
 4. Update `docs/PROVENANCE.md` "Baseline", then run
    `git grep -n '<old tag>\|<old short sha>' -- ':!docs/superpowers' ':!upstream'`
-   and update every hit. Known pin sites: `README.md` (revision column and
-   the pinned `blob/<tag>/…` links), the workflow header comment,
-   `docs/AGENT_HANDOFF.md` (owner decision 6, the layout table header,
-   "Current baseline"), this file (the "Root build" note and the
-   offline-bundle commands below), `docs/PROVENANCE.md` (the `[strata]`
-   reference and pinned license links) and the `docs/security/` pages that
-   name the version.
+   and update every current-pin hit; leave verification history (rows that
+   record what was verified at an older pin) untouched. The authoritative
+   list of pin sites is `docs/PROVENANCE.md` step 4.
 5. `git add upstream docs/PROVENANCE.md` plus every file touched in step 4;
    one commit: `upstream: bump to <tag>`.
 

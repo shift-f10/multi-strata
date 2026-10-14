@@ -2,7 +2,7 @@
 
 This repository (`shift-f10/multi-strata`) builds a security- and privacy-first frontend around [Niko1221/Strata](https://github.com/Niko1221/Strata/tree/v0.1.43) and is a mixture of the sources below. Upstream Strata is not copied into this tree: it is the git submodule `upstream/` ([`v0.1.43` on GitHub](https://github.com/Niko1221/Strata/tree/v0.1.43)), pinned at `v0.1.43` and never modified. The repository root holds only our code.
 
-Get the code with the submodule: `git clone --recurse-submodules https://github.com/shift-f10/multi-strata.git`, or run `git submodule update --init` after a plain clone. After a `git pull` that moves the submodule pointer, run `git submodule update --init` again (or set `git config submodule.recurse true` once); a `+` at the start of the `git submodule status` line means `upstream/` is behind the recorded gitlink.
+Get the code with the submodule: `git clone --recurse-submodules https://github.com/shift-f10/multi-strata.git`, or run `git submodule update --init` after a plain clone. After a `git pull` that moves the submodule pointer, run `git submodule update --init` again (or set `git config submodule.recurse true` once); a `+` at the start of the `git submodule status` line means the checked-out `upstream/` commit differs from the recorded gitlink (behind, ahead or elsewhere).
 
 ## Sources and credits
 
