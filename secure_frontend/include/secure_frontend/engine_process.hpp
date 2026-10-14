@@ -30,6 +30,8 @@ struct ProcessError final {
 
 // Owns one engine child and its process group (or Windows Job Object).
 // start() always invokes the supplied executable directly; it never uses a shell.
+// Test-only (SP0): no production code uses it; the server's engine runs under
+// EngineStdioProcess and EngineSupervisor. It is deliberately not C1-hardened.
 class EngineProcess final {
  public:
   EngineProcess() = default;
@@ -44,6 +46,10 @@ class EngineProcess final {
   // Returns an exit code when the child exits; nullopt means the timeout elapsed.
   [[nodiscard]] std::optional<int> wait_for(std::chrono::milliseconds timeout);
   // Terminates the whole child group, waits at most grace, then force-kills it.
+  // POSIX: the group SIGKILL is sent only while the leader is unreaped. Unlike
+  // spec C1 (EngineStdioProcess) it does not always SIGKILL the group: wait_for
+  // reaps the leader, so a later group kill could hit a recycled pgid. Kept as
+  // is by design (controller ruling RF12); used by tests only.
   [[nodiscard]] bool terminate(std::chrono::milliseconds grace);
 
  private:

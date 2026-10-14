@@ -28,8 +28,6 @@ std::vector<long> children_of(long pid);
 std::vector<long> descendants_of(long pid);
 // Windows: TokenElevation of process `pid` (true when it cannot be read). POSIX: false.
 bool process_token_elevated(long pid);
-// A loopback TCP port that was free a moment ago.
-std::uint16_t pick_free_port();
 
 struct HttpResult final {
   int status{0};
@@ -53,6 +51,9 @@ struct ServerOptions final {
 // strata-secure-server as a test child: fixture models (fake-model.gguf, 0600)
 // and the byte tokenizer pack in 0700 directories, a free port, token from
 // kHarnessTokenEnv; stdout/stderr go to <root>/stdout.log and <root>/stderr.log.
+// The engine (options.engine, default the fake) is copied into a private
+// <root>/bin (directory 0700, file 0700 on POSIX), as SP1's ServerFixture does:
+// SP1's engine trust check refuses a group-writable build-tree file (umask 0002).
 // Windows: started suspended with a non-elevated (LUA-restricted) token in its
 // own console process group (so CTRL_BREAK_EVENT can target it) inside a
 // kill-on-close harness Job used to count descendants and to clean up.
@@ -70,6 +71,8 @@ class ServerProcess final {
   [[nodiscard]] long pid() const noexcept { return pid_; }
   [[nodiscard]] std::uint16_t port() const noexcept { return port_; }
   [[nodiscard]] const std::filesystem::path& root() const noexcept { return root_; }
+  // The private engine copy the server was given (--engine); the server passes it as argv[0].
+  [[nodiscard]] const std::filesystem::path& engine_path() const noexcept { return engine_path_; }
   [[nodiscard]] std::optional<HttpResult> get(std::string_view target,
                                               std::chrono::milliseconds timeout = std::chrono::seconds(5)) const;
   [[nodiscard]] std::optional<HttpResult> post_chat(std::string_view body,
@@ -95,6 +98,7 @@ class ServerProcess final {
   void remember_descendants() const;
 
   std::filesystem::path root_;
+  std::filesystem::path engine_path_;
   std::uint16_t port_{0};
   long pid_{-1};
   std::optional<int> exit_code_;

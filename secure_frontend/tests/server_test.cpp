@@ -57,7 +57,7 @@ void proc01_server_passes_literal_argv() {
   if (dump) {
     auto model = server->root() / "models" / "fake-model.gguf";
     model.make_preferred();
-    const std::vector<std::string> expected{test_support::utf8_path(test_support::fake_engine_path()), "--serve",
+    const std::vector<std::string> expected{test_support::utf8_path(server->engine_path()), "--serve",
                                             "--dump-file=" + test_support::utf8_path(dump_file), weird, "--max-context", "8192",
                                             "--native", test_support::utf8_path(model)};
     expect(dump->argv == expected, "every value arrives literally as one argv entry, in order, with no shell");

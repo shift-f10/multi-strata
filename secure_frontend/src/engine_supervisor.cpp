@@ -90,7 +90,7 @@ EngineSupervisor::EngineSupervisor(SupervisorConfig config, ProcessFactory facto
 }
 
 EngineSupervisor::~EngineSupervisor() {
-  if (thread_.joinable()) shutdown(supervision_defaults::kShutdownBound);
+  if (thread_.joinable()) shutdown(config_defaults::kShutdownBound);
 }
 
 void EngineSupervisor::start() {

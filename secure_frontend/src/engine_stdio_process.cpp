@@ -1,7 +1,7 @@
 #include "secure_frontend/engine_stdio_process.hpp"
 
+#include "secure_frontend/config_defaults.hpp"
 #include "secure_frontend/deadline.hpp"
-#include "secure_frontend/supervision_defaults.hpp"
 
 #include <algorithm>
 #include <array>
@@ -16,8 +16,9 @@
 #if defined(_WIN32)
 #include "secure_frontend/win32_prelude.hpp"
 
-#include <bcrypt.h>
 #include <sddl.h>
+
+#include "secure_frontend/token_generator.hpp"
 #else
 #include <csignal>
 #include <fcntl.h>
@@ -104,10 +105,10 @@ std::wstring quote(const std::wstring_view arg) {
 std::string with_last_error(const char* what) { return std::string(what) + " (Win32 error " + std::to_string(GetLastError()) + ")"; }
 void close_handle(void*& handle) noexcept { if (handle != nullptr) { CloseHandle(static_cast<HANDLE>(handle)); handle = nullptr; } }
 
-// 128 random bits for the pipe name (spec §3.11). Task 29 switches this to SP1's fill_random().
+// 128 random bits for the pipe name (spec §3.11), from SP1's fail-closed CSPRNG.
 std::optional<std::wstring> random_pipe_suffix() {
   std::array<unsigned char, 16> bytes{};
-  if (BCryptGenRandom(nullptr, bytes.data(), static_cast<ULONG>(bytes.size()), BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) return std::nullopt;
+  if (!fill_random(bytes.data(), bytes.size())) return std::nullopt;
   static constexpr wchar_t kDigits[] = L"0123456789abcdef";
   std::wstring text;
   for (const unsigned char byte : bytes) {
@@ -171,7 +172,7 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
   const std::wstring pipe_name = L"\\\\.\\pipe\\secure_frontend-" + std::to_wstring(GetCurrentProcessId()) + L"-" + *suffix;
   parent_stdin = CreateNamedPipeW(pipe_name.c_str(), PIPE_ACCESS_OUTBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE | FILE_FLAG_OVERLAPPED,
                                   PIPE_TYPE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 1,
-                                  static_cast<DWORD>(supervision_defaults::kStdinWriteChunk), 0, 0, &pipe_attrs);
+                                  static_cast<DWORD>(config_defaults::kStdinWriteChunk), 0, 0, &pipe_attrs);
   LocalFree(descriptor);
   if (parent_stdin == INVALID_HANDLE_VALUE) parent_stdin = nullptr;
   if (parent_stdin != nullptr) {
@@ -310,7 +311,7 @@ bool EngineStdioProcess::write_line(const std::string_view line, std::string& er
   bool ok = true;
   std::size_t offset = 0;
   while (ok && offset < record.size()) {
-    const auto chunk = static_cast<DWORD>(std::min<std::size_t>(record.size() - offset, supervision_defaults::kStdinWriteChunk));
+    const auto chunk = static_cast<DWORD>(std::min<std::size_t>(record.size() - offset, config_defaults::kStdinWriteChunk));
     OVERLAPPED overlapped{};
     overlapped.hEvent = event;
     (void)ResetEvent(event);
@@ -320,7 +321,7 @@ bool EngineStdioProcess::write_line(const std::string_view line, std::string& er
       ok = false;
       break;
     }
-    if (WaitForSingleObject(event, static_cast<DWORD>(supervision_defaults::kStdinWriteDeadline.count())) != WAIT_OBJECT_0) {
+    if (WaitForSingleObject(event, static_cast<DWORD>(config_defaults::kStdinWriteDeadline.count())) != WAIT_OBJECT_0) {
       (void)CancelIoEx(pipe, &overlapped);
       (void)GetOverlappedResult(pipe, &overlapped, &written, TRUE);  // the cancelled I/O must finish before `overlapped` goes away
       error = "engine stdin is not writable";

@@ -1,5 +1,6 @@
 #include "server_harness.hpp"
 
+#include "http_client.hpp"
 #include "test_paths.hpp"
 #include "test_tokenizer.hpp"
 
@@ -23,6 +24,7 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -202,27 +204,6 @@ bool process_token_elevated(const long pid) {
 #endif
 }
 
-std::uint16_t pick_free_port() {
-  ensure_winsock();
-  const Socket socket_handle = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-  sockaddr_in address{};
-  address.sin_family = AF_INET;
-  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  address.sin_port = 0;
-#if defined(_WIN32)
-  int length = sizeof(address);
-#else
-  socklen_t length = sizeof(address);
-#endif
-  std::uint16_t port = 0;
-  if (socket_handle != kInvalidSocket && bind(socket_handle, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0 &&
-      getsockname(socket_handle, reinterpret_cast<sockaddr*>(&address), &length) == 0) {
-    port = ntohs(address.sin_port);
-  }
-  if (socket_handle != kInvalidSocket) close_socket(socket_handle);
-  return port;
-}
-
 std::optional<HttpResult> http_request(const std::uint16_t port, const std::string_view method, const std::string_view target,
                                        const std::string_view body, const std::chrono::milliseconds timeout) {
   const Socket socket_handle = connect_loopback(port, timeout);
@@ -287,9 +268,32 @@ std::unique_ptr<ServerProcess> ServerProcess::start(const ServerOptions& options
   secure_frontend_test::make_private_directory(tokenizer);  // 0700
   secure_frontend_test::write_file(models / "fake-model.gguf", "GGUF", 0600);
   write_tokenizer_pack(tokenizer);                           // 0600 files
-  server->port_ = pick_free_port();
+  // SP1's open_executable refuses an engine file or folder writable by group or
+  // others; the build tree is 0775 under umask 0002. Copy the engine into a
+  // private <root>/bin exactly as SP1's ServerFixture does.
+  const auto bin = server->root_ / "bin";
+  secure_frontend_test::make_private_directory(bin);  // 0700
+  const auto source = options.engine.value_or(fake_engine_path());
+  server->engine_path_ = bin / source.filename();
+  std::error_code copy_error;
+  std::filesystem::copy_file(source, server->engine_path_, std::filesystem::copy_options::overwrite_existing, copy_error);
+  if (copy_error) {
+    std::cerr << "harness: could not copy the engine into " << utf8_path(bin) << ": " << copy_error.message() << '\n';
+    return nullptr;
+  }
+#if defined(_WIN32)
+  server->engine_path_.make_preferred();
+#else
+  if (chmod(server->engine_path_.c_str(), 0700) != 0) {
+    std::cerr << "harness: chmod 0700 failed on the engine copy\n";
+    return nullptr;
+  }
+  // SP1 hands the engine its canonical path as argv[0].
+  server->engine_path_ = std::filesystem::canonical(server->engine_path_);
+#endif
+  server->port_ = secure_frontend_test::pick_free_port();  // SP1's helper (support/http_client.hpp)
   std::vector<std::string> arguments{utf8_path(server_path()), "--models-root", utf8_path(models), "--tokenizer-pack",
-                                     utf8_path(tokenizer), "--engine", utf8_path(options.engine.value_or(fake_engine_path())),
+                                     utf8_path(tokenizer), "--engine", utf8_path(server->engine_path_),
                                      "--model-id", "fake-model", "--token-env", std::string(kHarnessTokenEnv), "--port",
                                      std::to_string(server->port_)};
   for (const auto& argument : options.engine_args) {

@@ -1,22 +1,22 @@
 #pragma once
 
-#include "secure_frontend/supervision_defaults.hpp"
+#include "secure_frontend/config_defaults.hpp"
 
 #include <chrono>
 #include <cstdint>
 
 namespace secure_frontend {
 
-// Spec §3.3 restart policy. Defaults come from supervision_defaults.hpp; SP1
-// turns them into typed configuration.
+// Spec §3.3 restart policy. Defaults come from config_defaults.hpp;
+// supervisor_config() (subsystem_limits.hpp) sets ready_timeout from the config.
 struct RestartPolicy final {
-  std::uint32_t max_consecutive_failures{supervision_defaults::kMaxConsecutiveFailures};
-  std::chrono::milliseconds backoff_initial{supervision_defaults::kBackoffInitial};
-  std::uint32_t backoff_factor{supervision_defaults::kBackoffFactor};
-  std::chrono::milliseconds backoff_max{supervision_defaults::kBackoffMax};
-  std::chrono::milliseconds healthy_window{supervision_defaults::kHealthyWindow};
-  std::chrono::milliseconds ready_timeout{supervision_defaults::kReadyTimeout};
-  std::chrono::milliseconds reap_timeout{supervision_defaults::kReapTimeout};
+  std::uint32_t max_consecutive_failures{config_defaults::kMaxConsecutiveFailures};
+  std::chrono::milliseconds backoff_initial{config_defaults::kBackoffInitial};
+  std::uint32_t backoff_factor{config_defaults::kBackoffFactor};
+  std::chrono::milliseconds backoff_max{config_defaults::kBackoffMax};
+  std::chrono::milliseconds healthy_window{config_defaults::kHealthyWindow};
+  std::chrono::milliseconds ready_timeout{std::chrono::seconds(config_defaults::kEngineReadyTimeoutS)};
+  std::chrono::milliseconds reap_timeout{config_defaults::kReapTimeout};
 };
 
 struct RestartDecision final {

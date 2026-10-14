@@ -193,7 +193,8 @@ target_compile_features(secure_frontend_subsystem_limits PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_subsystem_limits PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
 target_link_libraries(secure_frontend_subsystem_limits PUBLIC secure_frontend_typed_config
-    secure_frontend_http_socket_server secure_frontend_chat_execution secure_frontend_chat_schema)
+    secure_frontend_http_socket_server secure_frontend_chat_execution secure_frontend_chat_schema
+    secure_frontend_engine_supervisor)
 
 add_executable(secure-frontend-smoke src/smoke_main.cpp)
 
@@ -372,7 +373,7 @@ if(WIN32)
     target_link_libraries(secure_frontend_config PUBLIC ws2_32)
     target_link_libraries(secure_frontend_http_socket_server PUBLIC ws2_32)
     target_link_libraries(secure_frontend_token_reader PUBLIC advapi32)
-    target_link_libraries(secure_frontend_engine_stdio_process PUBLIC advapi32 bcrypt)
+    target_link_libraries(secure_frontend_engine_stdio_process PUBLIC advapi32 secure_frontend_secrets)
     target_link_libraries(secure_frontend_paths PUBLIC advapi32)
     target_link_libraries(secure_frontend_secrets PUBLIC bcrypt)
     target_link_libraries(secure_frontend_token_reader PUBLIC crypt32)
@@ -757,7 +758,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_test_executable(secure_frontend_subsystem_limits_tests tests/subsystem_limits_test.cpp
         secure_frontend_subsystem_limits)
     secure_frontend_add_cases(secure_frontend_subsystem_limits_tests
-        ready_timeout_defaults_to_900_seconds subsystem_limits_follow_config
+        ready_timeout_defaults_to_900_seconds subsystem_limits_follow_config supervisor_policy_follows_config
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     add_executable(secure_frontend_fake_engine tests/fake_engine_main.cpp)

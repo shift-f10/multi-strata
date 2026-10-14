@@ -1,12 +1,12 @@
 #pragma once
 
 #include "secure_frontend/chat_execution.hpp"
+#include "secure_frontend/config_defaults.hpp"
 #include "secure_frontend/engine_process.hpp"
 #include "secure_frontend/engine_protocol_client.hpp"
 #include "secure_frontend/exit_status.hpp"
 #include "secure_frontend/restart_policy.hpp"
 #include "secure_frontend/supervised_process.hpp"
-#include "secure_frontend/supervision_defaults.hpp"
 #include "secure_frontend/supervisor_clock.hpp"
 #include "secure_frontend/supervisor_wake.hpp"
 #include "secure_frontend/tokenizer_pack.hpp"
@@ -77,10 +77,10 @@ struct SupervisorConfig final {
   ChatExecutionLimits chat_limits{};
   NativeChatProfile profile{NativeChatProfile::qwen};
   EngineProtocolFlavor flavor{EngineProtocolFlavor::strata_0143};
-  std::chrono::milliseconds ready_poll_slice{supervision_defaults::kReadyPollSlice};
-  std::chrono::milliseconds monitor_poll{supervision_defaults::kMonitorFallbackPoll};
-  std::chrono::milliseconds shutdown_stdin_wait{supervision_defaults::kShutdownStdinWait};
-  std::chrono::milliseconds shutdown_term_wait{supervision_defaults::kShutdownTermWait};
+  std::chrono::milliseconds ready_poll_slice{config_defaults::kReadyPollSlice};
+  std::chrono::milliseconds monitor_poll{config_defaults::kMonitorFallbackPoll};
+  std::chrono::milliseconds shutdown_stdin_wait{config_defaults::kShutdownStdinWait};
+  std::chrono::milliseconds shutdown_term_wait{config_defaults::kShutdownTermWait};
   // Linux: become the child subreaper and sweep orphaned descendants after every generation (spec §3.7b).
   bool sweep_orphans{true};
   // Linux: log the /dev/nvidia-uvm hint when a generation ends before READY under PR_SET_NO_NEW_PRIVS.

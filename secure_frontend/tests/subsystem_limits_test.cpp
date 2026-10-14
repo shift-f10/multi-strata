@@ -52,11 +52,25 @@ void subsystem_limits_follow_config() {
   const auto chat = secure_frontend::chat_execution_limits(*config);
   expect(chat.ready_timeout == std::chrono::seconds(7) && chat.default_max_tokens == 64U, "chat execution limits");
 }
+
+void supervisor_policy_follows_config() {
+  const auto config = config_with({{"limits.engine.ready_timeout_s", "7"}});
+  const secure_frontend::SupervisorConfig supervisor = secure_frontend::supervisor_config(*config);
+  expect(supervisor.policy.ready_timeout == std::chrono::seconds(7), "limits.engine.ready_timeout_s drives RestartPolicy::ready_timeout");
+  expect(supervisor.chat_limits.ready_timeout == std::chrono::seconds(7), "and the chat limits agree");
+  const secure_frontend::RestartPolicy defaults{};
+  expect(defaults.ready_timeout == std::chrono::seconds(secure_frontend::config_defaults::kEngineReadyTimeoutS),
+         "the policy default is SP1's 900 s constant, not a second copy");
+  expect(supervisor.policy.max_consecutive_failures == secure_frontend::config_defaults::kMaxConsecutiveFailures &&
+             supervisor.policy.backoff_initial == secure_frontend::config_defaults::kBackoffInitial,
+         "the other policy values come from config_defaults.hpp");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
       {"ready_timeout_defaults_to_900_seconds", ready_timeout_defaults_to_900_seconds},
       {"subsystem_limits_follow_config", subsystem_limits_follow_config},
+      {"supervisor_policy_follows_config", supervisor_policy_follows_config},
   }, failures);
 }
