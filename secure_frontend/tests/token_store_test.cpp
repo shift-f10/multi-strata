@@ -51,6 +51,16 @@ void token_store_creates_0600_file_in_0700_dir() {
   const auto unsafe = secure_frontend::store_token(root_at(shared), rel("token"), token, secure_frontend::TokenStoreMode::create_new);
   expect(unsafe.has_value() && unsafe->code == secure_frontend::TokenStoreErrorCode::unsafe_location,
          "a directory with group access is refused");
+  // A holding directory that is owner-only but lacks the search bit opens (read
+  // access suffices), yet fstatat inside it fails with EACCES, not ENOENT; that
+  // must fail closed as unsafe_location rather than count as "absent".
+  const auto outer = secure_frontend_test::make_scratch_directory();
+  secure_frontend_test::make_private_directory(outer / "sub");
+  chmod((outer / "sub").c_str(), 0600);
+  const auto blind = secure_frontend::store_token(root_at(outer), rel("sub/token"), token, secure_frontend::TokenStoreMode::replace);
+  chmod((outer / "sub").c_str(), 0700);
+  expect(blind.has_value() && blind->code == secure_frontend::TokenStoreErrorCode::unsafe_location,
+         "a target that cannot be inspected is refused (only ENOENT counts as absent)");
 }
 
 void token_store_rotate_is_atomic() {
@@ -60,20 +70,36 @@ void token_store_rotate_is_atomic() {
   const std::string a = std::string{first.view()} + "\n";
   const std::string b = std::string{second.view()} + "\n";
   expect(!secure_frontend::store_token(root_at(dir), rel("token"), first, secure_frontend::TokenStoreMode::create_new), "initial");
+  expect(!secure_frontend::store_token(root_at(dir), rel("token"), second, secure_frontend::TokenStoreMode::replace),
+         "a replace succeeds");
+  expect(secure_frontend_test::read_file(dir / "token") == b, "a replace puts the new token in place");
   std::atomic<bool> stop{false};
   std::atomic<int> torn{0};
+  std::atomic<long> reads{0};
   std::thread reader([&] {
     while (!stop) {
       const std::string seen = secure_frontend_test::read_file(dir / "token");
       if (seen != a && seen != b) ++torn;
+      ++reads;
     }
   });
+  int failed_replaces = 0;
   for (int i = 0; i < 200; ++i) {
-    (void)secure_frontend::store_token(root_at(dir), rel("token"), i % 2 == 0 ? second : first, secure_frontend::TokenStoreMode::replace);
+    if (secure_frontend::store_token(root_at(dir), rel("token"), i % 2 == 0 ? first : second,
+                                     secure_frontend::TokenStoreMode::replace)) {
+      ++failed_replaces;
+    }
   }
   stop = true;
   reader.join();
+  expect(failed_replaces == 0, "every replace succeeds");
+  expect(reads > 0, "the concurrent reader ran");
   expect(torn == 0, "a concurrent reader always sees the old or the new token, never a partial file");
+  // 200 alternating writes starting with `first` end on `second`.
+  expect(secure_frontend_test::read_file(dir / "token") == b, "the last replace is the content on disk");
+  std::size_t entries = 0;
+  for ([[maybe_unused]] const auto& entry : std::filesystem::directory_iterator(dir)) ++entries;
+  expect(entries == 1U, "no temporary file is left behind after replaces");
 }
 
 void token_store_refuses_symlinked_target() {

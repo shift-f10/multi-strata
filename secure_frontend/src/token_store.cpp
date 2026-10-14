@@ -69,6 +69,9 @@ std::optional<TokenStoreError> write_private_file(const CanonicalRoot& root, con
   if (::fstatat(dir, name.c_str(), &existing, AT_SYMLINK_NOFOLLOW) == 0) {
     if (!S_ISREG(existing.st_mode)) return fail(TokenStoreErrorCode::unsafe_location, "the target exists and is not a regular file");
     if (mode == TokenStoreMode::create_new) return fail(TokenStoreErrorCode::already_exists, "the file already exists");
+  } else if (errno != ENOENT) {
+    // Only "absent" lets the write go ahead; any other failure fails closed.
+    return fail(TokenStoreErrorCode::unsafe_location, "the target cannot be inspected");
   }
   const std::string suffix = random_suffix();
   if (suffix.empty()) return fail(TokenStoreErrorCode::write_failed, "no randomness for the temporary file name");
