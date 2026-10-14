@@ -42,6 +42,7 @@ KillReason kill_reason_for(const EngineProtocolClient& protocol) noexcept {
   if (!code) return KillReason::protocol_failed;
   switch (*code) {
     case EngineProtocolErrorCode::transport_write_failed: return KillReason::write_timeout;
+    case EngineProtocolErrorCode::fatal_engine_line: return KillReason::fatal_line;
     default: return KillReason::protocol_failed;
   }
 }

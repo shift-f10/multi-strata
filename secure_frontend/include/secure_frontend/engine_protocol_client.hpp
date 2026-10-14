@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -46,7 +47,20 @@ enum class EngineProtocolErrorCode {
   unexpected_line,
   engine_error,
   response_limit,
+  fatal_engine_line,
 };
+
+// The engine's fatal verification lines (upstream/serve/server.py:587-588
+// FATAL_PREFIXES), matched as prefixes. The engine lives on but is unusable;
+// a trailing DONE is never accepted (upstream _pump, upstream/serve/server.py:775-791).
+inline constexpr std::array<std::string_view, 4> kEngineFatalPrefixes{
+    "ERR verify: timed out at layer ",
+    "ERR verify batch: timed out at layer ",
+    "ERR verify: an earlier window never finished",
+    "ERR verify batch: an earlier window never finished",
+};
+
+[[nodiscard]] bool is_engine_fatal_line(std::string_view line) noexcept;
 
 struct EngineProtocolError final {
   EngineProtocolErrorCode code;

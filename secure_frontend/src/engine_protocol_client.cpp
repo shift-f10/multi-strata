@@ -58,6 +58,11 @@ std::vector<std::string_view> fields(const std::string_view line) {
 
 }  // namespace
 
+bool is_engine_fatal_line(const std::string_view line) noexcept {
+  return std::any_of(kEngineFatalPrefixes.begin(), kEngineFatalPrefixes.end(),
+                     [line](const std::string_view prefix) { return line.substr(0, prefix.size()) == prefix; });
+}
+
 EngineProtocolClient::EngineProtocolClient(EngineLineTransport& transport,
                                            const EngineProtocolLimits limits,
                                            const EngineProtocolFlavor flavor)
@@ -124,6 +129,9 @@ std::optional<EngineProtocolError> EngineProtocolClient::await_ready(const std::
     }
     if (const auto validation = validate_incoming(response.line); validation.has_value()) {
       return fail(validation->code, validation->message);
+    }
+    if (is_engine_fatal_line(response.line)) {
+      return fail(EngineProtocolErrorCode::fatal_engine_line, "engine reported a fatal verification failure");
     }
     const auto parsed = fields(response.line);
     if (parsed.size() >= 2 && parsed.front() == "INFO") continue;
@@ -196,6 +204,9 @@ std::optional<EngineProtocolError> EngineProtocolClient::read_generation(const s
     }
     if (const auto validation = validate_incoming(response.line); validation.has_value()) {
       return fail(validation->code, validation->message);
+    }
+    if (is_engine_fatal_line(response.line)) {
+      return fail(EngineProtocolErrorCode::fatal_engine_line, "engine reported a fatal verification failure");
     }
     if (response.line.rfind("T ", 0) == 0) {
       const auto token_text = std::string_view(response.line).substr(2);

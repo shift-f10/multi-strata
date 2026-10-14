@@ -279,6 +279,46 @@ void proc04_backoff_survives_stale_wake() {
   supervisor.shutdown(5s);
 }
 
+void proc04_fatal_prefix_kills_engine() {
+  // Protocol level: each prefix fails the generation; the trailing DONE is never consumed.
+  for (std::size_t index = 0; index < secure_frontend::kEngineFatalPrefixes.size(); ++index) {
+    auto child = std::make_shared<test_support::FakeChild>();
+    test_support::FakeChildTransport transport(child);
+    child->push_line("READY 4096 stop");
+    secure_frontend::EngineProtocolClient protocol(transport);
+    secure_frontend::EngineReady ready{};
+    expect(!protocol.await_ready(1s, ready).has_value(), "READY");
+    expect(!protocol.begin_generation(1, {1}).has_value(), "GEN");
+    child->push_line("T 1");
+    child->push_line(std::string(secure_frontend::kEngineFatalPrefixes[index]) + "12");
+    child->push_line("DONE stop");
+    secure_frontend::EngineGeneration generation{};
+    const auto error = protocol.read_generation(1s, generation);
+    expect(error && error->code == secure_frontend::EngineProtocolErrorCode::fatal_engine_line, "prefix " + std::to_string(index) + " is fatal");
+    expect(protocol.closed() && secure_frontend::kill_reason_for(protocol) == secure_frontend::KillReason::fatal_line, "maps to fatal_line");
+    std::lock_guard lock(child->mutex);
+    expect(child->reads.size() == 1U && child->reads.front().line == "DONE stop", "the trailing DONE is not accepted");
+  }
+  // Supervisor level: the generation is killed and replaced.
+  const auto tokenizer = test_support::byte_tokenizer();
+  const secure_frontend::ChatCompletionRequest request{"fake-model", {{"user", "Hi"}}, 2U};
+  for (int index = 0; index < 4; ++index) {
+    secure_frontend::SupervisorConfig config;
+    config.policy.backoff_initial = 20ms;
+    test_support::LogCapture log;
+    secure_frontend::EngineSupervisor supervisor(
+        config, secure_frontend::make_stdio_process_factory(fake_plan({"--fatal-line=" + std::to_string(index)})),
+        std::make_shared<secure_frontend::SteadySupervisorClock>(), log.sink());
+    supervisor.start();
+    expect(test_support::wait_generation_ready(supervisor, 1U, 10s), "generation 1 ready");
+    const auto outcome = secure_frontend::execute_with_lease(supervisor, request, tokenizer);
+    expect(outcome && std::holds_alternative<secure_frontend::ChatExecutionError>(*outcome), "the request fails; no result after a fatal line");
+    expect(test_support::wait_generation_ready(supervisor, 2U, 10s), "the engine is replaced");
+    expect(log.contains("engine generation 1 ended: killed_by_supervisor(fatal_line)"), "killed as fatal_line, prefix " + std::to_string(index));
+    supervisor.shutdown(5s);
+  }
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -291,5 +331,6 @@ int main(int argc, char* argv[]) {
                                                 {"supervisor_retires_ended_generation_on_its_own_thread", supervisor_retires_ended_generation_on_its_own_thread},
                                                 {"proc04_monitor_detects_idle_crash", proc04_monitor_detects_idle_crash},
                                                 {"proc04_monitor_fallback_without_pidfd", proc04_monitor_fallback_without_pidfd},
-                                                {"proc04_backoff_survives_stale_wake", proc04_backoff_survives_stale_wake}}, failures);
+                                                {"proc04_backoff_survives_stale_wake", proc04_backoff_survives_stale_wake},
+                                                {"proc04_fatal_prefix_kills_engine", proc04_fatal_prefix_kills_engine}}, failures);
 }
