@@ -350,6 +350,37 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     endif()
     secure_frontend_add_cases(secure_frontend_engine_stdio_process_tests ${_stdio_cases} TIMEOUT 300)
 
+    # SP2 F1: test-only stand-in for `strata --serve`. Never installed. SP1's own
+    # fake (tests/fake_engine_main.cpp, secure_frontend_fake_engine) is separate.
+    add_executable(strata-supervision-fake-engine tests/supervision_fake_engine_main.cpp)
+    target_include_directories(strata-supervision-fake-engine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_features(strata-supervision-fake-engine PRIVATE cxx_std_20)
+    secure_frontend_set_warnings(strata-supervision-fake-engine)
+    if(WIN32)
+        target_link_libraries(strata-supervision-fake-engine PRIVATE shell32 advapi32)
+    endif()
+
+    # Paths every SP2 test needs (fixture directories come from SP1's
+    # make_scratch_directory below ${SECURE_FRONTEND_TEST_TMP}).
+    function(secure_frontend_test_paths target)
+        target_compile_definitions(${target} PRIVATE
+            "STRATA_FAKE_ENGINE_PATH=\"$<TARGET_FILE:strata-supervision-fake-engine>\"")
+        add_dependencies(${target} strata-supervision-fake-engine)
+        if(WIN32)
+            target_link_libraries(${target} PRIVATE advapi32)  # grant_current_user()
+        endif()
+    endfunction()
+
+    # SP1 Task 2 already builds and registers secure_frontend_engine_stdio_process_tests.
+    secure_frontend_test_paths(secure_frontend_engine_stdio_process_tests)
+
+    secure_frontend_add_test_executable(secure_frontend_fake_engine_tests tests/fake_engine_test.cpp
+        secure_frontend_engine_process secure_frontend_engine_stdio_process)
+    secure_frontend_test_paths(secure_frontend_fake_engine_tests)
+    # Crash exit codes are Windows runtime semantics: MSYS2 only.
+    secure_frontend_add_cases(secure_frontend_fake_engine_tests fake_engine_modes_selftest
+        TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+
     secure_frontend_add_test_executable(secure_frontend_http_policy_tests tests/http_policy_test.cpp secure_frontend_http_policy)
     secure_frontend_add_cases(secure_frontend_http_policy_tests
         accepts_exact_host_without_browser_origin rejects_ambiguous_or_untrusted_host requires_an_exact_same_origin
