@@ -1,5 +1,7 @@
 #include "secure_frontend/engine_protocol_client.hpp"
 
+#include "secure_frontend/deadline.hpp"
+
 #include <algorithm>
 #include <charconv>
 #include <limits>
@@ -104,11 +106,12 @@ std::optional<EngineProtocolError> EngineProtocolClient::await_ready(const std::
   if (state_ != State::waiting_ready) {
     return EngineProtocolError{EngineProtocolErrorCode::invalid_state, "engine is not awaiting READY"};
   }
-  const auto duration = std::max(timeout, std::chrono::milliseconds(0));
-  const auto deadline = std::chrono::steady_clock::now() + duration;
+  const auto deadline = deadline_after(timeout);
   while (true) {
-    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::max(deadline - std::chrono::steady_clock::now(), std::chrono::steady_clock::duration::zero()));
+    const auto remaining = remaining_until(deadline);
+    if (remaining.count() == 0) {
+      return EngineProtocolError{EngineProtocolErrorCode::timeout, "engine did not report READY before timeout"};
+    }
     const auto response = transport_.read_line(remaining);
     if (response.kind == EngineReadKind::timeout) {
       return EngineProtocolError{EngineProtocolErrorCode::timeout, "engine did not report READY before timeout"};
@@ -175,13 +178,12 @@ std::optional<EngineProtocolError> EngineProtocolClient::read_generation(const s
                                                                           EngineGeneration& generation) {
   if (state_ != State::generating) return EngineProtocolError{EngineProtocolErrorCode::invalid_state, "no generation is active"};
   generation = active_generation_;
-  const auto deadline = std::chrono::steady_clock::now() + std::max(timeout, std::chrono::milliseconds(0));
+  const auto deadline = deadline_after(timeout);
   while (true) {
-    const auto now = std::chrono::steady_clock::now();
-    if (now >= deadline) {
+    const auto remaining = remaining_until(deadline);
+    if (remaining.count() == 0) {
       return EngineProtocolError{EngineProtocolErrorCode::timeout, "engine generation read timed out"};
     }
-    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
     const auto response = transport_.read_line(remaining);
     if (response.kind == EngineReadKind::timeout) {
       return EngineProtocolError{EngineProtocolErrorCode::timeout, "engine generation read timed out"};

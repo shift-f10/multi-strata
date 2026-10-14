@@ -50,6 +50,28 @@ inline constexpr int kSkipReturnCode = 77;
 inline std::filesystem::path fake_engine_path() { return std::filesystem::path(STRATA_FAKE_ENGINE_PATH); }
 inline std::filesystem::path server_path() { return std::filesystem::path(STRATA_SECURE_SERVER_PATH); }
 
+// This test binary's own path. Fails the test loudly if the OS call fails or
+// truncates (K5), instead of returning a garbage path.
+inline std::filesystem::path current_executable() {
+#if defined(_WIN32)
+  std::vector<wchar_t> buffer(32768);
+  const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+  if (length == 0 || length >= buffer.size()) {
+    std::cerr << "FATAL: GetModuleFileNameW failed or truncated the path\n";
+    std::exit(EXIT_FAILURE);
+  }
+  return std::filesystem::path(std::wstring(buffer.data(), length));
+#else
+  std::vector<char> buffer(4096);
+  const ssize_t length = readlink("/proc/self/exe", buffer.data(), buffer.size());
+  if (length <= 0 || static_cast<std::size_t>(length) >= buffer.size()) {
+    std::cerr << "FATAL: readlink(/proc/self/exe) failed or truncated the path\n";
+    std::exit(EXIT_FAILURE);
+  }
+  return std::filesystem::path(std::string(buffer.data(), static_cast<std::size_t>(length)));
+#endif
+}
+
 inline std::string utf8_path(const std::filesystem::path& path) {
   const auto text = path.u8string();
   return std::string(reinterpret_cast<const char*>(text.data()), text.size());

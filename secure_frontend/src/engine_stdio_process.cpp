@@ -1,5 +1,7 @@
 #include "secure_frontend/engine_stdio_process.hpp"
 
+#include "secure_frontend/deadline.hpp"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -211,12 +213,14 @@ std::optional<EngineReadResult> EngineStdioProcess::take_pending_line() {
 }
 
 EngineReadResult EngineStdioProcess::read_line(const std::chrono::milliseconds timeout) {
+  // K1: a zero budget is already expired on every path, even with a buffered line.
+  if (timeout.count() <= 0) return {EngineReadKind::timeout, {}, {}};
   if (auto pending = take_pending_line(); pending.has_value()) return std::move(*pending);
 #if defined(_WIN32)
   // Iterative and bounded exactly like POSIX: an oversized line is a failure,
   // the deadline is a timeout, and a dead child with an empty pipe is closed.
   if (!stdout_read_) return {EngineReadKind::closed, {}, {}};
-  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  const auto deadline = deadline_after(timeout);
   std::array<char, 1024> bytes{};
   bool child_exit_seen = false;
   for (;;) {
@@ -231,7 +235,7 @@ EngineReadResult EngineStdioProcess::read_line(const std::chrono::milliseconds t
       if (auto pending = take_pending_line(); pending.has_value()) return std::move(*pending);
       continue;
     }
-    if (std::chrono::steady_clock::now() >= deadline) return {EngineReadKind::timeout, {}, {}};
+    if (remaining_until(deadline).count() == 0) return {EngineReadKind::timeout, {}, {}};
     // A 1 ms pause that returns at once when the child has exited.  Output the
     // child wrote before exiting is already in the pipe, so one more empty peek
     // after the exit was observed means nothing further can arrive.
@@ -249,10 +253,10 @@ EngineReadResult EngineStdioProcess::read_line(const std::chrono::milliseconds t
   // One deadline for the whole call: every poll waits only for the remaining
   // budget, so a record split across several writes is still read whole as
   // long as its last byte arrives before the deadline.
-  const auto deadline = std::chrono::steady_clock::now() + std::max(timeout, std::chrono::milliseconds::zero());
+  const auto deadline = deadline_after(timeout);
   std::array<char, 1024> bytes{};
   for (;;) {
-    const auto remaining = std::chrono::ceil<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+    const auto remaining = remaining_until(deadline);
     const auto bounded = std::clamp<std::int64_t>(remaining.count(), 0, 0x7fffffff);
     pollfd pollfd{stdout_read_, POLLIN | POLLHUP, 0};
     const int status = poll(&pollfd, 1, static_cast<int>(bounded));

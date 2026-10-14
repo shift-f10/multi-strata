@@ -28,6 +28,13 @@ class EngineStdioProcess final : public EngineLineTransport {
   // and is accepted by the original Strata command-line parser.
   [[nodiscard]] std::optional<ProcessError> start(const EngineCommand& command);
   [[nodiscard]] bool running();
+  // Sends SIGTERM to the child's process group (Windows: terminates the Job),
+  // waits up to `grace`, then SIGKILLs the group and reaps the leader for at
+  // most 500 ms. Returns true once the leader is reaped (or was never
+  // started). Returns false ONLY if the leader is still unreaped after that
+  // bound: the object is then "abandoned" — do not start() it again; the
+  // supervisor applies spec V10 (no respawn until reaped; past reap_timeout
+  // the circuit opens).
   [[nodiscard]] bool terminate(std::chrono::milliseconds grace);
 
   [[nodiscard]] bool write_line(std::string_view line, std::string& error) override;

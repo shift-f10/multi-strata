@@ -410,6 +410,11 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_server_tests ${SECURE_FRONTEND_SERVER_CASES}
         TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
+    secure_frontend_add_test_executable(secure_frontend_deadline_tests tests/deadline_test.cpp secure_frontend_engine_stdio_process)
+    secure_frontend_test_paths(secure_frontend_deadline_tests)
+    # Portable and unlabeled: it also runs under wine.
+    secure_frontend_add_cases(secure_frontend_deadline_tests deadline_zero_timeout_is_immediate_everywhere TIMEOUT 120)
+
     secure_frontend_add_test_executable(secure_frontend_http_policy_tests tests/http_policy_test.cpp secure_frontend_http_policy)
     secure_frontend_add_cases(secure_frontend_http_policy_tests
         accepts_exact_host_without_browser_origin rejects_ambiguous_or_untrusted_host requires_an_exact_same_origin
@@ -445,6 +450,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_engine_process_tests
         starts_without_a_shell_and_uses_only_allowlisted_environment rejects_empty_executable
         rejects_malformed_allowlist_entry rejects_embedded_nul_in_exec_boundary termination_cleans_up_a_process_group)
+    secure_frontend_test_paths(secure_frontend_engine_process_tests)
 
     secure_frontend_add_test_executable(secure_frontend_engine_protocol_client_tests tests/engine_protocol_client_test.cpp
         secure_frontend_engine_protocol_client)

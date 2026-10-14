@@ -1,4 +1,5 @@
 #include "secure_frontend/engine_process.hpp"
+#include "support/test_paths.hpp"
 #include "support/test_support.hpp"
 
 #include <chrono>
@@ -26,17 +27,7 @@ void expect(const bool condition, const std::string& message) {
   }
 }
 
-std::filesystem::path current_executable() {
-#if defined(_WIN32)
-  std::vector<wchar_t> buffer(32768);
-  const auto length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-  return std::filesystem::path(std::wstring(buffer.data(), length));
-#else
-  std::vector<char> buffer(4096);
-  const auto length = readlink("/proc/self/exe", buffer.data(), buffer.size());
-  return std::filesystem::path(std::string(buffer.data(), static_cast<std::size_t>(length)));
-#endif
-}
+using test_support::current_executable;
 
 int run_fake_engine(const int argc, char** argv) {
   const char* const allowed = std::getenv("STRATA_ALLOWED_TEST");
