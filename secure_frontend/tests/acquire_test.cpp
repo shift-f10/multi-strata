@@ -3,6 +3,8 @@
 #include "secure_frontend/manifest_diff.hpp"
 #include "secure_frontend/model_index_model.hpp"
 #include "secure_frontend/staging_plan.hpp"
+#include "acquire_cases.hpp"
+#include "support/expect.hpp"
 #include "support/test_support.hpp"
 
 #include <algorithm>
@@ -16,14 +18,7 @@
 
 namespace {
 
-int failures = 0;
-
-void expect(const bool condition, const std::string& message) {
-  if (!condition) {
-    ++failures;
-    std::cerr << "FAILED: " << message << '\n';
-  }
-}
+using secure_frontend_test::expect;
 
 using secure_frontend::AcquireReason;
 using secure_frontend::ExitCode;
@@ -256,5 +251,15 @@ int main(int argc, char** argv) {
       {"staging_plan_classifies_partials", staging_plan_classifies_partials},
       {"abandoned_keys_match_same_model_only", abandoned_keys_match_same_model_only},
       {"update_diff_lists_changed_files_and_license", update_diff_lists_changed_files_and_license},
-  }, failures);
+#if defined(SECURE_FRONTEND_HAVE_MODELS_STORE)  // F-34: until Task 17 adds the Windows store
+      {"concurrent_pull_same_manifest_second_is_models_busy", acquire_cases::concurrent_pull_same_manifest_second_is_models_busy},
+      {"part_file_create_append_resume_truncate", acquire_cases::part_file_create_append_resume_truncate},
+      {"rename_within_never_replaces", acquire_cases::rename_within_never_replaces},
+      {"rename_fallback_never_replaces", acquire_cases::rename_fallback_never_replaces},
+      {"remove_tree_removes_links_without_following", acquire_cases::remove_tree_removes_links_without_following},
+      {"hash_into_rejects_hard_links_and_counts_bytes", acquire_cases::hash_into_rejects_hard_links_and_counts_bytes},
+      {"store_environment_seams_report_space_and_fs_kind", acquire_cases::store_environment_seams_report_space_and_fs_kind},
+      {"overlong_joined_paths_fail_closed_without_throwing", acquire_cases::overlong_joined_paths_fail_closed_without_throwing},
+#endif
+  }, secure_frontend_test::failures);
 }
