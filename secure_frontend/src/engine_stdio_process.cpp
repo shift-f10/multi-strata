@@ -1,10 +1,10 @@
 #include "secure_frontend/engine_stdio_process.hpp"
 
 #include "secure_frontend/deadline.hpp"
+#include "secure_frontend/supervision_defaults.hpp"
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -15,6 +15,9 @@
 
 #if defined(_WIN32)
 #include "secure_frontend/win32_prelude.hpp"
+
+#include <bcrypt.h>
+#include <sddl.h>
 #else
 #include <csignal>
 #include <fcntl.h>
@@ -95,6 +98,39 @@ std::wstring quote(const std::wstring_view arg) {
 // Fixed text plus the numeric Win32 error code: no paths, names or secrets.
 std::string with_last_error(const char* what) { return std::string(what) + " (Win32 error " + std::to_string(GetLastError()) + ")"; }
 void close_handle(void*& handle) noexcept { if (handle != nullptr) { CloseHandle(static_cast<HANDLE>(handle)); handle = nullptr; } }
+
+// 128 random bits for the pipe name (spec §3.11). Task 29 switches this to SP1's fill_random().
+std::optional<std::wstring> random_pipe_suffix() {
+  std::array<unsigned char, 16> bytes{};
+  if (BCryptGenRandom(nullptr, bytes.data(), static_cast<ULONG>(bytes.size()), BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) return std::nullopt;
+  static constexpr wchar_t kDigits[] = L"0123456789abcdef";
+  std::wstring text;
+  for (const unsigned char byte : bytes) {
+    text.push_back(kDigits[byte >> 4U]);
+    text.push_back(kDigits[byte & 0x0fU]);
+  }
+  return text;
+}
+
+// D:P(A;;GA;;;<current user SID>): protected, one ACE, current user only.
+// The caller LocalFree()s the result.
+PSECURITY_DESCRIPTOR owner_only_descriptor() {
+  HANDLE token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return nullptr;
+  DWORD size = 0;
+  (void)GetTokenInformation(token, TokenUser, nullptr, 0, &size);
+  std::vector<std::byte> buffer(size);
+  const bool have_user = size != 0 && GetTokenInformation(token, TokenUser, buffer.data(), size, &size);
+  CloseHandle(token);
+  if (!have_user) return nullptr;
+  LPWSTR sid = nullptr;
+  if (!ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER*>(buffer.data())->User.Sid, &sid)) return nullptr;
+  const std::wstring sddl = std::wstring(L"D:P(A;;GA;;;") + sid + L")";
+  LocalFree(sid);
+  PSECURITY_DESCRIPTOR descriptor = nullptr;
+  if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr)) return nullptr;
+  return descriptor;
+}
 #endif
 
 }  // namespace
@@ -114,23 +150,33 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
   for (const auto& [name, value] : command.environment) { auto n = to_wide(name); auto v = to_wide(value); if (!n || !v) return ProcessError{ProcessErrorCode::invalid_command, "engine environment is not valid UTF-8"}; environment += *n + L"=" + *v; environment.push_back(L'\0'); }
   environment.push_back(L'\0');
   SECURITY_ATTRIBUTES attrs{sizeof(attrs), nullptr, TRUE}; HANDLE child_stdin = nullptr, child_stdout = nullptr, child_stderr = nullptr, parent_stdin = nullptr, parent_stdout = nullptr;
-  // Bounded stdin writes by the documented pipe-buffer contract (P7): the
-  // parent's outbound buffer holds kMaxWriteLineBytes + 4096 bytes, so one GEN
-  // record (at most kMaxWriteLineBytes plus LF) never blocks the synchronous
-  // WriteFile.  Overlapped writes with a deadline are SP2 work.  The pipe has a
-  // single instance created with FILE_FLAG_FIRST_PIPE_INSTANCE and rejects
-  // remote clients: a squatter on the name, or one that connects first, makes
-  // setup fail closed before anything is written.  The parent end is not
-  // inheritable; only the child's read end (opened with `attrs`) is.
-  static std::atomic<unsigned long> pipe_counter{0};
-  const std::wstring pipe_name = L"\\\\.\\pipe\\secure_frontend-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(pipe_counter.fetch_add(1));
-  parent_stdin = CreateNamedPipeW(pipe_name.c_str(), PIPE_ACCESS_OUTBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE,
+  // Spec §3.11: an owner-only (protected DACL, current user), single-instance
+  // pipe with a 128-bit random name that rejects remote clients. The frontend
+  // end is overlapped so writes have a deadline (§3.10). After our own client
+  // open the pipe's client pid must be ours, which closes the window in which
+  // another process could connect first. The parent end is not inheritable;
+  // only the child's read end (opened with `attrs`) is.
+  const auto suffix = random_pipe_suffix();
+  PSECURITY_DESCRIPTOR descriptor = owner_only_descriptor();
+  if (!suffix || descriptor == nullptr) {
+    if (descriptor != nullptr) LocalFree(descriptor);
+    return ProcessError{ProcessErrorCode::platform_failure, "stdio pipe setup failed"};
+  }
+  SECURITY_ATTRIBUTES pipe_attrs{sizeof(pipe_attrs), descriptor, FALSE};
+  const std::wstring pipe_name = L"\\\\.\\pipe\\secure_frontend-" + std::to_wstring(GetCurrentProcessId()) + L"-" + *suffix;
+  parent_stdin = CreateNamedPipeW(pipe_name.c_str(), PIPE_ACCESS_OUTBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE | FILE_FLAG_OVERLAPPED,
                                   PIPE_TYPE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 1,
-                                  static_cast<DWORD>(kMaxWriteLineBytes + 4096U), 0, 0, nullptr);
+                                  static_cast<DWORD>(supervision_defaults::kStdinWriteChunk), 0, 0, &pipe_attrs);
+  LocalFree(descriptor);
   if (parent_stdin == INVALID_HANDLE_VALUE) parent_stdin = nullptr;
   if (parent_stdin != nullptr) {
     child_stdin = CreateFileW(pipe_name.c_str(), GENERIC_READ, 0, &attrs, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (child_stdin == INVALID_HANDLE_VALUE) child_stdin = nullptr;
+  }
+  ULONG client_pid = 0;
+  if (child_stdin != nullptr && (!GetNamedPipeClientProcessId(parent_stdin, &client_pid) || client_pid != GetCurrentProcessId())) {
+    CloseHandle(child_stdin);
+    child_stdin = nullptr;
   }
   if (parent_stdin == nullptr || child_stdin == nullptr || !CreatePipe(&parent_stdout, &child_stdout, &attrs, 0) || !SetHandleInformation(parent_stdout, HANDLE_FLAG_INHERIT, 0)) { if (child_stdin) CloseHandle(child_stdin); if (parent_stdin) CloseHandle(parent_stdin); if (child_stdout) CloseHandle(child_stdout); if (parent_stdout) CloseHandle(parent_stdout); return ProcessError{ProcessErrorCode::platform_failure, with_last_error("stdio pipe setup failed")}; }
   child_stderr = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &attrs, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -181,7 +227,7 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
   if (!AssignProcessToJobObject(job, info.hProcess)) { TerminateProcess(info.hProcess, 1); /* still suspended: it never ran */ CloseHandle(info.hThread); CloseHandle(info.hProcess); CloseHandle(parent_stdin); CloseHandle(parent_stdout); CloseHandle(job); return ProcessError{ProcessErrorCode::platform_failure, with_last_error("AssignProcessToJobObject failed")}; }
   if (ResumeThread(info.hThread) == static_cast<DWORD>(-1)) { TerminateJobObject(job, kSupervisorKillExitCode); CloseHandle(info.hThread); CloseHandle(info.hProcess); CloseHandle(parent_stdin); CloseHandle(parent_stdout); CloseHandle(job); return ProcessError{ProcessErrorCode::platform_failure, with_last_error("ResumeThread failed")}; }
   CloseHandle(info.hThread);
-  process_handle_ = info.hProcess; job_handle_ = job; stdin_write_ = parent_stdin; stdout_read_ = parent_stdout; return std::nullopt;
+  process_handle_ = info.hProcess; job_handle_ = job; stdin_write_ = parent_stdin; stdout_read_ = parent_stdout; stdin_pipe_name_ = pipe_name; return std::nullopt;
 #else
   // Everything the child needs is built before fork(); the child body is async-signal-safe.
   posix_launch::PreparedExec prepared;
@@ -242,8 +288,42 @@ bool EngineStdioProcess::write_line(const std::string_view line, std::string& er
   if (line.empty() || line.size() > kMaxWriteLineBytes || line.find('\n') != std::string_view::npos || line.find('\r') != std::string_view::npos || contains_nul(line)) { error = "protocol line is invalid"; return false; }
   std::string record(line); record.push_back('\n');
 #if defined(_WIN32)
-  // Synchronous by contract: the stdin pipe buffer (see start) holds one whole record.
-  if (!stdin_write_) { error = "engine stdin is closed"; return false; } DWORD written = 0; if (!WriteFile(static_cast<HANDLE>(stdin_write_), record.data(), static_cast<DWORD>(record.size()), &written, nullptr) || written != record.size()) { error = "engine stdin write failed"; return false; } return true;
+  if (!stdin_write_) { error = "engine stdin is closed"; return false; }
+  // Spec §3.10: overlapped writes in chunks; a chunk that makes no progress
+  // within kStdinWriteDeadline is cancelled and the write fails, so a hung
+  // engine can never hang the serving thread (the supervisor then kills it).
+  HANDLE pipe = static_cast<HANDLE>(stdin_write_);
+  HANDLE event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  if (event == nullptr) { error = "engine stdin write failed"; return false; }
+  bool ok = true;
+  std::size_t offset = 0;
+  while (ok && offset < record.size()) {
+    const auto chunk = static_cast<DWORD>(std::min<std::size_t>(record.size() - offset, supervision_defaults::kStdinWriteChunk));
+    OVERLAPPED overlapped{};
+    overlapped.hEvent = event;
+    (void)ResetEvent(event);
+    DWORD written = 0;
+    if (!WriteFile(pipe, record.data() + offset, chunk, nullptr, &overlapped) && GetLastError() != ERROR_IO_PENDING) {
+      error = "engine stdin write failed";
+      ok = false;
+      break;
+    }
+    if (WaitForSingleObject(event, static_cast<DWORD>(supervision_defaults::kStdinWriteDeadline.count())) != WAIT_OBJECT_0) {
+      (void)CancelIoEx(pipe, &overlapped);
+      (void)GetOverlappedResult(pipe, &overlapped, &written, TRUE);  // the cancelled I/O must finish before `overlapped` goes away
+      error = "engine stdin is not writable";
+      ok = false;
+      break;
+    }
+    if (!GetOverlappedResult(pipe, &overlapped, &written, FALSE) || written == 0) {
+      error = "engine stdin write failed";
+      ok = false;
+      break;
+    }
+    offset += written;
+  }
+  CloseHandle(event);
+  return ok;
 #else
   if (stdin_write_ < 0) { error = "engine stdin is closed"; return false; } std::size_t offset = 0; while (offset < record.size()) { pollfd pollfd{stdin_write_, POLLOUT, 0}; if (poll(&pollfd, 1, 1000) <= 0) { error = "engine stdin is not writable"; return false; } ssize_t count = -1; if (!write_without_sigpipe(stdin_write_, record.data() + offset, record.size() - offset, count) || count <= 0) { error = "engine stdin write failed"; return false; } offset += static_cast<std::size_t>(count); } return true;
 #endif

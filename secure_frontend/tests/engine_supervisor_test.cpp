@@ -542,6 +542,38 @@ void proc04_windows_crash_does_not_stall() {
   expect(std::chrono::steady_clock::now() - started < 5s, "within 5 s");
   supervisor.shutdown(5s);
 }
+
+// K2 (spec §3.10): an engine that never reads stdin cannot hang the serving
+// thread; the stalled chunk is cancelled at its deadline and the supervisor
+// kills the engine as write_timeout.
+void proc04_windows_write_timeout_kills_engine() {
+  secure_frontend::SupervisorConfig config;
+  config.policy.backoff_initial = 20ms;
+  // The request must end through the write deadline, deterministically: a
+  // short generation_timeout (2 s) bounds the case even if a write completed,
+  // and the prompt cap is raised for the large prompt below.
+  config.chat_limits.generation_timeout = 2s;
+  config.chat_limits.maximum_prompt_tokens = 100000U;
+  test_support::LogCapture log;
+  secure_frontend::EngineSupervisor supervisor(
+      config, secure_frontend::make_stdio_process_factory(fake_plan({"--stall-stdin", "--ready-context=131072"})),
+      std::make_shared<secure_frontend::SteadySupervisorClock>(), log.sink());
+  supervisor.start();
+  expect(test_support::wait_generation_ready(supervisor, 1U, 10s), "ready");
+  const auto tokenizer = test_support::byte_tokenizer();
+  // 60,000 '0' bytes are 60,000 prompt tokens of id 239 (three digits plus a
+  // comma each): the GEN line is about 240 KB, more than 3x the 64 KiB pipe
+  // buffer, and this engine never reads stdin, so a chunk must stall past the
+  // 1 s no-progress deadline. (60,000 stays under the renderer's 65,536-byte
+  // per-message cap, so the request reaches the write.)
+  const secure_frontend::ChatCompletionRequest request{"fake-model", {{"user", std::string(60000U, '0')}}, 2U};
+  const auto started = std::chrono::steady_clock::now();
+  const auto outcome = secure_frontend::execute_with_lease(supervisor, request, tokenizer);
+  expect(outcome && std::holds_alternative<secure_frontend::ChatExecutionError>(*outcome), "the request fails");
+  expect(std::chrono::steady_clock::now() - started < 5s, "the blocked write is cancelled at its deadline");
+  expect(log.wait_for("engine generation 1 ended: killed_by_supervisor(write_timeout)", 5s), "killed as write_timeout");
+  supervisor.shutdown(5s);
+}
 #endif
 
 }  // namespace
@@ -570,6 +602,7 @@ int main(int argc, char* argv[]) {
 #if defined(_WIN32)
                                                 {"proc04_windows_abort_does_not_stall", proc04_windows_abort_does_not_stall},
                                                 {"proc04_windows_crash_does_not_stall", proc04_windows_crash_does_not_stall},
+                                                {"proc04_windows_write_timeout_kills_engine", proc04_windows_write_timeout_kills_engine},
 #endif
                                                }, failures);
 }

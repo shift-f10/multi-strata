@@ -60,6 +60,11 @@ class EngineStdioProcess final : public EngineLineTransport, public SupervisedPr
   // Test seam: bytes read from the engine but not yet returned as a line.
   [[nodiscard]] std::size_t pending_bytes_for_tests() const noexcept { return pending_stdout_.size(); }
 
+#if defined(_WIN32)
+  // Test seams (spec N6, R1): the stdin pipe's name and the frontend's end of it.
+  [[nodiscard]] const std::wstring& stdin_pipe_name_for_tests() const noexcept { return stdin_pipe_name_; }
+  [[nodiscard]] void* stdin_handle_for_tests() const noexcept { return stdin_write_; }
+#endif
 #if !defined(_WIN32)
   // Test seam: the POSIX child pid, so tests can inspect /proc/<pid> after terminate.
   [[nodiscard]] int pid_for_tests() const noexcept { return process_id_; }
@@ -71,6 +76,7 @@ class EngineStdioProcess final : public EngineLineTransport, public SupervisedPr
   void* job_handle_{nullptr};
   void* stdin_write_{nullptr};
   void* stdout_read_{nullptr};
+  std::wstring stdin_pipe_name_;
 #else
   int process_id_{-1};
   int process_group_{-1};

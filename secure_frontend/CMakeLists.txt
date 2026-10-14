@@ -315,6 +315,7 @@ if(WIN32)
     target_link_libraries(secure_frontend_config PUBLIC ws2_32)
     target_link_libraries(secure_frontend_http_socket_server PUBLIC ws2_32)
     target_link_libraries(secure_frontend_token_reader PUBLIC advapi32)
+    target_link_libraries(secure_frontend_engine_stdio_process PUBLIC advapi32 bcrypt)
 endif()
 
 foreach(_target IN ITEMS
@@ -436,7 +437,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_test_paths(secure_frontend_engine_child_tests)
     set(SECURE_FRONTEND_CHILD_CASES proc04_exit_status_is_classified)
     set(SECURE_FRONTEND_CHILD_LINUX_CASES proc05_group_killed_after_leader_reaped proc02_child_signal_state_is_default proc02_canary_descriptors_absent)
-    set(SECURE_FRONTEND_CHILD_WINDOWS_CASES proc02_canary_handles_absent)
+    set(SECURE_FRONTEND_CHILD_WINDOWS_CASES proc02_canary_handles_absent proc02_stdin_pipe_dacl_is_owner_only proc03_windows_pipe_second_open_fails)
     if(WIN32)
         list(APPEND SECURE_FRONTEND_CHILD_CASES ${SECURE_FRONTEND_CHILD_WINDOWS_CASES})
     else()
@@ -455,7 +456,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     set(SECURE_FRONTEND_SUPERVISOR_UNIT_CASES supervisor_health_literals_per_state proc04_restart_backoff_then_circuit_open proc04_healthy_window_resets_failure_count proc04_missing_engine_opens_circuit_without_spinning proc04_client_err_lines_open_circuit_until_restart supervisor_retires_ended_generation_on_its_own_thread proc04_monitor_fallback_without_pidfd proc04_backoff_survives_stale_wake proc04_fatal_line_before_ready_kills_as_fatal_line proc04_unreaped_child_opens_circuit)
     set(SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES proc04_recovers_after_transient_crash proc04_monitor_detects_idle_crash proc04_fatal_prefix_kills_engine proc04_ready_timeout_kills_and_counts proc04_drain_failure_kills_and_restarts proc04_no_leak_across_restarts)
     set(SECURE_FRONTEND_SUPERVISOR_LINUX_CASES proc05_setsid_grandchild_is_reaped proc05_setsid_grandchild_is_reaped_at_shutdown)
-    set(SECURE_FRONTEND_SUPERVISOR_WINDOWS_CASES proc04_windows_abort_does_not_stall proc04_windows_crash_does_not_stall)
+    set(SECURE_FRONTEND_SUPERVISOR_WINDOWS_CASES proc04_windows_abort_does_not_stall proc04_windows_crash_does_not_stall proc04_windows_write_timeout_kills_engine)
     if(WIN32)
         list(APPEND SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES ${SECURE_FRONTEND_SUPERVISOR_WINDOWS_CASES})
     else()
@@ -465,6 +466,10 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # Process cases are windows-runtime on Windows (Jobs, exit codes, pipes).
     secure_frontend_add_cases(secure_frontend_engine_supervisor_tests ${SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES}
         TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    if(WIN32)
+        # Tokenizing and writing a ~240 KB GEN line on a slow runner; the case itself ends in seconds.
+        set_tests_properties(secure_frontend_engine_supervisor_tests.proc04_windows_write_timeout_kills_engine PROPERTIES TIMEOUT 300)
+    endif()
 
     secure_frontend_add_test_executable(secure_frontend_http_policy_tests tests/http_policy_test.cpp secure_frontend_http_policy)
     secure_frontend_add_cases(secure_frontend_http_policy_tests

@@ -16,6 +16,8 @@
 
 #if defined(_WIN32)
 #include "secure_frontend/win32_prelude.hpp"
+
+#include <aclapi.h>
 #else
 #include <csignal>
 #include <fcntl.h>
@@ -293,6 +295,58 @@ void proc02_canary_handles_absent() {
   CloseHandle(event);
   (void)closesocket(socket_handle);
 }
+std::vector<unsigned char> current_token_user() {
+  HANDLE token = nullptr;
+  (void)OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token);
+  DWORD size = 0;
+  (void)GetTokenInformation(token, TokenUser, nullptr, 0, &size);
+  std::vector<unsigned char> buffer(size);
+  (void)GetTokenInformation(token, TokenUser, buffer.data(), size, &size);
+  CloseHandle(token);
+  return buffer;  // a TOKEN_USER
+}
+
+void proc02_stdin_pipe_dacl_is_owner_only() {
+  secure_frontend::EngineStdioProcess child;
+  expect(!child.start({.executable = test_support::fake_engine_path(), .arguments = {}, .environment = {}}).has_value(), "start");
+  expect(child.read_line(5s).line == "READY 4096 stop", "READY");
+  PACL dacl = nullptr;
+  PSECURITY_DESCRIPTOR descriptor = nullptr;
+  const DWORD status = GetSecurityInfo(static_cast<HANDLE>(child.stdin_handle_for_tests()), SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION,
+                                       nullptr, nullptr, &dacl, nullptr, &descriptor);
+  expect(status == ERROR_SUCCESS && dacl != nullptr, "the pipe has an explicit DACL");
+  if (status == ERROR_SUCCESS && dacl != nullptr) {
+    ACL_SIZE_INFORMATION size{};
+    expect(GetAclInformation(dacl, &size, sizeof(size), AclSizeInformation) && size.AceCount == 1U, "exactly one ACE");
+    void* ace = nullptr;
+    if (GetAce(dacl, 0, &ace)) {
+      const auto* allowed = static_cast<ACCESS_ALLOWED_ACE*>(ace);
+      const auto user = current_token_user();
+      expect(allowed->Header.AceType == ACCESS_ALLOWED_ACE_TYPE, "an allow ACE");
+      expect(EqualSid(const_cast<DWORD*>(&allowed->SidStart), reinterpret_cast<const TOKEN_USER*>(user.data())->User.Sid) != FALSE,
+             "for the current user only");
+    }
+    SECURITY_DESCRIPTOR_CONTROL control = 0;
+    DWORD revision = 0;
+    expect(GetSecurityDescriptorControl(descriptor, &control, &revision) && (control & SE_DACL_PROTECTED) != 0, "protected: nothing inherited");
+  }
+  if (descriptor != nullptr) LocalFree(descriptor);
+  const std::wstring& name = child.stdin_pipe_name_for_tests();
+  expect(name.size() > 33U && name.find_last_of(L'-') == name.size() - 33U, "the name ends with a 128-bit random suffix");
+  (void)child.terminate(250ms);
+}
+
+void proc03_windows_pipe_second_open_fails() {
+  secure_frontend::EngineStdioProcess child;
+  expect(!child.start({.executable = test_support::fake_engine_path(), .arguments = {}, .environment = {}}).has_value(), "start");
+  expect(child.read_line(5s).line == "READY 4096 stop", "READY");
+  HANDLE second = CreateFileW(child.stdin_pipe_name_for_tests().c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+  const DWORD error = second == INVALID_HANDLE_VALUE ? GetLastError() : 0U;
+  if (second != INVALID_HANDLE_VALUE) CloseHandle(second);
+  expect(second == INVALID_HANDLE_VALUE && (error == ERROR_PIPE_BUSY || error == ERROR_ACCESS_DENIED),
+         "a second open of the engine stdin pipe fails (busy or denied), error " + std::to_string(error));
+  (void)child.terminate(250ms);
+}
 #endif
 
 }  // namespace
@@ -308,6 +362,8 @@ int main(int argc, char* argv[]) {
 #endif
 #if defined(_WIN32)
                                              {"proc02_canary_handles_absent", proc02_canary_handles_absent},
+                                             {"proc02_stdin_pipe_dacl_is_owner_only", proc02_stdin_pipe_dacl_is_owner_only},
+                                             {"proc03_windows_pipe_second_open_fails", proc03_windows_pipe_second_open_fails},
 #endif
                                          },
                                          failures);
