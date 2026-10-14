@@ -5,7 +5,9 @@
 #include "secure_frontend/downloader_command.hpp"
 #include "secure_frontend/fetch_schedule.hpp"
 #include "secure_frontend/model_index_model.hpp"
+#include "fetch_cases.hpp"
 #include "support/curl_scenario.hpp"
+#include "support/expect.hpp"
 #include "support/fake_curl_support.hpp"
 #include "support/test_support.hpp"
 
@@ -30,14 +32,7 @@
 
 namespace {
 
-int failures = 0;
-
-void expect(const bool condition, const std::string& message) {
-  if (!condition) {
-    ++failures;
-    std::cerr << "FAILED: " << message << '\n';
-  }
-}
+using secure_frontend_test::expect;
 
 bool location_problem(const std::string_view value, const secure_frontend::UrlProblem expected) {
   const auto result = secure_frontend::parse_location(value, "huggingface.co");
@@ -590,5 +585,27 @@ int main(int argc, char** argv) {
 #else
       {"fake_curl_records_on_crt_entry_4_windows", fake_curl_records_on_crt_entry_4_windows},
 #endif
-  }, failures);
+      {"dl03_truncated_body_rejected", fetch_cases::dl03_truncated_body_rejected},
+      {"dl03_oversize_body_rejected_mid_stream", fetch_cases::dl03_oversize_body_rejected_mid_stream},
+      {"dl03_redirect_to_http_rejected", fetch_cases::dl03_redirect_to_http_rejected},
+      {"dl03_redirect_off_allowlist_rejected", fetch_cases::dl03_redirect_off_allowlist_rejected},
+      {"dl03_redirect_limit", fetch_cases::dl03_redirect_limit},
+      {"redirect_query_only_in_config_line", fetch_cases::redirect_query_only_in_config_line},
+      {"dl03_private_address_rejected", fetch_cases::dl03_private_address_rejected},
+      {"dl03_mixed_public_private_answer_rejected", fetch_cases::dl03_mixed_public_private_answer_rejected},
+      {"dl03_range_ignored_restarts_from_zero", fetch_cases::dl03_range_ignored_restarts_from_zero},
+      {"dl03_content_range_mismatch_rejected", fetch_cases::dl03_content_range_mismatch_rejected},
+      {"dl03_content_encoding_gzip_fails_digest", fetch_cases::dl03_content_encoding_gzip_fails_digest},
+      {"dl03_stalled_source_times_out", fetch_cases::dl03_stalled_source_times_out},
+      {"time_budget_exceeded_is_resumable", fetch_cases::time_budget_exceeded_is_resumable},
+      {"tls_untrusted_moves_to_next_source", fetch_cases::tls_untrusted_moves_to_next_source},
+      {"digest_mismatch_after_resume_refetches_once", fetch_cases::digest_mismatch_after_resume_refetches_once},
+      {"free_space_rechecked_while_writing", fetch_cases::free_space_rechecked_while_writing},
+      {"ipv6_only_hop_is_address_not_allowed", fetch_cases::ipv6_only_hop_is_address_not_allowed},
+      {"range_ignored_twice_is_range_mismatch_then_restarts", fetch_cases::range_ignored_twice_is_range_mismatch_then_restarts},
+      {"proxy_hop_skips_address_policy", fetch_cases::proxy_hop_skips_address_policy},
+#if defined(SECURE_FRONTEND_TEST_HOOKS)
+      {"test_cacert_reaches_argv_in_hook_builds", fetch_cases::test_cacert_reaches_argv_in_hook_builds},
+#endif
+  }, secure_frontend_test::failures);
 }

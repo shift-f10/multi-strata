@@ -420,13 +420,15 @@ else()
 endif()
 add_library(secure_frontend_acquire src/models_store_common.cpp ${_sf_models_store_platform})
 target_sources(secure_frontend_acquire PRIVATE src/model_index_write.cpp src/acquire_publish.cpp src/bundle_io.cpp)
+# SP4 Task 21 (spec §3.3-§3.7): per-file fetch over an abstract hop transport; getaddrinfo resolver.
+target_sources(secure_frontend_acquire PRIVATE src/fetch_file.cpp src/system_resolver.cpp)
 target_compile_features(secure_frontend_acquire PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_acquire PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
 target_link_libraries(secure_frontend_acquire PUBLIC secure_frontend_acquire_core secure_frontend_model_store
     secure_frontend_token_store secure_frontend_tokenizer_pack)
 if(WIN32)
-    target_link_libraries(secure_frontend_acquire PUBLIC advapi32)
+    target_link_libraries(secure_frontend_acquire PUBLIC advapi32 ws2_32)
 endif()
 secure_frontend_set_warnings(secure_frontend_acquire)
 
@@ -937,6 +939,21 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         endif()
         secure_frontend_add_cases(secure_frontend_fetch_tests fake_curl_answers_probe
             ARGS $<TARGET_FILE:secure_frontend_fake_curl>)
+    endif()
+    # SP4 Task 21 (spec §3.3-§3.7): fetch_file over ScriptedTransport; these write a models store.
+    target_sources(secure_frontend_fetch_tests PRIVATE tests/fetch_file_test.cpp)
+    target_link_libraries(secure_frontend_fetch_tests PRIVATE secure_frontend_acquire)
+    secure_frontend_add_cases(secure_frontend_fetch_tests dl03_truncated_body_rejected dl03_oversize_body_rejected_mid_stream
+        dl03_redirect_to_http_rejected dl03_redirect_off_allowlist_rejected dl03_redirect_limit redirect_query_only_in_config_line
+        dl03_private_address_rejected dl03_mixed_public_private_answer_rejected dl03_range_ignored_restarts_from_zero
+        dl03_content_range_mismatch_rejected dl03_content_encoding_gzip_fails_digest dl03_stalled_source_times_out
+        time_budget_exceeded_is_resumable tls_untrusted_moves_to_next_source digest_mismatch_after_resume_refetches_once
+        free_space_rechecked_while_writing ipv6_only_hop_is_address_not_allowed
+        range_ignored_twice_is_range_mismatch_then_restarts proxy_hop_skips_address_policy
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    if(SECURE_FRONTEND_TEST_HOOKS)
+        secure_frontend_add_cases(secure_frontend_fetch_tests test_cacert_reaches_argv_in_hook_builds
+            LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     endif()
 
     add_test(NAME strata_secure_server_help COMMAND strata-secure-server --help)
