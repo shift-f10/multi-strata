@@ -38,4 +38,14 @@ class SecretBytes final {
   std::size_t size_{0U};
 };
 
+namespace detail {
+// Copies both values into zero-padded 256-byte windows and XORs all 256
+// bytes, folding in the length difference, so the work done is the same for
+// every input up to the public maximum. A value longer than 256 bytes is
+// rejected before comparing. An empty stored value never matches.
+// *bytes_compared (test instrumentation) receives the number of bytes compared.
+[[nodiscard]] bool fixed_window_equals(std::string_view presented, std::string_view stored,
+                                       std::size_t* bytes_compared) noexcept;
+}  // namespace detail
+
 }  // namespace secure_frontend

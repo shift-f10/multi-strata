@@ -1,7 +1,7 @@
 #include "secure_frontend/http_request_handler.hpp"
+#include "secure_frontend/secret_bytes.hpp"
 
 #include <algorithm>
-#include <cstdint>
 #include <limits>
 
 namespace secure_frontend {
@@ -162,14 +162,7 @@ std::optional<std::string_view> HttpResponse::header_value(std::string_view name
 }
 
 bool constant_time_token_equals(std::string_view candidate, std::string_view expected) {
-  const std::size_t longest = std::max(candidate.size(), expected.size());
-  std::uint64_t difference = static_cast<std::uint64_t>(candidate.size() ^ expected.size());
-  for (std::size_t index = 0; index < longest; ++index) {
-    const unsigned char left = index < candidate.size() ? static_cast<unsigned char>(candidate[index]) : 0U;
-    const unsigned char right = index < expected.size() ? static_cast<unsigned char>(expected[index]) : 0U;
-    difference |= static_cast<std::uint64_t>(left ^ right);
-  }
-  return difference == 0U;
+  return detail::fixed_window_equals(candidate, expected, nullptr);
 }
 
 HttpResponse handle_http_request(std::string_view request, const HttpPolicy& policy,

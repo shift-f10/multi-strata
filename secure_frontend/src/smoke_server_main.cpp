@@ -6,6 +6,7 @@
 #include "secure_frontend/process_defaults.hpp"
 #include "secure_frontend/secret_source.hpp"
 #include "secure_frontend/token_reader.hpp"
+#include "secure_frontend/token_verifier.hpp"
 
 #include <charconv>
 #include <cstdlib>
@@ -138,21 +139,6 @@ std::string host_header(const secure_frontend::Config& config) {
   return (ipv6 ? "[" + config.host + "]" : config.host) + ":" + std::to_string(config.port);
 }
 
-class TokenVerifier final {
- public:
-  explicit TokenVerifier(std::string token) : token_(std::move(token)) {}
-  ~TokenVerifier() {
-    volatile char* bytes = token_.empty() ? nullptr : token_.data();
-    for (std::size_t index = 0; bytes != nullptr && index < token_.size(); ++index) bytes[index] = '\0';
-  }
-  [[nodiscard]] bool matches(const std::string_view candidate) const {
-    return secure_frontend::constant_time_token_equals(candidate, token_);
-  }
-
- private:
-  std::string token_;
-};
-
 int run(const Options& options) {
   const auto source_result = options.token_environment.has_value()
       ? secure_frontend::make_environment_secret_source(*options.token_environment)
@@ -169,7 +155,7 @@ int run(const Options& options) {
     std::cerr << "Unable to read API token.\n";
     return EXIT_FAILURE;
   }
-  auto verifier = std::make_shared<TokenVerifier>(std::string{token->view()});
+  auto verifier = std::make_shared<const secure_frontend::TokenVerifier>(std::move(*token));
 
   const secure_frontend::ConfigInput input{
       .host = options.host,
@@ -204,7 +190,7 @@ int run(const Options& options) {
       [] { return true; }, [models = std::move(models)] { return models; });
   auto server = secure_frontend::HttpSocketServer::bind(
       *config, std::move(policy),
-      [verifier](const std::string_view supplied) { return verifier->matches(supplied); },
+      secure_frontend::make_bearer_validator(verifier),
       [&router](const std::string_view method, const std::string_view target, const std::string_view) {
         return router.dispatch(method, target);
       },

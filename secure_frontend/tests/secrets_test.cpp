@@ -1,5 +1,6 @@
 #include "secure_frontend/secret_bytes.hpp"
 #include "secure_frontend/token_generator.hpp"
+#include "secure_frontend/token_verifier.hpp"
 #include "support/test_support.hpp"
 
 #include <algorithm>
@@ -8,6 +9,7 @@
 #include <new>
 #include <set>
 #include <string>
+#include <utility>
 #include <variant>
 
 namespace {
@@ -82,6 +84,35 @@ void secret_bytes_rejects_over_capacity() {
          "a value over 256 bytes is refused, not truncated");
   expect(secret.assign(std::string(secure_frontend::SecretBytes::kCapacity, 'x')), "exactly 256 bytes fits");
 }
+
+void auth03_compare_touches_fixed_window() {
+  const std::string stored(43, 's');
+  for (const std::size_t length : {std::size_t{1}, std::size_t{43}, std::size_t{256}}) {
+    std::size_t compared = 0;
+    (void)secure_frontend::detail::fixed_window_equals(std::string(length, 'p'), stored, &compared);
+    expect(compared == secure_frontend::kTokenWindowBytes,
+           "every comparison touches all 256 bytes, input length " + std::to_string(length));
+  }
+  std::size_t compared = 99;
+  expect(!secure_frontend::detail::fixed_window_equals(std::string(257, 'p'), stored, &compared) && compared == 0U,
+         "a value over the public 256-byte maximum is rejected before comparing");
+}
+
+void auth03_prefix_and_suffix_variants_rejected() {
+  const std::string stored = "auth03-token-0123456789abcdefghijklmnopqrs";
+  secure_frontend::SecretBytes secret;
+  expect(secret.assign(stored), "fits");
+  const secure_frontend::TokenVerifier verifier(std::move(secret));
+  expect(verifier.matches(stored), "the exact token matches");
+  std::string first = stored; first.front() = 'X';
+  std::string last = stored; last.back() = 'X';
+  for (const std::string& variant : {stored.substr(0, stored.size() - 1), stored + "x", "x" + stored, first, last,
+                                     std::string{}, stored + std::string(1, '\0')}) {
+    expect(!verifier.matches(variant), "a prefix, suffix or one-byte variant must not match");
+  }
+  const secure_frontend::TokenVerifier empty{secure_frontend::SecretBytes{}};
+  expect(!empty.matches(""), "an empty stored token never matches, not even an empty one");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -91,5 +122,7 @@ int main(int argc, char** argv) {
       {"token_generate_differs_across_calls", token_generate_differs_across_calls},
       {"secret_bytes_wiped_on_destroy_and_move", secret_bytes_wiped_on_destroy_and_move},
       {"secret_bytes_rejects_over_capacity", secret_bytes_rejects_over_capacity},
+      {"auth03_compare_touches_fixed_window", auth03_compare_touches_fixed_window},
+      {"auth03_prefix_and_suffix_variants_rejected", auth03_prefix_and_suffix_variants_rejected},
   }, failures);
 }

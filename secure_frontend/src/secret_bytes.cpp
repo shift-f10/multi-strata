@@ -1,5 +1,6 @@
 #include "secure_frontend/secret_bytes.hpp"
 
+#include <array>
 #include <cstring>
 
 #if defined(_WIN32)
@@ -59,5 +60,27 @@ void SecretBytes::clear() noexcept {
 std::string_view SecretBytes::view() const noexcept {
   return std::string_view{reinterpret_cast<const char*>(bytes_.data()), size_};
 }
+
+namespace detail {
+bool fixed_window_equals(const std::string_view presented, const std::string_view stored,
+                         std::size_t* const bytes_compared) noexcept {
+  if (bytes_compared != nullptr) *bytes_compared = 0U;
+  if (presented.size() > kTokenWindowBytes || stored.size() > kTokenWindowBytes) return false;
+  std::array<unsigned char, kTokenWindowBytes> left{};
+  std::array<unsigned char, kTokenWindowBytes> right{};
+  if (!presented.empty()) std::memcpy(left.data(), presented.data(), presented.size());
+  if (!stored.empty()) std::memcpy(right.data(), stored.data(), stored.size());
+  std::size_t difference = presented.size() ^ stored.size();
+  std::size_t compared = 0U;
+  for (std::size_t index = 0U; index < kTokenWindowBytes; ++index) {
+    difference |= static_cast<std::size_t>(left[index] ^ right[index]);
+    ++compared;
+  }
+  secure_wipe(left.data(), left.size());
+  secure_wipe(right.data(), right.size());
+  if (bytes_compared != nullptr) *bytes_compared = compared;
+  return difference == 0U && !stored.empty();
+}
+}  // namespace detail
 
 }  // namespace secure_frontend

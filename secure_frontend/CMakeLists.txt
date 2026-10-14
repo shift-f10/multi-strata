@@ -167,7 +167,7 @@ add_library(secure_frontend_chat_execution
     src/chat_execution.cpp
 )
 
-add_library(secure_frontend_secrets src/secret_bytes.cpp src/token_generator.cpp)
+add_library(secure_frontend_secrets src/secret_bytes.cpp src/token_generator.cpp src/token_verifier.cpp)
 target_compile_features(secure_frontend_secrets PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_secrets PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
@@ -213,7 +213,7 @@ target_include_directories(secure_frontend_http_request_handler
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(secure_frontend_http_request_handler PUBLIC secure_frontend_http_policy)
+target_link_libraries(secure_frontend_http_request_handler PUBLIC secure_frontend_http_policy secure_frontend_secrets)
 
 target_compile_features(secure_frontend_http_socket_server PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_http_socket_server
@@ -411,7 +411,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_test_executable(secure_frontend_secrets_tests tests/secrets_test.cpp secure_frontend_secrets)
     secure_frontend_add_cases(secure_frontend_secrets_tests
         base64url_known_vectors token_generate_is_43_base64url_chars token_generate_differs_across_calls
-        secret_bytes_wiped_on_destroy_and_move secret_bytes_rejects_over_capacity)
+        secret_bytes_wiped_on_destroy_and_move secret_bytes_rejects_over_capacity
+        auth03_compare_touches_fixed_window auth03_prefix_and_suffix_variants_rejected)
 
     secure_frontend_add_test_executable(secure_frontend_token_store_tests tests/token_store_test.cpp
         secure_frontend_token_store)
@@ -486,7 +487,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         accepts_authorized_request passes_the_bounded_raw_body_to_an_authorized_dispatcher
         rejects_malformed_and_ambiguous_messages requires_one_well_formed_bearer_token
         fails_closed_before_calling_validator_for_untrusted_origin emits_cors_only_for_policy_approved_origin
-        handles_policy_approved_preflight_without_exposing_an_endpoint constant_time_helper_matches_only_equal_tokens)
+        handles_policy_approved_preflight_without_exposing_an_endpoint constant_time_helper_matches_only_equal_tokens
+        auth03_router_uses_verifier)
 
     secure_frontend_add_test_executable(secure_frontend_http_socket_server_tests tests/http_socket_server_test.cpp
         secure_frontend_http_socket_server)

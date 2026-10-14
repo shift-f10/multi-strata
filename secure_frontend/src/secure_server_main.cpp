@@ -12,6 +12,7 @@
 #include "secure_frontend/server_cli.hpp"
 #include "secure_frontend/subsystem_limits.hpp"
 #include "secure_frontend/token_reader.hpp"
+#include "secure_frontend/token_verifier.hpp"
 #include "secure_frontend/tokenizer_pack.hpp"
 
 #include <algorithm>
@@ -34,21 +35,6 @@ std::string host_header(const secure_frontend::Config& config) {
   const bool ipv6 = config.host.find(':') != std::string::npos;
   return (ipv6 ? "[" + config.host + "]" : config.host) + ":" + std::to_string(config.port);
 }
-
-class TokenVerifier final {
- public:
-  explicit TokenVerifier(std::string token) : token_(std::move(token)) {}
-  ~TokenVerifier() {
-    volatile char* bytes = token_.empty() ? nullptr : token_.data();
-    for (std::size_t index = 0; bytes != nullptr && index < token_.size(); ++index) bytes[index] = '\0';
-  }
-  [[nodiscard]] bool matches(const std::string_view candidate) const {
-    return secure_frontend::constant_time_token_equals(candidate, token_);
-  }
-
- private:
-  std::string token_;
-};
 
 secure_frontend::HttpResponse json_error(const int status, const char* message) {
   return {.status = status,
@@ -83,7 +69,7 @@ int run(const FrontendConfig& config) {
   auto token_result = read_configured_token(config);
   auto* token = std::get_if<secure_frontend::SecretBytes>(&token_result);
   if (token == nullptr) { std::cerr << "Unable to read API token.\n"; return EXIT_FAILURE; }
-  auto verifier = std::make_shared<TokenVerifier>(std::string{token->view()});
+  auto verifier = std::make_shared<const secure_frontend::TokenVerifier>(std::move(*token));
 
   const secure_frontend::Config listener = secure_frontend::listener_config(config);
   // Derived once, before bind/spawn; each subsystem keeps its own const copy.
@@ -137,7 +123,7 @@ int run(const FrontendConfig& config) {
       [&engine_state, &health_snapshot] { health_snapshot = engine_state(); return health_snapshot != "failed"; },
       [models] { return models; }, [&health_snapshot] { return health_snapshot; });
   auto server = secure_frontend::HttpSocketServer::bind(
-      listener, std::move(policy), [verifier](const std::string_view supplied) { return verifier->matches(supplied); },
+      listener, std::move(policy), secure_frontend::make_bearer_validator(verifier),
       [&router, &chat, &engine, &tokenizer, &model_id, &schema_limits](
           const std::string_view method, const std::string_view target, const std::string_view body) {
         if (method == "GET") return router.dispatch(method, target);

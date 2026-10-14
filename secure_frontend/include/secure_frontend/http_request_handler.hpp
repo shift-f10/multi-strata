@@ -31,9 +31,8 @@ using RequestDispatcher = std::function<HttpResponse(std::string_view method,
                                                      std::string_view target,
                                                      std::string_view body)>;
 
-// Compares all available bytes without an early content mismatch exit. This
-// helper is for opaque bearer tokens; callers should keep the expected token
-// outside long-lived configuration objects.
+// Fixed 256-byte window comparison (detail::fixed_window_equals): no early
+// exit on content and no dependence on either length up to the public maximum.
 [[nodiscard]] bool constant_time_token_equals(std::string_view candidate,
                                               std::string_view expected);
 
