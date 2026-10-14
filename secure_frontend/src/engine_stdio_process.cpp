@@ -20,7 +20,10 @@
 
 #include <sddl.h>
 
+#include <variant>
+
 #include "secure_frontend/token_generator.hpp"
+#include "win_child_launch.hpp"
 #else
 #include <csignal>
 #include <fcntl.h>
@@ -196,64 +199,50 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
   if (parent_stdin == nullptr || child_stdin == nullptr || !CreatePipe(&parent_stdout, &child_stdout, &attrs, 0) || !SetHandleInformation(parent_stdout, HANDLE_FLAG_INHERIT, 0)) { if (child_stdin) CloseHandle(child_stdin); if (parent_stdin) CloseHandle(parent_stdin); if (child_stdout) CloseHandle(child_stdout); if (parent_stdout) CloseHandle(parent_stdout); return ProcessError{ProcessErrorCode::platform_failure, with_last_error("stdio pipe setup failed")}; }
   child_stderr = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &attrs, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (child_stderr == INVALID_HANDLE_VALUE) { CloseHandle(child_stdin); CloseHandle(parent_stdin); CloseHandle(child_stdout); CloseHandle(parent_stdout); return ProcessError{ProcessErrorCode::platform_failure, with_last_error("stderr sink setup failed")}; }
-  HANDLE job = CreateJobObjectW(nullptr, nullptr); JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
-  // Spec §3.7: an unhandled exception in any Job process ends it at once
-  // (no WER wait), and closing the Job kills every member.
-  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
-  if (!job || !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) { CloseHandle(child_stdin); CloseHandle(parent_stdin); CloseHandle(child_stdout); CloseHandle(parent_stdout); CloseHandle(child_stderr); if (job) CloseHandle(job); return ProcessError{ProcessErrorCode::platform_failure, with_last_error("CreateJobObjectW failed")}; }
-  SIZE_T attribute_list_size = 0;
-  (void)InitializeProcThreadAttributeList(nullptr, 1, 0, &attribute_list_size);
-  std::vector<std::byte> attribute_list_storage(attribute_list_size);
-  auto* attribute_list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attribute_list_storage.data());
-  HANDLE inherited_handles[]{child_stdin, child_stdout, child_stderr};
-  if (!InitializeProcThreadAttributeList(attribute_list, 1, 0, &attribute_list_size) ||
-      !UpdateProcThreadAttribute(attribute_list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-                                 inherited_handles, sizeof(inherited_handles), nullptr, nullptr)) {
-    CloseHandle(child_stdin); CloseHandle(parent_stdin); CloseHandle(child_stdout); CloseHandle(parent_stdout); CloseHandle(child_stderr);
-    CloseHandle(job);
-    return ProcessError{ProcessErrorCode::platform_failure, with_last_error("process handle-list setup failed")};
-  }
-  STARTUPINFOEXW startup{};
-  startup.StartupInfo.cb = sizeof(startup);
-  startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-  startup.StartupInfo.hStdInput = child_stdin;
-  startup.StartupInfo.hStdOutput = child_stdout;
-  startup.StartupInfo.hStdError = child_stderr;
-  startup.lpAttributeList = attribute_list;
-  PROCESS_INFORMATION info{};
-  // Spec §3.7: a crashing engine must never wait on a Windows Error Reporting
-  // dialog; the error mode is inherited by the child. Set once per process.
-  static const UINT previous_error_mode = SetErrorMode(GetErrorMode() | SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS);
-  (void)previous_error_mode;
-  // Start suspended so the child is inside the Job before it runs a single
-  // instruction: no early descendant can escape the kill-on-close Job (PROC-05).
-  // CREATE_NEW_PROCESS_GROUP: Ctrl-C is disabled in the engine's group and
-  // group-targeted Ctrl-Break reaches only the frontend. CREATE_NO_WINDOW
-  // (SP2 Task 15 ruling): the engine runs without the frontend's console, so a
-  // console-wide Ctrl-Break or a closed console window reaches only the
-  // frontend, whose console handler (shutdown_signal.cpp) runs the orderly
-  // shutdown (spec §3.7). Its stdio is redirected, so it needs no console.
-  // Authoritative in MSYS2.
+  // The Job, creation flags, handle list, cwd and error mode live in
+  // win_launch::launch_in_job (SP2 R4: shared with SP4's downloader); the
+  // engine passes none of the SP4 seam inputs, so its launch is unchanged:
+  // Job = KILL_ON_JOB_CLOSE | DIE_ON_UNHANDLED_EXCEPTION, created suspended,
+  // assigned, resumed; CREATE_NO_WINDOW (SP2 Task 15 ruling). Authoritative in MSYS2.
   // Spec §3.12: the engine's cwd-relative files land in <state_dir>/engine; empty: inherit.
-  const std::wstring working_directory = command.working_directory.wstring();
-  const BOOL created = CreateProcessW(executable.c_str(), line.data(), nullptr, nullptr, TRUE,
-                                      CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED |
-                                          CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
-                                      environment.data(), working_directory.empty() ? nullptr : working_directory.c_str(),
-                                      &startup.StartupInfo, &info);
-  const DWORD create_error = created ? ERROR_SUCCESS : GetLastError();  // before CloseHandle can overwrite it
-  DeleteProcThreadAttributeList(attribute_list);
+  win_launch::WinLaunchStep step = win_launch::WinLaunchStep::none;
+  const auto launched = win_launch::launch_in_job({.executable = executable,
+                                                   .command_line = line,
+                                                   .environment_block = environment,
+                                                   .cwd = command.working_directory.wstring(),
+                                                   .stdin_read = child_stdin,
+                                                   .stdout_write = child_stdout,
+                                                   .stderr_handle = child_stderr,
+                                                   .primary_token = nullptr,
+                                                   .extra_inherited_handles = {},
+                                                   .crt_fd_block = {},
+                                                   .limit_active_process_to_one = false,
+                                                   .restrict_ui = false},
+                                                  &step);
   CloseHandle(child_stdin); CloseHandle(child_stdout); CloseHandle(child_stderr);
-  if (!created) {
-    CloseHandle(parent_stdin); CloseHandle(parent_stdout); CloseHandle(job);
-    // Spec §3.6/G3: an engine that asks for elevation is a spawn failure; it is never retried via runas.
-    if (create_error == ERROR_ELEVATION_REQUIRED) return ProcessError{ProcessErrorCode::spawn_failed, "engine requires elevation; refused"};
-    return ProcessError{ProcessErrorCode::spawn_failed, "CreateProcessW failed (Win32 error " + std::to_string(create_error) + ")"};
+  if (const auto* code = std::get_if<DWORD>(&launched)) {
+    CloseHandle(parent_stdin); CloseHandle(parent_stdout);
+    const std::string number = " (Win32 error " + std::to_string(*code) + ")";
+    switch (step) {
+      case win_launch::WinLaunchStep::create_process:
+        // Spec §3.6/G3: an engine that asks for elevation is a spawn failure; it is never retried via runas.
+        if (*code == ERROR_ELEVATION_REQUIRED) return ProcessError{ProcessErrorCode::spawn_failed, "engine requires elevation; refused"};
+        return ProcessError{ProcessErrorCode::spawn_failed, "CreateProcessW failed" + number};
+      case win_launch::WinLaunchStep::job:
+        return ProcessError{ProcessErrorCode::platform_failure, "CreateJobObjectW failed" + number};
+      case win_launch::WinLaunchStep::attributes:
+        return ProcessError{ProcessErrorCode::platform_failure, "process handle-list setup failed" + number};
+      case win_launch::WinLaunchStep::assign_job:
+        return ProcessError{ProcessErrorCode::platform_failure, "AssignProcessToJobObject failed" + number};
+      case win_launch::WinLaunchStep::resume:
+      case win_launch::WinLaunchStep::none:
+        break;
+    }
+    return ProcessError{ProcessErrorCode::platform_failure, "ResumeThread failed" + number};
   }
-  if (!AssignProcessToJobObject(job, info.hProcess)) { TerminateProcess(info.hProcess, 1); /* still suspended: it never ran */ CloseHandle(info.hThread); CloseHandle(info.hProcess); CloseHandle(parent_stdin); CloseHandle(parent_stdout); CloseHandle(job); return ProcessError{ProcessErrorCode::platform_failure, with_last_error("AssignProcessToJobObject failed")}; }
-  if (ResumeThread(info.hThread) == static_cast<DWORD>(-1)) { TerminateJobObject(job, kSupervisorKillExitCode); CloseHandle(info.hThread); CloseHandle(info.hProcess); CloseHandle(parent_stdin); CloseHandle(parent_stdout); CloseHandle(job); return ProcessError{ProcessErrorCode::platform_failure, with_last_error("ResumeThread failed")}; }
-  CloseHandle(info.hThread);
-  process_handle_ = info.hProcess; job_handle_ = job; stdin_write_ = parent_stdin; stdout_read_ = parent_stdout; stdin_pipe_name_ = pipe_name; return std::nullopt;
+  const auto& child = std::get<win_launch::WinLaunched>(launched);
+  CloseHandle(child.thread);
+  process_handle_ = child.process; job_handle_ = child.job; stdin_write_ = parent_stdin; stdout_read_ = parent_stdout; stdin_pipe_name_ = pipe_name; return std::nullopt;
 #else
   // Everything the child needs is built before fork(); the child body is async-signal-safe.
   posix_launch::PreparedExec prepared;
@@ -276,8 +265,11 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
     if (child == 0) posix_launch::exec_child(prepared, input[0], output[1], /*null_stderr=*/true, errors[1]);
   }
   if (child < 0) { for (int* pipe_fd : {input, output, errors}) { close_fd(pipe_fd[0]); close_fd(pipe_fd[1]); } return ProcessError{ProcessErrorCode::spawn_failed, "fork failed"}; }
-  close_fd(input[0]); close_fd(output[1]); close_fd(errors[1]); int child_errno = 0; const ssize_t count = read(errors[0], &child_errno, sizeof(child_errno)); close_fd(errors[0]);
-  if (count > 0) { close_fd(input[1]); close_fd(output[0]); int ignored = 0; (void)waitpid(child, &ignored, 0); return ProcessError{ProcessErrorCode::spawn_failed, std::string("execve failed: ") + std::strerror(child_errno)}; }
+  // EOF on the report pipe = execve succeeded; an errno = a launch step or execve
+  // failed; 'H' + errno = a pre-exec hook failed (SP4 seam; never from the engine,
+  // which passes no hook) — each with its own text (RF11).
+  close_fd(input[0]); close_fd(output[1]); close_fd(errors[1]); const auto report = posix_launch::classify_report(posix_launch::read_report(errors[0])); close_fd(errors[0]);
+  if (report.kind != posix_launch::ChildReportKind::none) { close_fd(input[1]); close_fd(output[0]); int ignored = 0; (void)waitpid(child, &ignored, 0); return ProcessError{ProcessErrorCode::spawn_failed, posix_launch::describe_report(report)}; }
   process_id_ = child; process_group_ = child; pidfd_ = open_pidfd(child); stdin_write_ = input[1]; stdout_read_ = output[0];
   cgroup_dir_ = command.cgroup_procs ? std::optional<std::filesystem::path>(command.cgroup_procs->parent_path()) : std::nullopt;
   return std::nullopt;

@@ -7,6 +7,7 @@
 #include "support/test_paths.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cerrno>
 #include <cstddef>
@@ -18,9 +19,11 @@
 #include <iostream>
 #include <map>
 #include <optional>
+#include <span>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <variant>
 #include <vector>
 
 #if defined(_WIN32)
@@ -28,14 +31,20 @@
 
 #include <aclapi.h>
 #include <sddl.h>
+
+#include "win_child_launch.hpp"
 #else
 #include <csignal>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
+
+#include "posix_child_launch.hpp"
 #endif
 
 namespace {
@@ -589,6 +598,252 @@ void proc06_child_has_no_new_privs() {
 }
 #endif
 
+#if !defined(_WIN32)
+// ---- SP4 launch seam (SP2 R4; SP4 spec §3.2), POSIX half ---------------------
+namespace launch = secure_frontend::posix_launch;
+
+// What the seam hook checks in the child. Filled before fork(): the child
+// only reads it (async-signal-safe).
+struct SeamHookContext final {
+  dev_t devices[2]{};
+  ino_t inodes[2]{};
+  int swept_parent_fd{-1};  // open in the parent, not kept: the sweep must have closed it
+};
+
+// Runs in the forked child after the sweep. Distinct errno values name the
+// check that failed, so a RED run says which property broke.
+int seam_hook(const void* raw, const std::span<const int> lifted) noexcept {
+  const auto* context = static_cast<const SeamHookContext*>(raw);
+  if (lifted.size() != 2U) return E2BIG;
+  for (std::size_t index = 0; index < 2U; ++index) {
+    if (lifted[index] < launch::kLiftFloor) return ERANGE;  // lifted at or above the floor
+    const int flags = fcntl(lifted[index], F_GETFD);
+    if (flags < 0 || (flags & FD_CLOEXEC) == 0) return ENOTSUP;  // lifted copies are close-on-exec
+    struct stat status {};
+    if (fstat(lifted[index], &status) != 0 || status.st_dev != context->devices[index] || status.st_ino != context->inodes[index]) {
+      return EDOM;  // the same open files, in keep_fds order
+    }
+  }
+  if (fcntl(context->swept_parent_fd, F_GETFD) != -1) return EEXIST;  // the hook runs after the sweep
+  // SP4's own move (§3.2): the first kept descriptor becomes the child's fd 4.
+  if (dup2(lifted[0], 4) != 4) return errno;
+  return 0;
+}
+
+int seam_hook_refuses(const void*, std::span<const int>) noexcept { return EPERM; }
+
+struct SeamLaunch final {
+  std::string report;  // raw report bytes; empty = execve succeeded
+  int status{-1};
+};
+
+// Forks and runs exec_child exactly as the launchers do (signals blocked
+// across fork; stdout and stderr to /dev/null).
+SeamLaunch seam_launch(const secure_frontend::EngineCommand& command, const launch::ExecOptions& options) {
+  launch::PreparedExec prepared;
+  launch::prepare(prepared, command, /*insert_serve=*/false);
+  SeamLaunch result;
+  int report[2]{-1, -1};
+  const int sink = open("/dev/null", O_WRONLY | O_CLOEXEC);
+  if (sink < 0 || pipe2(report, O_CLOEXEC) != 0) {
+    expect(false, "seam launch setup");
+    return result;
+  }
+  pid_t child = -1;
+  {
+    launch::BlockAllSignals blocked;
+    child = fork();
+    if (child == 0) launch::exec_child(prepared, -1, sink, /*null_stderr=*/true, report[1], options);
+  }
+  (void)close(report[1]);
+  (void)close(sink);
+  expect(child > 0, "fork");
+  result.report = launch::read_report(report[0]);
+  (void)close(report[0]);
+  if (child > 0) (void)waitpid(child, &result.status, 0);
+  return result;
+}
+
+// keep_fds holds a parent descriptor numbered 3 (the number SP2 dup2s its
+// report pipe onto) and one above 3. The hook sees both lifted >= kLiftFloor,
+// close-on-exec, in keep_fds order, after the sweep; it dup2s the first to 4.
+// The child then holds exactly 0, 1, 2 and 4, and fd 4 is the parent's fd 3.
+void sp4_seam_keep_fds_lift_and_hook_order() {
+  const auto dir = test_support::make_temp_dir("sp4p");
+  const auto first_path = dir / "first.txt";
+  const auto second_path = dir / "second.txt";
+  // Free fd 3 so the first kept file is opened as fd 3 (SP4's test-hook shape).
+  const int saved3 = fcntl(3, F_GETFD) >= 0 ? fcntl(3, F_DUPFD_CLOEXEC, 20) : -1;
+  if (saved3 >= 0) (void)close(3);
+  const int first = open(first_path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+  const int second = open(second_path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+  const int swept = open("/dev/null", O_RDONLY);  // inheritable on purpose: only the sweep closes it
+  expect(first == 3, "precondition: the first kept descriptor is fd 3, saw " + std::to_string(first));
+  expect(second > 3 && swept > 3, "precondition: the second kept descriptor is above 3");
+  SeamHookContext context;
+  struct stat status {};
+  for (const auto& [index, fd] : {std::pair{0, first}, std::pair{1, second}}) {
+    expect(fstat(fd, &status) == 0, "fstat");
+    context.devices[index] = status.st_dev;
+    context.inodes[index] = status.st_ino;
+  }
+  context.swept_parent_fd = swept;
+  const std::array<int, 2> keep{first, second};
+  const auto dump_path = dir / "dump.txt";
+  const auto launched = seam_launch(
+      {.executable = test_support::fake_engine_path(),
+       .arguments = {"--exit-before-ready=0", "--write-inherited=4", "--dump-file=" + test_support::utf8_path(dump_path)},
+       .environment = {}},
+      launch::ExecOptions{keep, seam_hook, &context});
+  int hook_errno = 0;
+  if (launched.report.size() == 1U + sizeof(int)) std::memcpy(&hook_errno, launched.report.data() + 1, sizeof(int));
+  expect(launched.report.empty(), "execve succeeded (report bytes " + std::to_string(launched.report.size()) + ", errno " +
+                                      std::to_string(hook_errno) + ")");
+  expect(WIFEXITED(launched.status) && WEXITSTATUS(launched.status) == 0, "the fake wrote through fd 4 and exited 0");
+  const auto dump = test_support::read_dump_file(dump_path, 10s);
+  expect(dump && dump->fds == std::vector<int>{0, 1, 2, 4},
+         "the child holds exactly stdio and the hook's fd 4: the hook ran after the sweep, and the lifted copies were close-on-exec");
+  std::ifstream written(first_path);
+  const std::string text{std::istreambuf_iterator<char>(written), std::istreambuf_iterator<char>()};
+  expect(text == "INHERITED 4\n", "fd 4 in the child is the parent's fd 3: it survived the 0..3 dup2 sequence, saw '" + text + "'");
+  for (const int fd : {first, second, swept}) (void)close(fd);
+  if (saved3 >= 0) {
+    (void)dup2(saved3, 3);
+    (void)close(saved3);
+  }
+}
+
+// A hook that returns EPERM: report is exactly 'H' + EPERM (SP4's classifier:
+// size == 1 + sizeof(int) && front() == 'H'), exit 127, distinct from an
+// execve failure (errno only). A keep_fds entry that cannot be lifted fails
+// closed the same way as a hook failure. Both launchers' texts differ.
+void sp4_seam_hook_failure_is_distinct_from_execve_failure() {
+  const auto marked = [](const std::string& report, const int expected) {
+    int value = 0;
+    if (report.size() == 1U + sizeof(int)) std::memcpy(&value, report.data() + 1, sizeof(int));
+    return report.size() == 1U + sizeof(int) && report.front() == launch::kHookFailureMarker && value == expected;
+  };
+  const secure_frontend::EngineCommand fake{.executable = test_support::fake_engine_path(), .arguments = {"--exit-before-ready=0"}, .environment = {}};
+  const std::array<int, 1> stdin_only{0};
+  const auto refused = seam_launch(fake, launch::ExecOptions{stdin_only, seam_hook_refuses, nullptr});
+  expect(marked(refused.report, EPERM), "a hook failure reports 'H' + EPERM");
+  expect(WIFEXITED(refused.status) && WEXITSTATUS(refused.status) == 127, "and the child _exits (127) without execve");
+  const auto classified = launch::classify_report(refused.report);
+  expect(classified.kind == launch::ChildReportKind::hook_failed && classified.error == EPERM, "classified as a hook failure");
+  expect(launch::describe_report(classified) == std::string("pre-exec hook failed: ") + std::strerror(EPERM), "hook failure text");
+
+  const auto missing = seam_launch({.executable = "/nonexistent/strata-r4-missing", .arguments = {}, .environment = {}}, launch::ExecOptions{});
+  int exec_errno = 0;
+  if (missing.report.size() == sizeof(int)) std::memcpy(&exec_errno, missing.report.data(), sizeof(int));
+  expect(missing.report.size() == sizeof(int) && exec_errno == ENOENT, "an execve failure keeps SP2's report: errno only, no marker");
+  const auto exec_failure = launch::classify_report(missing.report);
+  expect(exec_failure.kind == launch::ChildReportKind::exec_failed && exec_failure.error == ENOENT, "classified as an execve failure");
+  expect(launch::describe_report(exec_failure) == std::string("execve failed: ") + std::strerror(ENOENT), "execve failure text is unchanged");
+  expect(launch::describe_report(exec_failure) != launch::describe_report(classified), "the two failures read distinctly");
+  expect(launch::classify_report("").kind == launch::ChildReportKind::none, "no bytes: execve succeeded");
+  expect(launch::classify_report("xyz").kind == launch::ChildReportKind::malformed, "anything else is malformed, never success");
+
+  // Lifting fails closed: an fd that is not open cannot be lifted (EBADF); the hook never runs.
+  // (A high number nothing here opens: a just-closed low number would be reused by the launch's own open.)
+  int closed_fd = 900;
+  while (fcntl(closed_fd, F_GETFD) != -1) ++closed_fd;
+  const std::array<int, 1> not_open{closed_fd};
+  const auto unliftable = seam_launch(fake, launch::ExecOptions{not_open, seam_hook_refuses, nullptr});
+  expect(marked(unliftable.report, EBADF), "a keep_fds lift failure reports 'H' + EBADF (fail closed)");
+
+  // The engine launcher passes ExecOptions{} and still reports execve failures as before.
+  secure_frontend::EngineStdioProcess engine;
+  const auto error = engine.start({.executable = "/nonexistent/strata-r4-missing", .arguments = {}, .environment = {}});
+  expect(error && error->code == secure_frontend::ProcessErrorCode::spawn_failed &&
+             error->message == std::string("execve failed: ") + std::strerror(ENOENT),
+         "the engine's execve failure text is unchanged");
+}
+#endif
+
+#if defined(_WIN32)
+// ---- SP4 launch seam (SP2 R4; SP4 spec §3.2), Windows half -------------------
+// launch_in_job with one extra inheritable handle and a CRT block whose entry 4
+// is that handle (SP4's test-hook layout, n = 5): the fake parses the block from
+// STARTUPINFO and writes through entry 4. A launch without the extra handle (same
+// block) cannot write: the explicit handle list, not inheritance, carries it.
+void sp4_seam_launch_in_job_handle_and_crt_block() {
+  namespace wl = secure_frontend::win_launch;
+  const auto dir = test_support::make_temp_dir("sp4w");
+  const auto record = dir / "record.txt";
+  SECURITY_ATTRIBUTES inherit{sizeof(inherit), nullptr, TRUE};
+  HANDLE record_handle = CreateFileW(record.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit, CREATE_ALWAYS,
+                                     FILE_ATTRIBUTE_NORMAL, nullptr);
+  HANDLE in = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit, OPEN_EXISTING, 0, nullptr);
+  HANDLE out = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit, OPEN_EXISTING, 0, nullptr);
+  HANDLE err = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit, OPEN_EXISTING, 0, nullptr);
+  expect(record_handle != INVALID_HANDLE_VALUE && in != INVALID_HANDLE_VALUE && out != INVALID_HANDLE_VALUE && err != INVALID_HANDLE_VALUE,
+         "handles opened");
+  // Microsoft CRT inheritance layout, packed: int n, n flag bytes, n HANDLEs.
+  constexpr int kEntries = 5;
+  std::vector<std::uint8_t> block(sizeof(int) + kEntries * (1U + sizeof(HANDLE)));
+  std::memcpy(block.data(), &kEntries, sizeof(int));
+  const std::array<std::uint8_t, kEntries> flags{0x41, 0x41, 0x41, 0x00, 0x01};  // FOPEN|FDEV x3, unused, FOPEN
+  std::memcpy(block.data() + sizeof(int), flags.data(), flags.size());
+  const std::array<HANDLE, kEntries> handles{in, out, err, INVALID_HANDLE_VALUE, record_handle};
+  std::memcpy(block.data() + sizeof(int) + kEntries, handles.data(), sizeof(handles));
+  const std::wstring executable = test_support::fake_engine_path().wstring();
+  const std::wstring line = L"\"" + executable + L"\" --exit-before-ready=0 --write-inherited=4";
+  std::wstring environment;
+  std::vector<wchar_t> root(32768);
+  const DWORD root_length = GetEnvironmentVariableW(L"SystemRoot", root.data(), static_cast<DWORD>(root.size()));
+  if (root_length != 0 && root_length < root.size()) environment = L"SystemRoot=" + std::wstring(root.data(), root_length);
+  environment.push_back(L'\0');
+  environment.push_back(L'\0');
+
+  const auto run = [&](const bool with_extra, const bool limits) -> std::optional<DWORD> {
+    // SP4 Task 26's positional shape: executable .. crt_fd_block; the job options follow.
+    wl::WinLaunchSpec spec{executable, line, environment, L"", in, out, err, nullptr,
+                           with_extra ? std::vector<HANDLE>{record_handle} : std::vector<HANDLE>{}, block};
+    spec.limit_active_process_to_one = limits;
+    spec.restrict_ui = limits;
+    const auto launched = wl::launch_in_job(spec);
+    if (const auto* code = std::get_if<DWORD>(&launched)) {
+      expect(false, "launch_in_job failed (Win32 error " + std::to_string(*code) + ")");
+      return std::nullopt;
+    }
+    const auto child = std::get<wl::WinLaunched>(launched);
+    std::optional<DWORD> exit_code;
+    if (WaitForSingleObject(child.process, 10000) == WAIT_OBJECT_0) {
+      DWORD code = 0;
+      if (GetExitCodeProcess(child.process, &code)) exit_code = code;
+    }
+    if (limits) {
+      JOBOBJECT_EXTENDED_LIMIT_INFORMATION extended{};
+      JOBOBJECT_BASIC_UI_RESTRICTIONS ui{};
+      expect(QueryInformationJobObject(child.job, JobObjectExtendedLimitInformation, &extended, sizeof(extended), nullptr) != FALSE &&
+                 (extended.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_ACTIVE_PROCESS) != 0 &&
+                 extended.BasicLimitInformation.ActiveProcessLimit == 1 &&
+                 (extended.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE) != 0,
+             "the Job carries ACTIVE_PROCESS = 1 and KILL_ON_JOB_CLOSE when the spec asks");
+      expect(QueryInformationJobObject(child.job, JobObjectBasicUIRestrictions, &ui, sizeof(ui), nullptr) != FALSE &&
+                 ui.UIRestrictionsClass == wl::kAllUiRestrictions,
+             "and every UI restriction");
+    }
+    (void)TerminateJobObject(child.job, 1);
+    CloseHandle(child.thread);
+    CloseHandle(child.process);
+    CloseHandle(child.job);
+    return exit_code;
+  };
+  const auto read_record = [&] {
+    std::ifstream input(record, std::ios::binary);
+    return std::string{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+  };
+  const auto with_handle = run(true, true);
+  expect(with_handle == 0U, "the fake found the handle at CRT entry 4 and wrote through it (exit 0)");
+  expect(read_record() == "INHERITED 4\n", "the extra handle and the CRT block reached the child");
+  const auto without_handle = run(false, false);
+  expect(without_handle.has_value() && *without_handle != 0U, "without the extra handle in the list the child cannot write");
+  expect(read_record() == "INHERITED 4\n", "and nothing more was written");
+  for (HANDLE handle : {record_handle, in, out, err}) CloseHandle(handle);
+}
+#endif
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -603,12 +858,15 @@ int main(int argc, char* argv[]) {
                                              {"proc03_other_uid_cannot_open_engine_fd", proc03_other_uid_cannot_open_engine_fd},
                                              {"proc03_same_uid_reopen_is_accepted_risk", proc03_same_uid_reopen_is_accepted_risk},
                                              {"proc06_child_has_no_new_privs", proc06_child_has_no_new_privs},
+                                             {"sp4_seam_keep_fds_lift_and_hook_order", sp4_seam_keep_fds_lift_and_hook_order},
+                                             {"sp4_seam_hook_failure_is_distinct_from_execve_failure", sp4_seam_hook_failure_is_distinct_from_execve_failure},
 #endif
 #if defined(_WIN32)
                                              {"proc02_canary_handles_absent", proc02_canary_handles_absent},
                                              {"proc02_stdin_pipe_dacl_is_owner_only", proc02_stdin_pipe_dacl_is_owner_only},
                                              {"proc03_windows_pipe_second_open_fails", proc03_windows_pipe_second_open_fails},
                                              {"proc01_windows_argv_round_trip", proc01_windows_argv_round_trip},
+                                             {"sp4_seam_launch_in_job_handle_and_crt_block", sp4_seam_launch_in_job_handle_and_crt_block},
                                              // G3: in the case list only, never registered with CTest.
                                              {"proc06_elevation_required_is_spawn_failed", proc06_elevation_required_is_spawn_failed},
 #endif

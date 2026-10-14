@@ -381,6 +381,8 @@ if(WIN32)
     target_link_libraries(secure_frontend_http_socket_server PUBLIC ws2_32)
     target_link_libraries(secure_frontend_token_reader PUBLIC advapi32)
     target_link_libraries(secure_frontend_engine_stdio_process PUBLIC advapi32 secure_frontend_secrets)
+    # SP2 R4: win_launch::launch_in_job, the engine's CreateProcessW + Job sequence (SP4 seam).
+    target_sources(secure_frontend_engine_stdio_process PRIVATE src/win_child_launch.cpp)
     target_link_libraries(secure_frontend_paths PUBLIC advapi32)
     target_link_libraries(secure_frontend_secrets PUBLIC bcrypt)
     target_link_libraries(secure_frontend_token_reader PUBLIC crypt32)
@@ -572,10 +574,14 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         secure_frontend_engine_stdio_process secure_frontend_test_support)
     secure_frontend_test_paths(secure_frontend_engine_child_tests)
     target_link_libraries(secure_frontend_engine_child_tests PRIVATE secure_frontend_engine_process)
+    # SP2 R4: the SP4 seam cases drive the internal launch headers (src/posix_child_launch.hpp, src/win_child_launch.hpp).
+    target_include_directories(secure_frontend_engine_child_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     set(SECURE_FRONTEND_CHILD_CASES proc04_exit_status_is_classified proc06_child_ids_and_cwd)
     set(SECURE_FRONTEND_CHILD_LINUX_CASES proc05_group_killed_after_leader_reaped proc02_child_signal_state_is_default proc02_canary_descriptors_absent
-        proc03_other_uid_cannot_open_engine_fd proc03_same_uid_reopen_is_accepted_risk proc06_child_has_no_new_privs)
-    set(SECURE_FRONTEND_CHILD_WINDOWS_CASES proc02_canary_handles_absent proc02_stdin_pipe_dacl_is_owner_only proc03_windows_pipe_second_open_fails proc01_windows_argv_round_trip)
+        proc03_other_uid_cannot_open_engine_fd proc03_same_uid_reopen_is_accepted_risk proc06_child_has_no_new_privs
+        sp4_seam_keep_fds_lift_and_hook_order sp4_seam_hook_failure_is_distinct_from_execve_failure)
+    set(SECURE_FRONTEND_CHILD_WINDOWS_CASES proc02_canary_handles_absent proc02_stdin_pipe_dacl_is_owner_only proc03_windows_pipe_second_open_fails proc01_windows_argv_round_trip
+        sp4_seam_launch_in_job_handle_and_crt_block)
     if(WIN32)
         list(APPEND SECURE_FRONTEND_CHILD_CASES ${SECURE_FRONTEND_CHILD_WINDOWS_CASES})
     else()

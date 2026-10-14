@@ -8,6 +8,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <cstring>
 #include <cwchar>
 #include <filesystem>
 #include <fstream>
@@ -67,6 +68,7 @@ struct Options final {
   std::string grandchild_pidfile;
   bool echo_cmdline{false};
   std::string dump_file;
+  std::optional<int> write_inherited;
 };
 
 #if !defined(_WIN32)
@@ -109,6 +111,7 @@ Options parse_options(const int argc, char** argv) {
     else if (value_of(argument, "--record-file", value)) options.record_file = value;
     else if (value_of(argument, "--grandchild-pidfile", value)) options.grandchild_pidfile = value;
     else if (value_of(argument, "--dump-file", value)) options.dump_file = value;
+    else if (value_of(argument, "--write-inherited", value)) options.write_inherited = std::stoi(value);
     else if (value_of(argument, "--slow-stdin", value)) options.slow_stdin_bytes = std::max(1, std::stoi(value));
     else if (value_of(argument, "--slow-stdin-interval-ms", value)) options.slow_stdin_interval_ms = std::max(1, std::stoi(value));
   }
@@ -355,6 +358,32 @@ void write_dump_file(const std::string& path) {
   std::filesystem::rename(temporary, path, ignored);
 }
 
+// --write-inherited=N (SP2 R4, the SP4 launch seam): writes "INHERITED <N>\n"
+// to descriptor N (POSIX) or, on Windows, to the handle at entry N of the
+// Microsoft CRT descriptor block in STARTUPINFO.lpReserved2 (int n, n flag
+// bytes, n HANDLEs, packed). The block is parsed here, not through the fake's
+// own CRT, so the test sees exactly what the launcher passed. False: absent.
+bool write_inherited(const int index) {
+  const std::string text = "INHERITED " + std::to_string(index) + "\n";
+#if defined(_WIN32)
+  STARTUPINFOW startup{};
+  startup.cb = sizeof(startup);
+  GetStartupInfoW(&startup);
+  const unsigned char* block = startup.lpReserved2;
+  const std::size_t size = startup.cbReserved2;
+  int count = 0;
+  if (block == nullptr || size < sizeof(count)) return false;
+  std::memcpy(&count, block, sizeof(count));
+  if (index < 0 || count <= index || size < sizeof(count) + static_cast<std::size_t>(count) * (1U + sizeof(HANDLE))) return false;
+  HANDLE handle = nullptr;
+  std::memcpy(&handle, block + sizeof(count) + static_cast<std::size_t>(count) + static_cast<std::size_t>(index) * sizeof(HANDLE), sizeof(HANDLE));
+  DWORD written = 0;
+  return WriteFile(handle, text.data(), static_cast<DWORD>(text.size()), &written, nullptr) != FALSE && written == text.size();
+#else
+  return write(index, text.data(), text.size()) == static_cast<ssize_t>(text.size());
+#endif
+}
+
 void echo_cmdline() {
 #if defined(_WIN32)
   std::cout << "CMDLINE " << hex(utf8(GetCommandLineW())) << '\n' << std::flush;
@@ -388,6 +417,7 @@ int serve(const Options& options) {
   // A real engine may emit human diagnostics on stderr before READY; they must
   // never reach the strict stdout protocol stream.
   std::cerr << "diagnostic: private engine startup\n" << std::flush;
+  if (options.write_inherited && !write_inherited(*options.write_inherited)) return 3;
   if (!options.dump_file.empty()) write_dump_file(options.dump_file);
   if (options.exit_before_ready) return *options.exit_before_ready;
   if (options.hang_before_ready) sleep_forever();

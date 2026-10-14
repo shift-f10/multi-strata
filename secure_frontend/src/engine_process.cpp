@@ -199,6 +199,9 @@ std::optional<ProcessError> EngineProcess::start(const EngineCommand& command) {
   // frontend, whose console handler stops the engine in order (spec §3.7).
   // Same flags as the production twin (engine_stdio_process.cpp); this
   // test-only class (RF12) speaks no stdio protocol. Authoritative in MSYS2.
+  // It keeps its own CreateProcessW (no stdio redirection, bInheritHandles
+  // FALSE, so no handle list) rather than win_launch::launch_in_job (SP2 R4),
+  // which always passes three inheritable standard handles.
   const std::wstring working_directory = command.working_directory.wstring();
   if (!CreateProcessW(command.executable.c_str(), command_line.data(), nullptr, nullptr, FALSE,
                       CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
@@ -250,13 +253,13 @@ std::optional<ProcessError> EngineProcess::start(const EngineCommand& command) {
     return ProcessError{ProcessErrorCode::spawn_failed, "fork failed"};
   }
   close(error_pipe[1]);
-  int child_errno = 0;
-  const auto bytes_read = read(error_pipe[0], &child_errno, sizeof(child_errno));
+  // Same report reading as the production twin: execve and hook failures read distinctly (RF11).
+  const auto report = posix_launch::classify_report(posix_launch::read_report(error_pipe[0]));
   close(error_pipe[0]);
-  if (bytes_read > 0) {
+  if (report.kind != posix_launch::ChildReportKind::none) {
     int status = 0;
     (void)waitpid(child, &status, 0);
-    return ProcessError{ProcessErrorCode::spawn_failed, std::string("execve failed: ") + std::strerror(child_errno)};
+    return ProcessError{ProcessErrorCode::spawn_failed, posix_launch::describe_report(report)};
   }
   process_id_ = child;
   return std::nullopt;
