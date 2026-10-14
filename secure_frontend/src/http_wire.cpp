@@ -3,7 +3,11 @@
 #include "secure_frontend/http_request_head.hpp"
 
 #include <array>
+#include <cstddef>
 #include <cstdio>
+#include <optional>
+#include <utility>
+#include <vector>
 
 namespace secure_frontend {
 namespace {
@@ -16,13 +20,44 @@ constexpr std::array<std::pair<std::string_view, std::string_view>, 5> kSecurity
     {"Cross-Origin-Resource-Policy", "same-origin"},
 }};
 
-bool is_reserved_header(std::string_view name) {
+bool is_reserved_header(std::string_view name, const bool complete) {
   for (const auto& [fixed, value] : kSecurityHeaders) {
     (void)value;
     if (ascii_iequal(name, fixed)) return true;
   }
   return ascii_iequal(name, "Date") || ascii_iequal(name, "Connection") || ascii_iequal(name, "Content-Length") ||
-         ascii_iequal(name, "Transfer-Encoding") || ascii_iequal(name, "Server") || ascii_iequal(name, "X-Powered-By");
+         ascii_iequal(name, "Server") || ascii_iequal(name, "X-Powered-By") || (complete && ascii_iequal(name, "Transfer-Encoding"));
+}
+
+std::string head_text(const int status, const std::vector<std::pair<std::string, std::string>>& headers,
+                      const std::chrono::system_clock::time_point now, const std::optional<std::size_t> content_length) {
+  std::string output{"HTTP/1.1 "};
+  output += std::to_string(status);
+  output += ' ';
+  output += reason_phrase(status);
+  output += "\r\nDate: ";
+  output += imf_fixdate(now);
+  output += "\r\nConnection: close\r\n";
+  if (content_length.has_value()) output += "Content-Length: " + std::to_string(*content_length) + "\r\n";
+  for (const auto& [name, value] : kSecurityHeaders) {
+    output += name;
+    output += ": ";
+    output += value;
+    output += "\r\n";
+  }
+  for (const auto& [name, value] : headers) {
+    // Values come from code, never from the request; the CR/LF guard stays (SP0).
+    if (name.find_first_of("\r\n") != std::string::npos || value.find_first_of("\r\n") != std::string::npos ||
+        is_reserved_header(name, content_length.has_value() || status == 204)) {
+      continue;
+    }
+    output += name;
+    output += ": ";
+    output += value;
+    output += "\r\n";
+  }
+  output += "\r\n";
+  return output;
 }
 
 }  // namespace
@@ -76,37 +111,13 @@ std::string imf_fixdate(const std::chrono::system_clock::time_point now) {
   return buffer;
 }
 
+std::string serialize_head(const HttpHead& head, const std::chrono::system_clock::time_point now) {
+  return head_text(head.status, head.headers, now, std::nullopt);
+}
+
 std::string serialize_response(const HttpResponse& response, const std::chrono::system_clock::time_point now) {
-  std::string output{"HTTP/1.1 "};
-  output += std::to_string(response.status);
-  output += ' ';
-  output += reason_phrase(response.status);
-  output += "\r\nDate: ";
-  output += imf_fixdate(now);
-  output += "\r\nConnection: close\r\n";
-  if (response.status != 204) {
-    output += "Content-Length: ";
-    output += std::to_string(response.body.size());
-    output += "\r\n";
-  }
-  for (const auto& [name, value] : kSecurityHeaders) {
-    output += name;
-    output += ": ";
-    output += value;
-    output += "\r\n";
-  }
-  for (const auto& [name, value] : response.headers) {
-    // Values come from code, never from the request; the CR/LF guard stays (SP0).
-    if (name.find_first_of("\r\n") != std::string::npos || value.find_first_of("\r\n") != std::string::npos ||
-        is_reserved_header(name)) {
-      continue;
-    }
-    output += name;
-    output += ": ";
-    output += value;
-    output += "\r\n";
-  }
-  output += "\r\n";
+  std::string output = head_text(response.status, response.headers, now,
+                                 response.status == 204 ? std::nullopt : std::optional<std::size_t>{response.body.size()});
   if (response.status != 204) output += response.body;
   return output;
 }

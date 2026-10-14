@@ -20,10 +20,9 @@ void expect(bool condition, const std::string& message) {
   }
 }
 
-// The new policy has no CORS switch: a configured cors_origins entry is the
-// switch (pre-flight P10). The flag is kept so call sites stay unchanged until
-// Task 6b ports these cases to the router.
-secure_frontend::HttpPolicy policy(bool /*cors_enabled*/ = false) {
+// The policy has no CORS switch: a configured cors_origins entry is the
+// switch (pre-flight P10).
+secure_frontend::HttpPolicy policy() {
   return secure_frontend::make_http_policy(*secure_frontend::parse_listener_address("127.0.0.1"), 8080, {},
                                            {"https://console.example.test"});
 }
@@ -83,12 +82,16 @@ void rejects_malformed_and_ambiguous_messages() {
   for (const std::string request : {
            "GET / HTTP/1.1\nHost: 127.0.0.1:8080\n\n",
            "GET / HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nHost: evil.test\r\nAuthorization: Bearer test-token\r\n\r\n",
-           "GET / HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nAuthorization: Bearer test-token\r\nTransfer-Encoding: chunked\r\n\r\n",
            "GET / HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nAuthorization: Bearer test-token\r\nContent-Length: 2\r\n\r\nx",
        }) {
     const auto response = secure_frontend::handle_http_request(request, policy(), validator(), dispatcher());
     expect(response.status == 400, "ambiguous or malformed HTTP must be rejected with generic 400");
   }
+  // Spec §4.2 / §9.4: any Transfer-Encoding is 411 length_required (was the SP0 generic 400).
+  const auto chunked = secure_frontend::handle_http_request(
+      "GET / HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nAuthorization: Bearer test-token\r\nTransfer-Encoding: chunked\r\n\r\n",
+      policy(), validator(), dispatcher());
+  expect(chunked.status == 411, "a chunked request is rejected with 411");
 }
 
 void requires_one_well_formed_bearer_token() {
@@ -116,14 +119,14 @@ void fails_closed_before_calling_validator_for_untrusted_origin() {
 void emits_cors_only_for_policy_approved_origin() {
   const auto response = secure_frontend::handle_http_request(
       "GET /health HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nOrigin: https://console.example.test\r\nAuthorization: Bearer test-token\r\n\r\n",
-      policy(true), validator(), dispatcher());
+      policy(), validator(), dispatcher());
   expect(response.status == 200, "configured CORS origin should be accepted");
   expect(response.header_value("Access-Control-Allow-Origin") == "https://console.example.test",
          "approved CORS origin must be emitted exactly");
 
   const auto same_origin = secure_frontend::handle_http_request(
       "GET /health HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nOrigin: http://127.0.0.1:8080\r\nAuthorization: Bearer test-token\r\n\r\n",
-      policy(true), validator(), dispatcher());
+      policy(), validator(), dispatcher());
   expect(!same_origin.header_value("Access-Control-Allow-Origin").has_value(),
          "same-origin requests must not receive CORS headers");
 }
@@ -131,14 +134,14 @@ void emits_cors_only_for_policy_approved_origin() {
 void handles_policy_approved_preflight_without_exposing_an_endpoint() {
   const auto response = secure_frontend::handle_http_request(
       "OPTIONS /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nOrigin: https://console.example.test\r\nAccess-Control-Request-Method: POST\r\n\r\n",
-      policy(true), validator(), dispatcher());
+      policy(), validator(), dispatcher());
   expect(response.status == 204, "CORS preflight is not an authenticated API endpoint");
   expect(response.header_value("Access-Control-Allow-Origin") == "https://console.example.test",
          "preflight must only emit policy-approved CORS");
 
   const auto unsupported_method = secure_frontend::handle_http_request(
       "OPTIONS /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nOrigin: https://console.example.test\r\nAccess-Control-Request-Method: DELETE\r\n\r\n",
-      policy(true), validator(), dispatcher());
+      policy(), validator(), dispatcher());
   expect(unsupported_method.status == 403, "preflight must reject methods outside the CORS allowlist");
 }
 

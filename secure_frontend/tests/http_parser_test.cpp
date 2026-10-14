@@ -2,6 +2,7 @@
 #include "secure_frontend/api_errors.hpp"
 #include "secure_frontend/http_request_head.hpp"
 #include "secure_frontend/http_wire.hpp"
+#include "secure_frontend/request_router.hpp"
 #include "support/test_support.hpp"
 
 #include <chrono>
@@ -219,6 +220,51 @@ void head_request_line_and_header_syntax() {
     expect(head->values("HOST").size() == 1U && head->values("origin").front() == "http://127.0.0.1:8080", "values()");
   }
 }
+
+void wire_head_has_no_content_length() {
+  const auto now = std::chrono::system_clock::time_point{std::chrono::seconds{1791963785}};
+  const std::string head = secure_frontend::serialize_head(
+      {200, {{"Content-Type", "text/event-stream; charset=utf-8"}, {"Transfer-Encoding", "chunked"}, {"Content-Length", "5"}}}, now);
+  expect(head.rfind("HTTP/1.1 200 OK\r\n", 0) == 0, "status line");
+  expect(head.find("Content-Length") == std::string::npos, "a head never carries Content-Length");
+  expect(head.find("Transfer-Encoding: chunked\r\n") != std::string::npos, "a stream may set its own framing header");
+  expect(head.find("X-Content-Type-Options: nosniff\r\n") != std::string::npos && head.find("Connection: close\r\n") != std::string::npos,
+         "security headers and Connection: close");
+  expect(head.size() >= 4U && head.substr(head.size() - 4U) == "\r\n\r\n", "ends with the blank line");
+  const std::string complete = secure_frontend::serialize_response(
+      {.status = 200, .headers = {{"Transfer-Encoding", "chunked"}}, .body = "ok"}, now);
+  expect(complete.find("Transfer-Encoding") == std::string::npos && complete.find("Content-Length: 2\r\n") != std::string::npos,
+         "complete responses always use Content-Length");
+}
+
+struct SeamRouter final : secure_frontend::RequestRouter {
+  bool stream{false};
+  std::string seen_body;
+  secure_frontend::RouteDecision authorize(const secure_frontend::RequestHead& head) override {
+    secure_frontend::RouteDecision decision;
+    decision.route = secure_frontend::RouteId::chat;
+    decision.body_limit = head.content_length.value_or(0U);
+    return decision;
+  }
+  secure_frontend::RouteResult handle(const secure_frontend::RequestHead&, std::string_view body, const secure_frontend::RouteDecision&,
+                                      const secure_frontend::RequestContext&) override {
+    seen_body = std::string{body};
+    if (stream) return secure_frontend::StreamHandler{[](secure_frontend::StreamSink&) {}};
+    return secure_frontend::HttpResponse{.status = 200, .headers = {}, .body = "{}\n"};
+  }
+};
+
+void route_result_seam_returns_complete_response() {
+  SeamRouter router;
+  const std::string request = "POST /x HTTP/1.1\r\nHost: h\r\nContent-Length: 2\r\n\r\n{}";
+  const auto ok = secure_frontend::handle_http_request(request, router, kLimits);
+  expect(ok.status == 200 && router.seen_body == "{}", "a complete response passes through the seam");
+  expect(secure_frontend::handle_http_request(request + "x", router, kLimits).status == 400, "bytes after the body: 400");
+  router.stream = true;
+  const auto streamed = secure_frontend::handle_http_request(request, router, kLimits);
+  expect(streamed.status == 500 && streamed.body == secure_frontend::render_error_body(ApiError::internal_error),
+         "a StreamHandler needs a socket: the in-memory seam fails closed");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -232,5 +278,7 @@ int main(int argc, char** argv) {
       {"dos01_transfer_encoding_variants_are_411", dos01_transfer_encoding_variants_are_411},
       {"dos01_content_length_variants", dos01_content_length_variants},
       {"head_request_line_and_header_syntax", head_request_line_and_header_syntax},
+      {"wire_head_has_no_content_length", wire_head_has_no_content_length},
+      {"route_result_seam_returns_complete_response", route_result_seam_returns_complete_response},
   }, failures);
 }

@@ -414,10 +414,10 @@ void parser_honors_configured_max_request_bytes() {
   Fixture standard;
   if (!standard.server) { expect(false, "bind failed: " + standard.error); return; }
   const auto rejected = post_sink(standard, 128U * 1024U);
-  // A Content-Length beyond the bound is answered from the header alone with
-  // the parser's generic 400, without reading the body (required_message_size);
-  // 413 is reserved for bytes actually received past the bound.
-  expect(rejected.rfind("HTTP/1.1 400", 0) == 0, "the default limit still rejects it: " + rejected.substr(0, 24));
+  // A Content-Length beyond the bound is answered from the header alone,
+  // without reading the body: 413 request_too_large (spec §4.2, §9.4; was the
+  // SP0 generic 400).
+  expect(rejected.rfind("HTTP/1.1 413", 0) == 0, "the default limit still rejects it: " + rejected.substr(0, 24));
 }
 }  // namespace
 

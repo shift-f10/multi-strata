@@ -825,7 +825,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_http_parser_tests
         err_every_code_renders_fixed_body err_param_is_key_only wire_response_has_security_headers_and_date
         dos01_request_line_over_limit_is_414 dos01_header_block_over_limit_is_431 dos01_too_many_headers_is_431
-        dos01_transfer_encoding_variants_are_411 dos01_content_length_variants head_request_line_and_header_syntax)
+        dos01_transfer_encoding_variants_are_411 dos01_content_length_variants head_request_line_and_header_syntax
+        wire_head_has_no_content_length route_result_seam_returns_complete_response)
 
     secure_frontend_add_test_executable(secure_frontend_http_request_handler_tests tests/http_request_handler_test.cpp
         secure_frontend_http_request_handler)

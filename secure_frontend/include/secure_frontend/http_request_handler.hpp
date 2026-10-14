@@ -47,12 +47,13 @@ struct HttpParserLimits final {
   std::size_t max_request_line_bytes{static_cast<std::size_t>(config_defaults::kMaxRequestLineBytes)};
 };
 
-// Parses one complete, bounded HTTP/1.1 message in memory. This deliberately
-// does not open sockets, making policy enforcement portable and testable. The
-// dispatcher is reached only after Host/Origin policy and bearer
-// authentication have succeeded. The raw body is a non-owning view into the
-// already bounded request buffer and is valid only for the synchronous
-// dispatcher invocation; dispatchers that retain it must make their own copy.
+// Legacy adapter for the serial server; deleted in SP3 Task 9.
+// Wraps the dispatcher in a RequestRouter and runs the in-memory seam
+// (request_router.hpp). The dispatcher is reached only after Host/Origin
+// policy and bearer authentication have succeeded. The raw body is a
+// non-owning view into the already bounded request buffer and is valid only
+// for the synchronous dispatcher invocation; dispatchers that retain it must
+// make their own copy.
 [[nodiscard]] HttpResponse handle_http_request(std::string_view request,
                                                 const HttpPolicy& policy,
                                                 const BearerTokenValidator& validate_bearer_token,
