@@ -391,6 +391,13 @@ target_include_directories(secure_frontend_sha256 PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
 secure_frontend_set_warnings(secure_frontend_sha256)
 
+add_library(secure_frontend_manifest_core src/acquire_reason.cpp)
+target_compile_features(secure_frontend_manifest_core PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_manifest_core PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_link_libraries(secure_frontend_manifest_core PUBLIC secure_frontend_sha256)
+secure_frontend_set_warnings(secure_frontend_manifest_core)
+
 if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     enable_testing()
 
@@ -706,6 +713,10 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     if(SECURE_FRONTEND_TEST_HOOKS)
         secure_frontend_add_cases(secure_frontend_sha256_tests length_counter_past_2_32_bytes)
     endif()
+
+    secure_frontend_add_test_executable(secure_frontend_acquire_tests tests/acquire_test.cpp secure_frontend_manifest_core)
+    secure_frontend_add_cases(secure_frontend_acquire_tests exit_classes_match_spec_table
+        reason_table_is_complete_and_ordered error_text_states_resumable)
 
     add_test(NAME strata_secure_server_help COMMAND strata-secure-server --help)
     # The GLM runner takes positional arguments: glm53 without any --engine-arg is a usage error.
