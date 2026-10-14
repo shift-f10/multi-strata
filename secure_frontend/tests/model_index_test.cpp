@@ -56,6 +56,17 @@ void reinstall_same_version_does_not_retire() {
   expect(index.models.size() == 1 && index.retired.empty(), "--verify re-publish of the same dir retires nothing");
 }
 
+void downgrade_to_retired_version_leaves_it_live_only() {
+  ModelIndex index = secure_frontend::with_installed({}, entry("m", "t", 1, 'a'));
+  index = secure_frontend::with_installed(index, entry("m", "t", 2, 'b'));
+  index = secure_frontend::with_installed(index, entry("m", "t", 1, 'a'));
+  expect(index.models.size() == 1 && index.models.front().dir == "v1-aaaaaaaaaaaa", "v1 is live again");
+  expect(index.retired.size() == 1 && index.retired.front().dir == "v2-bbbbbbbbbbbb", "only v2 is retired; v1 is not");
+  index = secure_frontend::with_installed(index, entry("m", "t", 2, 'b'));
+  index = secure_frontend::with_installed(index, entry("m", "t", 1, 'a'));
+  expect(index.retired.size() == 1, "repeated swaps leave no duplicate retired rows");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -63,5 +74,6 @@ int main(int argc, char** argv) {
       {"index_render_is_deterministic", index_render_is_deterministic},
       {"install_retires_previous_version", install_retires_previous_version},
       {"reinstall_same_version_does_not_retire", reinstall_same_version_does_not_retire},
+      {"downgrade_to_retired_version_leaves_it_live_only", downgrade_to_retired_version_leaves_it_live_only},
   }, failures);
 }

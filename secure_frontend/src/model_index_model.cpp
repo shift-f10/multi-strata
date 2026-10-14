@@ -74,9 +74,17 @@ const IndexEntry* find_model(const ModelIndex& index, const std::string_view nam
 }
 
 ModelIndex with_installed(ModelIndex index, IndexEntry entry) {
+  // A directory is never live and retired at once (e.g. a downgrade adopting a retired version again).
+  std::erase_if(index.retired,
+                [&](const RetiredEntry& r) { return r.name == entry.name && r.tag == entry.tag && r.dir == entry.dir; });
   for (auto& e : index.models) {
     if (e.name != entry.name || e.tag != entry.tag) continue;
-    if (e.dir != entry.dir) index.retired.push_back(RetiredEntry{e.name, e.tag, e.dir, e.manifest_sha256});
+    const bool already_retired = std::any_of(index.retired.begin(), index.retired.end(), [&](const RetiredEntry& r) {
+      return r.name == e.name && r.tag == e.tag && r.dir == e.dir;
+    });
+    if (e.dir != entry.dir && !already_retired) {
+      index.retired.push_back(RetiredEntry{e.name, e.tag, e.dir, e.manifest_sha256});
+    }
     e = std::move(entry);
     return index;
   }

@@ -732,7 +732,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         abandoned_keys_match_same_model_only)
     secure_frontend_add_test_executable(secure_frontend_model_index_tests tests/model_index_test.cpp secure_frontend_manifest_core)
     secure_frontend_add_cases(secure_frontend_model_index_tests index_render_is_deterministic
-        install_retires_previous_version reinstall_same_version_does_not_retire)
+        install_retires_previous_version reinstall_same_version_does_not_retire
+        downgrade_to_retired_version_leaves_it_live_only)
 
     secure_frontend_add_test_executable(secure_frontend_manifest_tests tests/manifest_test.cpp secure_frontend_manifest_core)
     secure_frontend_add_cases(secure_frontend_manifest_tests source_url_grammar_matrix dns_names_and_wildcards proxy_grammar)
