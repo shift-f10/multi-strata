@@ -39,6 +39,18 @@ void expect(const bool condition, const std::string& message) {
   }
 }
 
+// The value of NAME in a dumped environment, as a path (UTF-8), if present.
+std::optional<std::filesystem::path> dumped_env_path(const test_support::FakeDump& dump, const std::string_view name) {
+  const std::string prefix = std::string(name) + "=";
+  for (const auto& entry : dump.env) {
+    if (entry.rfind(prefix, 0) == 0) {
+      const std::string value = entry.substr(prefix.size());
+      return std::filesystem::path(std::u8string(value.begin(), value.end()));
+    }
+  }
+  return std::nullopt;
+}
+
 std::string describe(const std::optional<test_support::HttpResult>& result) {
   return result ? std::to_string(result->status) + " " + result->body : std::string("no response");
 }
@@ -507,9 +519,9 @@ void ext02_extension_env_never_reaches_child() {
   if (!dump) return;
   // The dump is real: the frontend's own CUDA cache entry is present (the
   // harness default --state-dir is <root>/state).
-  std::filesystem::path cuda_cache = server->root() / "state" / "cache" / "cuda";
-  cuda_cache.make_preferred();
-  expect(std::find(dump->env.begin(), dump->env.end(), "CUDA_CACHE_PATH=" + test_support::utf8_path(cuda_cache)) != dump->env.end(),
+  const auto cuda_cache = dumped_env_path(*dump, "CUDA_CACHE_PATH");
+  std::error_code error;
+  expect(cuda_cache && std::filesystem::equivalent(*cuda_cache, server->root() / "state" / "cache" / "cuda", error),
          "the dumped environment holds the allowlisted CUDA_CACHE_PATH");
   for (const auto& entry : dump->env) {
     for (const std::string_view banned :
@@ -574,11 +586,17 @@ void engine_cuda_cache_follows_roots_cache() {
   const auto dump = test_support::read_dump_file(dir / "dump.txt", 10s);
   expect(dump.has_value(), "the engine reported its environment");
   if (!dump) return;
-  std::filesystem::path cuda_cache = cache / "cuda";
-  cuda_cache.make_preferred();
-  expect(std::find(dump->env.begin(), dump->env.end(), "CUDA_CACHE_PATH=" + test_support::utf8_path(cuda_cache)) != dump->env.end(),
-         "CUDA_CACHE_PATH is <roots.cache>/cuda");
+  // The server passes roots.cache in canonical form (long names, symlinks
+  // resolved), so compare by identity, not by text.
+  const auto cuda_cache = dumped_env_path(*dump, "CUDA_CACHE_PATH");
+  std::error_code error;
+  expect(cuda_cache && std::filesystem::equivalent(*cuda_cache, cache / "cuda", error), "CUDA_CACHE_PATH is <roots.cache>/cuda");
   expect(std::filesystem::is_directory(cache / "cuda"), "the server created <roots.cache>/cuda");
+#if !defined(_WIN32)
+  struct stat status {};
+  expect(::lstat((cache / "cuda").c_str(), &status) == 0 && S_ISDIR(status.st_mode) && (status.st_mode & 077) == 0,
+         "<roots.cache>/cuda is owner-only");
+#endif
   expect(!std::filesystem::exists(server->root() / "state" / "cache"), "nothing is created at <state>/cache");
 }
 

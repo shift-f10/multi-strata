@@ -90,13 +90,17 @@ bool state_dir_is_usable(const FrontendConfig& config) {
 
 // Creates <state>/engine, the temp root and the CUDA cache owner-only and
 // clears the temp root: no engine runs yet, so temp directories a previous
-// frontend left behind are stale. The CUDA cache is <roots.cache>/cuda when
-// roots.cache is set (create_runtime_roots() already created that root 0700),
-// else <state>/cache/cuda.
-bool prepare_state_dir(const std::filesystem::path& state_dir, const secure_frontend::EngineEnvironment& environment,
-                       const bool cache_below_state) {
+// frontend left behind are stale. Where the CUDA cache lives is
+// engine_environment_for()'s decision: <roots.cache>/cuda (that root was
+// already created 0700 by create_runtime_roots() and is left as it is) or
+// <state>/cache/cuda, whose parent below the state dir is created owner-only too.
+bool prepare_state_dir(const std::filesystem::path& state_dir, const secure_frontend::EngineEnvironment& environment) {
   std::vector<std::filesystem::path> directories{state_dir / "engine", environment.temp_dir};
-  if (cache_below_state) directories.push_back(state_dir / "cache");
+  const auto below_state = [&state_dir](const std::filesystem::path& path) {
+    const auto relative = path.lexically_relative(state_dir);
+    return !relative.empty() && relative != "." && *relative.begin() != "..";
+  };
+  if (below_state(environment.cuda_cache_dir.parent_path())) directories.push_back(environment.cuda_cache_dir.parent_path());
   directories.push_back(environment.cuda_cache_dir);
   for (const auto& directory : directories) {
     if (!secure_frontend::create_owner_only_directory(directory)) return false;
@@ -167,7 +171,7 @@ int run(const FrontendConfig& config) {
   // Spec §3.9: the engine's whole environment, rendered per generation; nothing
   // is inherited from this server's environment.
   auto environment = secure_frontend::engine_environment_for(state_dir, config.roots.cache, std::move(lib_dirs));
-  if (!prepare_state_dir(state_dir, environment, !config.roots.cache.has_value())) {
+  if (!prepare_state_dir(state_dir, environment)) {
     std::cerr << "Unable to prepare --state-dir.\n";
     return EXIT_FAILURE;
   }
