@@ -297,6 +297,7 @@ int main(int argc, char** argv) {
       {"already_installed_needs_no_network", acquire_cases::already_installed_needs_no_network},
       {"pull_budgets_map_to_exit_classes", acquire_cases::pull_budgets_map_to_exit_classes},
       {"discard_partial_runs_only_after_confirmation", acquire_cases::discard_partial_runs_only_after_confirmation},
+      {"unreadable_installed_license_requires_interactive_yes", acquire_cases::unreadable_installed_license_requires_interactive_yes},
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
       {"dl03_third_party_cannot_shadow_catalog", acquire_cases::dl03_third_party_cannot_shadow_catalog},
       {"pull_test_cacert_reaches_argv_in_hook_builds", acquire_cases::pull_test_cacert_reaches_argv_in_hook_builds},

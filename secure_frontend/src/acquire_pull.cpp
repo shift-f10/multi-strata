@@ -294,6 +294,7 @@ PullOutcome run_pull(const PullRequest& request, const CanonicalRoot& models, co
   std::optional<BundleTarget> bundle;
   std::optional<InstalledModel> installed;
   std::optional<ManifestDiff> diff;
+  bool installed_license_unknown = false;  // fix round 1: an update whose installed version cannot be loaded
   if (to_bundle) {
     auto prepared = prepare_bundle_target(*request.bundle_dir, tm, true, s.store);
     if (auto* failure = std::get_if<AcquireError>(&prepared)) return failed(*failure);
@@ -336,6 +337,12 @@ PullOutcome run_pull(const PullRequest& request, const CanonicalRoot& models, co
         diff = diff_manifests(installed->manifest.manifest, m);
         // §6.1 on the console only: the lines carry license URLs, never written to acquire.log (§8.1).
         for (const auto& line : diff->lines) s.ui.say(line);
+      } else {
+        // Fail closed: the installed license is UNKNOWN, so §6.1's license question is asked
+        // (never answered by --yes). Fixed text plus the reason name only (§8.1).
+        installed_license_unknown = true;
+        s.ui.say("the installed version of " + ref + " cannot be read (" +
+                 std::string{reason_name(std::get<AcquireError>(loaded_model).reason)} + "); its license is unknown");
       }
     }
   }
@@ -395,6 +402,10 @@ PullOutcome run_pull(const PullRequest& request, const CanonicalRoot& models, co
       !s.ui.confirm("The license of " + ref + " changes (" + installed->manifest.manifest.license.id + " -> " + m.license.id +
                         "). Continue? [y/N]",
                     false)) {
+    return failed(AcquireError{AcquireReason::declined, ref});
+  }
+  if (installed_license_unknown &&
+      !s.ui.confirm("The license of the installed version of " + ref + " is unknown; install " + m.license.id + "? [y/N]", false)) {
     return failed(AcquireError{AcquireReason::declined, ref});
   }
   if (!work.empty() && !s.ui.confirm("Download " + format_gb(to_fetch) + " from " + hosts_text(m) + "? [y/N]", request.yes)) {

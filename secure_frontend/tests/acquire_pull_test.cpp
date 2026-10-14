@@ -412,6 +412,33 @@ void discard_partial_runs_only_after_confirmation() {
   for (const auto& argv : h.transport->argvs) expect(argv[argv.size() - 2] != "--range", "no range request after --discard-partial");
 }
 
+// Fix round 1: an installed version that cannot be loaded has an UNKNOWN license, so the
+// update asks with yes_applies=false (§6.1): --yes alone declines; an interactive y proceeds.
+void unreadable_installed_license_requires_interactive_yes() {
+  PullHarness h;
+  const auto v1 = fx::qwen_payload();
+  h.serve(v1);
+  expect(h.pull(h.third_party(fx::manifest_text("m", "t", 1, v1))).exit == ExitCode::success, "v1");
+  const auto entry = h.index().models.front();
+  secure_frontend_test::write_file(h.models.join(secure_frontend::must_rel("m/t/" + entry.dir + "/manifest.json")), "rotten");
+  auto v2 = v1;
+  v2[2].bytes = "index v2";
+  const auto v2_text = fx::manifest_text("m", "t", 2, v2);
+  h.serve(v2);
+  h.probe.calls = 0;
+  const auto declined = h.pull(h.third_party(v2_text));  // --yes, non-interactive
+  expect(declined.exit == ExitCode::declined && declined.error && declined.error->reason == AcquireReason::declined,
+         "--yes does not answer an unknown installed license: exit 2");
+  expect(h.transport->argvs.empty() && h.probe.calls == 0, "nothing spawned");
+  const auto v2_key = secure_frontend::staging_key(secure_frontend::to_hex(secure_frontend::sha256(v2_text)));
+  expect(!secure_frontend::exists_within(h.models, secure_frontend::must_rel(".staging/" + v2_key)), "nothing staged");
+  expect(h.index().models.front().sequence == 1, "index unchanged");
+  expect(h.ui.text().find("installed version of m:t cannot be read") != std::string::npos, "the reason is printed");
+  h.ui.interactive = true;
+  h.ui.answers = {true};
+  expect(h.pull(h.third_party(v2_text)).exit == ExitCode::success && h.index().models.front().sequence == 2, "an interactive y proceeds");
+}
+
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
 // F-51: the hooks-only CA bundle reaches every hop's argv through run_pull.
 void pull_test_cacert_reaches_argv_in_hook_builds() {

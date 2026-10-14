@@ -855,6 +855,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         enospc_mid_stream_keeps_part_and_exits_6 update_reuses_unchanged_files license_change_requires_interactive_yes
         pull_without_bundle_refuses_sourceless_files confirmation_answers_parsed_strictly already_installed_needs_no_network
         pull_budgets_map_to_exit_classes discard_partial_runs_only_after_confirmation
+        unreadable_installed_license_requires_interactive_yes
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     if(SECURE_FRONTEND_TEST_HOOKS)
         secure_frontend_add_cases(secure_frontend_acquire_tests dl03_third_party_cannot_shadow_catalog

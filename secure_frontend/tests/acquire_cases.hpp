@@ -68,4 +68,5 @@ void confirmation_answers_parsed_strictly();
 void already_installed_needs_no_network();
 void pull_budgets_map_to_exit_classes();
 void discard_partial_runs_only_after_confirmation();
+void unreadable_installed_license_requires_interactive_yes();
 }  // namespace acquire_cases
