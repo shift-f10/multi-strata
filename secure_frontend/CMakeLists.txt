@@ -145,6 +145,7 @@ add_library(secure_frontend_chat_execution
 )
 
 add_library(secure_frontend_engine_supervisor
+    src/descendant_sweep.cpp
     src/engine_supervisor.cpp
     src/restart_policy.cpp
     src/supervisor_wake.cpp
@@ -453,7 +454,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # tasks append case names to these four set() lines only.
     set(SECURE_FRONTEND_SUPERVISOR_UNIT_CASES supervisor_health_literals_per_state proc04_restart_backoff_then_circuit_open proc04_healthy_window_resets_failure_count proc04_missing_engine_opens_circuit_without_spinning proc04_client_err_lines_open_circuit_until_restart supervisor_retires_ended_generation_on_its_own_thread proc04_monitor_fallback_without_pidfd proc04_backoff_survives_stale_wake proc04_fatal_line_before_ready_kills_as_fatal_line proc04_unreaped_child_opens_circuit)
     set(SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES proc04_recovers_after_transient_crash proc04_monitor_detects_idle_crash proc04_fatal_prefix_kills_engine proc04_ready_timeout_kills_and_counts proc04_drain_failure_kills_and_restarts proc04_no_leak_across_restarts)
-    set(SECURE_FRONTEND_SUPERVISOR_LINUX_CASES)
+    set(SECURE_FRONTEND_SUPERVISOR_LINUX_CASES proc05_setsid_grandchild_is_reaped)
     set(SECURE_FRONTEND_SUPERVISOR_WINDOWS_CASES)
     if(WIN32)
         list(APPEND SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES ${SECURE_FRONTEND_SUPERVISOR_WINDOWS_CASES})

@@ -23,6 +23,7 @@
 #if defined(_WIN32)
 #include "secure_frontend/win32_prelude.hpp"
 #else
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -447,6 +448,35 @@ void proc04_unreaped_child_opens_circuit() {
   supervisor.shutdown(5s);
 }
 
+#if !defined(_WIN32)
+void proc05_setsid_grandchild_is_reaped() {
+  const auto dir = test_support::make_temp_dir("c2");
+  const auto pidfile = dir / "grandchild.pid";
+  secure_frontend::SupervisorConfig config;
+  config.policy.max_consecutive_failures = 1U;
+  secure_frontend::EngineSupervisor supervisor(
+      config, secure_frontend::make_stdio_process_factory(
+                  fake_plan({"--spawn-grandchild", "--grandchild-setsid", "--grandchild-pidfile=" + test_support::utf8_path(pidfile)})));
+  supervisor.start();
+  expect(test_support::wait_generation_ready(supervisor, 1U, 10s), "ready");
+  const auto grandchild = test_support::read_pidfile(pidfile, 5s);
+  expect(grandchild.has_value(), "the escaping grandchild started");
+  if (!grandchild) return;
+  {
+    auto lease = supervisor.acquire();
+    if (lease) supervisor.report_fatal(*lease, secure_frontend::KillReason::protocol_failed);
+  }
+  expect(supervisor.wait_for_state(SupervisorState::circuit_open, 5s), "the generation ended");
+  expect(test_support::wait_until_gone(*grandchild, 2s), "a setsid grandchild outside the engine's group is swept");
+  test_support::kill_process(*grandchild);
+  // Hygiene: this process is the subreaper, so a grandchild the sweep missed
+  // is our child; collect it (ECHILD at once when it is not ours).
+  int status = 0;
+  (void)waitpid(static_cast<pid_t>(*grandchild), &status, 0);
+  supervisor.shutdown(5s);
+}
+#endif
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -465,5 +495,9 @@ int main(int argc, char* argv[]) {
                                                 {"proc04_ready_timeout_kills_and_counts", proc04_ready_timeout_kills_and_counts},
                                                 {"proc04_drain_failure_kills_and_restarts", proc04_drain_failure_kills_and_restarts},
                                                 {"proc04_no_leak_across_restarts", proc04_no_leak_across_restarts},
-                                                {"proc04_unreaped_child_opens_circuit", proc04_unreaped_child_opens_circuit}}, failures);
+                                                {"proc04_unreaped_child_opens_circuit", proc04_unreaped_child_opens_circuit},
+#if !defined(_WIN32)
+                                                {"proc05_setsid_grandchild_is_reaped", proc05_setsid_grandchild_is_reaped},
+#endif
+                                               }, failures);
 }

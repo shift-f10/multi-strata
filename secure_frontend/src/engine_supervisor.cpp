@@ -1,5 +1,6 @@
 #include "secure_frontend/engine_supervisor.hpp"
 
+#include "descendant_sweep.hpp"
 #include "secure_frontend/deadline.hpp"
 #include "secure_frontend/engine_stdio_process.hpp"
 
@@ -84,7 +85,9 @@ EngineSupervisor::EngineSupervisor(SupervisorConfig config, ProcessFactory facto
       factory_(std::move(factory)),
       clock_(std::move(clock)),
       log_(log ? std::move(log) : SupervisorLog(log_to_stderr)),
-      tracker_(config_.policy) {}
+      tracker_(config_.policy) {
+  if (config_.sweep_orphans) (void)become_child_subreaper();
+}
 
 EngineSupervisor::~EngineSupervisor() {
   if (thread_.joinable()) shutdown(supervision_defaults::kShutdownBound);
@@ -266,6 +269,9 @@ bool EngineSupervisor::end_generation(const std::shared_ptr<EngineInstance>& ins
     log_end(instance->number, "unreaped");
     return false;
   }
+  // Spec §3.7(b): orphans (setsid, setpgid, double fork) re-parented to us are
+  // killed and reaped; no engine is alive at this point.
+  if (config_.sweep_orphans) (void)sweep_orphans({}, std::chrono::milliseconds(1000));
   process.release_resources(std::chrono::milliseconds(1000));
   const KillReason sent = ended_on_its_own ? KillReason::none : (reason == KillReason::none ? KillReason::protocol_failed : reason);
   log_end(instance->number, describe_exit(classify_exit(*status, sent)));
