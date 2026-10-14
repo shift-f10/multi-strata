@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -128,26 +129,14 @@ FrontendConfigDraft merge_drafts(FrontendConfigDraft file, const FrontendConfigD
   return file;
 }
 
-std::string render_config_document(const FrontendConfigDraft& draft) {
+std::string render_config_literals(const std::map<std::string, std::string>& literals) {
   struct Node {
     std::vector<std::string> names;
     std::vector<Node> children;
     std::string literal;
   };
   Node root;
-  for (const auto& [path, entry] : draft.entries) {
-    std::string literal;
-    if (const auto* b = std::get_if<bool>(&entry.value)) literal = *b ? "true" : "false";
-    else if (const auto* i = std::get_if<std::int64_t>(&entry.value)) literal = std::to_string(*i);
-    else if (const auto* s = std::get_if<std::string>(&entry.value)) append_json_string(&literal, *s);
-    else {
-      literal = "[";
-      for (const auto& item : std::get<std::vector<std::string>>(entry.value)) {
-        if (literal.size() > 1U) literal += ", ";
-        append_json_string(&literal, item);
-      }
-      literal += "]";
-    }
+  for (const auto& [path, literal] : literals) {
     Node* node = &root;
     std::size_t start = 0;
     while (true) {
@@ -177,7 +166,26 @@ std::string render_config_document(const FrontendConfigDraft& draft) {
     out += "}";
   };
   emit(root, 0U);
-  return out + "\n";
+  return out;
+}
+
+std::string render_config_document(const FrontendConfigDraft& draft) {
+  std::map<std::string, std::string> literals;
+  for (const auto& [path, entry] : draft.entries) {
+    std::string& literal = literals[path];
+    if (const auto* b = std::get_if<bool>(&entry.value)) literal = *b ? "true" : "false";
+    else if (const auto* i = std::get_if<std::int64_t>(&entry.value)) literal = std::to_string(*i);
+    else if (const auto* s = std::get_if<std::string>(&entry.value)) append_json_string(&literal, *s);
+    else {
+      literal = "[";
+      for (const auto& item : std::get<std::vector<std::string>>(entry.value)) {
+        if (literal.size() > 1U) literal += ", ";
+        append_json_string(&literal, item);
+      }
+      literal += "]";
+    }
+  }
+  return render_config_literals(literals) + "\n";
 }
 
 }  // namespace secure_frontend

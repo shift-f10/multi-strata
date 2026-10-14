@@ -138,6 +138,33 @@ void init_refuses_to_overwrite_without_force() {
   expect(f.run(forced).exit_code == 0, "--force succeeds");
   expect(secure_frontend_test::read_file(f.dir / "fresh" / "token") != token_before, "--force rotates the token");
 }
+
+void init_force_refuses_a_non_regular_config_target() {
+  ServerFixture f;
+  const auto config = f.dir / "fresh" / "config.json";
+  expect(f.run(init_flags(f, config)).exit_code == 0, "first init");
+  const std::string token_before = secure_frontend_test::read_file(f.dir / "fresh" / "token");
+  const auto occupied = f.dir / "fresh" / "occupied";
+  secure_frontend_test::make_private_directory(occupied);
+  auto forced = init_flags(f, occupied);
+  forced.insert(forced.begin() + 1, "--force");
+  const auto result = f.run(forced);
+  expect(result.exit_code != 0 && contains(result.err, "not a regular file"),
+         "--force against a directory fails before writing: " + result.err);
+  expect(secure_frontend_test::read_file(f.dir / "fresh" / "token") == token_before, "the token was not rotated");
+  expect(std::filesystem::is_directory(occupied), "the directory is left in place");
+}
+
+void init_failure_creates_nothing() {
+  ServerFixture f;
+  const auto before = secure_frontend_test::snapshot_tree(f.dir);
+  auto flags = init_flags(f, f.dir / "never" / "config.json");
+  flags.back() = "0";  // --port 0 is invalid
+  const auto result = f.run(flags);
+  expect(result.exit_code != 0 && contains(result.err, "listener.port"), "an invalid option fails init: " + result.err);
+  expect(!std::filesystem::exists(f.dir / "never"), "no config directory was created");
+  expect(secure_frontend_test::snapshot_tree(f.dir) == before, "nothing below the scratch tree changed");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -149,5 +176,7 @@ int main(int argc, char** argv) {
       {"cli_unknown_option_does_not_echo_value", cli_unknown_option_does_not_echo_value},
       {"init_writes_config_and_token_then_server_starts", init_writes_config_and_token_then_server_starts},
       {"init_refuses_to_overwrite_without_force", init_refuses_to_overwrite_without_force},
+      {"init_force_refuses_a_non_regular_config_target", init_force_refuses_a_non_regular_config_target},
+      {"init_failure_creates_nothing", init_failure_creates_nothing},
   }, failures);
 }

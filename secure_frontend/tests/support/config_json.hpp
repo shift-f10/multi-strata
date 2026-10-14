@@ -1,12 +1,11 @@
 #pragma once
+#include "secure_frontend/config_file.hpp"
 #include "secure_frontend/json.hpp"
 #include "support/test_support.hpp"
 
 #include <filesystem>
-#include <functional>
 #include <map>
 #include <string>
-#include <vector>
 
 namespace secure_frontend_test {
 
@@ -16,50 +15,26 @@ inline std::string json_literal(const std::string& text) {
   return out;
 }
 
-// Renders {"a":{"b":1}} from {{"a.b","1"}} (values are JSON literals). The key
-// path named by `duplicate` is written twice, for duplicate-key tests.
+// Renders {"a":{"b":1}} from {{"a.b","1"}} (values are JSON literals) through
+// the production renderer. The key path named by `duplicate` (a leaf or a
+// section) is written twice, for duplicate-key tests: a sibling copy is
+// rendered under a placeholder name, which is then renamed to the real one.
 inline std::string render_config_json(const std::map<std::string, std::string>& literals,
                                       const std::string& duplicate = {}) {
-  struct Node {
-    std::vector<std::string> names;
-    std::vector<Node> children;
-    std::string literal;
-  };
-  Node root;
+  if (duplicate.empty()) return secure_frontend::render_config_literals(literals);
+  const auto dot = duplicate.rfind('.');
+  const std::string parent = dot == std::string::npos ? std::string{} : duplicate.substr(0, dot + 1U);
+  const std::string name = dot == std::string::npos ? duplicate : duplicate.substr(dot + 1U);
+  const std::string placeholder = "__render_config_json_duplicate__";
+  auto copied = literals;
   for (const auto& [path, literal] : literals) {
-    Node* node = &root;
-    std::size_t start = 0;
-    while (true) {
-      const auto dot = path.find('.', start);
-      const std::string name = path.substr(start, dot == std::string::npos ? std::string::npos : dot - start);
-      std::size_t index = 0;
-      while (index < node->names.size() && node->names[index] != name) ++index;
-      if (index == node->names.size()) {
-        node->names.push_back(name);
-        node->children.emplace_back();
-      }
-      node = &node->children[index];
-      if (dot == std::string::npos) break;
-      start = dot + 1;
-    }
-    node->literal = literal;
+    if (path == duplicate) copied[parent + placeholder] = literal;
+    else if (path.rfind(duplicate + ".", 0) == 0) copied[parent + placeholder + path.substr(duplicate.size())] = literal;
   }
-  std::function<void(const Node&, const std::string&, std::string&)> emit =
-      [&](const Node& node, const std::string& prefix, std::string& out) {
-        out += '{';
-        for (std::size_t i = 0; i < node.names.size(); ++i) {
-          const std::string path = prefix.empty() ? node.names[i] : prefix + "." + node.names[i];
-          for (int copy = 0; copy < (path == duplicate ? 2 : 1); ++copy) {
-            if (out.back() != '{') out += ',';
-            out += json_literal(node.names[i]) + ':';
-            if (node.children[i].names.empty()) out += node.children[i].literal;
-            else emit(node.children[i], path, out);
-          }
-        }
-        out += '}';
-      };
-  std::string out;
-  emit(root, "", out);
+  std::string out = secure_frontend::render_config_literals(copied);
+  const std::string quoted = json_literal(placeholder);
+  const auto at = out.find(quoted);
+  if (at != std::string::npos) out.replace(at, quoted.size(), json_literal(name));
   return out;
 }
 
