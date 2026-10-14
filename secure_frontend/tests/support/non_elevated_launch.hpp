@@ -75,8 +75,12 @@ inline bool create_non_elevated_process(const std::wstring& executable, std::wst
   }
   const bool created = CreateProcessAsUserW(token, executable.c_str(), command_line.data(), nullptr, nullptr, TRUE,
                                             flags | CREATE_SUSPENDED, environment, nullptr, &startup, &info) != 0;
+  const DWORD create_error = created ? ERROR_SUCCESS : GetLastError();
   CloseHandle(token);
-  if (!created) return false;
+  if (!created) {
+    std::cerr << who << ": CreateProcessAsUserW failed (Win32 error " << create_error << ")\n";
+    return false;
+  }
   HANDLE child_token = nullptr;
   const bool elevated = OpenProcessToken(info.hProcess, TOKEN_QUERY, &child_token) == 0 || token_elevated(child_token);
   if (child_token != nullptr) CloseHandle(child_token);

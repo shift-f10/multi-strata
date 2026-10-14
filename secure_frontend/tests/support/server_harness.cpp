@@ -2,6 +2,7 @@
 
 #include "http_client.hpp"
 #include "non_elevated_launch.hpp"
+#include "windows_command_line.hpp"
 #include "test_paths.hpp"
 #include "test_tokenizer.hpp"
 
@@ -55,27 +56,6 @@ std::wstring widen(const std::string& text) {
   if (size > 0) (void)MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), out.data(), size);
   return out;
 }
-std::wstring quote(const std::wstring& argument) {
-  std::wstring result{L"\""};
-  std::size_t slashes = 0;
-  for (const wchar_t character : argument) {
-    if (character == L'\\') {
-      ++slashes;
-    } else if (character == L'"') {
-      result.append(slashes * 2 + 1, L'\\');
-      result += character;
-      slashes = 0;
-    } else {
-      result.append(slashes, L'\\');
-      result += character;
-      slashes = 0;
-    }
-  }
-  result.append(slashes * 2, L'\\');
-  result += L'"';
-  return result;
-}
-
 using secure_frontend_test::token_elevated;
 #else
 using Socket = int;
@@ -287,7 +267,7 @@ bool ServerProcess::launch(const std::vector<std::string>& arguments, const std:
   std::wstring command_line;
   for (const auto& argument : arguments) {
     if (!command_line.empty()) command_line += L' ';
-    command_line += quote(widen(argument));
+    command_line += secure_frontend_test::quote_windows_argument(widen(argument));
   }
   std::wstring block;
   for (const auto& [name, value] : environment) {

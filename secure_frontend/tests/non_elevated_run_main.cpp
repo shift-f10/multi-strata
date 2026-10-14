@@ -14,29 +14,10 @@
 #include <shellapi.h>
 
 #include "support/non_elevated_launch.hpp"
+#include "support/windows_command_line.hpp"
 
-#include <cwchar>
 #include <iostream>
 #include <string>
-
-namespace {
-
-// CommandLineToArgvW quoting rules.
-std::wstring quote(const std::wstring& argument) {
-  if (!argument.empty() && argument.find_first_of(L" \t\n\v\"") == std::wstring::npos) return argument;
-  std::wstring out = L"\"";
-  for (auto it = argument.begin();; ++it) {
-    std::size_t backslashes = 0;
-    while (it != argument.end() && *it == L'\\') { ++it; ++backslashes; }
-    if (it == argument.end()) { out.append(backslashes * 2, L'\\'); break; }
-    if (*it == L'"') { out.append(backslashes * 2 + 1, L'\\'); out.push_back(L'"'); }
-    else { out.append(backslashes, L'\\'); out.push_back(*it); }
-  }
-  out.push_back(L'"');
-  return out;
-}
-
-}  // namespace
 
 int main() {
   int argc = 0;
@@ -45,8 +26,8 @@ int main() {
     std::cerr << "usage: secure_frontend_non_elevated_run <strata-secure-server> <argument>...\n";
     return 125;
   }
-  std::wstring command = quote(argv[1]);
-  for (int index = 2; index < argc; ++index) command += L" " + quote(argv[index]);
+  std::wstring command = secure_frontend_test::quote_windows_argument(argv[1]);
+  for (int index = 2; index < argc; ++index) command += L" " + secure_frontend_test::quote_windows_argument(argv[index]);
   STARTUPINFOW startup{};
   startup.cb = sizeof(startup);
   startup.dwFlags = STARTF_USESTDHANDLES;
@@ -63,11 +44,26 @@ int main() {
     std::cerr << "non_elevated_run: could not launch the server\n";
     return 125;
   }
+  // Kill-on-close Job, assigned while the child is still suspended: if CTest
+  // kills this launcher at its timeout, the server dies with it.
+  HANDLE job = CreateJobObjectW(nullptr, nullptr);
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  if (job == nullptr || !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits)) ||
+      !AssignProcessToJobObject(job, info.hProcess)) {
+    std::cerr << "non_elevated_run: could not place the server in a kill-on-close Job (Win32 error " << GetLastError() << ")\n";
+    (void)TerminateProcess(info.hProcess, 1);
+    CloseHandle(info.hThread);
+    CloseHandle(info.hProcess);
+    if (job != nullptr) CloseHandle(job);
+    return 125;
+  }
   (void)ResumeThread(info.hThread);
   CloseHandle(info.hThread);
   (void)WaitForSingleObject(info.hProcess, INFINITE);
   DWORD code = 125;
   (void)GetExitCodeProcess(info.hProcess, &code);
   CloseHandle(info.hProcess);
+  CloseHandle(job);
   return static_cast<int>(code);
 }

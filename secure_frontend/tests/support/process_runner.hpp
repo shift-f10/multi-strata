@@ -12,6 +12,7 @@
 #if defined(_WIN32)
 #include "secure_frontend/win32_prelude.hpp"
 #include "support/non_elevated_launch.hpp"
+#include "support/windows_command_line.hpp"
 #include <cwchar>
 #else
 #include <csignal>
@@ -63,8 +64,8 @@ class ChildProcess final {
                              FILE_ATTRIBUTE_NORMAL, nullptr);
     HANDLE err = CreateFileW((output_ / "stderr").c_str(), GENERIC_WRITE, FILE_SHARE_READ, &inherit, CREATE_ALWAYS,
                              FILE_ATTRIBUTE_NORMAL, nullptr);
-    std::wstring command = quote(spec.executable.wstring());
-    for (const auto& argument : spec.arguments) command += L" " + quote(widen(argument));
+    std::wstring command = quote_windows_argument(spec.executable.wstring());
+    for (const auto& argument : spec.arguments) command += L" " + quote_windows_argument(widen(argument));
     std::vector<std::wstring> entries;
     bool has_system_root = false;
     for (const auto& [key, value] : spec.environment) {
@@ -91,6 +92,8 @@ class ChildProcess final {
     // G4: strata-secure-server refuses an elevated token, so it always starts
     // through the shared non-elevated launch (no override flag exists); any
     // other executable keeps the plain CreateProcessW.
+    // Selected by name: a renamed copy of the server takes the plain path and
+    // is then refused by G4 itself (a loud failure, never a bypass).
     const bool server = spec.executable.stem() == L"strata-secure-server";
     const bool ok = server ? create_non_elevated_process(spec.executable.wstring(), command, flags, block.data(), startup, info,
                                                          "process_runner")
@@ -187,20 +190,6 @@ class ChildProcess final {
     const int size = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
     std::wstring out(static_cast<std::size_t>(size), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), out.data(), size);
-    return out;
-  }
-  // CommandLineToArgvW quoting rules.
-  static std::wstring quote(const std::wstring& argument) {
-    if (!argument.empty() && argument.find_first_of(L" \t\n\v\"") == std::wstring::npos) return argument;
-    std::wstring out = L"\"";
-    for (auto it = argument.begin();; ++it) {
-      std::size_t backslashes = 0;
-      while (it != argument.end() && *it == L'\\') { ++it; ++backslashes; }
-      if (it == argument.end()) { out.append(backslashes * 2, L'\\'); break; }
-      if (*it == L'"') { out.append(backslashes * 2 + 1, L'\\'); out.push_back(L'"'); }
-      else { out.append(backslashes, L'\\'); out.push_back(*it); }
-    }
-    out.push_back(L'"');
     return out;
   }
   HANDLE process_{nullptr};
