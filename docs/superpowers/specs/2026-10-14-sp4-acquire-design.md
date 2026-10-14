@@ -1,6 +1,6 @@
 # Sub-project 4 — Explicit, verified model acquisition (`strata pull`, `import`, `export`)
 
-Date: 2026-10-14. **Status: DRAFT — awaiting owner decisions** (§12). Nothing in
+Date: 2026-10-14. **Status: APPROVED 2026-10-14 — owner accepted every recommendation (see §12 "Decisions taken")**. Nothing in
 this document is approved. The owner could not be interviewed, so every
 genuinely open choice is in §12 with a recommendation, and the body is written
 as if each recommendation were accepted. Revision: review rounds 1–3 fixes
@@ -1225,6 +1225,7 @@ narrowed by `--proto =https`, no curl-followed redirects, `--globoff` and no
 SOCKS/FTP. Cost: a runtime dependency on a system curl; one process per hop;
 platform confinement code. (a′) trades the external binary for an in-process
 TLS stack with no confinement.
+**Decision (2026-10-14): (a) system curl as a confined child (Linux: `PR_SET_NO_NEW_PRIVS` + Landlock, read-allow system dirs, no write; Windows: restricted/low-integrity token in the Job); every byte verified by SHA-256 and counted by us.**
 
 **D2 — Manifest trust for `pull`.** (a) Built-in catalog pinned by digest,
 plus per-invocation `--trust-manifest`. (b) Remote catalog
@@ -1233,6 +1234,7 @@ Ed25519). (c) Remote catalog over HTTPS only (rejected: TLS is not the
 integrity boundary).
 *Recommendation: (a).* Cost: new models or revisions need a new release or a
 third-party manifest; PX §4 is amended (§13.3).
+**Decision (2026-10-14): (a) built-in digest-pinned catalog; third-party manifests only via `--trust-manifest sha256:<hex>` per run; no remote catalog in v1 (`pull.manifest_sources` dropped).**
 
 **D3 — Downloader floor and confinement fallback.** Floor options: (a) curl
 ≥ 8.4.0 everywhere — **hygiene, not the control**: the CVEs that made 8.4.0
@@ -1252,12 +1254,14 @@ reported by `doctor`; (ii) refuse unless a new key
 this host's), so (b) keeps 8.4.0 only where version numbers track fixes.
 Cost: (b) trusts distro backports; (i) leaves old kernels without filesystem
 confinement.
+**Decision (2026-10-14): (b) and (i): curl floor 8.4.0 on Windows, 7.81.0 on Linux; `confinement: reduced` announced and logged when Landlock is unavailable.**
 
 **D4 — v1 catalog contents (Qwen only; GLM is SP6).** (a) GSQ-RCO
 `iq2_xs`/`iq3_xxs`/`iq3_s` and Coder `iq1_m` (Apache-2.0). (b) (a) plus Swift
 1.5 and Unsloth after reviewing "Swift Open License 1.0" and Unsloth's terms.
 (c) `iq2_xs` only.
 *Recommendation: (a).* Cost: four pins in PROV; each needs a pack (D5).
+**Decision (2026-10-14): (a) GSQ-RCO `iq2_xs`, `iq3_xxs`, `iq3_s` plus Coder `iq1_m` (Apache-2.0); GLM entries move to SP6.**
 
 **D5 — Derived artifacts (the Qwen `--pack`; also MTP). Unresolved.**
 Upstream builds the pack locally from shard 1 with `iq_pack.py` (602 lines)
@@ -1291,6 +1295,7 @@ by the owner or in SP7, not now.
 *Recommendation:* no recommendation between (A) and (C) until the owner's
 determinism check; ship (D) as the v1 behavior in the meantime, with (B) or
 (B′) as its developer mechanism depending on the check.
+**Decision (2026-10-14): unresolved between (A) and (C); ship (D) meanwhile — plan implements (D) with a seam for A/C.**
 
 **D6 — Does `run` offer to pull a missing model?** PX §3 step 6 states the
 intent. (a) `run` runs the same in-process `pull` flow after the same
@@ -1300,6 +1305,7 @@ installed" is local). (b) `run` prints the `pull` (or `import`) command and
 exits non-zero — an explicit PX amendment.
 *Recommendation: (a).* Cost: one more verb that can reach the network; the
 confirmation and non-interactive No rule are unchanged.
+**Decision (2026-10-14): (a) `run` on a missing model runs the same in-process pull flow after the same confirmation prompt (conditionally networked; PRIV-01 list updated).**
 
 **D7 — Trust for bundle manifests.** PX §5 says a bundle has a **signed**
 manifest. (a) A bundle's manifest is trusted by catalog digest or
@@ -1308,6 +1314,9 @@ and key custody).
 *Recommendation: (a)* — the offline box runs the same release, so the catalog
 already pins the digest; PX §5 is amended (§13.3). Cost: third-party bundles
 need the digest typed on the offline box.
+**Decision (2026-10-14): (a) bundle trust = catalog digest or `--trust-manifest`, no signature; Ed25519 + SHA-512 + program-update verification move to SP7; `strata update` (program) exits 12 until then.**
+
+**Decisions taken.** On 2026-10-14 the owner accepted every recommendation: D1 confined system curl; D2 built-in catalog plus `--trust-manifest`; D3 floor 8.4.0 Windows / 7.81.0 Linux with reduced-confinement fallback; D4 Qwen GSQ-RCO catalog; D5 unresolved between (A) and (C), (D) ships meanwhile; D6 `run` offers the pull; D7 bundle trust by digest, signatures in SP7. Binding SP2 second-run seam (from §3.2): `keep_fds` lifted via `F_DUPFD_CLOEXEC` ≥ `kLiftFloor` before the 0..3 `dup2` sequence; `int pre_exec(const void*, std::span<const int> lifted) noexcept` runs after the sweep: `dup2(record,4)` → `PR_SET_NO_NEW_PRIVS` → `landlock_restrict_self` → close(ruleset) → `chdir`; non-zero → `H` marker + errno on `kReportFd(3)` → `downloader_confinement_failed`, exit 9. Windows: `primary_token`, `extra_inherited_handles`, `crt_fd_block` (n=5, packed, entry 4 = record handle).
 
 Design statements formerly listed as decisions (not open): proxy only via
 `pull.proxy` (§3.8); private/special ranges denied by default with

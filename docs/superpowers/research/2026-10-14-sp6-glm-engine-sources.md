@@ -583,7 +583,7 @@ costs.
 owner decision that local patches to the engine source are acceptable. The
 second makes glm53f's two main gaps cheap to close.
 
-### Owner decisions needed
+### Owner decisions (asked 2026-10-14)
 
 1. **Which base:** maya, glm53f, or **evaluate both engines on the GPU box
    before choosing the base**. Given the fact-check, the third option is a
@@ -611,6 +611,20 @@ second makes glm53f's two main gaps cheap to close.
     whether any tuning knobs may pass at all.
 11. Is maya's default loop guard (forced tokens on detected loops) acceptable
     behavior for our chat route, or must it be off?
+
+### Decisions taken (2026-10-14)
+
+A1. Base engine: EVALUATE BOTH (project-maya v1.1.8 @5c970a86 and lighttransport glm53f @4894c996) on the owner's NVIDIA box before choosing; lean Maya.
+A2. Windows GLM is in SP6 scope.
+A3. MSVC v143 (VS 2022) accepted as the nvcc host compiler for the Windows GLM build.
+A4. AMD/HIP out of scope for SP6 v1 (NVIDIA only).
+A5. Quant formats: GGUF IQ/K types + Maya's own S/M/L quants; EXL3 later.
+A6. Maya's serve/, maya.py, dashboard, updater, MCP client and quant tooling are out of scope.
+A7. DFlash2 (CC BY-NC-ND weights) is never supported, fetched or documented, including via STRATA_GLM_DFLASH.
+A8. Single GPU first; multi-GPU layer split later; glm53f remote TP permanently out.
+A9. Tracking: git submodule, no local patches (fork on GitHub if a patch is unavoidable).
+A10. SP2 env allowlist for Maya: slots off (STRATA_GLM_SLOTS=0 or STRATA_GLM_NO_REUSE=1), STRATA_GLM_DFLASH excluded, no tuning knobs pass.
+A11. Maya's default loop guard is OFF for our chat route.
 
 ---
 

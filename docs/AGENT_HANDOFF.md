@@ -76,6 +76,22 @@ without asking the owner.
    remain a smoke test only. After the submodule layout: run `38478775552`
    (branch `layout/upstream-submodule` @ `4aa742c9`), all blocking jobs green.
 
+### Owner decisions, 2026-10-14
+
+Approved by rflores ("approve all"); binding for plans and implementation.
+
+- Upstream bump to `Niko1221/Strata` v0.1.44.1 merged (main `c07f2429`).
+- SP2 Task 22 = bound: engine-stdin writes get an overall bound (the request's
+  remaining deadline) in SP2's second run; Task 28 documents it.
+- SP3 and SP4 specs APPROVED, all recommendations (see the specs' "Decisions
+  taken"). SP3 plans: two, M1 (concurrency and hardening) and M2 (streaming).
+  SP4 D5 stays open between (A) and (C); (D) ships meanwhile.
+- SP6: A1-A11 recorded in the research doc, section 6.
+- Details: `docs/superpowers/specs/2026-10-14-sp3-api-concurrency-streaming-design.md`
+  (section 11), `docs/superpowers/specs/2026-10-14-sp4-acquire-design.md`
+  (section 12), `docs/superpowers/research/2026-10-14-sp6-glm-engine-sources.md`
+  (section 6).
+
 ## Current baseline
 
 - Upstream baseline: the `upstream` submodule gitlink, `Niko1221/Strata` tag

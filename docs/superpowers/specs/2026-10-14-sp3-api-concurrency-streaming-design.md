@@ -1,6 +1,6 @@
 # Sub-project 3 — API concurrency, streaming, and the `NET-*`/`WEB-*`/`DOS-*`/`EXT-*` acceptance tests
 
-Status: DRAFT — awaiting owner decisions (§11.1). Every value below is the
+Status: APPROVED 2026-10-14 — owner accepted every recommendation (see §11 "Decisions taken"). Every value below is the
 recommended option of the matching decision; a different choice changes only
 the rows that cite it.
 
@@ -1161,6 +1161,7 @@ Each lists options, the recommendation (marked **R**) and the cost.
    schema change, but most chat answers are cut at 256 tokens with
    `finish_reason:"length"`. Cost of (a): an unbounded-looking request can run
    up to `generation_timeout_s`.
+    **Decision (2026-10-14): (a) auto: `min(max_completion_tokens, ctx − n − 8)`, with the SP1 schema addendum (0 = auto, range 0–16384).**
 2. **`max_tokens` above the limit.** (a) **R** clamp to
    `min(max_completion_tokens, ctx − n − 8)`; the answer ends with `"length"`
    if the clamp is hit; `400 context_length_exceeded` only when the prompt
@@ -1168,6 +1169,7 @@ Each lists options, the recommendation (marked **R**) and the cost.
    (b) reject with `400` (OpenAI behavior); such clients fail on every
    request. Cost of (a): a client gets fewer tokens than it asked for without
    an error.
+    **Decision (2026-10-14): (a) clamp; `400` only when the prompt alone fills the context.**
 3. **Invalid UTF-8 in model output.** (a) **R** replace each invalid sequence
    with U+FFFD and continue; drop an incomplete tail on `length`/`cancel`
    endings (§3.3). (b) fail on an invalid sequence: before stream headers
@@ -1179,11 +1181,13 @@ Each lists options, the recommendation (marked **R**) and the cost.
    incomplete-tail drop on `length`/`cancel` endings applies, because a tail
    cut by a limit is not invalid output.
    Cost of (a): a client may see U+FFFD where a broken model emitted garbage.
+    **Decision (2026-10-14): (a) replace invalid sequences with U+FFFD; incomplete tail dropped on length/cancel.**
 4. **Generation timeout result.** (a) **R** `STOP`, drain, return the text so
    far with `finish_reason:"length"`. (b) an error (`503 engine_error`);
    output is discarded and OpenAI SDKs retry the whole request (unless
    `x-should-retry: false`). Cost of (a): a client cannot tell a timeout from
    `max_tokens`; the request log records `generation_timeout`.
+    **Decision (2026-10-14): (a) partial text with `finish_reason:"length"`.**
 5. **Stream framing.** (a) close-delimited body, `[DONE]` as the only end
    marker; simplest, but a truncated stream looks complete at the HTTP layer
    and `[DONE]` also follows error events. (b) **R** HTTP/1.1 chunked transfer
@@ -1193,6 +1197,7 @@ Each lists options, the recommendation (marked **R**) and the cost.
    (`server.py:4585`, `4743-4749`), so (b) differs from upstream on the wire
    but not in what an SSE client parses. Complete responses keep
    `Content-Length` in both options.
+    **Decision (2026-10-14): (b) chunked transfer coding.**
 6. **Sampling parameters.** (a) `400 unsupported_parameter` for all until SP5;
    fails most apps (LangChain, Open WebUI, Continue send `temperature`,
    `top_p`, and neutral `presence_penalty: 0` by default), against PX §1's
@@ -1206,29 +1211,35 @@ Each lists options, the recommendation (marked **R**) and the cost.
    `top_k`, `min_p`, non-zero penalties stay SP5. **R** (e); at minimum (d).
    Cost of (e): three bounded keys and a `GEN` change verified only on the GPU
    box (§9.5 item 3).
+    **Decision (2026-10-14): (e) neutral values are no-ops; bounded `temperature`/`top_p`/`seed` passed to `GEN`.**
 7. **Legacy `/v1/completions`.** **R** out of scope (upstream has none; PX
    targets chat clients). Cost: tools that only speak the legacy route do not
    work.
+    **Decision (2026-10-14): out of scope.**
 8. **Anthropic `/v1/messages`.** **R** not in SP3; consider in SP5 (upstream
    routes it, `server.py:5084-5085`, and project-maya has one too) behind the
    same gate, error model and SSE encoder with Anthropic event names. Cost:
    Claude-API clients need a translation proxy until SP5.
+    **Decision (2026-10-14): not in SP3 (SP5 candidate).**
 9. **Ollama-native `/api/chat`, `/api/generate`, `/api/tags`.** **R** out;
    PX's banner and clients use the OpenAI-compatible base URL, and upstream
    has none. Cost: tools that speak only the Ollama API need their OpenAI
    mode.
+    **Decision (2026-10-14): out.**
 10. **CORS default.** (a) **R** none by default; `listener.cors_origins`
     exact-origin opt-in, no `*`. (b) no CORS at all, even opt-in; browser apps
     can never call the API directly. (c) a built-in allow for
     `http://localhost:*` dev servers; any local web page on any port gets a
     CORS grant (the token is still required). Cost of (a): one key and its
     tests.
+    **Decision (2026-10-14): (a) off by default; exact-origin opt-in via `listener.cors_origins`.**
 11. **Concurrency defaults.** `max_concurrent_requests` 8,
     `max_queued_generations` 4, `queue_timeout_ms` 300 000,
     `max_connections_per_remote_address` 4. **R** these. A queue of 1 refuses
     a second `strata run` window plus an app quickly; 16+ lets one client park
     many requests behind a 120 s generation. Upstream queues without bound and
     never answers busy.
+    **Decision (2026-10-14): 8 workers; queue derived min(4, max(0, workers−2)); 300 s queue timeout; per-remote-address cap derived min(4, workers).**
 12. **Loopback residual after the slow-body fix.** Unauthenticated clients
     can now hold a worker only in P1 and are evicted oldest-first, but loopback
     peers stay exempt from the per-address cap. Residual: (i) another local
@@ -1242,6 +1253,9 @@ Each lists options, the recommendation (marked **R**) and the cost.
     local ones. (c) reserve one worker for `/health` only; `strata run`'s
     readiness polls never starve, at the cost of one idle thread. Cost of (a):
     none in code.
+    **Decision (2026-10-14): (a) accept the loopback residual and record it in the threat model.**
+
+**Decisions taken.** On 2026-10-14 the owner accepted every recommendation: (1) auto `max_tokens`; (2) clamp above the limit; (3) U+FFFD for invalid UTF-8; (4) partial text with `"length"` on timeout; (5) chunked transfer coding; (6) option (e) sampling; (7) `/v1/completions` out; (8) `/v1/messages` not in SP3; (9) Ollama `/api/*` out; (10) CORS off by default, exact-origin opt-in; (11) defaults 8 / 4 / 300 s / 4 as derived; (12) loopback residual accepted. Two plans: M1 (concurrency and hardening), M2 (streaming).
 
 ### 11.2 Settled engineering choices (recorded, not for the owner)
 
