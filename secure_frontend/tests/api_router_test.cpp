@@ -1,14 +1,19 @@
+#include "secure_frontend/api_errors.hpp"
 #include "secure_frontend/api_router.hpp"
+#include "secure_frontend/config.hpp"
 #include "secure_frontend/http_policy.hpp"
+#include "secure_frontend/request_router.hpp"
+#include "secure_frontend/secret_bytes.hpp"
 #include "secure_frontend/token_verifier.hpp"
 #include "support/test_support.hpp"
 
 #include <cstdlib>
 #include <iostream>
 #include <memory>
-#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -22,171 +27,179 @@ void expect(bool condition, const std::string& message) {
   }
 }
 
-secure_frontend::ApiRouter router(bool healthy = true) {
-  return secure_frontend::ApiRouter(
-      [healthy] { return healthy; },
-      [] {
-        return std::vector<secure_frontend::ApiModel>{
-            {.id = "local-model", .owned_by = "local"},
-            {.id = "quote-\\\"and-newline\\n", .owned_by = "owner\\\\name"},
-        };
-      });
+constexpr std::string_view kRouterToken = "router-token-0123456789abcdefghijklmnopq";
+constexpr secure_frontend::HeadLimits kRouterLimits{4096, 16384, 64, 65536};
+
+secure_frontend::ApiRouter router_with(secure_frontend::HealthProvider health, std::string model = "fake-model",
+                                       std::string owned_by = "local") {
+  secure_frontend::SecretBytes secret;
+  (void)secret.assign(kRouterToken);
+  return secure_frontend::ApiRouter({
+      .policy = secure_frontend::make_http_policy(*secure_frontend::parse_listener_address("127.0.0.1"), 8080, {}, {}),
+      .validator = secure_frontend::make_bearer_validator(std::make_shared<const secure_frontend::TokenVerifier>(std::move(secret))),
+      .model_id = std::move(model), .owned_by = std::move(owned_by), .chat_body_limit = 49152,
+      .health = health ? std::move(health) : secure_frontend::HealthProvider{[] { return secure_frontend::HealthView{true, "ready", ""}; }},
+      .chat = {}});
+}
+secure_frontend::RequestHead head_of(std::string method, std::string target) {
+  secure_frontend::RequestHead head;
+  head.method = std::move(method);
+  head.target = std::move(target);
+  head.fields = {{"Host", "127.0.0.1:8080"}, {"Authorization", "Bearer " + std::string{kRouterToken}}};
+  return head;
+}
+secure_frontend::RouteDecision decision_of(secure_frontend::ApiRouter& router, std::string method, std::string target) {
+  return router.authorize(head_of(std::move(method), std::move(target)));
+}
+secure_frontend::HttpResponse complete(secure_frontend::RouteResult result) {
+  return std::get<secure_frontend::HttpResponse>(std::move(result));
+}
+secure_frontend::HttpResponse get(secure_frontend::ApiRouter& router, const std::string& target) {
+  const auto decision = decision_of(router, "GET", target);
+  if (decision.early) return *decision.early;
+  return complete(router.handle(head_of("GET", target), "", decision, {}));
 }
 
-void dispatches_exact_health_route() {
-  const auto response = router().dispatch("GET", "/health");
-  expect(response.status == 200, "GET /health should be successful when provider is healthy");
-  expect(response.header_value("Content-Type") == "application/json; charset=utf-8",
-         "health must use JSON content type");
-  expect(response.body == "{\"status\":\"ok\"}\n", "health response should be stable JSON");
-
-  const auto unavailable = router(false).dispatch("GET", "/health");
-  expect(unavailable.status == 503, "unhealthy provider should be unavailable");
-  expect(unavailable.body == "{\"status\":\"unavailable\"}\n",
-         "unhealthy response should not leak provider details");
+// health_samples_status_before_state_once_each: the provider is called exactly once per /health.
+void health_samples_status_before_state_once_each() {
+  int calls = 0;
+  auto router = router_with([&calls] { ++calls; return secure_frontend::HealthView{true, "ready", ""}; });
+  (void)router.handle(head_of("GET", "/health"), "", decision_of(router, "GET", "/health"), {});
+  expect(calls == 1, "one snapshot per /health request");
+  // SP2 (spec §3.4): READY is consumed eagerly, so `starting` is reported 503.
+  auto starting = router_with([] { return secure_frontend::HealthView{false, "starting", ""}; });
+  const auto r = get(starting, "/health");
+  expect(r.status == 503 && r.body == "{\"status\":\"unavailable\",\"engine\":\"starting\"}\n", "a starting engine: " + r.body);
 }
 
-void dispatches_models_with_json_escaping() {
-  const auto response = router().dispatch("GET", "/v1/models");
-  expect(response.status == 200, "GET /v1/models should be successful");
-  expect(response.body ==
-             "{\"object\":\"list\",\"data\":[{\"id\":\"local-model\",\"object\":\"model\",\"owned_by\":\"local\"},{\"id\":\"quote-\\\\\\\"and-newline\\\\n\",\"object\":\"model\",\"owned_by\":\"owner\\\\\\\\name\"}]}\n",
-         "model metadata must be serialized as escaped JSON, never interpolated raw");
-}
-
-void rejects_non_exact_routes() {
-  for (const auto& [method, target] : std::vector<std::pair<std::string, std::string>>{
-           {"POST", "/health"}, {"GET", "/health?verbose=1"}, {"GET", "/health/"},
-           {"GET", "/v1/models/"}, {"GET", "/v1/chat/completions"}, {"OPTIONS", "/v1/models"},
-       }) {
-    const auto response = router().dispatch(method, target);
-    expect(response.status == 404, "only exact GET routes should be exposed");
-    expect(response.body == "{\"error\":\"Not Found\"}\n", "404 must be generic JSON");
-  }
-}
-
-void fails_closed_when_provider_throws_or_returns_invalid_model() {
-  secure_frontend::ApiRouter throwing_router(
-      [] { return true; }, []() -> std::vector<secure_frontend::ApiModel> { throw std::runtime_error("private"); });
-  const auto thrown = throwing_router.dispatch("GET", "/v1/models");
-  expect(thrown.status == 503, "model provider exceptions should fail closed");
-  expect(thrown.body == "{\"error\":\"Service Unavailable\"}\n", "errors must not leak exception details");
-
-  secure_frontend::ApiRouter invalid_router(
-      [] { return true; }, [] { return std::vector<secure_frontend::ApiModel>{{.id = "", .owned_by = "local"}}; });
-  const auto invalid = invalid_router.dispatch("GET", "/v1/models");
-  expect(invalid.status == 503, "invalid model metadata must not be emitted");
+// Pre-flight T6b(a)/V11: recovery is reported only with an unhealthy engine.
+void health_carries_recovery_only_with_failed() {
+  auto restarting = router_with([] { return secure_frontend::HealthView{false, "failed", "restarting"}; });
+  const auto r = get(restarting, "/health");
+  expect(r.status == 503 && r.body == "{\"status\":\"unavailable\",\"engine\":\"failed\",\"recovery\":\"restarting\"}\n",
+         "failed + restarting: " + r.body);
+  auto exhausted = router_with([] { return secure_frontend::HealthView{false, "failed", "exhausted"}; });
+  expect(get(exhausted, "/health").body == "{\"status\":\"unavailable\",\"engine\":\"failed\",\"recovery\":\"exhausted\"}\n",
+         "failed + exhausted");
+  auto ready = router_with([] { return secure_frontend::HealthView{true, "ready", ""}; });
+  const auto healthy = get(ready, "/health");
+  expect(healthy.status == 200 && healthy.body == "{\"status\":\"ok\",\"engine\":\"ready\"}\n", "ready carries no recovery field");
+  const std::string fail_closed = secure_frontend::render_error_body(secure_frontend::ApiError::engine_unavailable);
+  auto mixed = router_with([] { return secure_frontend::HealthView{true, "ready", "restarting"}; });
+  const auto m = get(mixed, "/health");
+  expect(m.status == 503 && m.body == fail_closed, "recovery with a healthy engine fails closed: " + m.body);
+  auto unknown = router_with([] { return secure_frontend::HealthView{false, "failed", "/secret"}; });
+  const auto u = get(unknown, "/health");
+  expect(u.status == 503 && u.body == fail_closed && u.body.find("secret") == std::string::npos,
+         "an unknown recovery literal is never echoed");
 }
 void health_includes_engine_state_when_provided() {
-  const secure_frontend::ApiRouter with_state(
-      [] { return true; }, [] { return std::vector<secure_frontend::ApiModel>{}; },
-      []() -> std::string_view { return "ready"; });
-  const auto response = with_state.dispatch("GET", "/health");
-  expect(response.status == 200, "healthy provider with engine state must be 200");
-  expect(response.body == "{\"status\":\"ok\",\"engine\":\"ready\"}\n", "health must carry \"engine\":\"ready\"");
-  const secure_frontend::ApiRouter generating(
-      [] { return true; }, [] { return std::vector<secure_frontend::ApiModel>{}; },
-      []() -> std::string_view { return "generating"; });
-  expect(generating.dispatch("GET", "/health").body == "{\"status\":\"ok\",\"engine\":\"generating\"}\n",
-         "generating is reported as healthy");
+  auto router = router_with([] { return secure_frontend::HealthView{true, "generating", ""}; });
+  const auto r = complete(router.handle(head_of("GET", "/health"), "", decision_of(router, "GET", "/health"), {}));
+  expect(r.status == 200 && r.body == "{\"status\":\"ok\",\"engine\":\"generating\"}\n", "SP2 body unchanged: " + r.body);
+  expect(r.header_value("Content-Type") == std::optional<std::string_view>{"application/json; charset=utf-8"}, "JSON content type");
 }
-
 void health_is_503_with_engine_state_when_unavailable() {
-  const secure_frontend::ApiRouter failed(
-      [] { return false; }, [] { return std::vector<secure_frontend::ApiModel>{}; },
-      []() -> std::string_view { return "failed"; });
-  const auto response = failed.dispatch("GET", "/health");
-  expect(response.status == 503, "unavailable provider with engine state must be 503");
-  expect(response.body == "{\"status\":\"unavailable\",\"engine\":\"failed\"}\n",
-         "503 body carries only status and the engine literal");
-  const secure_frontend::ApiRouter bogus(
-      [] { return true; }, [] { return std::vector<secure_frontend::ApiModel>{}; },
-      []() -> std::string_view { return "/secret/path\"x"; });
-  const auto rejected = bogus.dispatch("GET", "/health");
-  expect(rejected.status == 503, "an engine state outside the fixed literals fails closed");
-  expect(rejected.body == "{\"status\":\"unavailable\"}\n", "an unknown engine state is never echoed");
+  auto router = router_with([] { return secure_frontend::HealthView{false, "failed", "restarting"}; });
+  const auto r = complete(router.handle(head_of("GET", "/health"), "", decision_of(router, "GET", "/health"), {}));
+  expect(r.status == 503 && r.body == "{\"status\":\"unavailable\",\"engine\":\"failed\",\"recovery\":\"restarting\"}\n", "503 body: " + r.body);
+  auto bogus = router_with([] { return secure_frontend::HealthView{true, "/secret/path\"x", ""}; });
+  const auto b = get(bogus, "/health");
+  expect(b.status == 503 && b.body == secure_frontend::render_error_body(secure_frontend::ApiError::engine_unavailable),
+         "an engine state outside the fixed literals is never echoed: " + b.body);
 }
-
-void health_samples_status_before_state_once_each() {
-  // SP2 (spec §3.4): READY is consumed eagerly, so `starting` means the model
-  // is loading and is reported 503. The providers are called in order b, s, r.
-  std::string calls;
-  std::string_view snapshot{"failed"};
-  const secure_frontend::ApiRouter snapshotting(
-      [&] { calls += 'b'; snapshot = "starting"; return false; },
-      [] { return std::vector<secure_frontend::ApiModel>{}; },
-      [&]() -> std::string_view { calls += 's'; return snapshot; },
-      [&]() -> std::string_view { calls += 'r'; return {}; });
-  const auto response = snapshotting.dispatch("GET", "/health");
-  expect(calls == "bsr", "health must call bool, then state, then recovery, once each; saw: " + calls);
-  expect(response.status == 503 && response.body == "{\"status\":\"unavailable\",\"engine\":\"starting\"}\n",
-         "a starting engine is 503 with engine=starting");
+void dispatches_exact_health_route() {
+  auto router = router_with([] { return secure_frontend::HealthView{true, "ready", ""}; });
+  expect(decision_of(router, "GET", "/health").route == secure_frontend::RouteId::health && !decision_of(router, "GET", "/health").early,
+         "/health is routed");
 }
-
-void health_carries_recovery_only_with_failed() {
-  const auto with = [](std::string_view state, std::string_view recovery, bool healthy) {
-    return secure_frontend::ApiRouter([healthy] { return healthy; }, [] { return std::vector<secure_frontend::ApiModel>{}; },
-                                      [state]() -> std::string_view { return state; },
-                                      [recovery]() -> std::string_view { return recovery; })
-        .dispatch("GET", "/health");
-  };
-  const auto restarting = with("failed", "restarting", false);
-  expect(restarting.status == 503 && restarting.body == "{\"status\":\"unavailable\",\"engine\":\"failed\",\"recovery\":\"restarting\"}\n",
-         "failed + restarting");
-  expect(with("failed", "exhausted", false).body == "{\"status\":\"unavailable\",\"engine\":\"failed\",\"recovery\":\"exhausted\"}\n",
-         "failed + exhausted");
-  expect(with("failed", "", false).body == "{\"status\":\"unavailable\",\"engine\":\"failed\"}\n", "no recovery field when empty");
-  expect(with("ready", "restarting", true).body == "{\"status\":\"unavailable\"}\n", "recovery with a non-failed state fails closed");
-  expect(with("failed", "/secret", false).body == "{\"status\":\"unavailable\"}\n", "an unknown recovery literal fails closed");
+void dispatches_models_with_json_escaping() {
+  auto router = router_with({}, "quote\"model", "own\\er");
+  const auto r = complete(router.handle(head_of("GET", "/v1/models"), "", decision_of(router, "GET", "/v1/models"), {}));
+  expect(r.status == 200 && r.body == "{\"object\":\"list\",\"data\":[{\"id\":\"quote\\\"model\",\"object\":\"model\",\"created\":0,\"owned_by\":\"own\\\\er\"}]}\n",
+         "only the served model, escaped: " + r.body);
+  const auto model = complete(router.handle(head_of("GET", "/v1/models/other"), "", decision_of(router, "GET", "/v1/models/other"), {}));
+  expect(model.status == 404 && model.body == secure_frontend::render_error_body(secure_frontend::ApiError::model_not_found),
+         "other model id: 404 model_not_found");
+  auto plain = router_with({});
+  const auto same = get(plain, "/v1/models/fake-model");
+  expect(same.status == 200 && same.body == "{\"id\":\"fake-model\",\"object\":\"model\",\"created\":0,\"owned_by\":\"local\"}\n",
+         "the served id answers the model object: " + same.body);
 }
-
+void rejects_non_exact_routes() {
+  auto router = router_with({});
+  for (const char* target : {"/health/", "//health", "/HEALTH", "/v1/models/", "/v1//models", "/v1/chat/completions/"}) {
+    const auto d = decision_of(router, "GET", target);
+    expect(d.early.has_value() && d.early->status == 404, std::string{"404 for "} + target);
+    if (d.early) {
+      expect(d.early->body == secure_frontend::render_error_body(secure_frontend::ApiError::not_found),
+             std::string{"404 body is the §7.2 not_found row for "} + target);
+    }
+  }
+}
+void fails_closed_when_provider_throws_or_returns_invalid_model() {
+  auto router = router_with([]() -> secure_frontend::HealthView { throw 1; });
+  const auto r = complete(router.handle(head_of("GET", "/health"), "", decision_of(router, "GET", "/health"), {}));
+  expect(r.status == 503 && r.body == secure_frontend::render_error_body(secure_frontend::ApiError::engine_unavailable),
+         "a throwing health provider is a fixed 503");
+  const std::string internal = secure_frontend::render_error_body(secure_frontend::ApiError::internal_error);
+  for (const std::string& bad_id : {std::string{"bad\x01model"}, std::string{}, std::string(1025, 'a'), std::string{"bad\x7fmodel"}}) {
+    auto bad = router_with({}, bad_id);
+    const auto models = complete(bad.handle(head_of("GET", "/v1/models"), "", decision_of(bad, "GET", "/v1/models"), {}));
+    expect(models.status == 500 && models.body == internal, "an invalid model id fails closed (size " + std::to_string(bad_id.size()) + ")");
+  }
+  auto bad_owner = router_with({}, "fake-model", "own\ner");
+  expect(get(bad_owner, "/v1/models").status == 500, "a control byte in owned_by fails closed");
+  expect(get(bad_owner, "/v1/models/fake-model").status == 500, "and on /v1/models/<id> too");
+  auto longest = router_with({}, std::string(1024, 'a'));
+  expect(get(longest, "/v1/models").status == 200, "1024 bytes is the inclusive bound");
+}
 void auth01_every_route_rejects_missing_malformed_wrong_token() {
-  secure_frontend::SecretBytes secret;
-  (void)secret.assign("auth01-token-0123456789abcdefghijklmnopq");
-  const auto validator = secure_frontend::make_bearer_validator(
-      std::make_shared<const secure_frontend::TokenVerifier>(std::move(secret)));
-  const auto routes_under_test = router();
-  const secure_frontend::RequestDispatcher dispatch = [&routes_under_test](std::string_view method, std::string_view target,
-                                                                           std::string_view) {
-    return routes_under_test.dispatch(method, target);
-  };
-  const secure_frontend::HttpPolicy policy =
-      secure_frontend::make_http_policy(*secure_frontend::parse_listener_address("127.0.0.1"), 8080, {}, {});
-  const std::string token = "auth01-token-0123456789abcdefghijklmnopq";
+  auto router = router_with({});
+  const std::string token{kRouterToken};
   const std::pair<std::string, int> variants[] = {
-      {"", 401},                                                           // missing
-      {"Authorization: bearer " + token + "\r\n", 401},                    // lowercase scheme
-      {"Authorization: Bearer \r\n", 401},                                 // Bearer + empty
-      {"Authorization: Bearer\t" + token + "\r\n", 401},                   // tab separator
-      {"Authorization: Basic " + token + "\r\n", 401},                     // other scheme
-      {"Authorization: Bearer " + token + "\r\nAuthorization: Bearer " + token + "\r\n", 400},  // duplicate
+      {"", 401}, {"Authorization: bearer " + token + "\r\n", 401}, {"Authorization: Bearer \r\n", 401},
+      {"Authorization: Bearer\t" + token + "\r\n", 401}, {"Authorization: Basic " + token + "\r\n", 401},
+      {"Authorization: Bearer " + token + "\r\nAuthorization: Bearer " + token + "\r\n", 400},
       {"Authorization: Bearer wrong-token-0123456789abcdefghijklmn\r\n", 401}};
-  const std::pair<const char*, const char*> routes[] = {
-      {"GET", "/health"}, {"GET", "/v1/models"}, {"POST", "/v1/chat/completions"}, {"GET", "/does-not-exist"}};
+  std::vector<std::pair<std::string, std::string>> routes;
+  for (const auto& entry : secure_frontend::kRouteTable) {
+    routes.emplace_back(std::string{entry.method}, entry.prefix ? std::string{entry.path} + "fake-model" : std::string{entry.path});
+  }
+  routes.emplace_back("GET", "/does-not-exist");
   for (const auto& [method, target] : routes) {
     for (const auto& [headers, status] : variants) {
-      std::string request = std::string{method} + " " + target + " HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n" + headers;
-      request += std::string{method} == "POST" ? "Content-Length: 2\r\n\r\n{}" : "\r\n";
-      const auto response = secure_frontend::handle_http_request(request, policy, validator, dispatch);
-      expect(response.status == status, std::string{method} + " " + target + " must answer " + std::to_string(status));
-      expect(response.body.find("local-model") == std::string::npos && response.body.find("status") == std::string::npos,
-             "a rejected request carries no route or model data");
+      std::string request = method + " " + target + " HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n" + headers;
+      request += method == "POST" ? "Content-Length: 2\r\nContent-Type: application/json\r\n\r\n{}" : "\r\n";
+      const auto response = secure_frontend::handle_http_request(request, router, kRouterLimits);
+      expect(response.status == status, method + " " + target + " must answer " + std::to_string(status));
+      expect(response.body.find("fake-model") == std::string::npos && response.body.find("status") == std::string::npos,
+             "no route data before authentication");
+      if (status == 401) {
+        expect(response.header_value("WWW-Authenticate") == std::optional<std::string_view>{"Bearer"}, "401 names the Bearer scheme");
+      }
     }
   }
   const auto allowed = secure_frontend::handle_http_request(
-      "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nAuthorization: Bearer " + token + "\r\n\r\n", policy, validator,
-      dispatch);
-  expect(allowed.status == 200 && allowed.body.find("local-model") != std::string::npos,
+      "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nAuthorization: Bearer " + token + "\r\n\r\n", router, kRouterLimits);
+  expect(allowed.status == 200 && allowed.body.find("fake-model") != std::string::npos,
          "the same route answers with the right token (the negatives are not vacuous)");
 }
-
 void models_list_keeps_utf8_model_id() {
-  const secure_frontend::ApiRouter utf8_router([] { return true; },
-      [] { return std::vector<secure_frontend::ApiModel>{{.id = "mod\xc3\xa8le-\xc3\xbc", .owned_by = "local"}}; });
-  const auto response = utf8_router.dispatch("GET", "/v1/models");
-  expect(response.status == 200, "models answers 200");
-  expect(response.body.find("mod\xc3\xa8le-\xc3\xbc") != std::string::npos, "UTF-8 model id copied unchanged");
-  expect(response.body.find("\\u00") == std::string::npos, "no byte >= 0x80 is escaped as \\u00XX");
+  auto router = router_with({}, "mod\xc3\xa8le-\xc3\xbc");
+  const auto r = complete(router.handle(head_of("GET", "/v1/models"), "", decision_of(router, "GET", "/v1/models"), {}));
+  expect(r.status == 200 && r.body.find("mod\xc3\xa8le-\xc3\xbc") != std::string::npos && r.body.find("\\u00") == std::string::npos,
+         "UTF-8 model id copied unchanged");
+  // Spec §3.9: copied unchanged only after validation; invalid UTF-8 fails closed.
+  const std::string internal = secure_frontend::render_error_body(secure_frontend::ApiError::internal_error);
+  for (const std::string& invalid : {std::string{"mod\xc3"}, std::string{"\xff-model"}, std::string{"\xed\xa0\x80"},
+                                     std::string{"\xc0\xaf"}}) {
+    auto bad = router_with({}, invalid);
+    const auto models = get(bad, "/v1/models");
+    expect(models.status == 500 && models.body == internal, "an invalid UTF-8 model id fails closed");
+    auto bad_owner = router_with({}, "fake-model", invalid);
+    expect(get(bad_owner, "/v1/models").status == 500, "an invalid UTF-8 owned_by fails closed");
+  }
 }
 }  // namespace
 

@@ -78,4 +78,8 @@ using JsonParseResult = std::variant<JsonValue, JsonError>;
 // bytes < 0x20 as \u00XX; everything else, including UTF-8, verbatim).
 void append_json_string(std::string* output, std::string_view value);
 
+// RFC 3629 UTF-8 (no overlongs, no surrogates, nothing above U+10FFFF); the
+// one validator the escaping writer's callers use before copying text (spec §3.9).
+[[nodiscard]] bool is_valid_utf8(std::string_view value) noexcept;
+
 }  // namespace secure_frontend

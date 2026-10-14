@@ -1,15 +1,24 @@
 #include "secure_frontend/api_constants.hpp"
 #include "secure_frontend/api_errors.hpp"
+#include "secure_frontend/api_router.hpp"
+#include "secure_frontend/config.hpp"
+#include "secure_frontend/http_policy.hpp"
 #include "secure_frontend/http_request_head.hpp"
 #include "secure_frontend/http_wire.hpp"
 #include "secure_frontend/request_router.hpp"
+#include "secure_frontend/secret_bytes.hpp"
+#include "secure_frontend/token_verifier.hpp"
 #include "support/test_support.hpp"
 
 #include <chrono>
 #include <iostream>
+#include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
+#include <vector>
 
 namespace {
 int failures = 0;
@@ -265,6 +274,103 @@ void route_result_seam_returns_complete_response() {
   expect(streamed.status == 500 && streamed.body == secure_frontend::render_error_body(ApiError::internal_error),
          "a StreamHandler needs a socket: the in-memory seam fails closed");
 }
+
+constexpr std::string_view kToken = "parser-token-0123456789abcdefghijklmnopq";
+
+secure_frontend::ApiRouter make_router(std::vector<std::string> cors = {}, int* chat_calls = nullptr) {
+  secure_frontend::SecretBytes secret;
+  (void)secret.assign(kToken);
+  secure_frontend::ApiRouterConfig config{
+      .policy = secure_frontend::make_http_policy(*secure_frontend::parse_listener_address("127.0.0.1"), 8080, {}, cors),
+      .validator = secure_frontend::make_bearer_validator(std::make_shared<const secure_frontend::TokenVerifier>(std::move(secret))),
+      .model_id = "fake-model", .owned_by = "local", .chat_body_limit = 49152,
+      .health = [] { return secure_frontend::HealthView{true, "ready", ""}; },
+      .chat = [chat_calls](std::string_view, const secure_frontend::RequestContext&) -> secure_frontend::RouteResult {
+        if (chat_calls != nullptr) ++*chat_calls;
+        return secure_frontend::HttpResponse{.status = 200, .headers = {{"Content-Type", "application/json; charset=utf-8"}}, .body = "{}\n"};
+      }};
+  return secure_frontend::ApiRouter(std::move(config));
+}
+
+std::string chat_request(const std::string& extra_headers, const std::string& body = "{}") {
+  return "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nAuthorization: Bearer " + std::string{kToken} +
+         "\r\nContent-Length: " + std::to_string(body.size()) + "\r\n" + extra_headers + "\r\n" + body;
+}
+
+void dos01_status_matrix_415_417_505() {
+  auto router = make_router();
+  const auto status_of = [&router](const std::string& request) {
+    return secure_frontend::handle_http_request(request, router, kLimits).status;
+  };
+  expect(status_of(chat_request("Content-Type: text/plain\r\n")) == 415, "text/plain body is 415");
+  expect(status_of(chat_request("")) == 415, "missing Content-Type is 415");
+  expect(status_of(chat_request("Content-Type: application/json\r\nExpect: foo\r\n")) == 417, "Expect: foo is 417");
+  expect(status_of("GET /health HTTP/1.0\r\nHost: 127.0.0.1:8080\r\n\r\n") == 505, "HTTP/1.0 is 505");
+  expect(status_of("GET /health HTTP/2.0\r\nHost: 127.0.0.1:8080\r\n\r\n") == 505, "HTTP/2.0 is 505");
+  expect(status_of(chat_request("Content-Type: application/json\r\n")) == 200, "a correct chat reaches the handler");
+}
+
+void content_type_variants_accepted() {
+  auto router = make_router();
+  for (const char* type : {"application/json", "application/json; charset=utf-8", "application/json;charset=UTF-8",
+                           "Application/JSON", "application/json ;  charset=utf-8"}) {
+    expect(secure_frontend::handle_http_request(chat_request(std::string{"Content-Type: "} + type + "\r\n"), router, kLimits).status == 200,
+           std::string{"accepted Content-Type "} + type);
+    expect(secure_frontend::is_json_content_type(type), std::string{"is_json_content_type "} + type);
+  }
+  for (const char* type : {"application/json; charset=latin1", "text/plain", "application/jsonx", "application/json; charset=utf-8; x=1",
+                           "multipart/form-data"}) {
+    expect(secure_frontend::handle_http_request(chat_request(std::string{"Content-Type: "} + type + "\r\n"), router, kLimits).status == 415,
+           std::string{"rejected Content-Type "} + type);
+    expect(!secure_frontend::is_json_content_type(type), std::string{"!is_json_content_type "} + type);
+  }
+  for (const char* type : {"", ";", "application/json;", "application/json; charset=", "application/json; charset=utf-88",
+                           "application/json charset=utf-8", "xapplication/json", "application/json\t;\tcharset=utf-8x"}) {
+    expect(!secure_frontend::is_json_content_type(type), std::string{"edge rejected: "} + type);
+  }
+  expect(secure_frontend::is_json_content_type(" \tapplication/json\t; charset=utf-8 "), "OWS around the parts is accepted");
+  expect(secure_frontend::handle_http_request(chat_request("Content-Type: application/json\r\nContent-Type: application/json\r\n"),
+                                              router, kLimits).status == 415, "two Content-Type fields are 415");
+}
+
+void auth_and_route_order_follows_spec() {
+  int chat_calls = 0;
+  auto router = make_router({"http://app.example:3000"}, &chat_calls);
+  const auto run = [&router](const std::string& request) { return secure_frontend::handle_http_request(request, router, kLimits); };
+  // Unauthenticated: 401 on every path and method, before 404/405/415/413.
+  for (const std::string line : {"GET /nope", "DELETE /health", "POST /v1/chat/completions", "GET /v1/models/x", "PUT /v1/models"}) {
+    const std::string body_headers = line.rfind("POST", 0) == 0 || line.rfind("PUT", 0) == 0 ? "Content-Length: 99999\r\n" : "";
+    const auto r = run(line + " HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n" + body_headers + "\r\n");
+    expect(r.status == (body_headers.empty() ? 401 : 413), line + " without a token");
+  }
+  const auto unauth = run("POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nContent-Length: 2\r\nContent-Type: text/plain\r\n\r\n{}");
+  expect(unauth.status == 401 && unauth.header_value("WWW-Authenticate") == std::optional<std::string_view>{"Bearer"},
+         "401 wins over 415 and carries WWW-Authenticate");
+  const std::string auth = "Authorization: Bearer " + std::string{kToken} + "\r\n";
+  expect(run("DELETE /health HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n" + auth + "\r\n").status == 405, "known path, other method: 405");
+  expect(run("DELETE /health HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n" + auth + "\r\n").header_value("Allow") == std::optional<std::string_view>{"GET"},
+         "405 names Allow");
+  expect(run("GET /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n" + auth + "\r\n").header_value("Allow") ==
+         std::optional<std::string_view>{"POST"}, "chat Allow: POST");
+  expect(run("GET /nope HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n" + auth + "\r\n").status == 404, "unknown path after auth: 404");
+  expect(run("GET /v1/models/ HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n" + auth + "\r\n").status == 404, "empty model id: 404");
+  expect(run(chat_request("Content-Type: application/json\r\n", std::string(49153, ' '))).status == 413, "route body limit: 413");
+  expect(run("GET /health HTTP/1.1\r\nHost: evil:8080\r\n" + auth + "\r\n").status == 403, "Host before auth: 403");
+  expect(run("GET /health HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nOrigin: null\r\n" + auth + "\r\n").status == 403, "Origin before auth: 403");
+  const auto cors = run("GET /health HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nOrigin: http://app.example:3000\r\n\r\n");
+  expect(cors.status == 401 && cors.header_value("Access-Control-Allow-Origin") == std::optional<std::string_view>{"http://app.example:3000"},
+         "an approved CORS origin gets ACAO even on 401");
+  const auto preflight = run("OPTIONS /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nOrigin: http://app.example:3000\r\n"
+                             "Access-Control-Request-Method: POST\r\n\r\n");
+  expect(preflight.status == 204, "preflight needs no token");
+  expect(run("GET /health HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n" + auth + auth + "\r\n").status == 400, "two Authorization fields: 400");
+  expect(chat_calls == 0, "no chat handler call for any refused request");
+  // Body-stage rules of the in-memory seam: Content-Length mismatch and stray bytes are 400.
+  expect(run(chat_request("Content-Type: application/json\r\n") + "x").status == 400, "bytes after the body: 400");
+  std::string short_body = chat_request("Content-Type: application/json\r\n");
+  short_body.pop_back();
+  expect(run(short_body).status == 400, "fewer bytes than Content-Length: 400");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -280,5 +386,8 @@ int main(int argc, char** argv) {
       {"head_request_line_and_header_syntax", head_request_line_and_header_syntax},
       {"wire_head_has_no_content_length", wire_head_has_no_content_length},
       {"route_result_seam_returns_complete_response", route_result_seam_returns_complete_response},
+      {"dos01_status_matrix_415_417_505", dos01_status_matrix_415_417_505},
+      {"content_type_variants_accepted", content_type_variants_accepted},
+      {"auth_and_route_order_follows_spec", auth_and_route_order_follows_spec},
   }, failures);
 }

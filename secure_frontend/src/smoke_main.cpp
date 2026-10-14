@@ -1,4 +1,6 @@
+#include "secure_frontend/api_errors.hpp"
 #include "secure_frontend/api_router.hpp"
+#include "secure_frontend/config_defaults.hpp"
 #include "secure_frontend/config.hpp"
 #include "secure_frontend/http_policy.hpp"
 #include "secure_frontend/http_request_handler.hpp"
@@ -19,6 +21,7 @@
 #include <string_view>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace {
 
@@ -65,25 +68,32 @@ int main(int argc, char** argv) {
       : "[" + options->host + "]:" + std::to_string(options->port);
   const auto bind_address = secure_frontend::parse_listener_address(config->host);
   if (!bind_address.has_value()) { std::cerr << "invalid listener configuration\n"; return EXIT_FAILURE; }
-  const std::filesystem::path models_root = options->models_root;
-  const secure_frontend::ApiRouter router(
-      [] { return true; },
-      [models_root] {
-        std::vector<secure_frontend::ApiModel> models;
-        const auto inventory = secure_frontend::enumerate_local_models(models_root);
-        if (const auto* entries = std::get_if<std::vector<secure_frontend::ModelManifest>>(&inventory)) {
-          for (const auto& entry : *entries) models.push_back({.id = entry.id, .owned_by = entry.owned_by});
-        }
-        return models;
-      });
+  // SP3 Task 6b: the router serves one model id (spec §3.6, E9); this smoke
+  // binary serves the first local model, if any. Task 8b reworks the smoke mains.
+  std::string model_id;
+  std::string owned_by{"local"};
+  const auto inventory = secure_frontend::enumerate_local_models(options->models_root);
+  if (const auto* entries = std::get_if<std::vector<secure_frontend::ModelManifest>>(&inventory); entries != nullptr && !entries->empty()) {
+    model_id = entries->front().id;
+    owned_by = entries->front().owned_by;
+  }
+  secure_frontend::ApiRouter router(secure_frontend::ApiRouterConfig{
+      .policy = secure_frontend::make_http_policy(*bind_address, config->port, {}, {}),
+      .validator = secure_frontend::make_bearer_validator(verifier),
+      .model_id = std::move(model_id),
+      .owned_by = std::move(owned_by),
+      .chat_body_limit = static_cast<std::size_t>(secure_frontend::config_defaults::kChatMaxBodyBytes),
+      .health = [] { return secure_frontend::HealthView{true, "ready", ""}; },
+      .chat = {}});
   std::string error;
   // Loopback only (allow_remote = false): the bound authority and localhost need
   // no alias. No CORS.
   auto server = secure_frontend::HttpSocketServer::bind(*config,
       secure_frontend::make_http_policy(*bind_address, config->port, {}, {}),
       secure_frontend::make_bearer_validator(verifier),
-      [router](std::string_view method, std::string_view target, std::string_view) {
-        return router.dispatch(method, target);
+      [&router](std::string_view method, std::string_view target, std::string_view) {
+        if (method != "GET") return secure_frontend::make_error_response(secure_frontend::ApiError::not_found);
+        return secure_frontend::handle_authenticated_get(router, target);
       }, &error);
   if (!server.has_value()) { std::cerr << "listener setup failed: " << error << '\n'; return EXIT_FAILURE; }
   std::cout << "secure frontend smoke server listening on http://" << host_header << " (local models only)\n";

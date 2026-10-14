@@ -275,7 +275,7 @@ target_include_directories(secure_frontend_api_router
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(secure_frontend_api_router PUBLIC secure_frontend_http_request_handler)
+target_link_libraries(secure_frontend_api_router PUBLIC secure_frontend_http_policy secure_frontend_http_request_handler)
 target_link_libraries(secure_frontend_api_router PUBLIC secure_frontend_api_core)
 
 target_compile_features(secure_frontend_engine_process PUBLIC cxx_std_20)
@@ -826,7 +826,10 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         err_every_code_renders_fixed_body err_param_is_key_only wire_response_has_security_headers_and_date
         dos01_request_line_over_limit_is_414 dos01_header_block_over_limit_is_431 dos01_too_many_headers_is_431
         dos01_transfer_encoding_variants_are_411 dos01_content_length_variants head_request_line_and_header_syntax
-        wire_head_has_no_content_length route_result_seam_returns_complete_response)
+        wire_head_has_no_content_length route_result_seam_returns_complete_response
+        dos01_status_matrix_415_417_505 content_type_variants_accepted auth_and_route_order_follows_spec)
+    target_link_libraries(secure_frontend_http_parser_tests PRIVATE
+        secure_frontend_api_router secure_frontend_secrets secure_frontend_http_policy)
 
     secure_frontend_add_test_executable(secure_frontend_http_request_handler_tests tests/http_request_handler_test.cpp
         secure_frontend_http_request_handler)
@@ -836,6 +839,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         fails_closed_before_calling_validator_for_untrusted_origin emits_cors_only_for_policy_approved_origin
         handles_policy_approved_preflight_without_exposing_an_endpoint constant_time_helper_matches_only_equal_tokens
         auth03_router_uses_verifier)
+    target_link_libraries(secure_frontend_http_request_handler_tests PRIVATE
+        secure_frontend_api_router secure_frontend_http_policy secure_frontend_secrets)
 
     secure_frontend_add_test_executable(secure_frontend_http_socket_server_tests tests/http_socket_server_test.cpp
         secure_frontend_http_socket_server)
@@ -856,7 +861,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         dispatches_models_with_json_escaping rejects_non_exact_routes
         fails_closed_when_provider_throws_or_returns_invalid_model health_carries_recovery_only_with_failed
         auth01_every_route_rejects_missing_malformed_wrong_token models_list_keeps_utf8_model_id)
-    target_link_libraries(secure_frontend_api_router_tests PRIVATE secure_frontend_secrets)
+    target_link_libraries(secure_frontend_api_router_tests PRIVATE
+        secure_frontend_secrets secure_frontend_api_router secure_frontend_http_policy)
 
     secure_frontend_add_test_executable(secure_frontend_engine_process_tests tests/engine_process_test.cpp
         secure_frontend_engine_process)

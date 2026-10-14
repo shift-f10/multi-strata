@@ -289,6 +289,8 @@ std::string_view describe_json_error(const JsonErrorCode code) noexcept {
   return "is not valid JSON";
 }
 
+bool is_valid_utf8(const std::string_view value) noexcept { return valid_utf8(value); }
+
 void append_json_string(std::string* const output, const std::string_view value) {
   static constexpr char kHex[] = "0123456789abcdef";
   output->push_back('"');

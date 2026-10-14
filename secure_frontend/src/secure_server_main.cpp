@@ -157,9 +157,6 @@ int run(const FrontendConfig& config, const bool expert) {
   const std::string& model_id = launch.model_id;
   const bool glm = launch.profile == EngineProfile::glm53;
   auto* engine_arguments = &launch.engine_args;
-  std::vector<secure_frontend::ApiModel> models;
-  models.reserve(launch.served_models.size());
-  for (const auto& id : launch.served_models) models.push_back({.id = id, .owned_by = "local"});
 
   // Profile, protocol flavor, chat limits and the READY deadline all come from
   // the validated config (limits.engine.ready_timeout_s drives the policy).
@@ -206,21 +203,28 @@ int run(const FrontendConfig& config, const bool expert) {
   // configured aliases; a wildcard bind trusts only listener.host_aliases.
   secure_frontend::HttpPolicy policy = secure_frontend::make_http_policy(
       config.listener.host, config.listener.port, config.listener.host_aliases, config.listener.cors_origins);
-  // /health takes one supervisor snapshot per request: the router calls the
-  // bool provider first, then the engine and recovery providers, once each
-  // (api_router.hpp), and the listener is serial.
-  secure_frontend::HealthSnapshot health = secure_frontend::health_for(secure_frontend::SupervisorState::stopped);
-  const secure_frontend::ApiRouter router(
-      [&supervisor, &health] {
-        health = supervisor.snapshot();
-        return health.healthy;
+  // Spec §3.6 (E9, re-anchor 4): /v1/models lists only the served model,
+  // launch.model_id, owned by "local". /health takes one supervisor snapshot
+  // per request. Pre-flight S11: the direct supervisor.snapshot() call is
+  // transitional until Task 16 routes it through the SupervisorPort.
+  secure_frontend::ApiRouter router(secure_frontend::ApiRouterConfig{
+      .policy = secure_frontend::make_http_policy(config.listener.host, config.listener.port, config.listener.host_aliases,
+                                                  config.listener.cors_origins),
+      .validator = secure_frontend::make_bearer_validator(verifier),
+      .model_id = model_id,
+      .owned_by = "local",
+      .chat_body_limit = config.limits.chat.max_body_bytes,
+      .health = [&supervisor] {
+        const auto s = supervisor.snapshot();
+        return secure_frontend::HealthView{s.healthy, s.engine, s.recovery};
       },
-      [models] { return models; }, [&health] { return health.engine; }, [&health] { return health.recovery; });
+      .chat = {}});
   auto server = secure_frontend::HttpSocketServer::bind(
       listener, std::move(policy), secure_frontend::make_bearer_validator(verifier),
       [&router, &supervisor, &tokenizer, &model_id, &schema_limits](
           const std::string_view method, const std::string_view target, const std::string_view body) {
-        if (method == "GET") return router.dispatch(method, target);
+        // The legacy adapter has already authenticated the request; Task 9 replaces this dispatcher.
+        if (method == "GET") return secure_frontend::handle_authenticated_get(router, target);
         if (method != "POST" || target != "/v1/chat/completions") return json_error(404, "Not Found");
         // Parse first: a request the frontend refuses (tools, functions, MCP,
         // stream, unknown fields) is answered with no engine or process action (EXT-01).

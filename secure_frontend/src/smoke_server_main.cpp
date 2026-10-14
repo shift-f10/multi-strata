@@ -1,4 +1,6 @@
+#include "secure_frontend/api_errors.hpp"
 #include "secure_frontend/api_router.hpp"
+#include "secure_frontend/config_defaults.hpp"
 #include "secure_frontend/config.hpp"
 #include "secure_frontend/http_policy.hpp"
 #include "secure_frontend/http_request_handler.hpp"
@@ -178,9 +180,14 @@ int run(const Options& options) {
     std::cerr << "Unable to inventory local models.\n";
     return EXIT_FAILURE;
   }
-  std::vector<secure_frontend::ApiModel> models;
-  models.reserve(manifests->size());
-  for (const auto& manifest : *manifests) models.push_back({.id = manifest.id, .owned_by = manifest.owned_by});
+  // SP3 Task 6b: the router serves one model id (spec §3.6, E9); this smoke
+  // binary serves the first local model, if any. Task 8b reworks the smoke mains.
+  std::string model_id;
+  std::string owned_by{"local"};
+  if (!manifests->empty()) {
+    model_id = manifests->front().id;
+    owned_by = manifests->front().owned_by;
+  }
 
   const std::string authority = host_header(*config);
   const auto bind_address = secure_frontend::parse_listener_address(config->host);
@@ -195,13 +202,20 @@ int run(const Options& options) {
       bind_address->scope() == secure_frontend::AddressScope::wildcard ? std::vector<std::string>{authority}
                                                                         : std::vector<std::string>{};
   secure_frontend::HttpPolicy policy = secure_frontend::make_http_policy(*bind_address, config->port, aliases, {});
-  const secure_frontend::ApiRouter router(
-      [] { return true; }, [models = std::move(models)] { return models; });
+  secure_frontend::ApiRouter router(secure_frontend::ApiRouterConfig{
+      .policy = policy,
+      .validator = secure_frontend::make_bearer_validator(verifier),
+      .model_id = std::move(model_id),
+      .owned_by = std::move(owned_by),
+      .chat_body_limit = static_cast<std::size_t>(secure_frontend::config_defaults::kChatMaxBodyBytes),
+      .health = [] { return secure_frontend::HealthView{true, "ready", ""}; },
+      .chat = {}});
   auto server = secure_frontend::HttpSocketServer::bind(
       *config, std::move(policy),
       secure_frontend::make_bearer_validator(verifier),
       [&router](const std::string_view method, const std::string_view target, const std::string_view) {
-        return router.dispatch(method, target);
+        if (method != "GET") return secure_frontend::make_error_response(secure_frontend::ApiError::not_found);
+        return secure_frontend::handle_authenticated_get(router, target);
       },
       nullptr);
   if (!server.has_value()) {
