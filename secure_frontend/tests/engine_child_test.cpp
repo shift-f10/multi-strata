@@ -4,9 +4,12 @@
 #include "support/fake_engine_dump.hpp"
 #include "support/test_paths.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <iostream>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -238,26 +241,53 @@ void proc02_canary_handles_absent() {
   HANDLE process = OpenProcess(PROCESS_DUP_HANDLE | PROCESS_QUERY_INFORMATION, FALSE, static_cast<DWORD>(child.pid()));
   expect(process != nullptr && query != nullptr && compare != nullptr, "inspection APIs are available (Windows 10 1607+)");
   if (process != nullptr && query != nullptr && compare != nullptr) {
-    std::vector<unsigned char> buffer(1U << 16U);
-    ULONG needed = 0;
-    LONG status = query(process, 51 /* ProcessHandleInformation */, buffer.data(), static_cast<ULONG>(buffer.size()), &needed);
-    if (status != 0 && needed > buffer.size()) {
-      buffer.resize(needed + 4096U);
-      status = query(process, 51, buffer.data(), static_cast<ULONG>(buffer.size()), &needed);
-    }
-    expect(status == 0, "handle snapshot of the engine");
-    if (status == 0) {
+    // True when some entry of a fresh snapshot of the engine's handle table is
+    // the same kernel object as `target`. The snapshot itself is checked so a
+    // failed or garbled inspection cannot pass as "absent".
+    const auto engine_holds = [&](HANDLE target) -> bool {
+      constexpr LONG info_length_mismatch = static_cast<LONG>(0xC0000004UL);  // STATUS_INFO_LENGTH_MISMATCH
+      std::vector<unsigned char> buffer(1U << 16U);
+      ULONG needed = 0;
+      LONG status = query(process, 51 /* ProcessHandleInformation */, buffer.data(), static_cast<ULONG>(buffer.size()), &needed);
+      for (int attempt = 0; status == info_length_mismatch && attempt < 4; ++attempt) {
+        buffer.resize(std::max<std::size_t>(needed, buffer.size() * 2U) + 4096U);
+        status = query(process, 51, buffer.data(), static_cast<ULONG>(buffer.size()), &needed);
+      }
+      if (status != 0) {
+        std::ostringstream hex;
+        hex << std::hex << static_cast<unsigned long>(static_cast<ULONG>(status));
+        expect(false, "handle snapshot of the engine, NTSTATUS 0x" + hex.str());
+        return false;
+      }
       const auto* snapshot = reinterpret_cast<const HandleSnapshot*>(buffer.data());
+      const std::size_t capacity = (buffer.size() - offsetof(HandleSnapshot, Handles)) / sizeof(HandleEntry);
+      expect(snapshot->NumberOfHandles >= 3U && snapshot->NumberOfHandles <= capacity,
+             "the snapshot lists a plausible handle count (at least stdio), saw " + std::to_string(snapshot->NumberOfHandles));
+      const std::size_t count = std::min<std::size_t>(snapshot->NumberOfHandles, capacity);
       const HandleEntry* entries = snapshot->Handles;
-      for (ULONG_PTR index = 0; index < snapshot->NumberOfHandles; ++index) {
+      bool duplicated_any = false;
+      bool found = false;
+      for (std::size_t index = 0; index < count; ++index) {
         HANDLE duplicate = nullptr;
         if (!DuplicateHandle(process, entries[index].HandleValue, GetCurrentProcess(), &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS)) continue;
-        for (HANDLE canary : canaries) expect(!compare(duplicate, canary), "a parent canary handle reached the engine");
+        duplicated_any = true;
+        if (compare(duplicate, target)) found = true;
         CloseHandle(duplicate);
       }
+      expect(duplicated_any, "at least one engine handle could be duplicated for comparison");
+      return found;
+    };
+    for (HANDLE canary : canaries) expect(!engine_holds(canary), "a parent canary handle reached the engine");
+    // Positive control: plant the event in the engine; the same inspection must now find it.
+    HANDLE injected = nullptr;
+    const bool planted = DuplicateHandle(GetCurrentProcess(), event, process, &injected, 0, FALSE, DUPLICATE_SAME_ACCESS) != 0;
+    expect(planted, "positive control: the event is planted in the engine");
+    if (planted) {
+      expect(engine_holds(event), "positive control: the inspection finds a handle the engine does hold");
+      (void)DuplicateHandle(process, injected, nullptr, nullptr, 0, FALSE, DUPLICATE_CLOSE_SOURCE);
     }
-    CloseHandle(process);
   }
+  if (process != nullptr) CloseHandle(process);
   (void)child.terminate(250ms);
   CloseHandle(file);
   CloseHandle(event);
