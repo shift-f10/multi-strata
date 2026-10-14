@@ -4,6 +4,8 @@
 
 #include <array>
 #include <cstdlib>
+#include <cstring>
+#include <cwchar>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -76,12 +78,29 @@ TokenReadResult read_protected_file(const SecretSource& source, const CanonicalR
 }
 
 TokenReadResult read_environment_token(const SecretSource& source) {
-  const char* const value = std::getenv(source.location().c_str());
+  const std::string& name = source.location();
+  char* const value = std::getenv(name.c_str());
   if (value == nullptr) {
-    return error(TokenReadErrorCode::environment_variable_not_set,
-                 "The configured token environment variable is not set.");
+    return error(TokenReadErrorCode::environment_variable_not_set, "The configured token environment variable is not set.");
   }
-  return token_from_bytes(value, false);
+  auto result = token_from_bytes(value, false);
+  // Overwrite the value where it lives, then remove the variable, so
+  // /proc/<pid>/environ and every later child lack it (CFG-05).
+  secure_wipe(value, std::strlen(value));
+#if defined(_WIN32)
+  // Accepted deviation (spec §3.6): Windows has no /proc/<pid>/environ. The CRT
+  // copies are wiped in place -- the narrow one above, the wide one here (the
+  // name is ASCII by the env-name grammar) -- then the variable is removed from
+  // the CRT and from the Win32 environment block. The block entry is removed,
+  // not overwritten in place: no Win32 API can do that.
+  const std::wstring wide_name(name.begin(), name.end());
+  if (wchar_t* const wide = _wgetenv(wide_name.c_str())) secure_wipe(wide, std::wcslen(wide) * sizeof(wchar_t));
+  (void)_putenv_s(name.c_str(), "");
+  (void)SetEnvironmentVariableW(wide_name.c_str(), nullptr);
+#else
+  (void)::unsetenv(name.c_str());
+#endif
+  return result;
 }
 
 }  // namespace

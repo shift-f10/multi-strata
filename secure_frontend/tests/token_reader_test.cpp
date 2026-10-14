@@ -1,5 +1,6 @@
 #include "secure_frontend/secret_source.hpp"
 #include "secure_frontend/token_reader.hpp"
+#include "support/process_runner.hpp"
 #include "support/test_support.hpp"
 
 #include <cstdlib>
@@ -188,6 +189,23 @@ void cfg03_rejects_hardlinked_token_file() {
   expect(is_error(read_file_source(root, "token"), TokenReadErrorCode::hard_link_not_allowed),
          "a token file with a second hard link must be rejected");
 }
+
+// K8: the child is started with the token in its *initial* environment block
+// (what /proc/<pid>/environ shows), reads it, then inspects itself.
+void cfg05_env_token_absent_from_proc_environ() {
+  const auto& args = secure_frontend_test::extra_arguments();
+  if (!args.empty() && args.front() == "--child") {
+    expect(is_token(read_env("SF_ENV_TOKEN"), kToken), "the child reads the token");
+    expect(std::getenv("SF_ENV_TOKEN") == nullptr, "the variable is unset after reading");
+    const std::string environ_block = secure_frontend_test::read_file("/proc/self/environ");
+    expect(environ_block.find(kToken) == std::string::npos, "/proc/self/environ no longer contains the token");
+    return;
+  }
+  const auto self = std::filesystem::read_symlink("/proc/self/exe");
+  const auto result = secure_frontend_test::run_to_completion(secure_frontend_test::ProcessSpec{
+      self, {"--case", "cfg05_env_token_absent_from_proc_environ", "--child"}, {{"SF_ENV_TOKEN", kToken}}});
+  expect(result.exit_code == 0, "child check failed: " + result.err);
+}
 #endif
 }  // namespace
 
@@ -209,6 +227,7 @@ int main(int argc, char** argv) {
       {"rejects_a_symlink_that_escapes_the_root", rejects_a_symlink_that_escapes_the_root},
       {"rejects_a_non_regular_file", rejects_a_non_regular_file},
       {"cfg03_rejects_hardlinked_token_file", cfg03_rejects_hardlinked_token_file},
+      {"cfg05_env_token_absent_from_proc_environ", cfg05_env_token_absent_from_proc_environ},
 #endif
   }, failures);
 }

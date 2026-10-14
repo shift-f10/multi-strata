@@ -461,7 +461,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     if(NOT WIN32)
         secure_frontend_add_cases(secure_frontend_token_reader_tests
             rejects_a_group_or_world_accessible_file rejects_a_symlink_that_escapes_the_root rejects_a_non_regular_file
-            cfg03_rejects_hardlinked_token_file)
+            cfg03_rejects_hardlinked_token_file cfg05_env_token_absent_from_proc_environ)
     endif()
 
     secure_frontend_add_test_executable(secure_frontend_engine_stdio_process_tests tests/engine_stdio_process_test.cpp
@@ -651,6 +651,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
     if(NOT WIN32)
         secure_frontend_add_cases(secure_frontend_server_e2e_tests cfg03_engine_receives_canonical_models_root
+            ${SECURE_FRONTEND_SERVER_ARGS} TIMEOUT 120)
+        secure_frontend_add_cases(secure_frontend_server_e2e_tests server_process_is_not_dumpable
             ${SECURE_FRONTEND_SERVER_ARGS} TIMEOUT 120)
     endif()
 

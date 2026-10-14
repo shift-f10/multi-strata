@@ -11,6 +11,8 @@
 
 #if defined(_WIN32)
 #include <iphlpapi.h>
+#else
+#include <unistd.h>
 #endif
 
 namespace {
@@ -183,6 +185,27 @@ void cfg03_engine_receives_canonical_models_root() {
          "--native carries the canonical models root: " + argv_dump);
   expect(!contains(argv_dump, "models-link"), "the raw (symlinked) root never reaches the engine");
 }
+
+// K9: the server is non-dumpable with a zero core-size limit.
+void server_process_is_not_dumpable() {
+  ServerFixture f;
+  secure_frontend_test::ChildProcess server;
+  expect(f.start(server, f.base_flags()), "server starts: " + server.stderr_text());
+  const std::string proc = "/proc/" + std::to_string(server.pid());
+  const std::string limits = secure_frontend_test::read_file(proc + "/limits");
+  const auto line_start = limits.find("Max core file size");
+  std::istringstream fields(limits.substr(line_start == std::string::npos ? 0 : line_start + 18));
+  std::string soft, hard;
+  fields >> soft >> hard;
+  expect(soft == "0" && hard == "0", "RLIMIT_CORE is 0/0, got " + soft + "/" + hard);
+  if (geteuid() != 0) {
+    // A non-dumpable process's /proc entries belong to root; its environ is unreadable to the same user.
+    std::ifstream environ_file(proc + "/environ");
+    std::string probe;
+    const bool readable = environ_file.good() && static_cast<bool>(std::getline(environ_file, probe));
+    expect(!readable, "PR_SET_DUMPABLE=0: /proc/<pid>/environ is not readable by the same user");
+  }
+}
 #endif
 }  // namespace
 
@@ -195,6 +218,7 @@ int main(int argc, char** argv) {
       {"ready_timeout_is_configurable", ready_timeout_is_configurable},
 #if !defined(_WIN32)
       {"cfg03_engine_receives_canonical_models_root", cfg03_engine_receives_canonical_models_root},
+      {"server_process_is_not_dumpable", server_process_is_not_dumpable},
 #endif
   }, failures);
 }
