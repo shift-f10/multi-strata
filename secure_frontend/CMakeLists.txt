@@ -367,6 +367,17 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_paths_tests
         cfg02_rejects_relative_root cfg02_sibling_prefix_root_rejected cfg04_rejects_unc_device_and_extended_roots
         cfg04_final_path_on_network_share_is_actionable)
+    target_link_libraries(secure_frontend_paths_tests PRIVATE secure_frontend_token_reader)
+    secure_frontend_add_cases(secure_frontend_paths_tests paths_handle_non_ascii_and_long_names
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    if(WIN32)
+        secure_frontend_add_cases(secure_frontend_paths_tests
+            auth02_windows_token_file_reads_with_private_dacl cfg03_rejects_junction_below_root
+            cfg03_rejects_symlink_below_root
+            LABELS windows-runtime)
+        set_tests_properties(secure_frontend_paths_tests.cfg03_rejects_symlink_below_root PROPERTIES
+            SKIP_REGULAR_EXPRESSION "SKIPPED:")
+    endif()
     if(NOT WIN32)
         secure_frontend_add_cases(secure_frontend_paths_tests
             cfg02_rejects_shared_writable_root cfg02_root_may_traverse_symlink

@@ -167,7 +167,7 @@ class OpenedFile final {
 // (RESOLVE_BENEATH | NO_SYMLINKS | NO_MAGICLINKS | NO_XDEV) when the kernel has
 // it, else a component-wise openat(O_NOFOLLOW) walk with st_dev checks;
 // Windows opens each component with FILE_FLAG_OPEN_REPARSE_POINT and checks
-// its reparse tag and final-path containment (Task 11).
+// its reparse tag, final-path containment and (owner_only) protected DACL.
 [[nodiscard]] std::variant<OpenedFile, PathError> open_beneath(const CanonicalRoot& root, const RelativePath& path,
                                                                const OpenOptions& options = {},
                                                                WalkMode mode = WalkMode::automatic);

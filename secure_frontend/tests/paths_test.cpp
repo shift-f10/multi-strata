@@ -1,4 +1,5 @@
 #include "secure_frontend/canonical_path.hpp"
+#include "secure_frontend/token_reader.hpp"
 #include "support/test_support.hpp"
 
 #include <cstdlib>
@@ -143,6 +144,77 @@ void cfg04_final_path_on_network_share_is_actionable() {
   const auto* text = std::get_if<std::wstring>(&local);
   expect(text != nullptr && *text == L"C:\\Users\\x\\models", "the \\\\?\\ prefix is stripped from a local final path");
 }
+
+// Review Focus 4: non-ASCII names and paths beyond MAX_PATH round-trip through the module.
+void paths_handle_non_ascii_and_long_names() {
+  const auto root_path = secure_frontend_test::make_scratch_directory() / secure_frontend::path_from_utf8("Jos\xC3\xA9-\xC3\xBC");
+  secure_frontend_test::make_private_directory(root_path);
+  std::string relative;
+  auto current = root_path;
+  for (int level = 0; level < 6; ++level) {
+    const std::string name = std::string(48, static_cast<char>('a' + level)) + "-\xC3\xA9";
+    current /= secure_frontend::path_from_utf8(name);
+    secure_frontend_test::make_private_directory(current);
+    relative += name + "/";
+  }
+  relative += "mod\xC3\xA8le.txt";
+  secure_frontend_test::write_file(current / secure_frontend::path_from_utf8("mod\xC3\xA8le.txt"), "payload");
+  expect(secure_frontend::path_to_utf8(current).size() > 300U, "the test path is longer than MAX_PATH");
+  const auto root = secure_frontend::open_root(root_path);
+  const auto* opened_root = std::get_if<secure_frontend::CanonicalRoot>(&root);
+  expect(opened_root != nullptr, "a non-ASCII root opens");
+  if (opened_root == nullptr) return;
+  expect(secure_frontend::path_to_utf8(opened_root->path()).find("Jos\xC3\xA9-\xC3\xBC") != std::string::npos,
+         "the canonical root keeps its UTF-8 name");
+  const auto file = secure_frontend::open_beneath(*opened_root,
+                                                  std::get<secure_frontend::RelativePath>(secure_frontend::parse_relative_path(relative)));
+  const auto* opened = std::get_if<secure_frontend::OpenedFile>(&file);
+  expect(opened != nullptr, "a > 260-character path below the root opens");
+  if (opened != nullptr) {
+    const auto text = opened->read_all(64);
+    expect(std::holds_alternative<std::string>(text) && std::get<std::string>(text) == "payload", "and reads");
+  }
+}
+
+#if defined(_WIN32)
+// Defect (b): the old reader opened directories with FILE_READ_ATTRIBUTES only,
+// so GetSecurityInfo failed and every protected token was "insecure".
+void auth02_windows_token_file_reads_with_private_dacl() {
+  const auto secret = secure_frontend_test::make_scratch_directory() / "secret";
+  secure_frontend_test::make_protected_directory(secret);
+  const std::string token = "windows-token-0123456789abcdefghijklmnopqrs";
+  secure_frontend_test::write_protected_file(secret / "token", token);
+  const auto source = std::get<secure_frontend::SecretSource>(secure_frontend::make_protected_file_secret_source("token"));
+  const auto result = secure_frontend::read_token(source, secret);
+  const auto* error = std::get_if<secure_frontend::TokenReadError>(&result);
+  expect(error == nullptr, "a private-DACL token file must read: " + (error ? error->message : std::string{}));
+}
+
+void cfg03_rejects_junction_below_root() {
+  const auto root = secure_frontend_test::make_scratch_directory();
+  const auto outside = secure_frontend_test::make_scratch_directory();
+  secure_frontend_test::write_file(outside / "f", "outside");
+  expect(secure_frontend_test::create_junction(root / "j", outside), "junction created without privilege");
+  expect(fails_with(secure_frontend::open_beneath(std::get<secure_frontend::CanonicalRoot>(secure_frontend::open_root(root)),
+                                                  std::get<secure_frontend::RelativePath>(secure_frontend::parse_relative_path("j/f"))),
+                    PathErrorCode::symlink_not_allowed),
+         "a junction below the root is rejected");
+}
+
+void cfg03_rejects_symlink_below_root() {
+  const auto root = secure_frontend_test::make_scratch_directory();
+  const auto outside = secure_frontend_test::make_scratch_directory();
+  secure_frontend_test::write_file(outside / "f", "outside");
+  if (CreateSymbolicLinkW((root / "s").c_str(), (outside / "f").c_str(), 0x2 /* ALLOW_UNPRIVILEGED_CREATE */) == 0) {
+    std::cout << "SKIPPED: SeCreateSymbolicLinkPrivilege / developer mode not available\n";
+    return;
+  }
+  expect(fails_with(secure_frontend::open_beneath(std::get<secure_frontend::CanonicalRoot>(secure_frontend::open_root(root)),
+                                                  std::get<secure_frontend::RelativePath>(secure_frontend::parse_relative_path("s"))),
+                    PathErrorCode::symlink_not_allowed),
+         "a file symlink below the root is rejected");
+}
+#endif
 
 #if !defined(_WIN32)
 void cfg02_rejects_shared_writable_root() {
@@ -289,6 +361,12 @@ int main(int argc, char** argv) {
       {"cfg02_sibling_prefix_root_rejected", cfg02_sibling_prefix_root_rejected},
       {"cfg04_rejects_unc_device_and_extended_roots", cfg04_rejects_unc_device_and_extended_roots},
       {"cfg04_final_path_on_network_share_is_actionable", cfg04_final_path_on_network_share_is_actionable},
+      {"paths_handle_non_ascii_and_long_names", paths_handle_non_ascii_and_long_names},
+#if defined(_WIN32)
+      {"auth02_windows_token_file_reads_with_private_dacl", auth02_windows_token_file_reads_with_private_dacl},
+      {"cfg03_rejects_junction_below_root", cfg03_rejects_junction_below_root},
+      {"cfg03_rejects_symlink_below_root", cfg03_rejects_symlink_below_root},
+#endif
 #if !defined(_WIN32)
       {"cfg02_rejects_shared_writable_root", cfg02_rejects_shared_writable_root},
       {"cfg02_root_may_traverse_symlink", cfg02_root_may_traverse_symlink},

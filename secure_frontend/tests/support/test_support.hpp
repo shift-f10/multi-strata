@@ -21,6 +21,9 @@
 #if defined(_WIN32)
 #include "secure_frontend/win32_prelude.hpp"
 #include <sddl.h>
+#include <winioctl.h>
+#include <cstdint>
+#include <stdexcept>
 #else
 #include <sys/stat.h>
 #include <unistd.h>
@@ -45,6 +48,25 @@ inline std::vector<std::filesystem::path>& scratch_registry() {
 }
 
 #if defined(_WIN32)
+// The current process user's SID as text ("S-1-5-21-..."), or empty on failure.
+// Test-side twin of windows_security::current_user_sid_string (test_support is
+// header-only and not every test binary links secure_frontend_paths).
+inline std::wstring current_user_sid_string() {
+  HANDLE token = nullptr;
+  if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token) == 0) return {};
+  DWORD size = 0;
+  GetTokenInformation(token, TokenUser, nullptr, 0, &size);
+  std::vector<unsigned char> buffer(size);
+  const BOOL ok = size != 0 ? GetTokenInformation(token, TokenUser, buffer.data(), size, &size) : FALSE;
+  CloseHandle(token);
+  if (ok == 0) return {};
+  LPWSTR text = nullptr;
+  if (ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER*>(buffer.data())->User.Sid, &text) == 0) return {};
+  std::wstring out{text};
+  LocalFree(text);
+  return out;
+}
+
 // CreateDirectoryW with an explicit, protected DACL: full control for the
 // current user, LocalSystem and Administrators, nothing inherited. %TEMP% is
 // not trusted to be private -- on GitHub's setup-msys2 runners TEMP lives under
@@ -166,6 +188,81 @@ inline void write_file(const std::filesystem::path& path, const std::string_view
   }
 #endif
 }
+
+#if defined(_WIN32)
+// O:<user>D:P(A;[OICI];FA;;;<user>)(A;[OICI];FA;;;SY): the owner is the user (not
+// the token's default owner, which is Administrators for an elevated admin), so
+// has_private_owner_dacl accepts it. Same SDDL as windows_security's
+// PrivateSecurityAttributes, kept test-side so the helper needs no product code.
+struct ProtectedAttributes final {
+  PSECURITY_DESCRIPTOR descriptor{nullptr};
+  SECURITY_ATTRIBUTES attributes{};
+  explicit ProtectedAttributes(const bool directory) {
+    const std::wstring sid = current_user_sid_string();
+    if (sid.empty()) throw std::runtime_error("the current user's SID is unavailable");
+    const std::wstring inherit = directory ? L"OICI" : L"";
+    const std::wstring sddl = L"O:" + sid + L"D:P(A;" + inherit + L";FA;;;" + sid + L")(A;" + inherit + L";FA;;;SY)";
+    if (ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr) == 0) {
+      throw std::runtime_error("the protected security descriptor could not be built: error " +
+                               std::to_string(GetLastError()));
+    }
+    attributes = SECURITY_ATTRIBUTES{static_cast<DWORD>(sizeof(SECURITY_ATTRIBUTES)), descriptor, FALSE};
+  }
+  ~ProtectedAttributes() { if (descriptor != nullptr) LocalFree(descriptor); }
+  ProtectedAttributes(const ProtectedAttributes&) = delete;
+  ProtectedAttributes& operator=(const ProtectedAttributes&) = delete;
+};
+
+inline void make_protected_directory(const std::filesystem::path& path) {
+  ProtectedAttributes sa(true);
+  const std::wstring extended = L"\\\\?\\" + std::filesystem::absolute(path).wstring();
+  if (CreateDirectoryW(extended.c_str(), &sa.attributes) == 0) {
+    throw std::runtime_error("protected mkdir failed: error " + std::to_string(GetLastError()));
+  }
+}
+
+inline void write_protected_file(const std::filesystem::path& path, const std::string_view bytes) {
+  ProtectedAttributes sa(false);
+  const std::wstring extended = L"\\\\?\\" + std::filesystem::absolute(path).wstring();
+  HANDLE file = CreateFileW(extended.c_str(), GENERIC_WRITE, 0, &sa.attributes, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) {
+    throw std::runtime_error("protected file create failed: error " + std::to_string(GetLastError()));
+  }
+  DWORD written = 0;
+  const bool ok = bytes.empty() || (WriteFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr) != 0 &&
+                                    written == bytes.size());
+  const DWORD error = ok ? ERROR_SUCCESS : GetLastError();
+  CloseHandle(file);
+  if (!ok) throw std::runtime_error("protected file write failed: error " + std::to_string(error));
+}
+
+// A directory junction (mount point) at `link` pointing at `target`; needs no privilege.
+inline bool create_junction(const std::filesystem::path& link, const std::filesystem::path& target) {
+  if (CreateDirectoryW(link.c_str(), nullptr) == 0) return false;
+  HANDLE directory = CreateFileW(link.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                                 FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  if (directory == INVALID_HANDLE_VALUE) return false;
+  const std::wstring print = std::filesystem::absolute(target).wstring();
+  const std::wstring substitute = L"\\??\\" + print;
+  const std::size_t path_bytes = (substitute.size() + 1U + print.size() + 1U) * sizeof(wchar_t);
+  std::vector<unsigned char> buffer(16U + path_bytes, 0U);
+  const auto put16 = [&buffer](const std::size_t offset, const std::uint16_t value) { std::memcpy(buffer.data() + offset, &value, 2U); };
+  const DWORD tag = IO_REPARSE_TAG_MOUNT_POINT;
+  std::memcpy(buffer.data(), &tag, 4U);
+  put16(4U, static_cast<std::uint16_t>(8U + path_bytes));                        // ReparseDataLength
+  put16(8U, 0U);                                                                // SubstituteNameOffset
+  put16(10U, static_cast<std::uint16_t>(substitute.size() * sizeof(wchar_t)));  // SubstituteNameLength
+  put16(12U, static_cast<std::uint16_t>((substitute.size() + 1U) * sizeof(wchar_t)));  // PrintNameOffset
+  put16(14U, static_cast<std::uint16_t>(print.size() * sizeof(wchar_t)));       // PrintNameLength
+  std::memcpy(buffer.data() + 16U, substitute.c_str(), (substitute.size() + 1U) * sizeof(wchar_t));
+  std::memcpy(buffer.data() + 16U + (substitute.size() + 1U) * sizeof(wchar_t), print.c_str(), (print.size() + 1U) * sizeof(wchar_t));
+  DWORD returned = 0;
+  const BOOL ok = DeviceIoControl(directory, FSCTL_SET_REPARSE_POINT, buffer.data(), static_cast<DWORD>(buffer.size()),
+                                  nullptr, 0, &returned, nullptr);
+  CloseHandle(directory);
+  return ok != 0;
+}
+#endif
 
 inline std::string read_file(const std::filesystem::path& path) {
   std::ifstream input(path, std::ios::binary);

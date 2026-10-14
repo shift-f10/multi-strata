@@ -4,7 +4,7 @@
 namespace secure_frontend::windows_security {
 namespace {
 
-// File-local: token_reader.cpp keeps its own WindowsHandle until Task 11.
+// File-local RAII for the process token (OwnedHandle is the path module's handle type).
 class ProcessToken final {
  public:
   explicit ProcessToken(const HANDLE handle) noexcept : handle_(handle) {}

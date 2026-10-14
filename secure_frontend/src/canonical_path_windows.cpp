@@ -3,6 +3,8 @@
 #include "windows_security.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cstdint>
 
 namespace secure_frontend {
 namespace ws = windows_security;
@@ -29,6 +31,73 @@ std::variant<std::size_t, PathError> OpenedFile::read_some(char* const buffer, c
     return detail::path_error(PathErrorCode::read_failed, "the file could not be read");
   }
   return static_cast<std::size_t>(count);
+}
+
+std::variant<OpenedFile, PathError> open_beneath(const CanonicalRoot& root, const RelativePath& path,
+                                                 const OpenOptions& options, const WalkMode) {
+  using detail::path_error;
+  std::array<std::byte, SECURITY_MAX_SID_SIZE> user_storage{};
+  PSID user = nullptr;
+  if (!ws::current_user_sid(user_storage, &user)) return path_error(PathErrorCode::open_failed, "the current user is unknown");
+  if (options.trust == FileTrust::owner_only && !ws::has_private_owner_dacl(root.handle(), user)) {
+    return path_error(PathErrorCode::permissions_too_broad, "the root must have a protected owner-only access control list");
+  }
+  std::wstring current = root.path().wstring();
+  const auto& parts = path.components();
+  for (std::size_t i = 0; i < parts.size(); ++i) {
+    const bool last = i + 1U == parts.size();
+    current += L'\\';
+    current += path_from_utf8(parts[i]).wstring();
+    DWORD access = READ_CONTROL | FILE_READ_ATTRIBUTES;  // READ_CONTROL: GetSecurityInfo needs it (defect b)
+    if (last && options.kind == OpenKind::regular_file) access |= GENERIC_READ;
+    HANDLE raw = CreateFileW(ws::extended_path(current).c_str(), access, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (raw == INVALID_HANDLE_VALUE) {
+      const DWORD code = GetLastError();
+      return code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND
+                 ? path_error(PathErrorCode::not_found, "the path does not exist")
+                 : path_error(PathErrorCode::open_failed, "the path could not be opened");
+    }
+    OwnedHandle guard(raw);
+    if (ws::is_reparse_point(raw)) {
+      return path_error(PathErrorCode::symlink_not_allowed, "a path component is a symbolic link, junction or other reparse point");
+    }
+    const auto final_path = classify_final_path(ws::final_path_for_handle(raw));
+    const auto* final_text = std::get_if<std::wstring>(&final_path);
+    if (final_text == nullptr || !is_within(root.path(), std::filesystem::path{*final_text})) {
+      return path_error(PathErrorCode::escapes_root, "the path resolves outside the root");
+    }
+    if (options.trust == FileTrust::owner_only && !ws::has_private_owner_dacl(raw, user)) {
+      return path_error(PathErrorCode::permissions_too_broad, "every path component must have a protected owner-only ACL");
+    }
+    FILE_ATTRIBUTE_TAG_INFO tag{};
+    GetFileInformationByHandleEx(raw, FileAttributeTagInfo, &tag, sizeof(tag));
+    const bool directory = (tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0U;
+    if (!last) {
+      if (!directory) return path_error(PathErrorCode::not_directory, "a path component is not a directory");
+      continue;
+    }
+    if (options.kind == OpenKind::directory && !directory) return path_error(PathErrorCode::not_directory, "the path is not a directory");
+    if (options.kind == OpenKind::regular_file && (directory || GetFileType(raw) != FILE_TYPE_DISK)) {
+      return path_error(PathErrorCode::not_regular_file, "the path is not a regular file");
+    }
+    BY_HANDLE_FILE_INFORMATION info{};
+    if (GetFileInformationByHandle(raw, &info) == 0) return path_error(PathErrorCode::open_failed, "the file cannot be inspected");
+    if (options.reject_hard_links && info.nNumberOfLinks > 1U) {
+      return path_error(PathErrorCode::hard_link_not_allowed, "the file has more than one hard link");
+    }
+    if (options.trust == FileTrust::not_shared_writable) {
+      switch (ws::write_access_is_private(raw)) {
+        case ws::Trust::trusted: break;
+        case ws::Trust::untrusted_owner: return path_error(PathErrorCode::untrusted_owner, "the file must be owned by you, SYSTEM or Administrators");
+        case ws::Trust::shared_writable: return path_error(PathErrorCode::shared_writable, "the file must not be writable by other users");
+        case ws::Trust::unreadable: return path_error(PathErrorCode::open_failed, "the file's security settings cannot be read");
+      }
+    }
+    const std::uint64_t size = (static_cast<std::uint64_t>(info.nFileSizeHigh) << 32U) | info.nFileSizeLow;
+    return detail::PathFactory::opened(guard.release(), size);
+  }
+  return path_error(PathErrorCode::open_failed, "the path has no components");
 }
 
 namespace detail {
