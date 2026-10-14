@@ -174,9 +174,16 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
     if (child_stdin == INVALID_HANDLE_VALUE) child_stdin = nullptr;
   }
   ULONG client_pid = 0;
-  if (child_stdin != nullptr && (!GetNamedPipeClientProcessId(parent_stdin, &client_pid) || client_pid != GetCurrentProcessId())) {
-    CloseHandle(child_stdin);
-    child_stdin = nullptr;
+  if (child_stdin != nullptr) {
+    const bool queried = GetNamedPipeClientProcessId(parent_stdin, &client_pid) != FALSE;
+    if (!queried || client_pid != GetCurrentProcessId()) {
+      // A foreign client: report it as access denied rather than a stale error code.
+      if (queried) SetLastError(ERROR_ACCESS_DENIED);
+      const DWORD reason = GetLastError();
+      CloseHandle(child_stdin);
+      child_stdin = nullptr;
+      SetLastError(reason);
+    }
   }
   if (parent_stdin == nullptr || child_stdin == nullptr || !CreatePipe(&parent_stdout, &child_stdout, &attrs, 0) || !SetHandleInformation(parent_stdout, HANDLE_FLAG_INHERIT, 0)) { if (child_stdin) CloseHandle(child_stdin); if (parent_stdin) CloseHandle(parent_stdin); if (child_stdout) CloseHandle(child_stdout); if (parent_stdout) CloseHandle(parent_stdout); return ProcessError{ProcessErrorCode::platform_failure, with_last_error("stdio pipe setup failed")}; }
   child_stderr = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &attrs, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);

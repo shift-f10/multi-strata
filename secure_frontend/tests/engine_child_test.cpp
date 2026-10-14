@@ -340,11 +340,20 @@ void proc03_windows_pipe_second_open_fails() {
   secure_frontend::EngineStdioProcess child;
   expect(!child.start({.executable = test_support::fake_engine_path(), .arguments = {}, .environment = {}}).has_value(), "start");
   expect(child.read_line(5s).line == "READY 4096 stop", "READY");
-  HANDLE second = CreateFileW(child.stdin_pipe_name_for_tests().c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+  // A squatter opens the read end, as the engine does: the single instance is
+  // taken by our own client, so the pipe must be busy (not merely the wrong mode).
+  HANDLE second = CreateFileW(child.stdin_pipe_name_for_tests().c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
   const DWORD error = second == INVALID_HANDLE_VALUE ? GetLastError() : 0U;
   if (second != INVALID_HANDLE_VALUE) CloseHandle(second);
-  expect(second == INVALID_HANDLE_VALUE && (error == ERROR_PIPE_BUSY || error == ERROR_ACCESS_DENIED),
-         "a second open of the engine stdin pipe fails (busy or denied), error " + std::to_string(error));
+  expect(second == INVALID_HANDLE_VALUE && error == ERROR_PIPE_BUSY,
+         "a second client open of the engine stdin pipe is busy, error " + std::to_string(error));
+  // Nor can a second server instance be created on the name (first-instance / one-instance guard).
+  HANDLE rival = CreateNamedPipeW(child.stdin_pipe_name_for_tests().c_str(), PIPE_ACCESS_INBOUND, PIPE_TYPE_BYTE | PIPE_WAIT,
+                                  PIPE_UNLIMITED_INSTANCES, 4096, 4096, 0, nullptr);
+  const DWORD rival_error = rival == INVALID_HANDLE_VALUE ? GetLastError() : 0U;
+  if (rival != INVALID_HANDLE_VALUE) CloseHandle(rival);
+  expect(rival == INVALID_HANDLE_VALUE && (rival_error == ERROR_ACCESS_DENIED || rival_error == ERROR_PIPE_BUSY),
+         "a second server instance on the name is refused, error " + std::to_string(rival_error));
   (void)child.terminate(250ms);
 }
 #endif
