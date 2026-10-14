@@ -87,6 +87,11 @@ jobs:
         working-directory: secure_frontend
       - run: ctest --preset linux-gcc-release
         working-directory: secure_frontend
+      - name: no test hooks in the shipped binaries (marker scan; --release needs SP7's manifest/SBOM)
+        run: |
+          mkdir -p "$RUNNER_TEMP/stage/bin"
+          cp secure_frontend/out/build/linux-gcc-release/strata secure_frontend/out/build/linux-gcc-release/strata-secure-server "$RUNNER_TEMP/stage/bin/"
+          python3 -I scripts/secure_distribution_check.py --package-dir "$RUNNER_TEMP/stage"
 
   windows-cross:
     name: windows-llvm-mingw-cross (compile+link on Linux)

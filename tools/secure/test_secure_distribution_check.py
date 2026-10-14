@@ -60,3 +60,15 @@ def test_native_only_stage_passes(tmp_path):
 def test_lookalike_names_pass(tmp_path):
     files = ["share/doc/upstream-notes.txt", "bin/requirements.txt.sig", "bin/observe/index.html"]
     assert check.inspect(stage(tmp_path, *files), False) == []
+
+
+def test_hooks_marker_is_rejected_in_every_mode(tmp_path):
+    root = stage(tmp_path, "bin/strata")
+    (root / "bin" / "strata").write_bytes(b"\x7fELF..." + check.HOOK_MARKER + b"...")
+    assert flagged(check.inspect(root, False), "bin/strata")
+    assert flagged(check.inspect(root, True), "bin/strata")
+
+
+def test_release_build_without_marker_passes_the_marker_scan(tmp_path):
+    root = stage(tmp_path, "bin/strata")
+    assert not flagged(check.inspect(root, False), "bin/strata")

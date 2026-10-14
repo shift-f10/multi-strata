@@ -616,6 +616,9 @@ int main(int argc, char** argv) {
       {"confinement_reduced_when_root_beneath_allowed_dir", fetch_cases::confinement_reduced_when_root_beneath_allowed_dir},
 #endif
 #endif
+#if !defined(_WIN32)
+      {"release_spawn_has_no_fd4", fetch_cases::release_spawn_has_no_fd4},
+#endif
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
       {"test_cacert_reaches_argv_in_hook_builds", fetch_cases::test_cacert_reaches_argv_in_hook_builds},
 #endif

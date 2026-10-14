@@ -62,4 +62,8 @@ void doctor_downloader_probes_on_fresh_store();
 void confinement_reduced_when_root_beneath_allowed_dir();
 #endif
 #endif
+#if !defined(_WIN32)
+// fetch_release_test.cpp (Task 28, release-only)
+void release_spawn_has_no_fd4();
+#endif
 }  // namespace fetch_cases
