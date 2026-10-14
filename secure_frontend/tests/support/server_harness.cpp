@@ -193,6 +193,14 @@ bool port_refuses(const std::uint16_t port) {
   return false;
 }
 
+std::unique_ptr<IdleConnection> IdleConnection::open(const std::uint16_t port) {
+  const Socket socket_handle = connect_loopback(port, std::chrono::milliseconds(2000));
+  if (socket_handle == kInvalidSocket) return nullptr;
+  return std::unique_ptr<IdleConnection>(new IdleConnection(static_cast<std::uintptr_t>(socket_handle)));
+}
+
+IdleConnection::~IdleConnection() { close_socket(static_cast<Socket>(socket_)); }
+
 std::unique_ptr<ServerProcess> ServerProcess::start(const ServerOptions& options) {
 #if defined(__linux__)
   // Orphans of a server that died (or was SIGKILLed by a test) re-parent to

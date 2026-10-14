@@ -393,6 +393,26 @@ void proc05_sigterm_during_generation_exits_cleanly() {
   for (const long pid : engine) expect(test_support::wait_until_gone(pid, 1s), "no engine is left");
 }
 
+// C4 / Review Focus 3 (final review I1): a client that connected and sends
+// nothing holds serve_one() in its request read (30 s deadline). SIGTERM must
+// still end the frontend with exit 0 inside the 5 s bound, no engine left.
+void proc05_sigterm_with_idle_client_exits_cleanly() {
+  auto server = ServerProcess::start({});
+  expect(server != nullptr && server->wait_until_listening(10s) && server->wait_for_health(test_support::kHealthReady, 10s), "ready");
+  if (!server) return;
+  const auto engine = test_support::children_of(server->pid());
+  const auto idle = test_support::IdleConnection::open(server->port());
+  expect(idle != nullptr, "the idle client connects");
+  std::this_thread::sleep_for(300ms);  // the server has accepted it and waits for its request
+  const auto started = std::chrono::steady_clock::now();
+  server->stop(ServerProcess::Stop::term);
+  const auto code = server->wait_exit(6s);
+  expect(code == 0, "exit 0 with an idle client connected, saw " + (code ? std::to_string(*code) : std::string("still running")));
+  expect(std::chrono::steady_clock::now() - started <= 5s, "within the 5 s bound");
+  for (const long pid : engine) expect(test_support::wait_until_gone(pid, 1s), "no engine is left");
+  expect(server->port_refuses(), "the port refuses connections");
+}
+
 // Review Focus 5: a second SIGTERM during the orderly shutdown changes nothing.
 void proc05_double_sigterm_is_idempotent() {
   auto server = ServerProcess::start({});
@@ -424,6 +444,25 @@ void proc05_windows_ctrl_break_stops_all_descendants() {
   server->stop(ServerProcess::Stop::ctrl_break);  // to the server's console group only
   const auto code = server->wait_exit(6s);
   expect(code == 0, "CTRL_BREAK runs the orderly shutdown and the frontend exits 0");
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (server->active_processes() != 0U && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(10ms);
+  expect(server->active_processes() == 0U, "no descendant is left (Job ActiveProcesses 0)");
+}
+
+// C6 + C4 (final review I1): the console-event shutdown with an idle client
+// connected (it never sends a byte) still exits 0 inside the 5 s bound.
+void proc05_windows_ctrl_break_with_idle_client_exits_cleanly() {
+  auto server = ServerProcess::start({});
+  expect(server != nullptr && server->wait_until_listening(10s) && server->wait_for_health(test_support::kHealthReady, 10s), "ready");
+  if (!server) return;
+  const auto idle = test_support::IdleConnection::open(server->port());
+  expect(idle != nullptr, "the idle client connects");
+  std::this_thread::sleep_for(300ms);  // the server has accepted it and waits for its request
+  const auto started = std::chrono::steady_clock::now();
+  server->stop(ServerProcess::Stop::ctrl_break);
+  const auto code = server->wait_exit(6s);
+  expect(code == 0, "CTRL_BREAK with an idle client connected exits 0");
+  expect(std::chrono::steady_clock::now() - started <= 5s, "within the 5 s bound");
   const auto deadline = std::chrono::steady_clock::now() + 2s;
   while (server->active_processes() != 0U && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(10ms);
   expect(server->active_processes() == 0U, "no descendant is left (Job ActiveProcesses 0)");
@@ -624,10 +663,12 @@ int main(int argc, char* argv[]) {
                                              {"proc05_frontend_has_only_engine_children", proc05_frontend_has_only_engine_children},
                                              {"proc05_sigterm_during_generation_exits_cleanly", proc05_sigterm_during_generation_exits_cleanly},
                                              {"proc05_double_sigterm_is_idempotent", proc05_double_sigterm_is_idempotent},
+                                             {"proc05_sigterm_with_idle_client_exits_cleanly", proc05_sigterm_with_idle_client_exits_cleanly},
                                              {"proc06_nnp_startup_hint_names_nvidia_uvm_fix", proc06_nnp_startup_hint_names_nvidia_uvm_fix},
 #endif
 #if defined(_WIN32)
                                              {"proc05_windows_ctrl_break_stops_all_descendants", proc05_windows_ctrl_break_stops_all_descendants},
+                                             {"proc05_windows_ctrl_break_with_idle_client_exits_cleanly", proc05_windows_ctrl_break_with_idle_client_exits_cleanly},
                                              {"proc05_windows_terminate_frontend_kills_job", proc05_windows_terminate_frontend_kills_job},
                                              {"state_dir_must_be_owner_only_windows", state_dir_must_be_owner_only_windows},
 #endif

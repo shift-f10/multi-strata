@@ -283,6 +283,33 @@ void socket_server_shutdown_listener_wakes_accept() {
   f.server->shutdown_listener();  // idempotent
 }
 
+// SP2 C4 (final review I1): an accepted client that sends nothing must not hold
+// serve_one() until its request deadline (30 s default) once the orderly
+// shutdown has closed the listener; otherwise main never reaches shutdown()
+// and the 5 s bound ends the process with exit 1.
+void socket_server_shutdown_listener_wakes_idle_client() {
+  Fixture f;  // default request_deadline (30 s)
+  if (!f.server) { expect(false, "bind failed: " + f.error); return; }
+  std::atomic<bool> returned{false};
+  bool served = true;
+  std::string worker_error;
+  std::thread worker([&] { served = f.server->serve_one(&worker_error); returned = true; });
+  const NativeSocket idle = f.connect_client();  // connected, sends nothing
+  expect(idle != kBad, "the idle client connects");
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));  // serve_one() is now waiting on it
+  expect(!returned.load(), "serve_one() is still waiting on the idle client");
+  const auto started = std::chrono::steady_clock::now();
+  f.server->shutdown_listener();
+  const auto deadline = started + std::chrono::seconds(3);
+  while (!returned.load() && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+  expect(returned.load() && waited <= std::chrono::milliseconds(500),
+         "shutdown_listener() ends a serve_one() waiting on an idle client within 500 ms, took " + std::to_string(waited.count()) + " ms");
+  if (idle != kBad) close_socket(idle);  // also ends serve_one() if the fix is missing (recv sees EOF)
+  worker.join();
+  expect(!served && worker_error == "listener shut down", "the woken call reports the shutdown: " + worker_error);
+}
+
 // S6: an IPv6 listener must be v6-only and must serve with a bracketed Host.
 // Binds the wildcard '::' because only a wildcard IPv6 socket can receive
 // IPv4-mapped traffic; a '::1' bind would refuse IPv4 even without V6ONLY.
@@ -407,5 +434,6 @@ int main(int argc, char** argv) {
       {"socket_server_responds_after_client_half_close", socket_server_responds_after_client_half_close},
       {"parser_honors_configured_max_request_bytes", parser_honors_configured_max_request_bytes},
       {"socket_server_shutdown_listener_wakes_accept", socket_server_shutdown_listener_wakes_accept},
+      {"socket_server_shutdown_listener_wakes_idle_client", socket_server_shutdown_listener_wakes_idle_client},
   }, failures);
 }

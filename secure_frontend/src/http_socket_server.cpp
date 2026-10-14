@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <string_view>
 #include <thread>
@@ -21,6 +22,7 @@
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -32,6 +34,10 @@ using Clock = std::chrono::steady_clock;
 // A response that is ready to go always gets at least this long to be sent,
 // so a legitimate large response is not cut off by a nearly spent deadline.
 constexpr std::chrono::milliseconds kMinimumSendBudget{1000};
+// Longest single wait for request bytes, so a serve_one() reading from an idle
+// or slow client sees shutdown_listener() promptly (SP2 C4: main must reach
+// the supervisor's shutdown() inside the 5 s bound).
+constexpr std::chrono::milliseconds kShutdownPollSlice{100};
 
 #ifdef _WIN32
 using NativeSocket = SOCKET;
@@ -81,6 +87,26 @@ bool last_call_timed_out() {
   return code == WSAETIMEDOUT || code == WSAEWOULDBLOCK || code == WSAEINTR;
 #else
   return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
+#endif
+}
+
+// Waits up to `timeout` for `socket` to become readable (or to report EOF,
+// reset or an error, which the following recv() then returns). 1 = ready,
+// 0 = timed out, -1 = failed (last_call_timed_out() tells an EINTR apart).
+// select() on Windows (no descriptor-number limit there), poll() on POSIX.
+int wait_readable(const NativeSocket socket, const std::chrono::milliseconds timeout) {
+  const auto clamped = std::clamp<long long>(timeout.count(), 0, 3600000);
+#ifdef _WIN32
+  fd_set readable;
+  FD_ZERO(&readable);
+  FD_SET(socket, &readable);
+  timeval tv{static_cast<long>(clamped / 1000), static_cast<long>((clamped % 1000) * 1000)};
+  const int result = select(0, &readable, nullptr, nullptr, &tv);
+  return result == SOCKET_ERROR ? -1 : (result > 0 ? 1 : 0);
+#else
+  pollfd entry{socket, POLLIN, 0};
+  const int result = poll(&entry, 1, static_cast<int>(clamped));
+  return result < 0 ? -1 : (result > 0 ? 1 : 0);
 #endif
 }
 
@@ -241,6 +267,11 @@ struct HttpSocketServer::State final {
   bool listener_failed{false};
   // Set by shutdown_listener() from another thread (SP2 C4).
   std::atomic<bool> listener_closed{false};
+  // The client serve_one() is handling, if any. shutdown_listener() shuts it
+  // down too (final review I1), under the mutex so it never touches a socket
+  // serve_one() has already closed (and the OS may have reused).
+  std::mutex client_mutex;
+  NativeSocket client{kInvalidSocket};
 #ifdef _WIN32
   bool winsock_started{false};
 #endif
@@ -386,7 +417,28 @@ bool HttpSocketServer::serve_one(std::string* error) {
 #if defined(SO_NOSIGPIPE)
   { const int one = 1; (void)setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one)); }
 #endif
-  struct ClientCloser final { NativeSocket value; ~ClientCloser() { close_socket(value); } } closer{client};
+  {
+    std::lock_guard lock(state_->client_mutex);
+    state_->client = client;
+  }
+  struct ClientCloser final {
+    State& state;
+    NativeSocket value;
+    ~ClientCloser() {
+      {
+        std::lock_guard lock(state.client_mutex);
+        state.client = kInvalidSocket;
+      }
+      close_socket(value);
+    }
+  } closer{*state_, client};
+  // shutdown_listener() stores listener_closed before it takes client_mutex,
+  // so it either saw this client above or its store is visible here.
+  if (state_->listener_closed.load()) {
+    state_->listener_failed = true;
+    if (error != nullptr) *error = "listener shut down";
+    return false;
+  }
   // One total budget for the whole request (header and body), measured from
   // accept(). A per-recv timeout alone lets a client drip one byte at a time.
   const Clock::time_point deadline = Clock::now() + state_->limits.request_deadline;
@@ -405,6 +457,16 @@ bool HttpSocketServer::serve_one(std::string* error) {
       if (error != nullptr) *error = "request deadline exceeded";
       return false;
     }
+    // Wait in slices so an idle or slow client cannot hold the orderly
+    // shutdown: no response, the connection just closes (Review Focus 3).
+    if (state_->listener_closed.load()) {
+      state_->listener_failed = true;
+      if (error != nullptr) *error = "listener shut down";
+      return false;
+    }
+    const int readable = wait_readable(client, std::min(remaining, kShutdownPollSlice));
+    if (readable == 0 || (readable < 0 && last_call_timed_out())) continue;
+    if (readable < 0) { if (error != nullptr) *error = "client wait failed"; return false; }
     if (!set_socket_timeouts(client, remaining)) {
       if (error != nullptr) *error = "client timeout setup failed";
       return false;
@@ -415,7 +477,13 @@ bool HttpSocketServer::serve_one(std::string* error) {
     const ssize_t received = recv(client, chunk.data(), chunk.size(), 0);
 #endif
     if (received < 0 && last_call_timed_out()) continue;  // the deadline check above decides
-    if (received <= 0) { if (error != nullptr) *error = "incomplete client request"; return false; }
+    if (received <= 0) {
+      // shutdown_listener() shut this client down: report the shutdown, not the client.
+      const bool closed = state_->listener_closed.load();
+      if (closed) state_->listener_failed = true;
+      if (error != nullptr) *error = closed ? "listener shut down" : "incomplete client request";
+      return false;
+    }
     const std::size_t count = static_cast<std::size_t>(received);
     if (count > maximum_request_bytes - request.size()) break;
     request.append(chunk.data(), count);
@@ -453,6 +521,19 @@ void HttpSocketServer::shutdown_listener() noexcept {
   state_->listener_closed.store(true);
   (void)::shutdown(state_->socket, SHUT_RDWR);
 #endif
+  // Final review I1: also end the client serve_one() is handling, so a peer
+  // that sends nothing (or stops reading) cannot hold main past the 5 s
+  // bound. Only shutdown(), never close: serve_one() owns and closes the
+  // socket. A receive also re-checks listener_closed every kShutdownPollSlice,
+  // which covers a platform where shutdown() does not wake a blocked wait.
+  std::lock_guard lock(state_->client_mutex);
+  if (state_->client != kInvalidSocket) {
+#ifdef _WIN32
+    (void)::shutdown(state_->client, SD_BOTH);
+#else
+    (void)::shutdown(state_->client, SHUT_RDWR);
+#endif
+  }
 }
 
 }  // namespace secure_frontend

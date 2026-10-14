@@ -39,6 +39,20 @@ std::optional<HttpResult> http_request(std::uint16_t port, std::string_view meth
                                        std::chrono::milliseconds timeout);
 bool port_refuses(std::uint16_t port);
 
+// A TCP connection to 127.0.0.1:<port> that never sends a byte; closed when
+// destroyed. Spec C4 / final review I1: an idle peer must not stall shutdown.
+class IdleConnection final {
+ public:
+  static std::unique_ptr<IdleConnection> open(std::uint16_t port);
+  ~IdleConnection();
+  IdleConnection(const IdleConnection&) = delete;
+  IdleConnection& operator=(const IdleConnection&) = delete;
+
+ private:
+  explicit IdleConnection(std::uintptr_t socket) noexcept : socket_(socket) {}
+  std::uintptr_t socket_;
+};
+
 // Every member has a default initializer, so designated initializers that name
 // only some of them keep compiling when later tasks add members (Task 18: state_dir).
 struct ServerOptions final {
