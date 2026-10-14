@@ -326,33 +326,25 @@ bool EngineStdioProcess::terminate(const std::chrono::milliseconds grace) {
   (void)try_reap();
   return true;
 #else
-  if (process_id_ < 0) {
-    return true;
+  if (process_group_ < 0) return true;  // never started, or already fully cleaned up
+  if (process_id_ >= 0) {
+    if (kill(-process_group_, SIGTERM) != 0 && errno != ESRCH) return false;
+    const auto end = std::chrono::steady_clock::now() + grace;
+    while (std::chrono::steady_clock::now() < end && !try_reap()) usleep(10000);
   }
-  if (kill(-process_id_, SIGTERM) != 0 && errno != ESRCH) {
-    return false;
-  }
-  const auto end = std::chrono::steady_clock::now() + grace;
-  while (std::chrono::steady_clock::now() < end) {
-    if (!running()) {
-      return true;
-    }
+  // Spec §3.7(a): always SIGKILL the group, even when the leader was already
+  // reaped: members that ignored SIGTERM or outlived the leader keep the group
+  // id valid and must die too.
+  (void)kill(-process_group_, SIGKILL);
+  for (int step = 0; step < 50 && process_id_ >= 0; ++step) {
+    if (try_reap()) break;
     usleep(10000);
   }
-  if (kill(-process_id_, SIGKILL) != 0 && errno != ESRCH) {
-    return false;
-  }
-  // Reap the killed child so no zombie outlives terminate (running() calls
-  // waitpid(WNOHANG) and clears process_id_ once the child is collected).
-  for (int step = 0; step < 50; ++step) {
-    if (!running()) {
-      close_fd(stdin_write_);
-      close_fd(stdout_read_);
-      return true;
-    }
-    usleep(10000);
-  }
-  return false;
+  if (process_id_ >= 0) return false;  // abandoned: still unreaped after the bound (header contract)
+  close_fd(stdin_write_);
+  close_fd(stdout_read_);
+  process_group_ = -1;
+  return true;
 #endif
 }
 

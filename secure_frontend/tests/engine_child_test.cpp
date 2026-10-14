@@ -10,6 +10,11 @@
 #include <thread>
 #include <vector>
 
+#if !defined(_WIN32)
+#include <csignal>
+#include <sys/types.h>
+#endif
+
 namespace {
 
 using namespace std::chrono_literals;
@@ -102,8 +107,38 @@ void proc04_exit_status_is_classified() {
          "a supervisor kill classifies as ours");
 }
 
+#if !defined(_WIN32)
+void proc05_group_killed_after_leader_reaped() {
+  const auto dir = test_support::make_temp_dir("c1");
+  const auto pidfile = dir / "grandchild.pid";
+  secure_frontend::EngineStdioProcess engine;
+  expect(!engine.start({.executable = test_support::fake_engine_path(),
+                        .arguments = {"--spawn-grandchild", "--grandchild-ignore-term", "--grandchild-pidfile=" + test_support::utf8_path(pidfile)},
+                        .environment = {}})
+              .has_value(),
+         "start");
+  expect(engine.read_line(5s).line == "READY 4096 stop", "READY");
+  const auto grandchild = test_support::read_pidfile(pidfile, 5s);
+  expect(grandchild.has_value(), "the grandchild started");
+  if (!grandchild) return;
+  (void)kill(static_cast<pid_t>(engine.pid()), SIGKILL);  // only the leader
+  expect(wait_reaped(engine, 5s).has_value(), "the leader is reaped first");
+  expect(test_support::process_alive(*grandchild), "precondition: the grandchild outlived its leader");
+  expect(engine.terminate(200ms), "terminate succeeds");
+  expect(test_support::wait_until_gone(*grandchild, 2s), "a group member dies although the leader was already reaped");
+  test_support::kill_process(*grandchild);
+}
+#endif
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
-  return secure_frontend_test::run_cases(argc, argv, {{"proc04_exit_status_is_classified", proc04_exit_status_is_classified}}, failures);
+  return secure_frontend_test::run_cases(argc, argv,
+                                         {
+                                             {"proc04_exit_status_is_classified", proc04_exit_status_is_classified},
+#if !defined(_WIN32)
+                                             {"proc05_group_killed_after_leader_reaped", proc05_group_killed_after_leader_reaped},
+#endif
+                                         },
+                                         failures);
 }
