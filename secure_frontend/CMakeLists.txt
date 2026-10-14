@@ -364,8 +364,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # make_scratch_directory below ${SECURE_FRONTEND_TEST_TMP}).
     function(secure_frontend_test_paths target)
         target_compile_definitions(${target} PRIVATE
-            "STRATA_FAKE_ENGINE_PATH=\"$<TARGET_FILE:strata-supervision-fake-engine>\"")
-        add_dependencies(${target} strata-supervision-fake-engine)
+            "STRATA_FAKE_ENGINE_PATH=\"$<TARGET_FILE:strata-supervision-fake-engine>\""
+            "STRATA_SECURE_SERVER_PATH=\"$<TARGET_FILE:strata-secure-server>\"")
+        add_dependencies(${target} strata-supervision-fake-engine strata-secure-server)
         if(WIN32)
             target_link_libraries(${target} PRIVATE advapi32)  # grant_current_user()
         endif()
@@ -379,6 +380,34 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_test_paths(secure_frontend_fake_engine_tests)
     # Crash exit codes are Windows runtime semantics: MSYS2 only.
     secure_frontend_add_cases(secure_frontend_fake_engine_tests fake_engine_modes_selftest fake_engine_dump_is_parseable
+        TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+
+    # F3: start/stop the real server with the fake engine; process-tree helpers.
+    add_library(secure_frontend_test_support STATIC tests/support/server_harness.cpp)
+    target_include_directories(secure_frontend_test_support PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_features(secure_frontend_test_support PUBLIC cxx_std_20)
+    target_link_libraries(secure_frontend_test_support PUBLIC secure_frontend_tokenizer_pack)
+    if(WIN32)
+        target_link_libraries(secure_frontend_test_support PUBLIC ws2_32 advapi32)
+    endif()
+    secure_frontend_set_warnings(secure_frontend_test_support)
+    secure_frontend_test_paths(secure_frontend_test_support)
+
+    secure_frontend_add_test_executable(secure_frontend_server_tests tests/server_test.cpp secure_frontend_test_support)
+    secure_frontend_test_paths(secure_frontend_server_tests)
+    # Later tasks append case names to these three set() lines only. Every
+    # server-level test is windows-runtime on Windows: it relies on console
+    # groups, Jobs, tokens and process exit codes.
+    set(SECURE_FRONTEND_SERVER_CASES harness_server_lifecycle_selftest)
+    set(SECURE_FRONTEND_SERVER_LINUX_CASES)
+    set(SECURE_FRONTEND_SERVER_WINDOWS_CASES)
+    if(WIN32)
+        list(APPEND SECURE_FRONTEND_SERVER_CASES ${SECURE_FRONTEND_SERVER_WINDOWS_CASES})
+    else()
+        list(APPEND SECURE_FRONTEND_SERVER_CASES ${SECURE_FRONTEND_SERVER_LINUX_CASES})
+    endif()
+    secure_frontend_add_cases(secure_frontend_server_tests ${SECURE_FRONTEND_SERVER_CASES}
         TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     secure_frontend_add_test_executable(secure_frontend_http_policy_tests tests/http_policy_test.cpp secure_frontend_http_policy)

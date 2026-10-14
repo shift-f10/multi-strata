@@ -3,8 +3,8 @@
 // Paths and process helpers shared by the SP2 tests, on top of SP1's
 // tests/support/test_support.hpp (case runner, owner-only scratch
 // directories). The including target must call secure_frontend_test_paths()
-// in CMake, which defines STRATA_FAKE_ENGINE_PATH (Task 3 adds
-// STRATA_SECURE_SERVER_PATH).
+// in CMake, which defines STRATA_FAKE_ENGINE_PATH and
+// STRATA_SECURE_SERVER_PATH.
 
 #include "support/test_support.hpp"
 
@@ -48,6 +48,7 @@ inline constexpr int kSkipReturnCode = 77;
 }
 
 inline std::filesystem::path fake_engine_path() { return std::filesystem::path(STRATA_FAKE_ENGINE_PATH); }
+inline std::filesystem::path server_path() { return std::filesystem::path(STRATA_SECURE_SERVER_PATH); }
 
 inline std::string utf8_path(const std::filesystem::path& path) {
   const auto text = path.u8string();
