@@ -63,9 +63,10 @@ using TokenReadResult = std::variant<SecretBytes, TokenReadError>;
 // open_beneath (no symlink, no mount crossing, no second hard link); on Linux
 // it must then be owned by the effective user with no group/other bits.
 //
-// On Windows the root and every component are opened with READ_CONTROL |
-// FILE_READ_ATTRIBUTES and FILE_FLAG_OPEN_REPARSE_POINT; a reparse point is
-// symlink_not_allowed; each handle's final path must lie at or below the
+// On Windows (ruling R7) the root is opened through its link — the root itself
+// may be a symlink or junction — and every component below it is opened with
+// READ_CONTROL | FILE_READ_ATTRIBUTES and FILE_FLAG_OPEN_REPARSE_POINT; a
+// reparse point below the root is symlink_not_allowed; each handle's final path must lie at or below the
 // root's (path_escapes_root); the root, every directory and the file must be
 // owned by the current user with a protected DACL whose only allow-ACEs name
 // that user, SYSTEM or Administrators (insecure_file_permissions); a file with

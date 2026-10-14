@@ -203,9 +203,12 @@ an environment variable (`env:NAME`) or a file below `roots.secret`
     strata-secure-server --check --config ~/.config/strata/config.json
     strata-secure-server --config ~/.config/strata/config.json
 
-`init` writes the config (owner-only, atomic) and a 43-character token generated
-from the OS random generator (`0600` on Linux; DPAPI-wrapped with a private ACL on
-Windows). It refuses to replace either without `--force`. Where the files live by
+`init` writes the config (owner-only, atomic). For a file token source
+(`file:…`, the default) it also writes a 43-character token generated from the
+OS random generator (`0600` on Linux; DPAPI-wrapped with a private ACL on
+Windows); for an `env:NAME` source it writes no token, and you set that variable
+yourself (at least 32 bytes). It refuses to replace an existing file without
+`--force`. Where the files live by
 default and the `strata` command are defined by the product-experience spec, not
 here. On Windows, give non-ASCII paths in the config file: command-line arguments
 arrive in the ANSI code page.
