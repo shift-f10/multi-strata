@@ -34,9 +34,11 @@ BOOL WINAPI on_console_event(DWORD) {
 void on_signal(int) { g_interrupted.store(true); }
 #endif
 
-// §8.3: SIGINT/SIGTERM (Windows: console Ctrl-C/Ctrl-Break/close) stop cleanly. Ctrl-C at a
-// [y/N] prompt is a plain No (EOF); during a transfer the downloader sees the flag, kills its
-// process group / Job, and run_pull returns `interrupted` with the resume hint.
+// §8.3: SIGINT/SIGTERM (Windows: console Ctrl-C/Ctrl-Break/close) stop cleanly. Active for the
+// whole network verb. At a pending [y/N] the handler (no SA_RESTART) ends the blocked read, and
+// do_pull reports `interrupted` (exit 8) rather than `declined` (§8.2); during a transfer the
+// downloader sees the flag, kills its process group / Job, and run_pull returns `interrupted`
+// with the resume hint.
 class InterruptScope final {
  public:
   InterruptScope() {
@@ -192,7 +194,6 @@ int do_pull(PullRequest request, const std::string& verb, const FrontendConfig& 
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
   request.test_cacert = services.test_cacert;  // F-51 / ruling R1: a test config only; never a CLI option
 #endif
-  const InterruptScope scope;
   NetworkKit kit;
   if (auto failure = fill_kit(kit, config, config_file, services, true)) return report(io, *failure);
   StreamConfirmer ui(io);
@@ -201,6 +202,12 @@ int do_pull(PullRequest request, const std::string& verb, const FrontendConfig& 
   PullServices pull_services{*kit.transport, *kit.probe, *kit.resolver, *kit.clock, store_for(services), *kit.loaded, ui, progress,
                              *kit.interrupted};
   const auto outcome = run_pull(request, config.roots.models, config.pull, pull_services);
+  if (outcome.error && outcome.error->reason == AcquireReason::declined && kit.interrupted->load()) {
+    // §8.2 (controller ruling): a signal at a pending [y/N] is an interrupt, never a No. EOF
+    // (Ctrl-D) leaves the flag clear and stays `declined` (exit 2). Nothing was spawned: the
+    // probe runs only after a yes.
+    return report(io, AcquireError{AcquireReason::interrupted, outcome.error->detail});
+  }
   if (outcome.error) return report(io, *outcome.error);
   return exit_code_value(outcome.exit);
 }
@@ -346,6 +353,7 @@ int verb_doctor(const FrontendConfig& config, const std::filesystem::path& confi
 
 int run_network_verb(const std::string& verb, const FrontendConfig& config, const std::filesystem::path& config_file,
                      const std::span<const std::string> rest, CliStreams& io, CliServices& services) {
+  const InterruptScope scope;  // the whole verb: prompts, every update --models target, run's re-read
   if (verb == "pull") return verb_pull(config, config_file, rest, io, services);
   if (verb == "run") return verb_run(config, config_file, rest, io, services);
   if (verb == "doctor") return verb_doctor(config, config_file, rest, io, services);

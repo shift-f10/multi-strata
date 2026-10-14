@@ -316,6 +316,11 @@ int main(int argc, char** argv) {
       {"run_missing_model_prompts_and_decline_exits_2", acquire_cases::run_missing_model_prompts_and_decline_exits_2},
       {"update_models_pulls_outdated_catalog_models", acquire_cases::update_models_pulls_outdated_catalog_models},
 #endif
+#if !defined(_WIN32) && defined(SECURE_FRONTEND_TEST_HOOKS)
+      {"dl04_sigint_during_download_exits_8", acquire_cases::dl04_sigint_during_download_exits_8},
+      {"dl04_sigterm_during_download_exits_8", acquire_cases::dl04_sigterm_during_download_exits_8},
+      {"interrupt_at_confirmation_prompt_exits_8", acquire_cases::interrupt_at_confirmation_prompt_exits_8},
+#endif
 #if defined(_WIN32) && defined(SECURE_FRONTEND_TEST_HOOKS)
       {"dl04_interrupt_during_download_never_indexed_windows", acquire_cases::dl04_interrupt_during_download_never_indexed_windows},
 #endif

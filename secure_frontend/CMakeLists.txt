@@ -1138,10 +1138,15 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
             run_missing_model_non_interactive_exits_2 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
         secure_frontend_add_cases(secure_frontend_acquire_tests update_models_pulls_outdated_catalog_models
             ARGS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/payload/fixture-qwen-t1 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+        add_dependencies(secure_frontend_acquire_tests strata secure_frontend_fake_curl)
         if(WIN32)
-            add_dependencies(secure_frontend_acquire_tests strata secure_frontend_fake_curl)
             secure_frontend_add_cases(secure_frontend_acquire_tests dl04_interrupt_during_download_never_indexed_windows
                 ARGS $<TARGET_FILE:strata> $<TARGET_FILE:secure_frontend_fake_curl> LABELS windows-runtime TIMEOUT 120)
+        else()
+            # Fix round 1: §8.3/§8.2 signals end to end through a strata child (TIMEOUT: each waits <= 15 s).
+            secure_frontend_add_cases(secure_frontend_acquire_tests dl04_sigint_during_download_exits_8
+                dl04_sigterm_during_download_exits_8 interrupt_at_confirmation_prompt_exits_8
+                ARGS $<TARGET_FILE:strata> $<TARGET_FILE:secure_frontend_fake_curl> TIMEOUT 120)
         endif()
     endif()
     secure_frontend_add_test_executable(secure_frontend_bundle_tests tests/bundle_test.cpp secure_frontend_acquire_core)

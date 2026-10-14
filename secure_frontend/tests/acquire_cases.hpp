@@ -92,6 +92,11 @@ void run_missing_model_non_interactive_exits_2();
 void run_missing_model_prompts_and_decline_exits_2();
 void update_models_pulls_outdated_catalog_models();
 #endif
+#if !defined(_WIN32) && defined(SECURE_FRONTEND_TEST_HOOKS)
+void dl04_sigint_during_download_exits_8();
+void dl04_sigterm_during_download_exits_8();
+void interrupt_at_confirmation_prompt_exits_8();
+#endif
 #if defined(_WIN32) && defined(SECURE_FRONTEND_TEST_HOOKS)
 void dl04_interrupt_during_download_never_indexed_windows();
 #endif
