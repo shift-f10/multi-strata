@@ -201,7 +201,11 @@ std::variant<std::vector<DirectoryEntry>, PathError> list_directory(const Canoni
     const std::uint64_t size = (static_cast<std::uint64_t>(data.nFileSizeHigh) << 32U) | data.nFileSizeLow;
     entries.push_back(DirectoryEntry{path_to_utf8(std::filesystem::path{name}), type, size});
   } while (FindNextFileW(find, &data) != 0);
+  const DWORD last_error = GetLastError();
   FindClose(find);
+  if (last_error != ERROR_NO_MORE_FILES) {
+    return path_error(PathErrorCode::read_failed, "the directory could not be read");
+  }
   std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) { return a.name < b.name; });
   return entries;
 }

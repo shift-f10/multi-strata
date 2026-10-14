@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <system_error>
 #include <variant>
 
 namespace {
@@ -107,6 +108,7 @@ void cfg03_inventory_rejects_symlink_entry() {
   expect(has_error(secure_frontend::enumerate_local_models(root),
                    secure_frontend::ModelInventoryErrorCode::symbolic_link_not_allowed),
          "inventory must reject, not follow, symbolic links");
+  std::filesystem::remove_all(root);  // removes the link, not its target
 }
 
 // Review Focus 1: a model kept on another disk via a symlinked file.
@@ -124,6 +126,8 @@ void inventory_symlink_error_names_entry() {
     expect(error->message.find("big/x.gguf") != std::string::npos, "the error names the entry: " + error->message);
     expect(error->message.find("roots.models") != std::string::npos, "and says what to do instead: " + error->message);
   }
+  std::filesystem::remove_all(root);
+  std::filesystem::remove_all(other_disk);
 }
 
 // Review Focus 5: two names a Windows client cannot tell apart.
@@ -133,6 +137,7 @@ void inventory_duplicate_detection_is_case_insensitive() {
   write_file(root / "qwen.gguf", "b");
   expect(has_error(secure_frontend::enumerate_local_models(root), secure_frontend::ModelInventoryErrorCode::duplicate_model_id),
          "IDs differing only in case are duplicates");
+  std::filesystem::remove_all(root);
 }
 
 // Controller ruling: an entry whose name fails the relative-path grammar is
@@ -156,6 +161,23 @@ void inventory_ignores_non_portable_non_model_names() {
     expect(error->message.find("bad:name.gguf") != std::string::npos, "the error names the entry: " + error->message);
     expect(error->message.find("rename") != std::string::npos, "and says what to do: " + error->message);
   }
+  std::filesystem::remove_all(root);
+}
+
+// Fix round 1 ruling: a directory must be descended, so a non-portable
+// directory name fails the inventory instead of hiding the models below it.
+void inventory_rejects_non_portable_directory() {
+  const auto root = unique_temp_directory();
+  write_file(root / "bad:dir" / "x.gguf", "a");
+  const auto result = secure_frontend::enumerate_local_models(root);
+  const auto* error = std::get_if<secure_frontend::ModelInventoryError>(&result);
+  expect(error != nullptr && error->code == secure_frontend::ModelInventoryErrorCode::invalid_artifact_path,
+         "a non-portable directory fails the inventory");
+  if (error != nullptr) {
+    expect(error->message.find("bad:dir") != std::string::npos, "the error names the directory: " + error->message);
+    expect(error->message.find("rename") != std::string::npos, "and says what to do: " + error->message);
+  }
+  std::filesystem::remove_all(root);
 }
 #else
 void cfg03_inventory_rejects_junction_entry() {
@@ -166,6 +188,10 @@ void cfg03_inventory_rejects_junction_entry() {
   expect(has_error(secure_frontend::enumerate_local_models(root),
                    secure_frontend::ModelInventoryErrorCode::symbolic_link_not_allowed),
          "a junction inside the models root fails the inventory");
+  std::error_code ignored;
+  std::filesystem::remove(root / "j", ignored);  // the junction itself first, never its target's contents
+  std::filesystem::remove_all(root, ignored);
+  std::filesystem::remove_all(outside, ignored);
 }
 #endif
 
@@ -182,6 +208,7 @@ int main(int argc, char** argv) {
       {"inventory_symlink_error_names_entry", inventory_symlink_error_names_entry},
       {"inventory_duplicate_detection_is_case_insensitive", inventory_duplicate_detection_is_case_insensitive},
       {"inventory_ignores_non_portable_non_model_names", inventory_ignores_non_portable_non_model_names},
+      {"inventory_rejects_non_portable_directory", inventory_rejects_non_portable_directory},
 #else
       {"cfg03_inventory_rejects_junction_entry", cfg03_inventory_rejects_junction_entry},
 #endif

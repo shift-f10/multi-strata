@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <system_error>
 #include <variant>
 
 namespace {
@@ -152,6 +153,8 @@ void cfg03_tokenizer_file_swapped_to_symlink_rejected() {
   std::filesystem::create_symlink(outside / "vocab.json", root / "vocab.json");
   expect(has_error(secure_frontend::load_local_tokenizer_pack(root), secure_frontend::TokenizerPackErrorCode::symbolic_link_not_allowed),
          "after the swap the file is opened by handle with O_NOFOLLOW and rejected");
+  std::filesystem::remove_all(root);  // removes the link, not its target
+  std::filesystem::remove_all(outside);
 }
 #endif
 
@@ -169,6 +172,10 @@ void cfg03_tokenizer_file_swapped_to_junction_rejected() {
   expect(secure_frontend_test::create_junction(root / "vocab.json", outside), "junction created without privilege");
   expect(has_error(secure_frontend::load_local_tokenizer_pack(root), secure_frontend::TokenizerPackErrorCode::symbolic_link_not_allowed),
          "a junction swapped in for vocab.json is opened with FILE_FLAG_OPEN_REPARSE_POINT and rejected");
+  std::error_code ignored;
+  std::filesystem::remove(root / "vocab.json", ignored);  // the junction itself first, never its target's contents
+  std::filesystem::remove_all(root, ignored);
+  std::filesystem::remove_all(outside, ignored);
 }
 #endif
 }  // namespace

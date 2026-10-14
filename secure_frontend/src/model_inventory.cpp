@@ -85,9 +85,10 @@ ModelInventoryResult enumerate_local_models(const CanonicalRoot& model_root) {
     const auto directory = std::move(pending.back());
     pending.pop_back();
     auto listed = list_directory(model_root, directory);
-    if (std::holds_alternative<PathError>(listed)) {
+    if (const auto* failure = std::get_if<PathError>(&listed)) {
       return ModelInventoryError{ModelInventoryErrorCode::inventory_read_failed,
-                                 "unable to list " + (directory ? directory->generic() : std::string{"the model root"})};
+                                 "unable to list " + (directory ? directory->generic() : std::string{"the model root"}) +
+                                     " (" + failure->message + ")"};
     }
     for (const auto& entry : std::get<std::vector<DirectoryEntry>>(listed)) {
       const std::string relative_text = directory ? directory->generic() + "/" + entry.name : entry.name;
@@ -99,14 +100,16 @@ ModelInventoryResult enumerate_local_models(const CanonicalRoot& model_root) {
                                    "symbolic link or junction in the model inventory: " + shown +
                                        "; point roots.models at the other disk instead (the root itself may be a link)"};
       }
-      const bool model_file = entry.type != EntryType::directory && has_gguf_name(entry.name);
+      const bool is_directory = entry.type == EntryType::directory;
+      const bool model_file = !is_directory && has_gguf_name(entry.name);
       if (path == nullptr) {
-        // Controller ruling: only a model file with a non-portable name fails;
-        // any other non-portable entry (and everything below it) is ignored.
-        if (!model_file) continue;
+        // Controller ruling: a directory (which must be descended) or a model
+        // file with a non-portable name fails; any other non-portable file is
+        // ignored.
+        if (!is_directory && !model_file) continue;
         return ModelInventoryError{ModelInventoryErrorCode::invalid_artifact_path,
-                                   "model file name is not portable: " + shown + " (" +
-                                       std::get<PathError>(relative).message + "); rename it"};
+                                   std::string{is_directory ? "directory" : "model file"} + " name is not portable: " +
+                                       shown + " (" + std::get<PathError>(relative).message + "); rename it"};
       }
       if (entry.type == EntryType::directory) {
         pending.push_back(*path);

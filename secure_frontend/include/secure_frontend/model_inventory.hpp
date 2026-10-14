@@ -55,8 +55,9 @@ using ModelInventoryResult = std::variant<std::vector<ModelManifest>, ModelInven
 // Recursively inventories regular *.gguf files beneath model_root through the
 // canonical-path module (list_directory / open_beneath). Symlinks, junctions
 // and other reparse points are rejected rather than followed; the error names
-// the entry. An entry whose name fails the relative-path grammar is ignored
-// unless it is a *.gguf model file, which fails. The inventory reads directory
+// the entry. An entry whose name fails the relative-path grammar fails the
+// inventory if it is a directory (it must be descended) or a *.gguf model
+// file; any other such file is ignored. The inventory reads directory
 // metadata only: it never opens artifacts, invokes a subprocess, or makes a
 // network request. Model IDs are derived from the artifact filename stem and
 // IDs that differ only in ASCII case are duplicates (fail closed).

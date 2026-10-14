@@ -481,7 +481,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         list(APPEND _inventory_root_cases cfg03_inventory_rejects_junction_entry)
     else()
         list(APPEND _inventory_root_cases cfg03_inventory_rejects_symlink_entry inventory_symlink_error_names_entry
-            inventory_duplicate_detection_is_case_insensitive inventory_ignores_non_portable_non_model_names)
+            inventory_duplicate_detection_is_case_insensitive inventory_ignores_non_portable_non_model_names
+            inventory_rejects_non_portable_directory)
     endif()
     secure_frontend_add_cases(secure_frontend_model_inventory_tests ${_inventory_root_cases}
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
