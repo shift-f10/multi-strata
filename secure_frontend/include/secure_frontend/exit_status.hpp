@@ -16,9 +16,12 @@ struct ExitStatus final {
 };
 
 // Why the supervisor ended a generation (spec §3.5); `none` when it did not.
-enum class KillReason { none, fatal_line, ready_timeout, drain_failed, write_timeout, protocol_failed, shutdown };
+// `client_stop_drain_failed` (SP3 D-2) is a drain_failed whose STOP the serving
+// side sent for a client that went away; it restarts without counting.
+enum class KillReason { none, fatal_line, ready_timeout, drain_failed, write_timeout, protocol_failed, shutdown, client_stop_drain_failed };
 
-// Diagnostic only: every kind counts as a failure, and the literal appears only
+// Diagnostic only: every kind counts as a failure (except our own
+// client_stop_drain_failed kill, SP3 D-2), and the literal appears only
 // in the frontend's own log line, never in a client response.
 enum class ExitKind { clean_exit, error_exit, spawn_failed, abort, killed_external, killed_by_supervisor, crashed };
 

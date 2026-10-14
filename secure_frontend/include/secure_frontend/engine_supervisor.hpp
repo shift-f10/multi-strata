@@ -145,6 +145,11 @@ class EngineSupervisor final {
   [[nodiscard]] std::optional<Lease> acquire();
   // The leased generation is unusable (fatal line, drain failure, write timeout,
   // failed protocol): kill it, count a failure, restart per policy.
+  // KillReason::client_stop_drain_failed (SP3 D-2: the drain after a STOP sent
+  // for a client that went away failed) kills and restarts the same way but
+  // counts no failure: the restart follows at once (zero-length `backoff`) and
+  // the failure count is unchanged. If the engine had already ended by itself,
+  // its end counts as usual.
   void report_fatal(const Lease& lease, KillReason reason);
   // One sample per /health request (SP0's sample-once rule).
   [[nodiscard]] HealthSnapshot snapshot() const;
@@ -182,8 +187,10 @@ class EngineSupervisor final {
   KillReason supervise(EngineInstance& instance, std::chrono::milliseconds& healthy_for);
   std::optional<KillReason> await_ready(EngineInstance& instance, EngineReady& ready);
   KillReason watch(EngineInstance& instance);
-  bool end_generation(const std::shared_ptr<EngineInstance>& instance, KillReason reason);
-  bool schedule_restart(std::chrono::milliseconds healthy_for, bool reaped);
+  // How an ended generation affects the restart policy (SP3 D-2: `uncounted`).
+  enum class GenerationEnd { counted, uncounted, unreaped };
+  GenerationEnd end_generation(const std::shared_ptr<EngineInstance>& instance, KillReason reason);
+  bool schedule_restart(std::chrono::milliseconds healthy_for, GenerationEnd ended);
   void wait_in_circuit_open();
   void shutdown_generation(const std::shared_ptr<EngineInstance>& instance);
   void retire(const std::shared_ptr<EngineInstance>& instance, bool reaped);
@@ -223,7 +230,9 @@ class EngineSupervisor final {
   std::thread thread_;
 };
 
-// Maps the protocol's terminal failure to the §3.5 kill reason.
+// Maps the protocol's terminal failure to the §3.5 kill reason. An abandoned
+// protocol (ignored STOP) is drain_failed, or client_stop_drain_failed when
+// that STOP was sent with EngineStopCause::client_cancelled (SP3 D-2).
 [[nodiscard]] KillReason kill_reason_for(const EngineProtocolClient& protocol) noexcept;
 
 // The serving thread's one call per chat request: borrows the current

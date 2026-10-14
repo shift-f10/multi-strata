@@ -48,7 +48,9 @@ KillReason kill_reason_for(const EngineProtocolClient& protocol) noexcept {
   switch (*code) {
     case EngineProtocolErrorCode::transport_write_failed: return KillReason::write_timeout;
     case EngineProtocolErrorCode::fatal_engine_line: return KillReason::fatal_line;
-    case EngineProtocolErrorCode::abandoned: return KillReason::drain_failed;
+    // SP3 D-2: an ignored STOP sent for a client that went away is not the engine's failure.
+    case EngineProtocolErrorCode::abandoned:
+      return protocol.stop_cause() == EngineStopCause::client_cancelled ? KillReason::client_stop_drain_failed : KillReason::drain_failed;
     default: return KillReason::protocol_failed;
   }
 }
@@ -303,7 +305,7 @@ void EngineSupervisor::run() {
     sweep_retired();
     if (stop_requested()) break;
     std::chrono::milliseconds healthy_for{0};
-    bool reaped = true;
+    GenerationEnd ended = GenerationEnd::counted;  // a spawn failure counts
     // Scoped to the generation: once retired, only retired_ and Leases hold it,
     // so the backoff and circuit_open sweeps can destroy it.
     if (auto instance = spawn_generation()) {
@@ -312,10 +314,10 @@ void EngineSupervisor::run() {
         shutdown_generation(instance);
         break;
       }
-      reaped = end_generation(instance, reason);
+      ended = end_generation(instance, reason);
     }
     if (stop_requested()) break;
-    if (!schedule_restart(healthy_for, reaped)) {
+    if (!schedule_restart(healthy_for, ended)) {
       wait_in_circuit_open();
       break;
     }
@@ -385,8 +387,9 @@ KillReason EngineSupervisor::watch(EngineInstance& instance) {
 }
 
 // `stopping` (spec §3.8): kill the whole group/Job, reap within reap_timeout,
-// classify and log. Returns false when the child could not be reaped.
-bool EngineSupervisor::end_generation(const std::shared_ptr<EngineInstance>& instance, const KillReason reason) {
+// classify and log. `uncounted` only for our own client_stop_drain_failed
+// kill (SP3 D-2); an engine that ended by itself counts whatever was reported.
+EngineSupervisor::GenerationEnd EngineSupervisor::end_generation(const std::shared_ptr<EngineInstance>& instance, const KillReason reason) {
   set_state(SupervisorState::stopping);
   SupervisedProcess& process = *instance->process;
   const bool ended_on_its_own = process.try_reap().has_value();
@@ -400,27 +403,36 @@ bool EngineSupervisor::end_generation(const std::shared_ptr<EngineInstance>& ins
   retire(instance, status.has_value());
   if (!status) {
     log_end(instance->number, "unreaped");
-    return false;
+    return GenerationEnd::unreaped;
   }
   // Spec §3.7(b): orphans (setsid, setpgid, double fork) re-parented to us are
   // killed and reaped; no engine is alive at this point.
   if (config_.sweep_orphans) (void)sweep_orphans({}, std::chrono::milliseconds(1000));
   process.release_resources(std::chrono::milliseconds(1000));
   const KillReason sent = ended_on_its_own ? KillReason::none : (reason == KillReason::none ? KillReason::protocol_failed : reason);
-  log_end(instance->number, describe_exit(classify_exit(*status, sent)));
+  const ExitClassification classified = classify_exit(*status, sent);
+  log_end(instance->number, describe_exit(classified));
   if (config_.no_new_privileges_hint && !nnp_hint_logged_ && !instance->chat && sent == KillReason::none) {
     nnp_hint_logged_ = true;
     log_(kNoNewPrivilegesHint);
   }
-  return true;
+  const bool client_stop = classified.kind == ExitKind::killed_by_supervisor && classified.reason == KillReason::client_stop_drain_failed;
+  return client_stop ? GenerationEnd::uncounted : GenerationEnd::counted;
 }
 
-bool EngineSupervisor::schedule_restart(const std::chrono::milliseconds healthy_for, const bool reaped) {
-  if (!reaped) {
+bool EngineSupervisor::schedule_restart(const std::chrono::milliseconds healthy_for, const GenerationEnd ended) {
+  if (ended == GenerationEnd::unreaped) {
     // Spec V10 / K3: never spawn while a killed child is unreaped; past
     // reap_timeout the circuit opens whatever the failure count.
     set_state(SupervisorState::circuit_open, nullptr);
     return false;
+  }
+  if (ended == GenerationEnd::uncounted) {
+    // SP3 D-2 (risk R4): a client that went away during a long prefill must
+    // not open the circuit. No failure is recorded, so neither the count nor
+    // the backoff grows; `backoff` lasts zero time and the next spawn follows.
+    set_state(SupervisorState::backoff, nullptr);
+    return true;
   }
   const RestartDecision decision = tracker_.record_failure(healthy_for);
   if (decision.circuit_open) {

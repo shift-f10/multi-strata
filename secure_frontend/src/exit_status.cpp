@@ -52,6 +52,7 @@ std::string_view kill_reason_literal(const KillReason reason) noexcept {
     case KillReason::fatal_line: return "fatal_line";
     case KillReason::ready_timeout: return "ready_timeout";
     case KillReason::drain_failed: return "drain_failed";
+    case KillReason::client_stop_drain_failed: return "client_stop_drain_failed";
     case KillReason::write_timeout: return "write_timeout";
     case KillReason::protocol_failed: return "protocol_failed";
     case KillReason::shutdown: return "shutdown";

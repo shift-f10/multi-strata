@@ -395,6 +395,147 @@ void proc04_drain_failure_kills_and_restarts() {
   supervisor.shutdown(5s);
 }
 
+// SP3 D-2: the cause of the STOP travels with the protocol to kill_reason_for.
+// A drain that fails after a client-requested STOP maps to
+// client_stop_drain_failed; after the frontend's own timeout STOP (the
+// default, and what ChatExecutionService sends) it stays drain_failed. The
+// cause belongs to one generation request: the next GEN forgets it.
+void sp3_d2_kill_reason_follows_stop_cause() {
+  using secure_frontend::EngineStopCause;
+  using secure_frontend::KillReason;
+  const auto drain_fails_after = [](const std::optional<EngineStopCause> cause, const bool client_stop_drained_first) {
+    auto child = std::make_shared<test_support::FakeChild>();
+    child->push_line("READY 4096 stop");
+    test_support::FakeChildTransport transport(child);
+    secure_frontend::EngineProtocolClient protocol(transport);
+    secure_frontend::EngineReady ready{};
+    if (protocol.await_ready(1s, ready).has_value()) return KillReason::none;
+    if (client_stop_drained_first) {
+      if (protocol.begin_generation(2U, {1U, 2U}).has_value() || protocol.stop(EngineStopCause::client_cancelled).has_value()) return KillReason::none;
+      child->push_line("DONE 0 2 1 1 cancel");
+      secure_frontend::EngineGeneration drained{};
+      if (protocol.read_generation(1s, drained).has_value()) return KillReason::none;
+    }
+    if (protocol.begin_generation(2U, {1U, 2U}).has_value()) return KillReason::none;
+    if ((cause ? protocol.stop(*cause) : protocol.stop()).has_value()) return KillReason::none;
+    secure_frontend::EngineGeneration drained{};
+    const auto drain = protocol.read_generation(20ms, drained);
+    if (!drain || drain->code != secure_frontend::EngineProtocolErrorCode::timeout) return KillReason::none;
+    protocol.abandon();
+    return secure_frontend::kill_reason_for(protocol);
+  };
+  expect(drain_fails_after(EngineStopCause::client_cancelled, false) == KillReason::client_stop_drain_failed,
+         "a failed drain after a client STOP is client_stop_drain_failed");
+  expect(drain_fails_after(EngineStopCause::generation_timeout, false) == KillReason::drain_failed,
+         "a failed drain after a timeout STOP stays drain_failed");
+  expect(drain_fails_after(std::nullopt, false) == KillReason::drain_failed, "stop() defaults to the timeout cause");
+  expect(drain_fails_after(std::nullopt, true) == KillReason::drain_failed,
+         "an earlier request's client STOP does not carry over to the next GEN");
+  expect(secure_frontend::kill_reason_literal(KillReason::client_stop_drain_failed) == "client_stop_drain_failed",
+         "fixed log literal");
+}
+
+// SP3 P6 cancel (SP3 spec §2.6): STOP for a gone client, drain within the
+// bound, report through the lease. The fake never answers GEN and ignores
+// STOP, so the drain times out and the protocol is abandoned.
+bool client_stop_drain_fails(secure_frontend::EngineSupervisor& supervisor) {
+  auto lease = supervisor.acquire();
+  if (!lease) return false;
+  auto& protocol = lease->protocol();
+  if (protocol.begin_generation(2U, {1U, 2U}).has_value()) return false;
+  if (protocol.stop(secure_frontend::EngineStopCause::client_cancelled).has_value()) return false;
+  secure_frontend::EngineGeneration drained{};
+  const auto drain = protocol.read_generation(20ms, drained);
+  if (!drain || drain->code != secure_frontend::EngineProtocolErrorCode::timeout) return false;
+  protocol.abandon();
+  supervisor.report_fatal(*lease, secure_frontend::kill_reason_for(protocol));
+  return true;
+}
+
+// SP3 D-2 (risk R4): a client that disconnects during a long prefill must not
+// open the circuit. Each failed drain after a client STOP kills and replaces
+// the generation exactly as drain_failed does, but records no failure: no
+// backoff delay, and the count is still 0 afterwards (three counted failures
+// are then needed, with the first delays 1 s, 2 s).
+void sp3_d2_client_stop_drain_failure_restarts_uncounted() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.push_line("READY 4096 stop"); });
+  auto clock = std::make_shared<test_support::ManualClock>();
+  test_support::LogCapture log;
+  secure_frontend::EngineSupervisor supervisor({}, fakes.factory(), clock, log.sink());
+  expect(supervisor.start(), "the supervisor starts");
+  for (std::uint64_t generation = 1U; generation <= 4U; ++generation) {
+    const std::string name = "generation " + std::to_string(generation);
+    expect(test_support::wait_generation_ready(supervisor, generation, 5s), name + " ready");
+    expect(client_stop_drain_fails(supervisor), name + ": the drain after a client STOP fails");
+  }
+  expect(test_support::wait_generation_ready(supervisor, 5U, 5s), "generation 5 ready: four client-STOP drain failures never opened the circuit");
+  expect(clock->delays().empty(), "no backoff: the failures were not counted");
+  for (std::uint64_t generation = 1U; generation <= 4U; ++generation) {
+    const auto child = fakes.child(generation);
+    expect(child && child->kills >= 1, "generation " + std::to_string(generation) + " was killed");
+    expect(log.contains("engine generation " + std::to_string(generation) + " ended: killed_by_supervisor(client_stop_drain_failed)"),
+           "generation " + std::to_string(generation) + " logged with the fixed client-STOP literal");
+  }
+  for (std::uint64_t generation = 5U; generation <= 7U; ++generation) {
+    expect(test_support::wait_generation_ready(supervisor, generation, 5s), "generation " + std::to_string(generation) + " ready");
+    auto lease = supervisor.acquire();
+    expect(lease.has_value(), "lease on generation " + std::to_string(generation));
+    if (lease) supervisor.report_fatal(*lease, secure_frontend::KillReason::protocol_failed);
+  }
+  expect(supervisor.wait_for_state(SupervisorState::circuit_open, 5s), "three counted failures open the circuit");
+  expect(clock->delays() == std::vector<std::chrono::milliseconds>{1000ms, 2000ms}, "the count started from 0: 1 s, 2 s, then open");
+  expect(fakes.spawned() == 7U, "exactly seven generations");
+  supervisor.shutdown(5s);
+}
+
+// SP3 D-2, the counted side: the frontend's own timeout STOP (ChatExecutionService)
+// followed by a failed drain is drain_failed and counts, as V7
+// (proc04_drain_failure_kills_and_restarts) requires; three open the circuit.
+void sp3_d2_timeout_stop_drain_failure_still_counts() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.push_line("READY 4096 stop"); });
+  auto clock = std::make_shared<test_support::ManualClock>();
+  test_support::LogCapture log;
+  secure_frontend::SupervisorConfig config;
+  config.chat_limits.generation_timeout = 20ms;
+  config.chat_limits.stop_drain_timeout = 20ms;
+  secure_frontend::EngineSupervisor supervisor(config, fakes.factory(), clock, log.sink());
+  expect(supervisor.start(), "the supervisor starts");
+  const auto tokenizer = test_support::byte_tokenizer();
+  const secure_frontend::ChatCompletionRequest request{"fake-model", {{"user", "Hi"}}, 2U};
+  for (std::uint64_t generation = 1U; generation <= 3U; ++generation) {
+    expect(test_support::wait_generation_ready(supervisor, generation, 5s), "generation " + std::to_string(generation) + " ready");
+    const auto outcome = secure_frontend::execute_with_lease(supervisor, request, tokenizer);
+    expect(outcome && std::holds_alternative<secure_frontend::ChatExecutionError>(*outcome), "the timed-out request fails");
+  }
+  expect(supervisor.wait_for_state(SupervisorState::circuit_open, 5s), "three timeout-STOP drain failures open the circuit");
+  expect(clock->delays() == std::vector<std::chrono::milliseconds>{1000ms, 2000ms}, "each one counts: 1 s, 2 s, then open");
+  expect(log.contains("engine generation 3 ended: killed_by_supervisor(drain_failed)"), "logged as drain_failed");
+  supervisor.shutdown(5s);
+}
+
+// SP3 D-2 exempts only our own kill: a generation that ended by itself is a
+// failure whatever reason the serving side reported.
+void sp3_d2_client_stop_counts_when_engine_ended_itself() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.push_line("READY 4096 stop"); });
+  auto clock = std::make_shared<test_support::ManualClock>();
+  test_support::LogCapture log;
+  secure_frontend::EngineSupervisor supervisor({}, fakes.factory(), clock, log.sink());
+  expect(supervisor.start(), "the supervisor starts");
+  expect(test_support::wait_generation_ready(supervisor, 1U, 5s), "generation 1 ready");
+  {
+    auto lease = supervisor.acquire();
+    expect(lease.has_value(), "lease on generation 1");
+    if (lease) {
+      fakes.child(1U)->end({false, 1U});  // the engine exits 1 on its own
+      supervisor.report_fatal(*lease, secure_frontend::KillReason::client_stop_drain_failed);
+    }
+  }
+  expect(test_support::wait_generation_ready(supervisor, 2U, 5s), "generation 2 ready");
+  expect(clock->delays() == std::vector<std::chrono::milliseconds>{1000ms}, "the engine's own end counts");
+  expect(log.contains("engine generation 1 ended: error_exit"), "classified by its own status");
+  supervisor.shutdown(5s);
+}
+
 std::size_t open_handle_count() {
 #if defined(_WIN32)
   DWORD count = 0;
@@ -1036,6 +1177,10 @@ int main(int argc, char* argv[]) {
                                                 {"proc04_ready_timeout_kills_and_counts", proc04_ready_timeout_kills_and_counts},
                                                 {"proc04_drain_failure_kills_and_restarts", proc04_drain_failure_kills_and_restarts},
                                                 {"proc04_no_leak_across_restarts", proc04_no_leak_across_restarts},
+                                                {"sp3_d2_kill_reason_follows_stop_cause", sp3_d2_kill_reason_follows_stop_cause},
+                                                {"sp3_d2_client_stop_drain_failure_restarts_uncounted", sp3_d2_client_stop_drain_failure_restarts_uncounted},
+                                                {"sp3_d2_timeout_stop_drain_failure_still_counts", sp3_d2_timeout_stop_drain_failure_still_counts},
+                                                {"sp3_d2_client_stop_counts_when_engine_ended_itself", sp3_d2_client_stop_counts_when_engine_ended_itself},
                                                 {"proc04_unreaped_child_opens_circuit", proc04_unreaped_child_opens_circuit},
                                                 {"supervisor_exception_opens_circuit", supervisor_exception_opens_circuit},
                                                 {"supervisor_shutdown_sends_eof_first_then_kills", supervisor_shutdown_sends_eof_first_then_kills},

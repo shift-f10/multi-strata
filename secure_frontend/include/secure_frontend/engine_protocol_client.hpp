@@ -88,6 +88,11 @@ enum class EngineProtocolFlavor {
   lighttransport_glm53,
 };
 
+// Who asked for a STOP (SP3 D-2). The frontend's own deadline
+// (ChatExecutionService's generation_timeout) is `generation_timeout`; SP3's
+// cancellation for a client that went away (SP3 spec §2.6) is `client_cancelled`.
+enum class EngineStopCause { generation_timeout, client_cancelled };
+
 struct EngineReady final {
   std::uint32_t max_context_tokens;
   bool supports_stop;
@@ -120,7 +125,9 @@ class EngineProtocolClient final {
   // the client idle: the engine is alive and resets on the next GEN.
   [[nodiscard]] std::optional<EngineProtocolError> read_generation(
       std::chrono::milliseconds timeout, EngineGeneration& generation);
-  [[nodiscard]] std::optional<EngineProtocolError> stop();
+  // Sends STOP once per generation; `cause` is recorded only when STOP was
+  // written and is forgotten by the next begin_generation().
+  [[nodiscard]] std::optional<EngineProtocolError> stop(EngineStopCause cause = EngineStopCause::generation_timeout);
   [[nodiscard]] std::optional<EngineProtocolError> quit();
   // Marks the protocol failed without writing anything, e.g. when the engine
   // ignored STOP and cannot be trusted with further commands.
@@ -133,6 +140,8 @@ class EngineProtocolClient final {
   [[nodiscard]] bool closed() const noexcept;
   // The code that failed the protocol (set by every terminal failure), or nullopt.
   [[nodiscard]] std::optional<EngineProtocolErrorCode> failure_code() const noexcept { return failure_code_; }
+  // Why STOP was sent for the current (or last) generation; nullopt if none was.
+  [[nodiscard]] std::optional<EngineStopCause> stop_cause() const noexcept { return stop_cause_; }
 
  private:
   enum class State { waiting_ready, idle, generating, closed, failed };
@@ -144,6 +153,7 @@ class EngineProtocolClient final {
   EngineGeneration active_generation_;
   bool supports_stop_{false};
   bool stop_requested_{false};
+  std::optional<EngineStopCause> stop_cause_;
   std::optional<EngineProtocolErrorCode> failure_code_;
   // Outbound command cap; sized from READY when limits_.max_line_bytes == 0.
   std::size_t effective_max_line_bytes_;

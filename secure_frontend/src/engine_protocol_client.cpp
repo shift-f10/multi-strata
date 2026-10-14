@@ -179,6 +179,7 @@ std::optional<EngineProtocolError> EngineProtocolClient::begin_generation(
   if (const auto error = write_command(command); error.has_value()) return error;
   active_generation_ = EngineGeneration{};
   stop_requested_ = false;
+  stop_cause_.reset();
   state_ = State::generating;
   return std::nullopt;
 }
@@ -258,12 +259,13 @@ std::optional<EngineProtocolError> EngineProtocolClient::read_generation(const s
   }
 }
 
-std::optional<EngineProtocolError> EngineProtocolClient::stop() {
+std::optional<EngineProtocolError> EngineProtocolClient::stop(const EngineStopCause cause) {
   if (state_ != State::generating) return EngineProtocolError{EngineProtocolErrorCode::invalid_state, "no generation is active"};
   if (!supports_stop_) return EngineProtocolError{EngineProtocolErrorCode::invalid_state, "engine did not advertise STOP support"};
   if (stop_requested_) return std::nullopt;
   if (const auto error = write_command("STOP"); error.has_value()) return error;
   stop_requested_ = true;
+  stop_cause_ = cause;
   return std::nullopt;
 }
 

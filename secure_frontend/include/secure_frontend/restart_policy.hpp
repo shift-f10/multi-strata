@@ -26,7 +26,8 @@ struct RestartDecision final {
 };
 
 // Spec §3.3: a failure is any unrequested end, every §3.5 kill and any spawn
-// failure. Delays grow initial * factor^(n-1), capped at backoff_max; the
+// failure. The supervisor does not record KillReason::client_stop_drain_failed
+// (SP3 D-2). Delays grow initial * factor^(n-1), capped at backoff_max; the
 // max_consecutive_failures-th failure opens the circuit for good.
 class RestartTracker final {
  public:

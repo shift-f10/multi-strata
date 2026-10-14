@@ -91,7 +91,7 @@ ChatExecutionOutcome ChatExecutionService::execute(const ChatCompletionRequest& 
     }
     // The generation is still active. Stop it and drain to DONE so the
     // engine is idle for the next request instead of wedged forever.
-    if (protocol_.stop().has_value()) {
+    if (protocol_.stop(EngineStopCause::generation_timeout).has_value()) {
       protocol_.abandon();
       return error(ChatExecutionErrorCode::engine_protocol_failed, "engine could not be stopped");
     }
