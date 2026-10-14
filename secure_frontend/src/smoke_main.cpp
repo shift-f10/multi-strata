@@ -77,9 +77,10 @@ int main(int argc, char** argv) {
         return models;
       });
   std::string error;
-  // Same allowlist as before ({host_header}, kept as an alias), no CORS.
+  // Loopback only (allow_remote = false): the bound authority and localhost need
+  // no alias. No CORS.
   auto server = secure_frontend::HttpSocketServer::bind(*config,
-      secure_frontend::make_http_policy(*bind_address, config->port, {host_header}, {}),
+      secure_frontend::make_http_policy(*bind_address, config->port, {}, {}),
       secure_frontend::make_bearer_validator(verifier),
       [router](std::string_view method, std::string_view target, std::string_view) {
         return router.dispatch(method, target);

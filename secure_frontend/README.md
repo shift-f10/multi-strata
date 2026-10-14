@@ -48,6 +48,8 @@ the SP2 merge).
 - Wildcard binds (`0.0.0.0`, `::` and every other spelling of the unspecified
   address) additionally require `listener.allow_wildcard_bind = true`
   (`--allow-wildcard-bind`); a regular remote-listening opt-in is not enough.
+  A wildcard listener also needs a non-empty `listener.host_aliases` (config
+  file): those are the only `Host` values it accepts.
 - The whole configuration is schema-validated before the listener binds or the
   engine starts; `--check` opens and inspects but never creates, writes,
   renames or deletes anything. The server binds before it spawns the engine.
@@ -235,11 +237,17 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `listener.allow_remote` | boolean | `false` | - | `--allow-remote` | Required for every non-loopback address. |
 | `listener.allow_wildcard_bind` | boolean | `false` | - | `--allow-wildcard-bind` | Also required for 0.0.0.0, :: and every other spelling of the unspecified address. |
 | `listener.backlog` | integer | `16` | 1-4096 | - | listen() backlog. |
+| `listener.cors_origins` | string array | `[]` | - | - | Exact browser origins allowed CORS: http:// or https://, a lower-case host, an optional port, no path; never * or null; at most 16. |
+| `listener.host_aliases` | string array | `[]` | - | - | Extra exact Host values (host or host:port) clients use; required when the bind is a wildcard; at most 16. |
 | `limits.http.request_deadline_ms` | integer | `30000` | 1-3600000 | - | Total time to read one request, header and body. |
 | `limits.http.max_request_bytes` | integer | `65536` | 4096-16777216 | - | Largest request (header and body) the listener and parser accept. |
 | `limits.http.max_header_bytes` | integer | `16384` | 1024-65536 | - | Largest header block; at most limits.http.max_request_bytes. |
 | `limits.http.max_headers` | integer | `64` | 8-256 | - | Most header fields. |
 | `limits.http.max_request_line_bytes` | integer | `4096` | 256-16384 | - | Longest request line; at most limits.http.max_header_bytes. |
+| `limits.http.header_deadline_ms` | integer | `10000` | 1-3600000 | - | Time from accept to the end of the request header; at most limits.http.request_deadline_ms. |
+| `limits.http.write_stall_ms` | integer | `10000` | 100-300000 | - | Longest send without progress before the client is treated as gone. |
+| `limits.http.response_write_deadline_ms` | integer | `60000` | 1000-3600000 | - | Time to send a whole complete response, or a stream's tail after DONE; at least limits.http.write_stall_ms. |
+| `limits.http.stream_keepalive_ms` | integer | `15000` | 1000-300000 | - | SSE comment interval while no content flows (streaming). |
 | `limits.chat.max_body_bytes` | integer | `49152` | 1-16777216 | - | Largest chat request body; at most max_request_bytes minus max_header_bytes. |
 | `limits.chat.max_messages` | integer | `128` | 1-128 | - | Most messages in one chat request. |
 | `limits.chat.max_message_bytes` | integer | `65536` | 1-65536 | - | Largest single message content. |
@@ -272,6 +280,7 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `pull.max_duration_s` | integer | `172800` | 60-604800 | - | Time budget for a whole pull run. |
 | `pull.stall_timeout_s` | integer | `120` | 10-3600 | - | Abort a transfer slower than 1024 B/s for this long. |
 | `pull.connect_timeout_s` | integer | `30` | 1-300 | - | TCP/TLS connect timeout per request. |
+| `logging.requests` | boolean | `false` | - | - | One line per request to stderr: route, status, code, time, bytes, loopback or remote; never paths, headers, tokens or text. |
 <!-- config-keys:end -->
 
 `roots.secret` defaults to the config file's directory only for a `file:` token

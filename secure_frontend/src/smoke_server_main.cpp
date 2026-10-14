@@ -188,8 +188,13 @@ int run(const Options& options) {
     std::cerr << "Invalid listener configuration.\n";
     return EXIT_FAILURE;
   }
-  // Same allowlist as before ({authority}, kept as an alias), no CORS.
-  secure_frontend::HttpPolicy policy = secure_frontend::make_http_policy(*bind_address, config->port, {authority}, {});
+  // The bound authority (plus localhost on loopback) needs no alias. This smoke
+  // binary has no typed config and so no listener.host_aliases: a wildcard bind
+  // keeps its own authority as the one alias, or no Host could ever match. No CORS.
+  const std::vector<std::string> aliases =
+      bind_address->scope() == secure_frontend::AddressScope::wildcard ? std::vector<std::string>{authority}
+                                                                        : std::vector<std::string>{};
+  secure_frontend::HttpPolicy policy = secure_frontend::make_http_policy(*bind_address, config->port, aliases, {});
   const secure_frontend::ApiRouter router(
       [] { return true; }, [models = std::move(models)] { return models; });
   auto server = secure_frontend::HttpSocketServer::bind(

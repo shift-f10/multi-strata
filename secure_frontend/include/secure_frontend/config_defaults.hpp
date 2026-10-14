@@ -16,6 +16,12 @@ inline constexpr std::int64_t kMaxRequestBytes = 65'536;
 inline constexpr std::int64_t kMaxHeaderBytes = 16'384;
 inline constexpr std::int64_t kMaxHeaders = 64;
 inline constexpr std::int64_t kMaxRequestLineBytes = 4'096;
+// SP3 addendum (spec §5.1).
+inline constexpr std::int64_t kHeaderDeadlineMs = 10'000;
+inline constexpr std::int64_t kWriteStallMs = 10'000;
+inline constexpr std::int64_t kResponseWriteDeadlineMs = 60'000;
+inline constexpr std::int64_t kStreamKeepaliveMs = 15'000;
+inline constexpr std::int64_t kMaxListEntries = 16;
 inline constexpr std::int64_t kChatMaxBodyBytes = kMaxRequestBytes - kMaxHeaderBytes;  // 49152, see the plan's Global Constraints
 inline constexpr std::int64_t kChatMaxMessages = 128;
 inline constexpr std::int64_t kChatMaxMessageBytes = 65'536;

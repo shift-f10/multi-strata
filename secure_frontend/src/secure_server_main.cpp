@@ -201,11 +201,11 @@ int run(const FrontendConfig& config, const bool expert) {
   // lives only inside one execute_with_lease() call.
   secure_frontend::EngineSupervisor supervisor(supervisor_config, secure_frontend::make_stdio_process_factory(std::move(plan)));
 
-  const std::string authority = host_header(listener);
-  // The old allowlist ({authority}) is kept as an alias; listener.host_aliases
-  // and listener.cors_origins are wired by a later task (no CORS yet).
-  secure_frontend::HttpPolicy policy =
-      secure_frontend::make_http_policy(config.listener.host, config.listener.port, {authority}, {});
+  const std::string authority = host_header(listener);  // the startup line only
+  // Spec §4.3/§4.4: the bound authority (plus localhost on loopback) and the
+  // configured aliases; a wildcard bind trusts only listener.host_aliases.
+  secure_frontend::HttpPolicy policy = secure_frontend::make_http_policy(
+      config.listener.host, config.listener.port, config.listener.host_aliases, config.listener.cors_origins);
   // /health takes one supervisor snapshot per request: the router calls the
   // bool provider first, then the engine and recovery providers, once each
   // (api_router.hpp), and the listener is serial.

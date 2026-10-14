@@ -39,6 +39,8 @@ void subsystem_limits_follow_config() {
                                    {"limits.http.max_header_bytes", "8192"},
                                    {"limits.http.max_headers", "32"},
                                    {"limits.http.request_deadline_ms", "1500"},
+                                   // SP3 §5.1: header_deadline_ms (default 10000) must not exceed it.
+                                   {"limits.http.header_deadline_ms", "1500"},
                                    {"listener.backlog", "64"},
                                    {"limits.chat.max_body_bytes", "131072"},
                                    {"limits.chat.default_max_tokens", "64"},

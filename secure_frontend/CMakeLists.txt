@@ -166,6 +166,8 @@ target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_config
 target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_paths)
 # SP4 §3.9: pull.proxy is parsed by parse_proxy (ProxySetting).
 target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_manifest_core)
+# SP3 §5.1: listener.host_aliases / cors_origins entries use the HTTP policy grammar.
+target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_http_policy)
 
 add_library(secure_frontend_server_cli src/server_cli.cpp)
 target_sources(secure_frontend_server_cli PRIVATE src/frontend_init.cpp)
@@ -954,6 +956,11 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # SP4 §4.9 delta e: the pull.* keys (scratch roots, DACL-private on Windows).
     secure_frontend_add_cases(secure_frontend_typed_config_tests cfg01_pull_keys_table_driven
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # SP3 SP1-addendum A1 (spec §5.1): unlabelled, so the wine smoke runs them (pre-flight T4).
+    secure_frontend_add_cases(secure_frontend_typed_config_tests cfg01_sp3_rows_type_and_range
+        cfg01_header_deadline_le_request_deadline cfg01_response_deadline_ge_write_stall
+        cfg01_wildcard_bind_requires_host_aliases cfg01_host_alias_grammar_and_count
+        web05_cors_origin_config_rejects_wildcard_null_path_duplicate_and_17_entries)
     if(WIN32)
         secure_frontend_add_cases(secure_frontend_typed_config_tests cfg01_config_with_everyone_write_ace_rejected
             LABELS windows-runtime)

@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <functional>
 #include <iostream>
+#include <map>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -661,6 +662,124 @@ void describe_reports_unset_expert_keys() {
   expect(text.find("\nengine.profile = (unset)\n") != std::string::npos, "engine.profile = (unset)");
   expect(text.find("\nengine.model_id = \"m:t\"\n") != std::string::npos, "engine.model_id as given");
 }
+
+// SP3 SP1-addendum A1 (spec §5.1, §4.3, §4.4): string-array rows, Host/CORS
+// grammar, HTTP deadline keys and logging.requests.
+struct Sp3Row { const char* path; ConfigValueType type; std::int64_t minimum; std::int64_t maximum; };
+constexpr Sp3Row kSp3RowsA1[] = {
+    {"listener.cors_origins", ConfigValueType::string_array, 0, 0},
+    {"listener.host_aliases", ConfigValueType::string_array, 0, 0},
+    {"limits.http.header_deadline_ms", ConfigValueType::integer, 1, 3'600'000},
+    {"limits.http.write_stall_ms", ConfigValueType::integer, 100, 300'000},
+    {"limits.http.response_write_deadline_ms", ConfigValueType::integer, 1'000, 3'600'000},
+    {"limits.http.stream_keepalive_ms", ConfigValueType::integer, 1'000, 300'000},
+    {"logging.requests", ConfigValueType::boolean, 0, 0},
+};
+
+std::string string_array(const std::vector<std::string>& values) {
+  std::string out = "[";
+  for (std::size_t i = 0; i < values.size(); ++i) out += (i ? "," : "") + secure_frontend_test::json_literal(values[i]);
+  return out + "]";
+}
+
+secure_frontend::ConfigValidationResult with_literals(const ConfigFixture& f, const std::map<std::string, std::string>& extra) {
+  auto literals = f.literals;
+  for (const auto& [k, v] : extra) literals[k] = v;
+  return validate_text(render_config_json(literals), f.dir);
+}
+
+void cfg01_sp3_rows_type_and_range() {
+  ConfigFixture f;
+  for (const auto& row : kSp3RowsA1) {
+    const auto* key = secure_frontend::find_config_key(row.path);
+    expect(key != nullptr && key->type == row.type, std::string{"row exists with its type: "} + row.path);
+    if (key != nullptr && row.type == ConfigValueType::integer) {
+      expect(key->minimum == row.minimum && key->maximum == row.maximum, std::string{"range of "} + row.path);
+    }
+  }
+  const auto defaults = with_literals(f, {});
+  const auto* validated = std::get_if<secure_frontend::ValidatedConfig>(&defaults);
+  expect(validated != nullptr, "defaults validate: " + issues_of(defaults));
+  if (validated != nullptr) {
+    const auto& c = validated->get();
+    expect(c.listener.cors_origins.empty() && c.listener.host_aliases.empty(), "array defaults are empty");
+    expect(c.limits.http.header_deadline == std::chrono::milliseconds(10000) && c.limits.http.write_stall == std::chrono::milliseconds(10000) &&
+           c.limits.http.response_write_deadline == std::chrono::milliseconds(60000) &&
+           c.limits.http.stream_keepalive == std::chrono::milliseconds(15000), "HTTP deadline defaults");
+    expect(!c.logging.requests, "request logging is off by default");
+    const std::string text = secure_frontend::describe(c);
+    for (const auto& row : kSp3RowsA1) expect(text.find(row.path) != std::string::npos, std::string{"--check prints "} + row.path);
+  }
+  std::vector<std::string> seventeen;
+  for (int i = 0; i < 17; ++i) seventeen.push_back("h" + std::to_string(i) + ".lan:8080");
+  expect(has_issue(with_literals(f, {{"listener.host_aliases", string_array(seventeen)}}), "listener.host_aliases",
+                   ConfigIssueCode::out_of_range), "17 aliases are rejected");
+  seventeen.pop_back();
+  expect(!has_issue(with_literals(f, {{"listener.host_aliases", string_array(seventeen)}}), "listener.host_aliases",
+                    ConfigIssueCode::out_of_range), "16 aliases are accepted");
+  expect(has_issue(with_literals(f, {{"listener.cors_origins", "[1]"}}), "listener.cors_origins", ConfigIssueCode::wrong_type),
+         "a non-string entry is a type error");
+}
+
+void cfg01_header_deadline_le_request_deadline() {
+  ConfigFixture f;
+  expect(has_issue(with_literals(f, {{"limits.http.header_deadline_ms", "30001"}}), "limits.http.header_deadline_ms",
+                   ConfigIssueCode::conflicting_values), "header deadline above the request deadline is rejected");
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(with_literals(f, {{"limits.http.header_deadline_ms", "30000"}})),
+         "equal deadlines are valid");
+}
+
+void cfg01_response_deadline_ge_write_stall() {
+  ConfigFixture f;
+  expect(has_issue(with_literals(f, {{"limits.http.write_stall_ms", "20000"}, {"limits.http.response_write_deadline_ms", "19999"}}),
+                   "limits.http.response_write_deadline_ms", ConfigIssueCode::conflicting_values),
+         "response deadline below the stall bound is rejected");
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(
+             with_literals(f, {{"limits.http.write_stall_ms", "20000"}, {"limits.http.response_write_deadline_ms", "20000"}})),
+         "equal values are valid");
+}
+
+void cfg01_wildcard_bind_requires_host_aliases() {
+  ConfigFixture f;
+  const std::map<std::string, std::string> wildcard{{"listener.host", "\"0.0.0.0\""}, {"listener.allow_remote", "true"},
+                                                    {"listener.allow_wildcard_bind", "true"}};
+  expect(has_issue(with_literals(f, wildcard), "listener.host_aliases", ConfigIssueCode::invalid_value),
+         "a wildcard bind without aliases names listener.host_aliases");
+  auto with_alias = wildcard;
+  with_alias["listener.host_aliases"] = string_array({"box.lan:8080"});
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(with_literals(f, with_alias)), "one alias is enough");
+}
+
+void cfg01_host_alias_grammar_and_count() {
+  ConfigFixture f;
+  for (const std::string bad : {"http://x", "x:", "x:99999", "a b", "user@x", "x.:80", ""}) {
+    expect(has_issue(with_literals(f, {{"listener.host_aliases", string_array({bad})}}), "listener.host_aliases",
+                     ConfigIssueCode::invalid_value), "alias rejected: " + bad);
+  }
+  expect(has_issue(with_literals(f, {{"listener.host_aliases", string_array({"a.lan:1", "a.lan:1"})}}), "listener.host_aliases",
+                   ConfigIssueCode::invalid_value), "duplicate aliases are rejected");
+  const auto ok = with_literals(f, {{"listener.host_aliases", string_array({"Strata.LAN:8080", "[fe80::1]:8080", "box"})}});
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(ok), "valid aliases: " + issues_of(ok));
+  const auto text = issues_of(with_literals(f, {{"listener.host_aliases", string_array({"secret-host-value:"})}}));
+  expect(text.find("secret-host-value") == std::string::npos, "the issue never echoes the value");
+}
+
+void web05_cors_origin_config_rejects_wildcard_null_path_duplicate_and_17_entries() {
+  ConfigFixture f;
+  for (const std::string bad : {"*", "null", "http://app.example/", "http://app.example/path", "http://App.example",
+                                "ftp://app.example", "app.example:3000", "http://app.example:3000?x"}) {
+    expect(has_issue(with_literals(f, {{"listener.cors_origins", string_array({bad})}}), "listener.cors_origins",
+                     ConfigIssueCode::invalid_value), "origin rejected: " + bad);
+  }
+  expect(has_issue(with_literals(f, {{"listener.cors_origins", string_array({"http://a.example", "http://a.example"})}}),
+                   "listener.cors_origins", ConfigIssueCode::invalid_value), "duplicate origins are rejected");
+  std::vector<std::string> seventeen;
+  for (int i = 0; i < 17; ++i) seventeen.push_back("http://a" + std::to_string(i) + ".example");
+  expect(has_issue(with_literals(f, {{"listener.cors_origins", string_array(seventeen)}}), "listener.cors_origins",
+                   ConfigIssueCode::out_of_range), "17 origins are rejected");
+  const auto ok = with_literals(f, {{"listener.cors_origins", string_array({"http://app.example:3000", "https://ui.example"})}});
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(ok), "two exact origins: " + issues_of(ok));
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -685,6 +804,13 @@ int main(int argc, char** argv) {
       {"cfg06_validated_config_bytes_do_not_contain_token", cfg06_validated_config_bytes_do_not_contain_token},
       {"readme_config_table_matches_schema", readme_config_table_matches_schema},
       {"cfg01_pull_keys_table_driven", cfg01_pull_keys_table_driven},
+      {"cfg01_sp3_rows_type_and_range", cfg01_sp3_rows_type_and_range},
+      {"cfg01_header_deadline_le_request_deadline", cfg01_header_deadline_le_request_deadline},
+      {"cfg01_response_deadline_ge_write_stall", cfg01_response_deadline_ge_write_stall},
+      {"cfg01_wildcard_bind_requires_host_aliases", cfg01_wildcard_bind_requires_host_aliases},
+      {"cfg01_host_alias_grammar_and_count", cfg01_host_alias_grammar_and_count},
+      {"web05_cors_origin_config_rejects_wildcard_null_path_duplicate_and_17_entries",
+       web05_cors_origin_config_rejects_wildcard_null_path_duplicate_and_17_entries},
 #if !defined(_WIN32)
       {"cfg02_env_token_ignores_config_folder_permissions", cfg02_env_token_ignores_config_folder_permissions},
       {"cfg02_file_token_default_secret_root_reports_one_issue", cfg02_file_token_default_secret_root_reports_one_issue},
