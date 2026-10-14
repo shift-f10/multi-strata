@@ -142,7 +142,8 @@ Trust boundaries:
   exec and its protocol carries no nonce without engine changes. This is an
   **accepted risk** for SP2 and must appear in the release record
   (`proc03_same_uid_reopen_is_accepted_risk` pins today's behavior). On Windows
-  the stdin pipe is owner-only, single-instance and client-verified (N6, R1).
+  the stdin pipe is owner-only, single-instance and client-verified (N6, R1)
+  (implemented; authoritative in the MSYS2 CI job — pending rflores's push).
 - Windows uses restricted handle inheritance plus a Job Object so all child
   processes terminate with the service. Linux uses close-on-exec descriptors,
   a dedicated process group, and reliable `waitpid`/signal cleanup. Restart
