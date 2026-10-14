@@ -172,7 +172,7 @@ std::optional<ProcessError> EngineProcess::start(const EngineCommand& command) {
   HANDLE job = CreateJobObjectW(nullptr, nullptr);
   if (job == nullptr) return ProcessError{ProcessErrorCode::platform_failure, "CreateJobObjectW failed"};
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
-  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
   if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
     CloseHandle(job);
     return ProcessError{ProcessErrorCode::platform_failure, "SetInformationJobObject failed"};
@@ -180,10 +180,14 @@ std::optional<ProcessError> EngineProcess::start(const EngineCommand& command) {
   STARTUPINFOW startup{};
   startup.cb = sizeof(startup);
   PROCESS_INFORMATION info{};
+  static const UINT previous_error_mode = SetErrorMode(GetErrorMode() | SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS);
+  (void)previous_error_mode;
   // Start suspended so the child is inside the Job before it runs a single
   // instruction: no early descendant can escape the kill-on-close Job (PROC-05).
+  // A new console process group: console events reach only the frontend.
   if (!CreateProcessW(command.executable.c_str(), command_line.data(), nullptr, nullptr, FALSE,
-                      CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED, environment.data(), nullptr, &startup, &info)) {
+                      CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP, environment.data(), nullptr,
+                      &startup, &info)) {
     CloseHandle(job);
     return ProcessError{ProcessErrorCode::spawn_failed, "CreateProcessW failed"};
   }

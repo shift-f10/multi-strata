@@ -503,6 +503,29 @@ void proc05_setsid_grandchild_is_reaped_at_shutdown() {
 }
 #endif
 
+#if defined(_WIN32)
+// Supervisor-level smoke for the Windows launch settings (spec §3.7): the fake
+// runs with --default-error-mode, so only the error mode it inherits from the
+// frontend and the Job's DIE_ON_UNHANDLED_EXCEPTION stand between its abort and
+// a Windows Error Reporting stall.
+void proc04_windows_abort_does_not_stall() {
+  secure_frontend::SupervisorConfig config;
+  config.policy.backoff_initial = 20ms;
+  test_support::LogCapture log;
+  secure_frontend::EngineSupervisor supervisor(config,
+                                               secure_frontend::make_stdio_process_factory(fake_plan({"--abort-in-gen", "--default-error-mode"})),
+                                               std::make_shared<secure_frontend::SteadySupervisorClock>(), log.sink());
+  supervisor.start();
+  expect(test_support::wait_generation_ready(supervisor, 1U, 10s), "ready");
+  const auto tokenizer = test_support::byte_tokenizer();
+  const auto started = std::chrono::steady_clock::now();
+  (void)secure_frontend::execute_with_lease(supervisor, {"fake-model", {{"user", "Hi"}}, 2U}, tokenizer);
+  expect(log.wait_for("engine generation 1 ended: abort", 5s), "the abort is observed, not stalled on a WER dialog");
+  expect(std::chrono::steady_clock::now() - started < 5s, "within 5 s");
+  supervisor.shutdown(5s);
+}
+#endif
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -525,6 +548,9 @@ int main(int argc, char* argv[]) {
 #if !defined(_WIN32)
                                                 {"proc05_setsid_grandchild_is_reaped", proc05_setsid_grandchild_is_reaped},
                                                 {"proc05_setsid_grandchild_is_reaped_at_shutdown", proc05_setsid_grandchild_is_reaped_at_shutdown},
+#endif
+#if defined(_WIN32)
+                                                {"proc04_windows_abort_does_not_stall", proc04_windows_abort_does_not_stall},
 #endif
                                                }, failures);
 }

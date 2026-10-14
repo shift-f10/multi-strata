@@ -135,7 +135,10 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
   if (parent_stdin == nullptr || child_stdin == nullptr || !CreatePipe(&parent_stdout, &child_stdout, &attrs, 0) || !SetHandleInformation(parent_stdout, HANDLE_FLAG_INHERIT, 0)) { if (child_stdin) CloseHandle(child_stdin); if (parent_stdin) CloseHandle(parent_stdin); if (child_stdout) CloseHandle(child_stdout); if (parent_stdout) CloseHandle(parent_stdout); return ProcessError{ProcessErrorCode::platform_failure, with_last_error("stdio pipe setup failed")}; }
   child_stderr = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &attrs, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (child_stderr == INVALID_HANDLE_VALUE) { CloseHandle(child_stdin); CloseHandle(parent_stdin); CloseHandle(child_stdout); CloseHandle(parent_stdout); return ProcessError{ProcessErrorCode::platform_failure, with_last_error("stderr sink setup failed")}; }
-  HANDLE job = CreateJobObjectW(nullptr, nullptr); JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{}; limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  HANDLE job = CreateJobObjectW(nullptr, nullptr); JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+  // Spec §3.7: an unhandled exception in any Job process ends it at once
+  // (no WER wait), and closing the Job kills every member.
+  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
   if (!job || !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) { CloseHandle(child_stdin); CloseHandle(parent_stdin); CloseHandle(child_stdout); CloseHandle(parent_stdout); CloseHandle(child_stderr); if (job) CloseHandle(job); return ProcessError{ProcessErrorCode::platform_failure, with_last_error("CreateJobObjectW failed")}; }
   SIZE_T attribute_list_size = 0;
   (void)InitializeProcThreadAttributeList(nullptr, 1, 0, &attribute_list_size);
@@ -157,10 +160,17 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
   startup.StartupInfo.hStdError = child_stderr;
   startup.lpAttributeList = attribute_list;
   PROCESS_INFORMATION info{};
+  // Spec §3.7: a crashing engine must never wait on a Windows Error Reporting
+  // dialog; the error mode is inherited by the child. Set once per process.
+  static const UINT previous_error_mode = SetErrorMode(GetErrorMode() | SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS);
+  (void)previous_error_mode;
   // Start suspended so the child is inside the Job before it runs a single
   // instruction: no early descendant can escape the kill-on-close Job (PROC-05).
+  // CREATE_NEW_PROCESS_GROUP: console Ctrl-C/Ctrl-Break reach only the
+  // frontend; a console handler (SP2 Task 15) will run the orderly shutdown.
   const BOOL created = CreateProcessW(executable.c_str(), line.data(), nullptr, nullptr, TRUE,
-                                      CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED,
+                                      CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED |
+                                          CREATE_NEW_PROCESS_GROUP,
                                       environment.data(), nullptr, &startup.StartupInfo, &info);
   DeleteProcThreadAttributeList(attribute_list);
   CloseHandle(child_stdin); CloseHandle(child_stdout); CloseHandle(child_stderr);

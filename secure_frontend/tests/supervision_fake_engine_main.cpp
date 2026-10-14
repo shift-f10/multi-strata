@@ -434,7 +434,12 @@ int main(int argc, char* argv[]) {
   // Without this a crash can wait on a Windows Error Reporting / critical-error
   // dialog on the MSYS2 runner and the test hangs until its CTest timeout. The
   // error mode is inherited by --fake-sleeper grandchildren.
-  (void)SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+  // --default-error-mode skips this, so the fake runs with the error mode it
+  // inherited from the frontend (SP2 Task 17: proc04_windows_abort_does_not_stall
+  // exercises the frontend's launch settings, not the fake's own).
+  bool default_error_mode = false;
+  for (int index = 1; index < argc; ++index) default_error_mode = default_error_mode || std::string_view(argv[index]) == "--default-error-mode";
+  if (!default_error_mode) (void)SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
 #endif
 #if !defined(_WIN32)
   g_argc = argc;
