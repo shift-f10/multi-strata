@@ -259,7 +259,26 @@ int main(int argc, char** argv) {
       {"hash_into_rejects_hard_links_and_counts_bytes", acquire_cases::hash_into_rejects_hard_links_and_counts_bytes},
       {"store_environment_seams_report_space_and_fs_kind", acquire_cases::store_environment_seams_report_space_and_fs_kind},
       {"overlong_joined_paths_fail_closed_without_throwing", acquire_cases::overlong_joined_paths_fail_closed_without_throwing},
+      {"dl04_publish_uses_noreplace_and_never_overwrites", acquire_cases::dl04_publish_uses_noreplace_and_never_overwrites},
+      {"publish_falls_back_when_noreplace_unsupported", acquire_cases::publish_falls_back_when_noreplace_unsupported},
+#if defined(SECURE_FRONTEND_TEST_HOOKS)
+      {"dl04_crash_between_publish_and_index_is_not_loaded", acquire_cases::dl04_crash_between_publish_and_index_is_not_loaded},
+#endif
+      {"dl04_orphan_adopted_after_rehash_by_digest", acquire_cases::dl04_orphan_adopted_after_rehash_by_digest},
+      {"replace_loaded_model_retires_old_version", acquire_cases::replace_loaded_model_retires_old_version},
+      {"layout_check_requires_pack_files_and_valid_tokenizer", acquire_cases::layout_check_requires_pack_files_and_valid_tokenizer},
+      {"staged_tree_must_be_exactly_the_manifest", acquire_cases::staged_tree_must_be_exactly_the_manifest},
+      {"install_decisions_follow_sequence_rules", acquire_cases::install_decisions_follow_sequence_rules},
+      {"publish_requires_staging_key_of_manifest", acquire_cases::publish_requires_staging_key_of_manifest},
+      {"overlong_staging_tree_is_publish_failed", acquire_cases::overlong_staging_tree_is_publish_failed},
+      {"retire_removes_read_only_published_version", acquire_cases::retire_removes_read_only_published_version},
+      {"downgrade_adopts_retired_version_keeping_one_live", acquire_cases::downgrade_adopts_retired_version_keeping_one_live},
+      {"rm_refuses_held_version_and_removes_read_only_tree", acquire_cases::rm_refuses_held_version_and_removes_read_only_tree},
+#if !defined(_WIN32)
+      {"rm_reports_unreachable_version_as_failure", acquire_cases::rm_reports_unreachable_version_as_failure},
+#endif
 #if defined(_WIN32)
+      {"replace_loaded_model_retires_old_version_windows", acquire_cases::replace_loaded_model_retires_old_version_windows},
       {"store_primitives_windows", acquire_cases::store_primitives_windows},
       {"store_adopts_only_private_files_windows", acquire_cases::store_adopts_only_private_files_windows},
 #endif

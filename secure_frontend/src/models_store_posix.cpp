@@ -25,13 +25,19 @@ AcquireError io_error(const int code, const std::string& detail) {
 }
 
 // The directory holding `path` (or the root itself), as an owned O_DIRECTORY fd.
-int parent_fd(const CanonicalRoot& root, const RelativePath& path) {
+// On failure, *absent (when given) tells a missing parent from one that cannot be
+// reached safely (a link, a non-directory, no permission).
+int parent_fd(const CanonicalRoot& root, const RelativePath& path, bool* absent = nullptr) {
+  if (absent) *absent = false;
   const auto& parts = path.components();
   if (parts.size() == 1U) return ::openat(root.handle(), ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
   std::string parent;
   for (std::size_t i = 0; i + 1U < parts.size(); ++i) parent += (parent.empty() ? "" : "/") + parts[i];
   auto opened = open_beneath(root, must_rel(parent), OpenOptions{OpenKind::directory});  // a prefix of a valid path
-  if (std::holds_alternative<PathError>(opened)) return -1;
+  if (const auto* failure = std::get_if<PathError>(&opened)) {
+    if (absent) *absent = failure->code == PathErrorCode::not_found;
+    return -1;
+  }
   return ::fcntl(std::get<OpenedFile>(opened).native(), F_DUPFD_CLOEXEC, 0);
 }
 
@@ -53,6 +59,16 @@ int rename_noreplace(const int from_dir, const char* from, const int to_dir, con
   errno = ENOSYS;
   return -1;
 #endif
+}
+
+// A read-only directory (0500, e.g. from make_read_only_directory) cannot have entries
+// removed. Restore owner rwx on the directory's own handle (never by path); best effort:
+// a failure surfaces as the removal error that follows.
+void restore_owner_write(const CanonicalRoot& root, const RelativePath& path) {
+  OwnedHandle fd(dir_fd(root, path));
+  struct stat info {};
+  if (fd.get() < 0 || ::fstat(fd.get(), &info) != 0 || info.st_uid != ::geteuid()) return;
+  if ((info.st_mode & S_IRWXU) != S_IRWXU) (void)::fchmod(fd.get(), (info.st_mode & 07777) | S_IRWXU);
 }
 
 }  // namespace
@@ -212,15 +228,21 @@ std::optional<AcquireError> rename_within(const CanonicalRoot& root, const Relat
 }
 
 std::optional<AcquireError> remove_file_within(const CanonicalRoot& root, const RelativePath& path) {
-  OwnedHandle dir(parent_fd(root, path));
-  if (dir.get() < 0) return std::nullopt;  // parent absent: nothing to remove
+  bool absent = false;
+  OwnedHandle dir(parent_fd(root, path, &absent));
+  if (dir.get() < 0) {  // parent absent: nothing to remove; unreachable: an error, never "removed"
+    return absent ? std::nullopt : std::optional<AcquireError>{error(AcquireReason::publish_failed, path.generic() + ": directory cannot be opened")};
+  }
   if (::unlinkat(dir.get(), path.components().back().c_str(), 0) != 0 && errno != ENOENT) return io_error(errno, path.generic());
   return std::nullopt;
 }
 
 std::optional<AcquireError> remove_tree_within(const CanonicalRoot& root, const RelativePath& path) {
-  OwnedHandle parent(parent_fd(root, path));
-  if (parent.get() < 0) return std::nullopt;
+  bool absent = false;
+  OwnedHandle parent(parent_fd(root, path, &absent));
+  if (parent.get() < 0) {  // parent absent: nothing to remove; unreachable: an error, never "removed"
+    return absent ? std::nullopt : std::optional<AcquireError>{error(AcquireReason::publish_failed, path.generic() + ": directory cannot be opened")};
+  }
   const char* name = path.components().back().c_str();
   struct stat info {};
   if (::fstatat(parent.get(), name, &info, AT_SYMLINK_NOFOLLOW) != 0) {
@@ -230,6 +252,7 @@ std::optional<AcquireError> remove_tree_within(const CanonicalRoot& root, const 
     if (::unlinkat(parent.get(), name, 0) != 0) return io_error(errno, path.generic());
     return std::nullopt;
   }
+  restore_owner_write(root, path);
   auto listed = list_directory(root, path);
   if (std::holds_alternative<PathError>(listed)) return error(AcquireReason::publish_failed, path.generic() + ": cannot be listed");
   for (const auto& entry : std::get<std::vector<DirectoryEntry>>(listed)) {

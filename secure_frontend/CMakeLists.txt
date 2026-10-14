@@ -419,7 +419,7 @@ else()
     set(_sf_models_store_platform src/models_store_posix.cpp)
 endif()
 add_library(secure_frontend_acquire src/models_store_common.cpp ${_sf_models_store_platform})
-target_sources(secure_frontend_acquire PRIVATE src/model_index_write.cpp)
+target_sources(secure_frontend_acquire PRIVATE src/model_index_write.cpp src/acquire_publish.cpp)
 target_compile_features(secure_frontend_acquire PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_acquire PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
@@ -815,6 +815,26 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     if(WIN32)
         secure_frontend_add_cases(secure_frontend_acquire_tests store_primitives_windows store_adopts_only_private_files_windows
             LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    endif()
+    # SP4 Task 19 (spec §4.4-§4.8): verify, publish, retire, orphan adoption, rm.
+    target_sources(secure_frontend_acquire_tests PRIVATE tests/acquire_publish_test.cpp)
+    secure_frontend_add_cases(secure_frontend_acquire_tests dl04_publish_uses_noreplace_and_never_overwrites
+        publish_falls_back_when_noreplace_unsupported dl04_orphan_adopted_after_rehash_by_digest
+        replace_loaded_model_retires_old_version layout_check_requires_pack_files_and_valid_tokenizer
+        staged_tree_must_be_exactly_the_manifest publish_requires_staging_key_of_manifest
+        overlong_staging_tree_is_publish_failed retire_removes_read_only_published_version
+        downgrade_adopts_retired_version_keeping_one_live rm_refuses_held_version_and_removes_read_only_tree
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # F-42: pure in-memory case, so wine runs it too.
+    secure_frontend_add_cases(secure_frontend_acquire_tests install_decisions_follow_sequence_rules)
+    if(SECURE_FRONTEND_TEST_HOOKS)
+        secure_frontend_add_cases(secure_frontend_acquire_tests dl04_crash_between_publish_and_index_is_not_loaded
+            LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    endif()
+    if(WIN32)
+        secure_frontend_add_cases(secure_frontend_acquire_tests replace_loaded_model_retires_old_version_windows LABELS windows-runtime)
+    else()
+        secure_frontend_add_cases(secure_frontend_acquire_tests rm_reports_unreachable_version_as_failure)
     endif()
     secure_frontend_add_test_executable(secure_frontend_bundle_tests tests/bundle_test.cpp secure_frontend_acquire_core)
     secure_frontend_add_cases(secure_frontend_bundle_tests sha256sums_render_sorted_bytewise sha256sums_parse_is_strict

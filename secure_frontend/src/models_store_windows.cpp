@@ -49,12 +49,19 @@ class PinnedParent final {
         directory += L'\\' + path_from_utf8(parts[i]).wstring();
       }
       auto opened = open_beneath(root, must_rel(parent), OpenOptions{OpenKind::directory});  // a prefix of a valid path
-      if (std::holds_alternative<PathError>(opened)) return;
+      if (const auto* failure = std::get_if<PathError>(&opened)) {
+        absent_ = failure->code == PathErrorCode::not_found;
+        return;
+      }
       validated.emplace(std::move(std::get<OpenedFile>(opened)));
     }
     handle_ = CreateFileW(ws::extended_path(directory).c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
                           nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
-    if (handle_ == INVALID_HANDLE_VALUE) return;
+    if (handle_ == INVALID_HANDLE_VALUE) {
+      const DWORD code = GetLastError();
+      absent_ = code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND;
+      return;
+    }
     const HANDLE checked = validated ? static_cast<HANDLE>(validated->native()) : static_cast<HANDLE>(root.handle());
     if (ws::is_reparse_point(handle_) || !same_file(handle_, checked)) {
       CloseHandle(handle_);
@@ -69,11 +76,14 @@ class PinnedParent final {
   PinnedParent(const PinnedParent&) = delete;
   PinnedParent& operator=(const PinnedParent&) = delete;
   [[nodiscard]] bool ok() const noexcept { return handle_ != INVALID_HANDLE_VALUE && !pinned_.empty(); }
+  // Not ok() because the parent does not exist (as opposed to a link, a mismatch or a denial).
+  [[nodiscard]] bool absent() const noexcept { return absent_; }
   [[nodiscard]] const std::wstring& final_path() const noexcept { return pinned_; }
 
  private:
   HANDLE handle_{INVALID_HANDLE_VALUE};
   std::wstring pinned_;
+  bool absent_{false};
 };
 
 bool same_path(const std::wstring& a, const std::wstring& b) {
@@ -103,6 +113,32 @@ bool private_to_user(const HANDLE handle) {
 }
 
 bool absent(const DWORD code) { return code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND; }
+
+// A read-only directory (FRFX DACL, e.g. from make_read_only_directory) blocks deleting its
+// entries. Put back the private owner-only DACL on a handle that is checked to be the
+// directory open_beneath validated (never a reparse point); the owner always holds
+// WRITE_DAC. Best effort: a failure surfaces as the removal error that follows.
+void restore_owner_access(const CanonicalRoot& root, const RelativePath& path) {
+  auto validated = open_beneath(root, path, OpenOptions{OpenKind::directory});
+  if (std::holds_alternative<PathError>(validated)) return;
+  const HANDLE h = CreateFileW(native(root, path).c_str(), WRITE_DAC | READ_CONTROL | FILE_READ_ATTRIBUTES,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                               FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return;
+  OwnedHandle guard(h);
+  if (ws::is_reparse_point(h) || !same_file(h, static_cast<HANDLE>(std::get<OpenedFile>(validated).native()))) return;
+  const std::wstring sddl = L"D:P(A;OICI;FA;;;" + ws::current_user_sid_string() + L")(A;OICI;FA;;;SY)";
+  PSECURITY_DESCRIPTOR descriptor = nullptr;
+  if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr)) return;
+  BOOL present = FALSE;
+  BOOL defaulted = FALSE;
+  PACL dacl = nullptr;
+  if (GetSecurityDescriptorDacl(descriptor, &present, &dacl, &defaulted) && present) {
+    (void)SetSecurityInfo(h, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, nullptr, nullptr, dacl,
+                          nullptr);
+  }
+  LocalFree(descriptor);
+}
 
 }  // namespace
 
@@ -270,7 +306,10 @@ std::optional<AcquireError> rename_within(const CanonicalRoot& root, const Relat
 
 std::optional<AcquireError> remove_file_within(const CanonicalRoot& root, const RelativePath& path) {
   const PinnedParent parent(root, path);
-  if (!parent.ok()) return std::nullopt;  // parent absent: nothing to remove
+  if (!parent.ok()) {  // parent absent: nothing to remove; unreachable: an error, never "removed"
+    if (parent.absent()) return std::nullopt;
+    return AcquireError{AcquireReason::publish_failed, path.generic() + ": directory cannot be opened"};
+  }
   const std::wstring target = native(root, path);
   if (with_sharing_retries([&] { return DeleteFileW(target.c_str()) != 0; })) return std::nullopt;
   const DWORD code = GetLastError();
@@ -292,6 +331,7 @@ std::optional<AcquireError> remove_tree_within(const CanonicalRoot& root, const 
     return removed ? std::nullopt : std::optional<AcquireError>{win_error(GetLastError(), path.generic())};
   }
   if ((attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) return remove_file_within(root, path);
+  restore_owner_access(root, path);
   auto listed = list_directory(root, path);
   if (std::holds_alternative<PathError>(listed)) return AcquireError{AcquireReason::publish_failed, path.generic() + ": cannot be listed"};
   for (const auto& entry : std::get<std::vector<DirectoryEntry>>(listed)) {
