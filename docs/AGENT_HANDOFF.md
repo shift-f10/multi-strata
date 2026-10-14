@@ -508,6 +508,20 @@ Notes on the SP2 table above:
   RF5 was applied in Task 15, C4/C7 row). The plan file is outside Task 28's
   scope and was not edited.
 
+### SP3 M1 deliverables (branch `sp3-api-streaming`)
+
+Plan: `docs/superpowers/plans/2026-10-14-sp3-m1-concurrency-hardening.md`. Spec:
+`docs/superpowers/specs/2026-10-14-sp3-api-concurrency-streaming-design.md`.
+Baseline before Task 1: linux-gcc N₀ = 520 (+2 allowed skips) tests, wine W₀ = 256 tests.
+
+| Task | IDs | What changed | Tests (CTest names) | linux-gcc | wine |
+| --- | --- | --- | --- | --- | --- |
+
+#### SP1 addendum (recorded by SP3, spec §5.1, §5.3)
+
+| # | Change | Task |
+| --- | --- | --- |
+
 The native frontend enforces these in-process boundaries: configuration
 validation, secret-source metadata, Linux/Windows protected-file token reading,
 exact Host/Origin/CORS policy, bounded HTTP request parsing with a total request
