@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -740,6 +741,133 @@ void supervisor_lease_outliving_shutdown_is_safe() {
   expect(true, "the Lease outlived the supervisor without touching it");
 }
 
+// SP3 D-1: a serving thread blocked in wait_for_change(generating) wakes as
+// soon as another thread destroys the Lease (no polling), and a wait with
+// nothing happening ends at its timeout with the unchanged state.
+void supervisor_wait_wakes_on_lease_release() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.push_line("READY 4096 stop"); });
+  test_support::LogCapture log;
+  secure_frontend::EngineSupervisor supervisor({}, fakes.factory(), std::make_shared<test_support::ManualClock>(), log.sink());
+  expect(supervisor.start(), "the supervisor starts");
+  expect(test_support::wait_generation_ready(supervisor, 1U, 5s), "generation 1 ready");
+  std::optional<secure_frontend::Lease> lease = supervisor.acquire();
+  expect(lease.has_value(), "lease on generation 1");
+
+  const auto quiet_start = std::chrono::steady_clock::now();
+  const auto quiet = supervisor.wait_for_change(SupervisorState::generating, 200ms);
+  const auto quiet_elapsed = std::chrono::steady_clock::now() - quiet_start;
+  expect(quiet.state == SupervisorState::generating, "a timed-out wait returns the unchanged state");
+  expect(quiet_elapsed >= 200ms && quiet_elapsed < 1s, "the wait ends at its timeout, not before and not much after");
+
+  std::atomic<bool> waiting{false};
+  std::optional<secure_frontend::HealthSnapshot> woke;
+  std::chrono::steady_clock::time_point woke_at{};
+  std::thread waiter([&] {
+    waiting.store(true);
+    woke = supervisor.wait_for_change(SupervisorState::generating, 10s);
+    woke_at = std::chrono::steady_clock::now();
+  });
+  while (!waiting.load()) std::this_thread::yield();
+  std::this_thread::sleep_for(100ms);  // let the waiter block on the condition
+  const auto released_at = std::chrono::steady_clock::now();
+  lease.reset();
+  waiter.join();
+  expect(woke.has_value() && woke->state == SupervisorState::ready, "the waiter sees `ready` after the release");
+  expect(woke_at >= released_at && woke_at - released_at < 1s, "the waiter wakes promptly (< 1 s) on the release");
+  expect(supervisor.acquire().has_value(), "the released generation can be leased again");
+}
+
+// SP3 D-1: a waiter never sleeps through a shutdown, even with a Lease out
+// (shutdown kills the leased generation, spec §3.7).
+void supervisor_wait_wakes_on_shutdown() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.push_line("READY 4096 stop"); });
+  test_support::LogCapture log;
+  secure_frontend::EngineSupervisor supervisor({}, fakes.factory(), std::make_shared<test_support::ManualClock>(), log.sink());
+  expect(supervisor.start(), "the supervisor starts");
+  expect(test_support::wait_generation_ready(supervisor, 1U, 5s), "generation 1 ready");
+  std::optional<secure_frontend::Lease> lease = supervisor.acquire();
+  expect(lease.has_value(), "lease on generation 1");
+  std::atomic<bool> waiting{false};
+  std::optional<secure_frontend::HealthSnapshot> woke;
+  std::chrono::steady_clock::time_point woke_at{};
+  std::thread waiter([&] {
+    waiting.store(true);
+    woke = supervisor.wait_for_change(SupervisorState::generating, 10s);
+    woke_at = std::chrono::steady_clock::now();
+  });
+  while (!waiting.load()) std::this_thread::yield();
+  std::this_thread::sleep_for(100ms);
+  const auto shutdown_at = std::chrono::steady_clock::now();
+  supervisor.shutdown(5s);
+  waiter.join();
+  expect(woke.has_value() && (woke->state == SupervisorState::shutting_down || woke->state == SupervisorState::stopped),
+         "the waiter sees the shutdown");
+  expect(woke_at >= shutdown_at && woke_at - shutdown_at < 1s, "the waiter wakes promptly (< 1 s) on shutdown");
+  lease.reset();  // RF4: after shutdown() it no longer refers to the supervisor
+}
+
+// SP3 D-1: acquire / snapshot / wait_for_change / Lease release from many
+// threads at once against the fake engine: no crash, no deadlock (bounded
+// join), at most one live Lease, and acquire() is empty while one is out.
+void supervisor_serving_api_is_thread_safe() {
+  constexpr int kThreads = 8;
+  constexpr auto kRunFor = 2s;
+  test_support::LogCapture log;
+  secure_frontend::EngineSupervisor supervisor({}, secure_frontend::make_stdio_process_factory(fake_plan({})),
+                                               std::make_shared<secure_frontend::SteadySupervisorClock>(), log.sink());
+  expect(supervisor.start(), "the supervisor starts");
+  expect(test_support::wait_generation_ready(supervisor, 1U, 10s), "generation 1 ready");
+
+  std::atomic<int> live{0};
+  std::atomic<int> violations{0};
+  std::atomic<std::uint64_t> leases{0};
+  std::atomic<std::uint64_t> empty_acquires{0};
+  std::mutex done_mutex;
+  std::condition_variable done_changed;
+  int done = 0;
+  const auto stop_at = std::chrono::steady_clock::now() + kRunFor;
+  std::vector<std::thread> threads;
+  for (int index = 0; index < kThreads; ++index) {
+    threads.emplace_back([&] {
+      while (std::chrono::steady_clock::now() < stop_at) {
+        const auto seen = supervisor.snapshot();
+        if (seen.state != SupervisorState::ready && seen.state != SupervisorState::generating) violations.fetch_add(1);
+        if (auto lease = supervisor.acquire()) {
+          leases.fetch_add(1);
+          if (live.fetch_add(1) != 0) violations.fetch_add(1);  // two Leases at once
+          if (supervisor.acquire().has_value()) violations.fetch_add(1);
+          if (supervisor.snapshot().state != SupervisorState::generating) violations.fetch_add(1);
+          if (lease->generation() != 1U) violations.fetch_add(1);
+          std::this_thread::yield();
+          live.fetch_sub(1);
+        } else {
+          empty_acquires.fetch_add(1);
+          (void)supervisor.wait_for_change(SupervisorState::generating, 50ms);
+        }
+      }
+      std::lock_guard lock(done_mutex);
+      ++done;
+      done_changed.notify_all();
+    });
+  }
+  bool joined = false;
+  {
+    std::unique_lock lock(done_mutex);
+    joined = done_changed.wait_for(lock, kRunFor + 20s, [&] { return done == kThreads; });
+  }
+  if (!joined) {
+    std::cerr << "FAILED: the serving threads deadlocked (no bounded join)\n";
+    std::_Exit(EXIT_FAILURE);
+  }
+  for (auto& thread : threads) thread.join();
+  expect(violations.load() == 0, "no invariant violation, saw " + std::to_string(violations.load()));
+  expect(leases.load() > 0 && empty_acquires.load() > 0, "the threads both leased and were refused while leased");
+  expect(supervisor.snapshot().state == SupervisorState::ready, "the supervisor is back in `ready`");
+  expect(supervisor.generations_started() == 1U, "no restart: the engine was never killed");
+  supervisor.shutdown(5s);
+  expect(supervisor.snapshot().state == SupervisorState::stopped, "stopped");
+}
+
 // Sets a variable of this test process for one case and restores the previous
 // value (or removes it) when the case ends.
 class ScopedParentVariable final {
@@ -912,6 +1040,9 @@ int main(int argc, char* argv[]) {
                                                 {"supervisor_exception_opens_circuit", supervisor_exception_opens_circuit},
                                                 {"supervisor_shutdown_sends_eof_first_then_kills", supervisor_shutdown_sends_eof_first_then_kills},
                                                 {"supervisor_lease_outliving_shutdown_is_safe", supervisor_lease_outliving_shutdown_is_safe},
+                                                {"supervisor_wait_wakes_on_lease_release", supervisor_wait_wakes_on_lease_release},
+                                                {"supervisor_wait_wakes_on_shutdown", supervisor_wait_wakes_on_shutdown},
+                                                {"supervisor_serving_api_is_thread_safe", supervisor_serving_api_is_thread_safe},
                                                 {"proc06_refuses_privileged_start", proc06_refuses_privileged_start},
                                                 {"engine_environment_uses_cache_root_when_set", engine_environment_uses_cache_root_when_set},
                                                 {"proc02_child_env_is_exact_allowlist", proc02_child_env_is_exact_allowlist},

@@ -107,8 +107,29 @@ using SupervisorLog = std::function<void(std::string_view line)>;
 
 // Owns every engine generation for the frontend's lifetime (spec §3.1): one
 // supervisor thread spawns, consumes READY, watches, kills and reaps; it is
-// the only reaper. The serving thread borrows the current generation through
+// the only reaper. The serving side borrows the current generation through
 // acquire() and reports an unusable one with report_fatal().
+//
+// Thread safety (SP3 D-1; covered by supervisor_serving_api_is_thread_safe):
+// - The serving API (acquire, snapshot, report_fatal, wait_for_change,
+//   wait_for_state, stop_requested, generations_started) and releasing a Lease
+//   (~Lease) may be called concurrently from any number of threads. Each one
+//   takes `mutex_` (or reads an atomic) for the duration of the call only;
+//   none forks, reaps, kills or waits on a child. That stays on the supervisor
+//   thread (spec §3.1).
+// - At most one Lease exists at a time: acquire() returns nullopt while one is
+//   out, so callers need no lock of their own around it.
+// - A Lease is used by one thread at a time: its accessors and the
+//   ChatExecutionService/EngineProtocolClient behind them are not
+//   synchronized. It may move to another thread (e.g. be destroyed there).
+// - Not concurrent: set_on_stopped() and start() run once, before serving, on
+//   the owning thread; shutdown() is called from one thread (the owning
+//   thread, or the destructor). shutdown() may run while other threads use the
+//   serving API or hold a Lease: from `shutting_down` on, acquire() returns
+//   nullopt and waiters wake.
+// - Nothing may call into the supervisor once its destructor has begun. A
+//   Lease is the exception: it may outlive shutdown() and the supervisor
+//   (RF4, see Lease).
 class EngineSupervisor final {
  public:
   EngineSupervisor(SupervisorConfig config, ProcessFactory factory,
@@ -127,6 +148,15 @@ class EngineSupervisor final {
   void report_fatal(const Lease& lease, KillReason reason);
   // One sample per /health request (SP0's sample-once rule).
   [[nodiscard]] HealthSnapshot snapshot() const;
+  // Blocks until the state is no longer `from` or `timeout` passes, and returns
+  // the state then (still `from` on timeout). The wait is not a poll: it uses
+  // the condition variable that every state change notifies under `mutex_`,
+  // the same one wait_for_state() uses. Use wait_for_change(generating, t) to
+  // wait for a Lease release (-> ready). The same wait wakes when the leased
+  // generation fails (report_fatal or a crash -> stopping) and on shutdown
+  // (-> shutting_down), so a waiter never sleeps through either. Once the state
+  // is `stopped` nothing changes it, so a wait from `stopped` runs to its timeout.
+  [[nodiscard]] HealthSnapshot wait_for_change(SupervisorState from, std::chrono::milliseconds timeout) const;
   // Requests the orderly shutdown (spec §3.7) and waits for it; past `bound`
   // the process exits 1. Idempotent.
   void shutdown(std::chrono::milliseconds bound);

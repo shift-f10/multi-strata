@@ -209,6 +209,12 @@ bool EngineSupervisor::wait_for_state(const SupervisorState state, const std::ch
   return changed_.wait_for(lock, timeout, [this, state] { return state_ == state; });
 }
 
+HealthSnapshot EngineSupervisor::wait_for_change(const SupervisorState from, const std::chrono::milliseconds timeout) const {
+  std::unique_lock lock(mutex_);
+  (void)changed_.wait_for(lock, timeout, [this, from] { return state_ != from; });
+  return health_for(state_);
+}
+
 void EngineSupervisor::shutdown(const std::chrono::milliseconds bound) {
   shutdown_requested_.store(true);
   wake_.notify();
