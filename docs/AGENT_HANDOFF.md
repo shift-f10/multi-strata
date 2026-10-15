@@ -40,8 +40,9 @@ without asking the owner.
      at `4b9fdd31`**; their `windows-runtime` rows passed in
      `windows-msys2-clang` (CI run `38625663621` on `557a2cc7`, 488/488).
      **Tasks 25–29 done on branch `sp4-acquire-part2`** (`06630dbd` …
-     Task 29; not pushed); their new `windows-runtime` cases are pending the
-     next MSYS2 run.
+     Task 29; not pushed); their new `windows-runtime` cases passed on real
+     Windows in CI run `38655938748` (`9044a5bc`, 515/516); the one failure,
+     PRIV-04's link-set reader (CRLF), is fixed and its re-run is pending.
    - SP5 — frontend parity with the upstream service.
    - SP6 — GLM engine port, in its own directory, tracking
      `lighttransport/Strata` branch `glm53f` and, since 2026-10-14,
@@ -177,8 +178,10 @@ case named in the Task 1–24b lines and in merge-time change (a) below is
 binary's own argv, had no case there; Known small gaps). Tasks 25–28 did not change
 that code except where their own lines say so (Task 26's additive SP1
 `ExecutableWriters::also_trusted_installer` option). The new
-`windows-runtime` cases of Tasks 25–28 are **pending MSYS2** (the
-controller's post-merge run; nothing here triggers CI).
+`windows-runtime` cases of Tasks 25–28 are **verified on real Windows** by
+CI run `38655938748` (`9044a5bc`, `windows-msys2-clang` 515/516); the one
+failure, `privacy.priv04_secure_server_does_not_link_acquisition`, is fixed
+(see SP4 part 2) and its MSYS2 re-run is pending.
 
 - Task 1: `SECURE_FRONTEND_TEST_HOOKS` option (ON in test presets), `linux-gcc-release` preset (hooks OFF; runs `release-only|release-also`), in-tree FIPS 180-4 SHA-256; `secure_frontend_sha256_tests` (7 cases; 2 `release-also`).
 - Task 2: §8 reasons, exit classes and error text in `secure_frontend_manifest_core`; `acquire.exit_classes_match_spec_table`, `reason_table_is_complete_and_ordered`, `error_text_states_resumable`.
@@ -853,7 +856,8 @@ owns it (see the decisions above).
 3. Add `DL-*` tests using only local fixture servers. Never make tests fetch
    public model files. **Done in SP4** (same branches): DL-01..05 and
    PRIV-01..04 with a fake downloader and scripted resolver; Windows runtime
-   cases of Tasks 25–28 pending MSYS2.
+   cases of Tasks 25–28 verified in CI run `38655938748` (PRIV-04 link-set
+   re-run pending).
 
 ### Phase 5 — compatibility, packaging, and release
 
@@ -917,9 +921,9 @@ confinement proofs ran, not skipped), cmake 4.4.3, wine 6.0.3, worktree
 
 Real Windows: CI run `38625663621` on the base `557a2cc7` is green
 (`windows-msys2-clang` 488/488, `linux-gcc-release` job green); it covers
-Tasks 1–24b and SP2 run 2, not Tasks 25–28. **Pending MSYS2 (the
-controller's post-merge run; nothing here triggered CI)**: every new
-`windows-runtime` case of Tasks 25–28 —
+Tasks 1–24b and SP2 run 2, not Tasks 25–28. **Verified on real Windows by
+CI run `38655938748` (`9044a5bc`, `windows-msys2-clang` 515/516; was
+pending MSYS2)**: every new `windows-runtime` case of Tasks 25–28 —
 `fetch.downloader_transfer_through_job_windows`,
 `dl03_default_windows_curl_path_accepted_windows`,
 `dl03_downloader_runs_at_low_integrity_windows`,
@@ -935,11 +939,13 @@ there: the Job `ActiveProcessLimit = 1` against conhost and the
 Low-integrity child's access to `.staging/.cwd`. Wine-runnable additions
 (`dl03_downloader_path_normalised_windows`,
 `dl03_downloader_unc_path_rejected_windows`, priv04 and the hooks marker
-case) are in the wine 260. Also to verify on real Windows: Ctrl-C at a
+case) are in the wine 260. Still pending on real Windows (no case in run
+`38655938748` covers it): Ctrl-C at a
 pending `[y/N]` may race the console-handler thread (the handler runs on its
 own thread, so the read can return EOF before the flag is set: exit 2
-instead of 8). MSYS2 run id for this branch: to be added when
-the owner pushes.
+instead of 8). MSYS2 run id for this branch: `38655938748` (`9044a5bc`).
+
+- CI run `38655938748` (`9044a5bc`, `windows-msys2-clang`): 515/516; every other Tasks 25–28 `windows-runtime` case passed on real Windows (rows above flipped from pending to verified). The failure, `privacy.priv04_secure_server_does_not_link_acquisition` ("the strata link set was generated" + all three positive controls), was CRLF: native-Windows CMake's `file(WRITE)` writes text mode, so `strata\r\n` never matched the test's `"strata\n"` (the server's newline-free check passed and its `\n`-suffixed negative checks were vacuous). Fix commit "sp4: PRIV-04 link sets written LF and parsed per line, CRLF-proof with path/size/entries diagnostics (SP4 merge gate; spec §7.1)": `file(CONFIGURE ... NEWLINE_STYLE UNIX)` and an exact per-line entry parse dropping `\r`, positive controls unchanged in strength. linux-gcc 560/560 (+2 skips), linux-gcc-release 526/526 (10/10), wine 260/260, pytest 25, cross 0 warnings. MSYS2 re-run: pending.
 
 **Required manual step (spec §13.5 item 4, the only real-HTTPS proof of DL-02), not yet run:**
 on the online dev machine,
@@ -1154,7 +1160,7 @@ sub-project named.
   `4b9fdd31`) builds and runs under wine only. CI run `38625663621` did not
   cover it: the CLI cases there call `run_strata` in-process. The first cases
   that start the `strata` binary on Windows are Task 27's DL-04 Ctrl-Break
-  case and Task 28's privacy cases (pending MSYS2), all with ASCII arguments;
+  case and Task 28's privacy cases (passed in CI run `38655938748`), all with ASCII arguments;
   a non-ASCII path through a `strata` verb on real Windows has no case yet
   (nor has Task 26's downloader argv, built with `path_to_utf8`).
 - The fallback descriptor sweep (used only where `close_range(2)` is missing

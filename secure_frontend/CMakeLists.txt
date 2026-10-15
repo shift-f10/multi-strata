@@ -1475,5 +1475,7 @@ endfunction()
 foreach(_sf_link_target IN ITEMS strata-secure-server strata)
     secure_frontend_link_closure(${_sf_link_target} _sf_link_set)
     list(JOIN _sf_link_set "\n" _sf_link_text)
-    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/${_sf_link_target}.link-set.txt" "${_sf_link_text}\n")
+    # file(WRITE) writes text mode on a native Windows host (CRLF on MSYS2); pin LF on every host.
+    file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${_sf_link_target}.link-set.txt"
+        CONTENT "@_sf_link_text@\n" @ONLY NEWLINE_STYLE UNIX)
 endforeach()

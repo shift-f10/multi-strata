@@ -10,6 +10,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <optional>
@@ -441,20 +444,58 @@ void priv03_api_payloads_resembling_pull_trigger_nothing() {
          "nothing was staged or spawned");
 }
 
+// The file is one target name per line. A trailing '\r' is dropped from each line, so a CRLF file
+// (CMake's file(WRITE) on a native Windows host writes text mode) parses exactly like an LF one.
+struct LinkSet final {
+  std::filesystem::path path;
+  bool exists = false;
+  std::uintmax_t size = 0;
+  std::vector<std::string> entries;
+
+  [[nodiscard]] bool has(const std::string& name) const {
+    return std::find(entries.begin(), entries.end(), name) != entries.end();
+  }
+  [[nodiscard]] std::string describe() const {
+    std::string text = " [read " + path.string() + ": " + (exists ? "exists" : "MISSING") + ", " +
+                       std::to_string(size) + " bytes, " + std::to_string(entries.size()) + " entries; first:";
+    for (std::size_t i = 0; i < entries.size() && i < 6; ++i) text += " '" + entries[i] + "'";
+    return text + "]";
+  }
+};
+
+LinkSet read_link_set(const std::filesystem::path& path) {
+  LinkSet set;
+  set.path = path;
+  std::error_code error;
+  set.exists = std::filesystem::is_regular_file(path, error);
+  if (set.exists) set.size = std::filesystem::file_size(path, error);
+  const auto text = file_text(path);
+  std::size_t start = 0;
+  while (start < text.size()) {
+    auto end = text.find('\n', start);
+    if (end == std::string::npos) end = text.size();
+    auto line = text.substr(start, end - start);
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (!line.empty()) set.entries.push_back(std::move(line));
+    start = end + 1;
+  }
+  return set;
+}
+
 // PRIV-04 supplement (§7.1): strata-secure-server does not link acquisition. Positive control: the
 // same closure of `strata` does contain acquisition and the downloader.
 void priv04_secure_server_does_not_link_acquisition() {
   const auto& args = secure_frontend_test::extra_arguments();  // [0] server link set, [1] strata link set
-  const auto strata_links = file_text(args.at(1));
-  expect(contains(strata_links, "strata\n"), "the strata link set was generated");
-  for (const auto* required : {"secure_frontend_strata_cli\n", "secure_frontend_acquire\n", "secure_frontend_downloader\n"}) {
-    expect(contains(strata_links, required), std::string{"positive control, strata links "} + required);
+  const auto strata_links = read_link_set(args.at(1));
+  expect(strata_links.has("strata"), "the strata link set was generated" + strata_links.describe());
+  for (const auto* required : {"secure_frontend_strata_cli", "secure_frontend_acquire", "secure_frontend_downloader"}) {
+    expect(strata_links.has(required), std::string{"positive control, strata links "} + required + strata_links.describe());
   }
-  const auto links = file_text(args.at(0));
-  expect(contains(links, "strata-secure-server"), "the link set was generated");
-  for (const auto* forbidden : {"secure_frontend_acquire\n", "secure_frontend_acquire_core\n", "secure_frontend_downloader\n",
-                                "secure_frontend_strata_cli\n"}) {
-    expect(!contains(links, forbidden), std::string{"strata-secure-server does not link "} + forbidden);
+  const auto links = read_link_set(args.at(0));
+  expect(links.has("strata-secure-server"), "the server link set was generated" + links.describe());
+  for (const auto* forbidden : {"secure_frontend_acquire", "secure_frontend_acquire_core", "secure_frontend_downloader",
+                                "secure_frontend_strata_cli"}) {
+    expect(!links.has(forbidden), std::string{"strata-secure-server does not link "} + forbidden + links.describe());
   }
 }
 
