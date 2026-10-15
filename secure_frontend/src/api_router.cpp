@@ -182,22 +182,4 @@ RouteResult ApiRouter::handle(const RequestHead& head, const std::string_view bo
   return response;
 }
 
-HttpResponse handle_authenticated_get(ApiRouter& router, const std::string_view target) {
-  RouteDecision decision;
-  for (const auto& entry : kRouteTable) {
-    if (entry.method != "GET") continue;
-    if (entry.prefix ? target.size() > entry.path.size() && target.substr(0, entry.path.size()) == entry.path
-                     : target == entry.path) {
-      decision.route = entry.id;
-      break;
-    }
-  }
-  RequestHead head;
-  head.method = "GET";
-  head.target = std::string{target};
-  RouteResult result = router.handle(head, "", decision, {});
-  if (auto* complete = std::get_if<HttpResponse>(&result)) return std::move(*complete);
-  return make_error_response(ApiError::internal_error);
-}
-
 }  // namespace secure_frontend

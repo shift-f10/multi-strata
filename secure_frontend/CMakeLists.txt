@@ -392,6 +392,7 @@ target_link_libraries(strata-secure-server PRIVATE secure_frontend_config secure
     secure_frontend_chat_generation_plan secure_frontend_chat_execution secure_frontend_engine_arguments)
 target_link_libraries(strata-secure-server PRIVATE secure_frontend_server_cli secure_frontend_typed_config)
 target_link_libraries(strata-secure-server PRIVATE secure_frontend_subsystem_limits secure_frontend_engine_supervisor)
+target_link_libraries(strata-secure-server PRIVATE secure_frontend_api_router secure_frontend_socket_io secure_frontend_api_core)
 target_compile_features(strata-secure-server PRIVATE cxx_std_20)
 # Spec A2: UTF-8 argv from the wide command line on Windows, shared by
 # strata-secure-server and strata (CommandLineToArgvW: shell32).
@@ -721,6 +722,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/tests ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_compile_features(secure_frontend_test_support PUBLIC cxx_std_20)
     target_link_libraries(secure_frontend_test_support PUBLIC secure_frontend_tokenizer_pack)
+    # SP3 Task 9 (pre-flight P36): §7.2 bodies (api_errors) and the --config file renderer (config_json.hpp).
+    target_link_libraries(secure_frontend_test_support PUBLIC secure_frontend_api_core secure_frontend_typed_config)
     if(WIN32)
         target_link_libraries(secure_frontend_test_support PUBLIC ws2_32 advapi32)
     endif()
@@ -743,6 +746,19 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     endif()
     secure_frontend_add_cases(secure_frontend_server_tests ${SECURE_FRONTEND_SERVER_CASES}
         TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+
+    secure_frontend_add_test_executable(secure_frontend_api_server_tests tests/api_server_test.cpp
+        secure_frontend_test_support secure_frontend_api_core secure_frontend_socket_io)
+    secure_frontend_test_paths(secure_frontend_api_server_tests)
+    set(SECURE_FRONTEND_API_SERVER_CASES
+        dos01_body_over_limit_is_413_before_reading dos01_content_length_over_request_limit_is_413_before_auth
+        dos01_unauthenticated_gets_401_before_body_is_read dos01_expect_continue_after_auth_only
+        dos01_slow_header_is_408_at_header_deadline dos01_slow_body_is_408_at_request_deadline
+        dos01_incomplete_body_then_close_frees_worker err_unauthenticated_is_401_on_every_path_and_method
+        security_headers_on_every_response)
+    # Ruling R-J: these cases start the real server over sockets; wine excludes them, MSYS2 is authoritative.
+    secure_frontend_add_cases(secure_frontend_api_server_tests ${SECURE_FRONTEND_API_SERVER_CASES}
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
 
     secure_frontend_add_test_executable(secure_frontend_deadline_tests tests/deadline_test.cpp secure_frontend_engine_stdio_process)
     secure_frontend_test_paths(secure_frontend_deadline_tests)

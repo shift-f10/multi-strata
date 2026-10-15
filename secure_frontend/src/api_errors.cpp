@@ -84,4 +84,9 @@ HttpResponse make_error_response(const ApiError error, const ErrorOptions& optio
   return response;
 }
 
+std::optional<int> engine_retry_after(const std::string_view recovery) noexcept {
+  if (recovery == "exhausted") return std::nullopt;
+  return api_constants::kRetryAfterEngineS;
+}
+
 }  // namespace secure_frontend

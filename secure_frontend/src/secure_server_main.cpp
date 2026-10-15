@@ -1,3 +1,4 @@
+#include "secure_frontend/api_errors.hpp"
 #include "secure_frontend/api_router.hpp"
 #include "secure_frontend/chat_execution.hpp"
 #include "secure_frontend/chat_schema.hpp"
@@ -8,7 +9,6 @@
 #include "secure_frontend/frontend_config.hpp"
 #include "secure_frontend/frontend_init.hpp"
 #include "secure_frontend/http_policy.hpp"
-#include "secure_frontend/http_request_handler.hpp"
 #include "secure_frontend/http_socket_server.hpp"
 #include "secure_frontend/launch_composition.hpp"
 #include "secure_frontend/privilege_check.hpp"
@@ -41,12 +41,6 @@ using secure_frontend::FrontendConfig;
 std::string host_header(const secure_frontend::Config& config) {
   const bool ipv6 = config.host.find(':') != std::string::npos;
   return (ipv6 ? "[" + config.host + "]" : config.host) + ":" + std::to_string(config.port);
-}
-
-secure_frontend::HttpResponse json_error(const int status, const char* message) {
-  return {.status = status,
-          .headers = {{"Content-Type", "application/json; charset=utf-8"}, {"Cache-Control", "no-store"}},
-          .body = std::string{"{\"error\":\""} + message + "\"}\n"};
 }
 
 secure_frontend::TokenReadResult read_configured_token(const FrontendConfig& config) {
@@ -198,14 +192,25 @@ int run(const FrontendConfig& config, const bool expert) {
   secure_frontend::EngineSupervisor supervisor(supervisor_config, secure_frontend::make_stdio_process_factory(std::move(plan)));
 
   const std::string authority = host_header(listener);  // the startup line only
-  // Spec §4.3/§4.4: the bound authority (plus localhost on loopback) and the
-  // configured aliases; a wildcard bind trusts only listener.host_aliases.
-  secure_frontend::HttpPolicy policy = secure_frontend::make_http_policy(
-      config.listener.host, config.listener.port, config.listener.host_aliases, config.listener.cors_origins);
-  // Spec §3.6 (E9, re-anchor 4): /v1/models lists only the served model,
-  // launch.model_id, owned by "local". /health takes one supervisor snapshot
-  // per request. Pre-flight S11: the direct supervisor.snapshot() call is
-  // transitional until Task 16 routes it through the SupervisorPort.
+  // Spec §3.4/§3.8: outside `ready` there is no lease and no wait; a stopping
+  // server answers server_shutting_down, anything else engine_unavailable with
+  // Retry-After 5 unless recovery is exhausted. Pre-flight S11/D7: the direct
+  // supervisor.snapshot() here and in /health, and execute_with_lease below,
+  // are transitional (serial server, one caller) until Task 16's ChatRoute and
+  // SupervisorPort replace them.
+  const auto engine_refusal = [&supervisor]() {
+    const auto snapshot = supervisor.snapshot();
+    if (snapshot.state == secure_frontend::SupervisorState::shutting_down ||
+        snapshot.state == secure_frontend::SupervisorState::stopped) {
+      return secure_frontend::make_error_response(secure_frontend::ApiError::server_shutting_down);
+    }
+    return secure_frontend::make_error_response(secure_frontend::ApiError::engine_unavailable,
+                                                {.retry_after = secure_frontend::engine_retry_after(snapshot.recovery)});
+  };
+  // Spec §4.1: every request goes through the header-first router (Host,
+  // Origin, preflight, bearer token, route table, Content-Type, body limit)
+  // before a body byte is read. Spec §3.6 (E9, re-anchor 4 / P26): /v1/models
+  // lists only the served model, launch.model_id, owned by "local".
   secure_frontend::ApiRouter router(secure_frontend::ApiRouterConfig{
       .policy = secure_frontend::make_http_policy(config.listener.host, config.listener.port, config.listener.host_aliases,
                                                   config.listener.cors_origins),
@@ -217,33 +222,42 @@ int run(const FrontendConfig& config, const bool expert) {
         const auto s = supervisor.snapshot();
         return secure_frontend::HealthView{s.healthy, s.engine, s.recovery};
       },
-      .chat = {}});
-  // The legacy dispatcher as a RequestRouter for the header-first connection
-  // handler (SP3 Task 8b); Task 9 replaces it with the ApiRouter.
-  const auto legacy_router = secure_frontend::make_dispatcher_router(
-      std::move(policy), secure_frontend::make_bearer_validator(verifier),
-      [&router, &supervisor, &tokenizer, &model_id, &schema_limits](
-          const std::string_view method, const std::string_view target, const std::string_view body) {
-        // The legacy adapter has already authenticated the request; Task 9 replaces this dispatcher.
-        if (method == "GET") return secure_frontend::handle_authenticated_get(router, target);
-        if (method != "POST" || target != "/v1/chat/completions") return json_error(404, "Not Found");
+      // Serial chat through SP2's lease until Task 16 replaces it with ChatRoute.
+      .chat = [&](const std::string_view body, const secure_frontend::RequestContext&) -> secure_frontend::RouteResult {
         // Parse first: a request the frontend refuses (tools, functions, MCP,
-        // stream, unknown fields) is answered with no engine or process action (EXT-01).
-        const auto request = secure_frontend::parse_chat_completion_request(body, schema_limits);
-        if (!request || request->model != model_id) return json_error(400, "Bad Request");
-        // Outside `ready` there is no lease: an immediate generic 503, never a wait (spec §3.4).
-        const auto outcome = secure_frontend::execute_with_lease(supervisor, *request, *tokenizer);
-        if (!outcome) return json_error(503, "Service Unavailable");
-        const auto* completion = std::get_if<secure_frontend::ChatExecutionResult>(&*outcome);
-        if (completion == nullptr) return json_error(503, "Service Unavailable");
-        const auto response =
-            secure_frontend::render_chat_completion_response(*request, completion->text, schema_limits);
-        if (!response) return json_error(503, "Service Unavailable");
+        // unknown fields) is answered with no engine or process action (EXT-01);
+        // the error names only a fixed key (P28).
+        const auto parsed = secure_frontend::parse_chat_request(body, schema_limits);
+        if (const auto* error = std::get_if<secure_frontend::ChatRequestError>(&parsed)) {
+          return secure_frontend::make_error_response(error->error, {.param = error->param});
+        }
+        const auto& request = std::get<secure_frontend::ChatCompletionRequest>(parsed);
+        if (request.model != model_id) return secure_frontend::make_error_response(secure_frontend::ApiError::model_not_found);
+        const auto outcome = secure_frontend::execute_with_lease(supervisor, request, *tokenizer);
+        if (!outcome.has_value()) return engine_refusal();
+        if (const auto* failure = std::get_if<secure_frontend::ChatExecutionError>(&*outcome)) {
+          using Code = secure_frontend::ChatExecutionErrorCode;
+          switch (failure->code) {
+            case Code::context_limit_exceeded:
+              return secure_frontend::make_error_response(secure_frontend::ApiError::context_length_exceeded);
+            case Code::invalid_request:
+            case Code::planning_failed:
+              return secure_frontend::make_error_response(secure_frontend::ApiError::invalid_request);
+            case Code::generation_timed_out:
+              return secure_frontend::make_error_response(secure_frontend::ApiError::engine_error);
+            case Code::output_decode_failed:
+              return secure_frontend::make_error_response(secure_frontend::ApiError::internal_error);
+            case Code::engine_protocol_failed:
+              return engine_refusal();
+          }
+          return secure_frontend::make_error_response(secure_frontend::ApiError::internal_error);
+        }
+        const auto& result = std::get<secure_frontend::ChatExecutionResult>(*outcome);
+        const auto rendered = secure_frontend::render_chat_completion_response(request, result.text, schema_limits);
+        if (!rendered) return secure_frontend::make_error_response(secure_frontend::ApiError::internal_error);
         return secure_frontend::HttpResponse{
-            .status = 200,
-            .headers = {{"Content-Type", "application/json; charset=utf-8"}, {"Cache-Control", "no-store"}},
-            .body = *response};
-      });
+            .status = 200, .headers = {{"Content-Type", "application/json; charset=utf-8"}}, .body = *rendered};
+      }});
   const secure_frontend::ConnectionLimits connection_bounds = secure_frontend::connection_limits(config);
   std::string bind_error;
   auto server = secure_frontend::HttpSocketServer::bind(listener, static_cast<int>(config.listener.backlog), &bind_error);
@@ -265,7 +279,7 @@ int run(const FrontendConfig& config, const bool expert) {
   std::cout.flush();
   for (;;) {
     std::string error;
-    const bool served = server->serve_one(*legacy_router, connection_bounds, &error);
+    const bool served = server->serve_one(router, connection_bounds, &error);
     if (supervisor.stop_requested()) break;
     // The on-stopped hook closed the listener (pre-flight P33): nothing more to accept.
     if (server->native_handle() == secure_frontend::kInvalidNativeSocket) break;

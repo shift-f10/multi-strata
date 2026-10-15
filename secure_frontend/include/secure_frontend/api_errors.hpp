@@ -40,5 +40,7 @@ struct ErrorOptions final {
 // {"error":{"message":"<fixed>","type":"<type>","param":null|"<key>","code":"<code>"}}\n
 [[nodiscard]] std::string render_error_body(ApiError error, std::string_view param = {});
 [[nodiscard]] HttpResponse make_error_response(ApiError error, const ErrorOptions& options = {});
+// Spec §3.8: engine_unavailable carries Retry-After 5 unless recovery=exhausted.
+[[nodiscard]] std::optional<int> engine_retry_after(std::string_view recovery) noexcept;
 
 }  // namespace secure_frontend

@@ -1,5 +1,6 @@
 #include "server_harness.hpp"
 
+#include "config_json.hpp"
 #include "http_client.hpp"
 #include "non_elevated_launch.hpp"
 #include "windows_command_line.hpp"
@@ -311,6 +312,14 @@ std::unique_ptr<ServerProcess> ServerProcess::start(const ServerOptions& options
   for (const auto& argument : options.engine_args) {
     arguments.emplace_back("--engine-arg");
     arguments.push_back(argument);
+  }
+  if (!options.config_literals.empty()) {
+    std::map<std::string, std::string> literals = options.config_literals;
+    literals.emplace("schema_version", "1");
+    const auto config_file = server->root_ / "config.json";
+    secure_frontend_test::write_file(config_file, secure_frontend_test::render_config_json(literals), 0600);
+    arguments.emplace_back("--config");
+    arguments.push_back(utf8_path(config_file));
   }
   arguments.insert(arguments.end(), options.extra_args.begin(), options.extra_args.end());
   std::map<std::string, std::string> environment{{std::string(kHarnessTokenEnv), std::string(kHarnessToken)}};

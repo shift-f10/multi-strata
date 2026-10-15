@@ -54,10 +54,4 @@ class ApiRouter final : public RequestRouter {
   ApiRouterConfig config_;
 };
 
-// Legacy bridge for the serial dispatcher path (secure_server_main and the
-// smoke mains); deleted with that path in Task 8b/9. The legacy adapter has
-// already run Host/Origin policy and authentication, so this only maps a GET
-// target onto kRouteTable and calls handle(); no other route is reachable.
-[[nodiscard]] HttpResponse handle_authenticated_get(ApiRouter& router, std::string_view target);
-
 }  // namespace secure_frontend

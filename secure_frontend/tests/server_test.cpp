@@ -1,3 +1,4 @@
+#include "secure_frontend/api_errors.hpp"
 #include "secure_frontend/cgroup_scope.hpp"
 
 #include "support/fake_engine_dump.hpp"
@@ -393,8 +394,11 @@ void proc05_sigterm_during_generation_exits_cleanly() {
   const auto code = server->wait_exit(6s);
   client.join();
   expect(code == 0, "exit 0 with a request in flight, saw " + (code ? std::to_string(*code) : std::string("still running")));
-  expect(!chat || (chat->status == 503 && chat->body == test_support::kGeneric503),
-         "the in-flight client gets a generic 503 or a closed connection, never a result: " + describe(chat));
+  // SP3 Task 9 (spec §7.2): a stopping server names itself with the fixed server_shutting_down body.
+  expect(!chat || (chat->status == 503 && (chat->body == test_support::kGeneric503 ||
+                                           chat->body == secure_frontend::render_error_body(
+                                                             secure_frontend::ApiError::server_shutting_down))),
+         "the in-flight client gets a fixed 503 or a closed connection, never a result: " + describe(chat));
   for (const long pid : engine) expect(test_support::wait_until_gone(pid, 1s), "no engine is left");
 }
 
@@ -522,17 +526,32 @@ void ext01_extension_fields_spawn_nothing() {
   expect(server != nullptr && server->wait_until_listening(10s) && server->wait_for_health(test_support::kHealthReady, 10s), "ready");
   if (!server) return;
   const auto processes_before = server->active_processes();
-  const std::vector<std::string> bodies{
-      R"({"model":"fake-model","messages":[{"role":"user","content":"Hi"}],"tools":[{"type":"function","function":{"name":"x"}}]})",
-      R"({"model":"fake-model","messages":[{"role":"user","content":"Hi"}],"tool_choice":"auto"})",
-      R"({"model":"fake-model","messages":[{"role":"user","content":"Hi"}],"functions":[{"name":"x"}]})",
-      R"({"model":"fake-model","messages":[{"role":"user","content":"Hi"}],"mcp_servers":[{"url":"mcp://x"}]})",
-      R"({"model":"fake-model","messages":[{"role":"user","content":"Hi"}],"stream":true})",
-      R"({"model":"fake-model","messages":[{"role":"tool","content":"run"}]})"};
-  for (const auto& body : bodies) {
+  // Spec §6.4 (SP3 Task 9): each extension is refused with the fixed
+  // extension_disabled body naming its key; "stream" is a feature, not an
+  // extension. Pre-flight ruling (EXT-01 under the depth limit): a realistic
+  // deep tools/functions/mcp_servers body may exceed the JSON depth bound and
+  // answer 400 invalid_json instead; the binding property for those is
+  // "400 and nothing spawned", asserted below for every body.
+  const std::string hi = R"({"model":"fake-model","messages":[{"role":"user","content":"Hi"}],)";
+  const std::vector<std::pair<std::string, std::string>> bodies{
+      {hi + R"("tools":[]})", "tools"},
+      {hi + R"("tool_choice":"auto"})", "tool_choice"},
+      {hi + R"("functions":[]})", "functions"},
+      {hi + R"("function_call":"auto"})", "function_call"},
+      {hi + R"("parallel_tool_calls":true})", "parallel_tool_calls"},
+      {hi + R"("mcp_servers":[]})", "mcp_servers"},
+      {R"({"model":"fake-model","messages":[{"role":"tool","content":"run"}]})", "role"},
+      {R"({"model":"fake-model","messages":[{"role":"function","content":"run"}]})", "role"}};
+  for (const auto& [body, key] : bodies) {
     const auto response = server->post_chat(body);
-    expect(response && response->status == 400 && response->body == test_support::kBadRequest,
-           "refused with the fixed response: " + describe(response));
+    expect(response && response->status == 400 &&
+               response->body == secure_frontend::render_error_body(secure_frontend::ApiError::extension_disabled, key),
+           "refused with the fixed extension_disabled body naming " + key + ": " + describe(response));
+  }
+  for (const std::string& deep : std::vector<std::string>{hi + R"("tools":[{"type":"function","function":{"name":"x"}}]})",
+                                 hi + R"("functions":[{"name":"x"}]})", hi + R"("mcp_servers":[{"url":"mcp://x"}]})"}) {
+    const auto response = server->post_chat(deep);
+    expect(response && response->status == 400, "a deep extension body is refused with 400: " + describe(response));
   }
   const auto recorded_text = [&record] {
     std::ifstream recorded(record);

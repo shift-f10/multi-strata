@@ -80,6 +80,11 @@ void err_every_code_renders_fixed_body() {
   expect(starting.header_value("Retry-After") == std::optional<std::string_view>{"5"}, "engine_unavailable can carry Retry-After: 5");
   const auto exhausted = secure_frontend::make_error_response(ApiError::engine_unavailable);
   expect(!exhausted.header_value("Retry-After").has_value(), "engine_unavailable without retry_after carries none");
+  // Spec §3.8 (Task 9): Retry-After 5 unless the supervisor's recovery is "exhausted".
+  expect(secure_frontend::engine_retry_after("") == std::optional<int>{5} &&
+             secure_frontend::engine_retry_after("restarting") == std::optional<int>{5} &&
+             !secure_frontend::engine_retry_after("exhausted").has_value(),
+         "engine_retry_after: 5 except when recovery is exhausted");
   const auto method = secure_frontend::make_error_response(ApiError::method_not_allowed, {.allow = "GET"});
   expect(method.header_value("Allow") == std::optional<std::string_view>{"GET"}, "405 carries Allow");
 }
@@ -186,6 +191,23 @@ void dos01_transfer_encoding_variants_are_411() {
                   ApiError::invalid_request), "space before the colon is 400");
 }
 
+struct SeamRouter final : secure_frontend::RequestRouter {
+  bool stream{false};
+  std::string seen_body;
+  secure_frontend::RouteDecision authorize(const secure_frontend::RequestHead& head) override {
+    secure_frontend::RouteDecision decision;
+    decision.route = secure_frontend::RouteId::chat;
+    decision.body_limit = head.content_length.value_or(0U);
+    return decision;
+  }
+  secure_frontend::RouteResult handle(const secure_frontend::RequestHead&, std::string_view body, const secure_frontend::RouteDecision&,
+                                      const secure_frontend::RequestContext&) override {
+    seen_body = std::string{body};
+    if (stream) return secure_frontend::StreamHandler{[](secure_frontend::StreamSink&) {}};
+    return secure_frontend::HttpResponse{.status = 200, .headers = {}, .body = "{}\n"};
+  }
+};
+
 void dos01_content_length_variants() {
   const auto post = [](const std::string& cl) { return head_of("POST /v1/chat/completions HTTP/1.1\r\n" + kHost + cl + "\r\n"); };
   expect(is_error(post("Content-Length: 2\r\nContent-Length: 2\r\n"), ApiError::invalid_request), "duplicate");
@@ -200,7 +222,13 @@ void dos01_content_length_variants() {
   const auto ok = post("Content-Length: 0000000002\r\n");
   expect(std::holds_alternative<secure_frontend::RequestHead>(ok) && std::get<secure_frontend::RequestHead>(ok).content_length == 2U,
          "ten digits with leading zeros are accepted");
-  // Mismatch and bytes after the body are body-stage rules: see the in-memory seam of Task 6a.
+  // Body-stage rules (pre-flight S12) through the in-memory seam: a body
+  // shorter than Content-Length, and bytes after the body, are 400.
+  SeamRouter router;
+  const std::string head = "POST /x HTTP/1.1\r\nHost: h\r\nContent-Length: 4\r\n\r\n";
+  expect(secure_frontend::handle_http_request(head + "{}", router, kLimits).status == 400, "Content-Length mismatch: 400");
+  expect(secure_frontend::handle_http_request(head + "{\"\"}x", router, kLimits).status == 400, "stray bytes after the body: 400");
+  expect(secure_frontend::handle_http_request(head + "{\"\"}", router, kLimits).status == 200, "an exact body passes");
 }
 
 void head_request_line_and_header_syntax() {
@@ -247,23 +275,6 @@ void wire_head_has_no_content_length() {
   expect(complete.find("Transfer-Encoding") == std::string::npos && complete.find("Content-Length: 2\r\n") != std::string::npos,
          "complete responses always use Content-Length");
 }
-
-struct SeamRouter final : secure_frontend::RequestRouter {
-  bool stream{false};
-  std::string seen_body;
-  secure_frontend::RouteDecision authorize(const secure_frontend::RequestHead& head) override {
-    secure_frontend::RouteDecision decision;
-    decision.route = secure_frontend::RouteId::chat;
-    decision.body_limit = head.content_length.value_or(0U);
-    return decision;
-  }
-  secure_frontend::RouteResult handle(const secure_frontend::RequestHead&, std::string_view body, const secure_frontend::RouteDecision&,
-                                      const secure_frontend::RequestContext&) override {
-    seen_body = std::string{body};
-    if (stream) return secure_frontend::StreamHandler{[](secure_frontend::StreamSink&) {}};
-    return secure_frontend::HttpResponse{.status = 200, .headers = {}, .body = "{}\n"};
-  }
-};
 
 void route_result_seam_returns_complete_response() {
   SeamRouter router;
