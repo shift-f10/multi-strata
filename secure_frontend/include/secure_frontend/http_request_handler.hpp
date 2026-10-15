@@ -9,11 +9,6 @@
 
 namespace secure_frontend {
 
-// Defined in http_policy.hpp, which includes this header for HttpResponse.
-struct HttpPolicy;
-// Defined in request_router.hpp, which includes this header for HttpResponse.
-class RequestRouter;
-
 // The validator owns any secret material. It is called only after request
 // syntax and Host/Origin policy have been accepted, and should compare the
 // supplied token in constant time (constant_time_token_equals is provided for

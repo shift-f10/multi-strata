@@ -51,6 +51,7 @@ std::optional<raw_http::Response> raw(const test_support::ServerProcess& s, cons
                                       std::chrono::milliseconds timeout = 10s) {
   return raw_http::exchange("127.0.0.1", s.port(), request, timeout);
 }
+// record_of / count_of: shared helpers (pre-flight P35) for the later cases of Tasks 10, 12, 16, 17 and 19-22.
 [[maybe_unused]] std::string record_of(const std::filesystem::path& file) {
   std::ifstream in(file, std::ios::binary);
   return std::string{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
