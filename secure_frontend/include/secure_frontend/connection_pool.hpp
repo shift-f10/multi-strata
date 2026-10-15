@@ -15,8 +15,9 @@
 #include <vector>
 
 // Accept-time admission (SP3 spec §2.3) and the lingering-close list for
-// refused sockets (§2.4). Both are owned by the accept thread; the pool
-// (Task 12) wires them to the workers.
+// refused sockets (§2.4). The pool (Task 12) owns both: the accept thread calls
+// admit() and workers call header_complete()/finished(), all under the pool
+// mutex; the LingerList is touched by the accept thread only.
 namespace secure_frontend {
 
 // Family byte + 16 address bytes, as HttpSocketServer::Accepted::peer_key.

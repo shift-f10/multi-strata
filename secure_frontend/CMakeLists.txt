@@ -906,7 +906,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_test_paths(secure_frontend_concurrency_tests)
     # Portable and unlabeled: these also run under wine.
     set(SECURE_FRONTEND_CONCURRENCY_CASES dos01_oldest_header_phase_connection_is_evicted dos01_remote_address_cap
-        dos01_linger_list_overflow_closes_oldest refusal_response_is_fixed_and_small)
+        dos01_linger_list_overflow_closes_oldest dos01_linger_closes_on_peer_eof refusal_response_is_fixed_and_small)
     secure_frontend_add_cases(secure_frontend_concurrency_tests ${SECURE_FRONTEND_CONCURRENCY_CASES} TIMEOUT 120)
 
     secure_frontend_add_test_executable(secure_frontend_api_router_tests tests/api_router_test.cpp secure_frontend_api_router)
