@@ -165,7 +165,8 @@ std::variant<OpenedFile, PathError> open_beneath(const CanonicalRoot& root, cons
 
 namespace detail {
 
-std::variant<CanonicalRoot, PathError> open_existing_root(const std::filesystem::path& requested, const RootPolicy policy) {
+std::variant<CanonicalRoot, PathError> open_existing_root(const std::filesystem::path& requested, const RootPolicy policy,
+                                                          const bool /*also_trusted_installer: Windows only*/) {
   const std::string text = requested.string();
   if (text.empty() || text.find('\0') != std::string::npos) return path_error(PathErrorCode::empty, "the root path is empty");
   if (!requested.is_absolute()) return path_error(PathErrorCode::not_absolute, "roots must be absolute paths");
@@ -204,7 +205,8 @@ std::variant<CanonicalRoot, PathError> open_existing_root(const std::filesystem:
 
 }  // namespace detail
 
-std::variant<CanonicalFile, PathError> open_executable(const std::filesystem::path& requested) {
+std::variant<CanonicalFile, PathError> open_executable(const std::filesystem::path& requested,
+                                                      const ExecutableWriters /*writers: Windows only*/) {
   using detail::path_error;
   const std::string text = requested.string();
   if (text.empty() || !requested.is_absolute()) {

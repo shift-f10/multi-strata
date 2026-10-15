@@ -5,6 +5,7 @@
 #include "secure_frontend/sha256.hpp"
 #include "secure_frontend/staging_plan.hpp"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -104,8 +105,11 @@ enum class PartOpen { create_new, open_existing };
 // §4.1 atomic_replace_within: SP1's write_private_file(…, TokenStoreMode::replace).
 [[nodiscard]] std::optional<AcquireError> replace_small_file(const CanonicalRoot& root, const RelativePath& path,
                                                              std::string_view bytes);
+// `interrupted` (§8.3, final fix F1): checked before every chunk; set → AcquireError interrupted,
+// so a whole-file re-hash of a 30-55 GB shard stops within one chunk. nullptr: never interrupted.
 [[nodiscard]] std::variant<std::uint64_t, AcquireError> hash_into(const CanonicalRoot& root, const RelativePath& path,
-                                                                  Sha256& hasher, std::uint64_t max_bytes);
+                                                                  Sha256& hasher, std::uint64_t max_bytes,
+                                                                  const std::atomic<bool>* interrupted = nullptr);
 [[nodiscard]] std::variant<std::string, AcquireError> read_small_file(const CanonicalRoot& root, const RelativePath& path,
                                                                       std::size_t max_bytes);
 // A joined path over P1's limits fails closed with bundle_invalid (F-6).

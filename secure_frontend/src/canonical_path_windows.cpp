@@ -104,7 +104,8 @@ std::variant<OpenedFile, PathError> open_beneath(const CanonicalRoot& root, cons
 
 namespace detail {
 
-std::variant<CanonicalRoot, PathError> open_existing_root(const std::filesystem::path& requested, const RootPolicy policy) {
+std::variant<CanonicalRoot, PathError> open_existing_root(const std::filesystem::path& requested, const RootPolicy policy,
+                                                          const bool also_trusted_installer) {
   const std::wstring text = requested.wstring();
   if (auto error = check_windows_root_form(text)) return *error;
   std::wstring full(32768, L'\0');
@@ -127,7 +128,7 @@ std::variant<CanonicalRoot, PathError> open_existing_root(const std::filesystem:
   // External roots (bundle directories) skip this: FAT/exFAT volumes have no ACLs, so
   // Trust::unreadable is accepted there too.
   if (policy != RootPolicy::external) {
-    switch (ws::write_access_is_private(handle)) {
+    switch (ws::write_access_is_private(handle, also_trusted_installer)) {
       case ws::Trust::trusted: break;
       case ws::Trust::untrusted_owner:
         return path_error(PathErrorCode::untrusted_owner, "the root must be owned by you, SYSTEM or Administrators");
@@ -144,7 +145,8 @@ std::variant<CanonicalRoot, PathError> open_existing_root(const std::filesystem:
 
 }  // namespace detail
 
-std::variant<CanonicalFile, PathError> open_executable(const std::filesystem::path& requested) {
+std::variant<CanonicalFile, PathError> open_executable(const std::filesystem::path& requested,
+                                                      const ExecutableWriters writers) {
   using detail::path_error;
   const std::wstring text = requested.wstring();
   if (auto error = check_windows_root_form(text)) return *error;
@@ -167,11 +169,12 @@ std::variant<CanonicalFile, PathError> open_executable(const std::filesystem::pa
   }
   auto classified = classify_final_path(ws::final_path_for_handle(handle));
   if (auto* error = std::get_if<PathError>(&classified)) return *error;
-  if (ws::write_access_is_private(handle) != ws::Trust::trusted) {
+  const bool also_trusted_installer = writers == ExecutableWriters::also_trusted_installer;
+  if (ws::write_access_is_private(handle, also_trusted_installer) != ws::Trust::trusted) {
     return path_error(PathErrorCode::shared_writable, "the engine executable must not be writable by other users");
   }
   const std::filesystem::path canonical{std::get<std::wstring>(classified)};
-  auto parent = detail::open_existing_root(canonical.parent_path());
+  auto parent = detail::open_existing_root(canonical.parent_path(), RootPolicy::existing, also_trusted_installer);
   if (std::holds_alternative<PathError>(parent)) {
     return path_error(PathErrorCode::shared_writable, "the engine executable's folder must not be writable by other users");
   }

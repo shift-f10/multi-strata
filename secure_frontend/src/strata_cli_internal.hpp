@@ -17,8 +17,7 @@
 
 namespace secure_frontend {
 
-// Network verbs (pull, run, update --models, doctor). Until Task 27 adds
-// strata_cli_network.cpp, a stub at the end of strata_cli.cpp returns a usage error.
+// Network verbs (pull, run, update --models, doctor), in strata_cli_network.cpp (Task 27).
 int run_network_verb(const std::string& verb, const FrontendConfig& config, const std::filesystem::path& config_file,
                      std::span<const std::string> rest, CliStreams& io, CliServices& services);
 

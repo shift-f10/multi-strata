@@ -153,8 +153,14 @@ For direct wine calls (not the test preset, which sets it) prefix
    baseline version. Changing the version on a `docs/security/` page asserts
    its facts hold for the new tag: re-check each row against the new source
    first and add rows for new behavior.
+   `upstream.version` (repository root, one line: the tag itself, today
+   `v0.1.44.1`) is a pin site — bump it with the gitlink; configure fails
+   when a reachable submodule tag disagrees with it. It is the source of the
+   SP4 engine version `kEngineVersion` (`secure_frontend/CMakeLists.txt`); the
+   `SECURE_STRATA_ENGINE_VERSION` cache override is for local experiments
+   only and appears nowhere in `.github/workflows/secure-frontend.yml`.
 6. `git add upstream docs/PROVENANCE.md` plus every file touched in step 5
-   (at least `README.md`, `.github/workflows/secure-frontend.yml`,
+   (at least `upstream.version`, `README.md`, `.github/workflows/secure-frontend.yml`,
    `docs/AGENT_HANDOFF.md`, `docs/secure-frontend-ci.md`); one commit:
    `upstream: bump to <new tag>`, whose body lists each gate with its counts
    (old → new), any exclusion added, and the upstream changes that matter to
@@ -164,6 +170,37 @@ After a `git pull` that moves the gitlink, run `git submodule update --init`
 (or set `git config submodule.recurse true` once). A `+` in front of the line
 `git submodule status` prints means the checked-out `upstream/` commit differs
 from the recorded gitlink (behind, ahead or elsewhere).
+
+## Model catalog (SP4)
+
+The `strata` binary embeds `secure_frontend/catalog/<name>/<tag>.json`
+manifests, pinned by `secure_frontend/catalog/CATALOG.sha256`. **The v1
+production catalog is empty** (SP4 D5 (D)): the Qwen `--pack` files have no
+pinned digests until the owner's determinism check (D5 (A)) or a C++ pack
+builder (D5 (C)). A catalog entry lands in the same commit as its pins here
+(repository, revision, every file's size and SHA-256, re-verified by one
+download on the dev machine); `tools/secure/test_catalog_provenance.py`
+enforces that. The DFlash2 drafter (`Anbeeld/GLM-5.3-Flash-DFlash2-GGUF`,
+CC BY-NC-ND 4.0) is never a catalog entry.
+
+Developer-built bundles (D5 (B′), `tools/secure/make_bundle.py`) check the
+downloaded shards against `tools/secure/qwen_bundle_pins.json`, read from the
+Hugging Face tree API (`lfs.oid`, `lfs.size`) on 2026-10-14 at the revisions
+upstream pins in `setup.py` `HF_REVISIONS`:
+
+| Repository @ revision | File | Bytes | SHA-256 |
+| --- | --- | --- | --- |
+| `ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF` @ `ed59f92082b1e93c0e96d60a8b11aab089b52f09` | `IQ2_XS/…-IQ2_XS-00001-of-00002.gguf` | 39225954592 | `92cee27ae5bbadcd732416a0f7a7f0acc092399dbbe8f5a5efa707c2ec0a49d7` |
+| same | `IQ2_XS/…-IQ2_XS-00002-of-00002.gguf` | 28800138432 | `316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113` |
+| same | `IQ3_XXS/…-IQ3_XXS-00001-of-00002.gguf` | 47039860096 | `219ea929900dfa9ef091f3aa473fdba6874b65fcb36526d7d851ac9e95856d15` |
+| same | `IQ3_XXS/…-IQ3_XXS-00002-of-00002.gguf` | 28800138432 | `316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113` |
+| same | `IQ3_S/…-IQ3_S-00001-of-00002.gguf` | 54817524224 | `4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3` |
+| same | `IQ3_S/…-IQ3_S-00002-of-00002.gguf` | 28800138432 | `316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113` |
+| `ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF` @ `5348543e0147355ac9cbcb031184a3546350988e` | `IQ1_M/…-IQ1_M-00001-of-00002.gguf` | 29608446496 | `e11083ba855e7666b48ea3f2db6a9c3a20c18751a012cc24f948de91b7087fad` |
+| same | `IQ1_M/…-IQ1_M-00002-of-00002.gguf` | 28800138432 | `316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113` |
+
+`…` is `Qwen3.8-Flash-Next-GSQ-RCO`. These are Hub-reported digests, not yet
+re-verified by a download here — **owner to confirm before any release**; `make_bundle.py` re-hashes every shard it uses.
 
 ## Security reference
 

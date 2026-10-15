@@ -62,10 +62,12 @@ Trust boundaries:
   on the operator's machine. Request logging is disabled by default; any
   operator-enabled diagnostic log must redact credentials and use a bounded,
   documented local retention policy.
-- The sole future networked operation is an explicit, foreground `acquire`
-  command initiated by the operator. It must display its source and expected
-  digest before transfer and cannot be invoked by the HTTP API, a model, a
-  plugin, or automatic update logic.
+- The networked operations are the explicit, foreground `strata pull` (acquire),
+  `strata update`, and — only for a model that is not installed and only after
+  the same confirmation — `strata run`. Each runs only after the operator
+  confirms the manifest-pinned hosts and digests it displays. `strata import`,
+  `export` and `verify` are local. None can be invoked by the HTTP API, a model,
+  a plugin, configuration or automatic logic.
 - Privacy-relevant behavior is build-time auditable: the release manifest lists
   enabled network-capable components, and CI tests prove that a normal service
   lifecycle makes no outbound network connection.
@@ -121,6 +123,18 @@ Trust boundaries:
   arbitrary archives.
 - Build dependencies and release artifacts are pinned, provenance recorded, and
   accompanied by an SBOM. Verification failure leaves no accepted artifact.
+- Every file is SHA-256-pinned by a manifest that is compiled into the release
+  or pinned by an operator-typed digest; redirects are followed only by the
+  frontend, only over HTTPS and only to hosts the manifest names. The
+  downloader runs confined (on Linux with Landlock: no file writes and reads
+  only below system directories; on Windows: Low integrity, which blocks writes
+  but not reads of the user's files). Confinement limits but does not remove
+  what a compromised downloader can do: it can open network connections to any
+  host, including LAN and loopback services (Landlock restricts only ports and
+  only from ABI 4; Low integrity restricts no network), read and send the
+  user's files on Windows, and on Linux change modes, owners and timestamps and
+  — below Landlock ABI 3 — truncate files. Digest verification still prevents
+  it from planting a model.
 
 ### Engine process isolation
 
