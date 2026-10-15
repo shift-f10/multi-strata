@@ -755,10 +755,14 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         dos01_unauthenticated_gets_401_before_body_is_read dos01_expect_continue_after_auth_only
         dos01_slow_header_is_408_at_header_deadline dos01_slow_body_is_408_at_request_deadline
         dos01_incomplete_body_then_close_frees_worker err_unauthenticated_is_401_on_every_path_and_method
-        security_headers_on_every_response)
+        security_headers_on_every_response
+        web01_bad_host_rejected_on_every_route web01_ipv6_bound_host_rules web02_bound_authority_and_localhost_alias_succeed web02_host_alias_from_config_succeeds
+        web03_untrusted_origin_no_cors_header web04_default_emits_no_cors_header_anywhere web05_only_exact_configured_origin_allowed web06_preflight_matrix
+        web06_cross_origin_post_without_trust_rejected auth01_every_route_rejects_missing_malformed_wrong_token cfg01_wildcard_bind_requires_host_aliases)
     # Ruling R-J: these cases start the real server over sockets; wine excludes them, MSYS2 is authoritative.
     secure_frontend_add_cases(secure_frontend_api_server_tests ${SECURE_FRONTEND_API_SERVER_CASES}
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+    set_tests_properties(secure_frontend_api_server_tests.web01_ipv6_bound_host_rules PROPERTIES SKIP_RETURN_CODE 77)
 
     secure_frontend_add_test_executable(secure_frontend_deadline_tests tests/deadline_test.cpp secure_frontend_engine_stdio_process)
     secure_frontend_test_paths(secure_frontend_deadline_tests)
