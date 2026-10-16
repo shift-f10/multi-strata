@@ -1,5 +1,7 @@
 # Sub-controller brief — common rules (Secure Strata / multi-strata)
 
+> **Read `docs/superpowers/handoff/2026-10-16-controller-resume.md` (in the repository) before this file.** It is the controller-level state and the owner's rules; this brief and your lane brief are read-only in `docs/superpowers/handoff/briefs/` and are superseded by the lane brief the controller gives you at launch (e.g. the submodule pin is now v0.1.44.1 `296b59d2`, not the v0.1.43 line below).
+
 You are a sub-controller. You run ONE implementation plan end to end with the
 `superpowers:subagent-driven-development` skill, in the worktree named in your
 plan-specific brief, and report back to the top-level controller. You do not

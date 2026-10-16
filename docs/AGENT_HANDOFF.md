@@ -1,5 +1,11 @@
 # Secure Strata agent handoff
 
+> **Agents: read `docs/superpowers/handoff/2026-10-16-controller-resume.md` first.**
+> It holds the orchestration-level state at the owner's stop (2026-10-15), the
+> owner's binding rules, the sub-controller briefs and lane reports, what waits
+> on the owner, and the exact resume procedure. The project is stopped until the
+> owner says otherwise. This document is the code-level truth it points at.
+
 ## Purpose
 
 This repository is a Windows-and-Linux, security- and privacy-first successor
