@@ -72,7 +72,7 @@ EngineArgumentsResult build_engine_arguments(const EngineArgumentsProfile profil
     return EngineArgumentsError{EngineArgumentsErrorCode::invalid_value, "selected model has an invalid artifact path"};
   }
   // The engine's own --gpu sets CUDA_DEVICE_ORDER/CUDA_VISIBLE_DEVICES (or
-  // HIP) inside the engine (upstream generate.cpp:1844-1865 at v0.1.44.1), so
+  // HIP) inside the engine (upstream generate.cpp:2334-2352 at v0.2.1.3), so
   // the strata family's environment carries no GPU variable.
   if (!gpus.empty()) {
     std::string list;

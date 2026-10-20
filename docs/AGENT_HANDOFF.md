@@ -10,7 +10,7 @@
 
 This repository is a Windows-and-Linux, security- and privacy-first successor
 to Strata. It must retain the model/backend flexibility of upstream Strata
-`v0.1.44.1` while replacing its public service boundary with a small portable
+`v0.2.1.3` while replacing its public service boundary with a small portable
 native frontend. UnbiasedStrata is a security-design reference, not a direct
 code base.
 
@@ -70,7 +70,7 @@ without asking the owner.
    lands in SP1 and SP7.
 6. **Upstream-trackability.** Upstream Strata is the git submodule `upstream/`
    (`https://github.com/Niko1221/Strata.git`), pinned by its gitlink at
-   `296b59d2f73c8f04a805df29c2fa97655adace78` (tag `v0.1.44.1`) and never
+   `cbfd5b926b794b356195d3cb600191b0c3567540` (tag `v0.2.1.3`) and never
    edited, inside or outside the submodule. The repository root holds only our
    code; our additions to upstream behavior are wrappers that import upstream
    (`tools/secure/secure_tokenizer.py`). The upstream Python service stays in
@@ -116,7 +116,7 @@ Approved by rflores ("approve all"); binding for plans and implementation.
 ## Current baseline
 
 - Upstream baseline: the `upstream` submodule gitlink, `Niko1221/Strata` tag
-  `v0.1.44.1`, commit `296b59d2f73c8f04a805df29c2fa97655adace78`
+  `v0.2.1.3`, commit `cbfd5b926b794b356195d3cb600191b0c3567540`
   (`git submodule status`).
 - Git remotes: `origin` is the owner's repository. Only the owner pushes. The
   older `upstream` remote of this repository is no longer used for tracking;
@@ -145,7 +145,7 @@ Approved by rflores ("approve all"); binding for plans and implementation.
 Upstream Strata is the git submodule `upstream/`; the repository root holds
 only our code. Deleting `upstream/` leaves exactly our code.
 
-| Ours, at the root | Pristine, under `upstream/` (submodule @ `296b59d2`, tag `v0.1.44.1`) |
+| Ours, at the root | Pristine, under `upstream/` (submodule @ `cbfd5b92`, tag `v0.2.1.3`) |
 | --- | --- |
 | `CMakeLists.txt` (builds `secure_frontend/` and, by default, the engine from `upstream/`) | `upstream/CMakeLists.txt`, `upstream/src/`, `upstream/include/`, `upstream/cmake/`, `upstream/third_party/`, `upstream/sycl/` |
 | `secure_frontend/` (own `CMakePresets.json`; builds without `upstream/`) | `upstream/serve/`, `upstream/setup.py`, `upstream/setup.sh`, `upstream/requirements.txt`, `upstream/chat.py`, the launchers |
@@ -328,6 +328,69 @@ step 6 "`run` … asks Download?" — **kept (D6 (a))**; the TLS question
 answered by D1; `strata update` model part §6.1, program part exit 12 until
 SP7; `STRATA_CONFIG` untouched (open for the PX addendum, §3.9); SP4 row
 signatures move to SP7.
+
+### Upstream bump to `v0.2.1.3` (2026-10-20)
+
+Owner lifted the stop and named the target; after analysis of `v0.2.1` →
+`v0.2.1.3` (engine code identical to `v0.2.1.2` plus Windows-HIP fixes) the
+owner chose the latest tag. Pin: `v0.1.44.1` (`296b59d2`) → **`v0.2.1.3`**
+(gitlink `cbfd5b926b794b356195d3cb600191b0c3567540`, tag object
+`1ab44ace2e4db985503ab9388b65405a63600dd7`). Pin sites re-pointed:
+`upstream.version`, `README.md`, the CI workflow header, this file,
+`docs/secure-frontend-ci.md` (offline bundle names), `docs/PROVENANCE.md`
+(baseline, runbook, license links, ggml `FetchContent` lines 1552–1555),
+`docs/security/*` headers, and the `engine_arguments` code comments
+(`--gpu` re-anchored to `generate.cpp:2334-2352`, usage `:797`). The limits
+doc was fully re-pinned to `v0.2.1.3` line numbers and gained rows for the
+`DONE` tail, HIP-Windows `rocm\bin` delay-load, batch telemetry and the
+version-numbering split.
+
+Owner rulings (2026-10-20, this bump): **tag version governs** —
+`kEngineVersion` (from `upstream.version`) and manifest `min_version` carry
+`0.2.1.3`; the engine's CMake self-version `0.1.46.2` (`strata --version`) is
+informational only. **wine stays off this host** — Windows proof comes from the
+`windows-msys2-clang` CI job. New commits drop the `Claude-Session:` trailer
+(keep `Co-Authored-By`).
+
+Gates this host, old pin → new pin (linux-gcc build 0 warnings both):
+
+| Gate | `v0.1.44.1` | `v0.2.1.3` |
+| --- | --- | --- |
+| pytest (ours) | 25 | 25 |
+| linux-gcc ctest | 560 reg., 556 pass, 4 env skips | 561 reg., 557 pass, 4 env skips |
+| windows-llvm-mingw-cross build (`-Werror`) | 0 warnings, 47 exes | 0 warnings |
+| root build + ctest | 239 steps; 526 reg., 522 pass, 4 skips | 240 steps; 527 reg., 523 pass, 4 skips |
+| upstream tools (own venv) | 760/2 skipped/5 desel. | 1027/13/6 |
+| upstream serve (own venv) | 774/11 | 878/14/1 |
+
+(Registered grew by one at both ctest levels from the `RESUME`/`REUSED`
+hotfix, `01ad7226`, landed immediately before the bump.)
+
+Two upstream tests fail deterministically at `v0.2.1.3` — both NEW in the
+0.2.1.x range, both quarantined Python, diagnosed to root cause (see the
+runbook bullet list): the parallel-download test (`04221c3e`/`e2071c2f`: the
+new length probe issues a whole-file ranged GET its own `asked()` counts
+twice) and the lifeline watcher test (`48e6d64c`: the `ps lstart,stat` token
+is unstable because `stat` flips `R`→`S`; the `pdeathsig` production path
+passes). Both added to the exclusion list with reasons. Nothing we build or
+ship failed.
+
+Upstream changes relevant to us (audited against the checked-out tag; full
+facts in `docs/security/engine-protocol-limits.md`): the `RESUME`/`REUSED`
+serve records (fixed in `01ad7226`); the main engine's `DONE` gained a
+` chunk=… experts_streamed=…` tail (opaque to our client, finish field
+position unchanged); `qwen35moe` now PARSES `--vision`/`--batch`/`--slots` —
+the frontend deny-list is now the only guard, and it holds; `qwen35moe`
+answers stray lines with `ERR expected: GEN …` instead of exiting; HIP
+gfx906 builds exclude the qwen35 engine; HIP-Windows gained the
+`<exe>\rocm\bin` delay-load search (SP7 packaging item, like `strata_kq`);
+`STRATA_MMQ_TQ_OVERLAY` defaults ON (GPU builds only, no CPU/root effect);
+`apps/desktop` and `apps/host` are new upstream trees — not packaged, and SP7
+must keep them out; the ggml pin `3cf03257` is unchanged; CMake surface
+re-audited: one `FetchContent` at `:1552`, no `tests/CMakeLists.txt`, option
+defaults compatible with our root seeds. The engine CLI gained three local
+tuning flags (pass-through candidates; deny-list unchanged and still
+complete for everything it refuses).
 
 ### Protocol hotfix: `RESUME`/`REUSED` prompt-progress records are consumed (2026-10-20)
 

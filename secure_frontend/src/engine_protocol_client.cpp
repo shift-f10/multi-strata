@@ -227,9 +227,11 @@ std::optional<EngineProtocolError> EngineProtocolClient::read_generation(const s
       // PP is a private prefill-progress heartbeat, never client-visible
       // output. Both engine profiles emit it, with different semantics:
       //
-      // Strata (upstream v0.1.44.1): `generate.cpp` prints
+      // Strata (unchanged from v0.1.44.1 through v0.2.1.3): `generate.cpp`
+      // prints
       // `PP <position reached> <prompt tokens> <ms> <fresh tokens/s>` after
-      // every batched prompt chunk (`%lld %lld %.0f %.1f`), and the
+      // every batched prompt chunk (`%lld %lld %.0f %.1f`, :9673/:12937/
+      // :12998/:13852 at v0.2.1.3), and the
       // `qwen35moe` engine (`q36_engine.cu`) prints `PP <done> <fresh> <ms>
       // <tokens/s>` where the second field counts only the tokens not reused
       // from the held state. Upstream's own server accepts any `PP` with two

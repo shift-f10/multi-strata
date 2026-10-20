@@ -3,7 +3,7 @@
 ## Purpose
 
 This is a deliberately narrow inventory of known network-capable paths in the
-Strata `v0.1.44.1` baseline. It prevents the native frontend migration from
+Strata `v0.2.1.3` baseline. It prevents the native frontend migration from
 accidentally retaining an implicit outbound behavior. It is not an assertion
 that these paths are malicious: several are normal, user-visible installer or
 optional image/MCP features. They are incompatible with the secure release
@@ -52,7 +52,11 @@ from the server and its HTTP API.
 ## Evidence baseline
 
 The current inventory was derived from direct source review on 2026-10-11
-Pacific time and re-reviewed against `v0.1.44.1` on 2026-10-14 (three rows added). Representative network-capable references include
+Pacific time, re-reviewed against `v0.1.44.1` on 2026-10-14 (three rows added),
+and re-reviewed against `v0.2.1.3` on 2026-10-20 (no row changed: every named
+reference still exists; upstream added `apps/desktop` and `apps/host`, which
+are not part of any package we stage — SP7 packaging must exclude them).
+Representative network-capable references include
 `upstream/START-HERE.bat`, `upstream/setup.py`, `upstream/UPDATE.bat`, `upstream/update.sh`, `upstream/serve/server.py`, and
 `upstream/serve/mcp.py` (the baseline is the `upstream/` submodule). Future agents must update this inventory when adding or
 removing a network-capable code path.
