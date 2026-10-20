@@ -15,4 +15,4 @@ Sub-controllers and implementers also read `docs/superpowers/handoff/briefs/subc
 - Commit author `shift-f10 <testdaflow.tv@gmail.com>`; two literal trailer lines in every commit (`Co-Authored-By: <model> <noreply@anthropic.com>` and the `Claude-Session:` URL of the current session). Existing trailers are never rewritten.
 - No `rm -rf`, `git clean -fd*`, or bypass flags. Retire worktrees by moving them out, then `git worktree prune`.
 - `-Werror` everywhere; TDD with RED evidence; a test is never weakened to pass.
-- Windows claims come only from the `windows-msys2-clang` CI job; GPU claims only from the owner's box. Update `docs/AGENT_HANDOFF.md` with every change.
+- Windows runtime claims wait for the owner's own hardware — GitHub Actions are disabled (2026-10-20); agents prove only the local `windows-llvm-mingw-cross` cross-build, and the last CI-authorized Windows proof is the green `windows-msys2-clang` run at `7bddb9e1`. GPU claims only from the owner's box. GitHub is storage: push to save, never to run CI. Update `docs/AGENT_HANDOFF.md` with every change.

@@ -113,6 +113,27 @@ Approved by rflores ("approve all"); binding for plans and implementation.
   (section 12), `docs/superpowers/research/2026-10-14-sp6-glm-engine-sources.md`
   (section 6).
 
+### Owner decisions, 2026-10-20
+
+Approved by rflores during the upstream update; binding.
+
+- Upstream bumped to `Niko1221/Strata` **`v0.2.1.3`** (owner chose the latest
+  tag of the 0.2.1 line); the `RESUME`/`REUSED` protocol gap was fixed as a
+  hotfix on main immediately before the bump (`01ad7226`).
+- **Tag version governs:** `upstream.version` → `kEngineVersion`, and manifest
+  `min_version` compare against the tag number (`0.2.1.3`); the engine's CMake
+  self-version `0.1.46.2` is informational for the frontend.
+- **GitHub is storage only:** Actions disabled at the repo level by the owner
+  ("do not do GitHub Actions on GitHub, we just need to save there"). Push to
+  save; never rely on, await, or watch workflow runs.
+- **Windows runtime proof deferred:** agents prove only the local
+  `windows-llvm-mingw-cross` cross-build (`-Werror`); real-Windows runtime
+  claims wait for the owner's own hardware. The green `windows-msys2-clang`
+  run at `7bddb9e1` is the last CI-authorized Windows runtime proof and stands
+  for the `v0.2.1.3` pin.
+- New commits drop the `Claude-Session:` trailer (keep `Co-Authored-By`
+  literal; existing trailers never rewritten). wine stays uninstalled locally.
+
 ## Current baseline
 
 - Upstream baseline: the `upstream` submodule gitlink, `Niko1221/Strata` tag
