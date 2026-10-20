@@ -1,15 +1,21 @@
 #include "secure_frontend/api_constants.hpp"
 #include "secure_frontend/connection_pool.hpp"
+#include "secure_frontend/generation_gate.hpp"
 #include "secure_frontend/http_socket_server.hpp"
 #include "secure_frontend/socket_io.hpp"
+#include "support/fake_supervised_process.hpp"
 #include "support/raw_http.hpp"
 #include "support/test_support.hpp"
 
+#include <atomic>
 #include <chrono>
+#include <functional>
 #include <iostream>
+#include <mutex>
 #include <optional>
 #include <algorithm>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -174,6 +180,130 @@ void refusal_response_is_fixed_and_small() {
          r.find("\"code\":\"server_busy\"") != std::string::npos && r.size() <= secure_frontend::api_constants::kRefusalMaxBytes,
          "fixed 503 server_busy with Retry-After: 1 in at most 512 bytes (" + std::to_string(r.size()) + ")");
 }
+
+// --- Task 13: SupervisorPort + GenerationGate (spec §2.5, D-1) -----------------
+
+struct GateFixture final {
+  test_support::FakeFactory fakes{[](test_support::FakeChild& child, std::uint64_t) { child.push_line("READY 4096 stop"); }};
+  std::shared_ptr<test_support::ManualClock> clock = std::make_shared<test_support::ManualClock>();
+  secure_frontend::EngineSupervisor supervisor{{}, fakes.factory(), clock};
+  secure_frontend::SupervisorPort port{supervisor};
+  GateFixture() {
+    expect(supervisor.start(), "supervisor starts");
+    expect(test_support::wait_generation_ready(supervisor, 1U, 5s), "fake generation ready");
+  }
+  ~GateFixture() { supervisor.shutdown(5s); }
+};
+std::chrono::steady_clock::time_point deadline_in(const std::chrono::milliseconds d) { return std::chrono::steady_clock::now() + d; }
+const std::function<bool()> kStaying = [] { return false; };
+
+void gate_first_request_gets_the_slot() {
+  GateFixture f;
+  secure_frontend::GenerationGate gate({.max_queued = 4, .queue_timeout = 1000ms});
+  auto result = gate.admit(f.port, deadline_in(1s), kStaying);
+  expect(std::holds_alternative<secure_frontend::Lease>(result), "the first chat gets the lease at once");
+  expect(f.port.snapshot().state == secure_frontend::SupervisorState::generating, "SP2 is generating");
+}
+
+void gate_queue_full_is_busy() {
+  GateFixture f;
+  secure_frontend::GenerationGate gate({.max_queued = 1, .queue_timeout = 5000ms});
+  auto holder = gate.admit(f.port, deadline_in(1s), kStaying);
+  std::thread waiter([&] { (void)gate.admit(f.port, deadline_in(2s), kStaying); });
+  for (int i = 0; i < 100 && gate.waiting() != 1U; ++i) std::this_thread::sleep_for(5ms);
+  const auto started = std::chrono::steady_clock::now();
+  auto refused = gate.admit(f.port, deadline_in(5s), kStaying);
+  expect(std::holds_alternative<secure_frontend::GateRefusal>(refused) &&
+         std::get<secure_frontend::GateRefusal>(refused) == secure_frontend::GateRefusal::busy, "a full queue answers busy");
+  expect(std::chrono::steady_clock::now() - started < 100ms, "at once");
+  { auto lease = std::get<secure_frontend::Lease>(std::move(holder)); }
+  gate.release();
+  waiter.join();
+}
+
+void gate_fifo_order() {
+  GateFixture f;
+  secure_frontend::GenerationGate gate({.max_queued = 3, .queue_timeout = 10000ms});
+  auto holder = std::optional<secure_frontend::Lease>{std::get<secure_frontend::Lease>(gate.admit(f.port, deadline_in(1s), kStaying))};
+  std::mutex order_mutex;
+  std::vector<int> order;
+  std::vector<std::thread> waiters;
+  for (int i = 0; i < 3; ++i) {
+    waiters.emplace_back([&, i] {
+      auto r = gate.admit(f.port, deadline_in(10s), kStaying);
+      if (!std::holds_alternative<secure_frontend::Lease>(r)) return;
+      { std::lock_guard g(order_mutex); order.push_back(i); }
+      { auto lease = std::get<secure_frontend::Lease>(std::move(r)); }
+      gate.release();
+    });
+    for (int t = 0; t < 100 && gate.waiting() != static_cast<std::size_t>(i + 1); ++t) std::this_thread::sleep_for(5ms);
+  }
+  holder.reset();
+  gate.release();
+  for (auto& t : waiters) t.join();
+  expect(order == std::vector<int>{0, 1, 2}, "strict FIFO by admission time");
+}
+
+void gate_timeout_returns_timeout() {
+  GateFixture f;
+  secure_frontend::GenerationGate gate({.max_queued = 1, .queue_timeout = 300ms});
+  auto holder = gate.admit(f.port, deadline_in(1s), kStaying);
+  const auto started = std::chrono::steady_clock::now();
+  auto r = gate.admit(f.port, deadline_in(300ms), kStaying);
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  expect(std::holds_alternative<secure_frontend::GateRefusal>(r) && std::get<secure_frontend::GateRefusal>(r) == secure_frontend::GateRefusal::timeout,
+         "the queue deadline answers timeout");
+  expect(elapsed >= 280ms && elapsed < 1s, "at the deadline");
+  expect(gate.waiting() == 0U, "the ticket left the queue");
+}
+
+void gate_cancelled_waiter_leaves_queue() {
+  GateFixture f;
+  secure_frontend::GenerationGate gate({.max_queued = 2, .queue_timeout = 5000ms});
+  auto holder = gate.admit(f.port, deadline_in(1s), kStaying);
+  std::atomic<bool> gone{false};
+  std::optional<secure_frontend::GateRefusal> refusal;
+  std::thread waiter([&] {
+    auto r = gate.admit(f.port, deadline_in(5s), [&gone] { return gone.load(); });
+    if (std::holds_alternative<secure_frontend::GateRefusal>(r)) refusal = std::get<secure_frontend::GateRefusal>(r);
+  });
+  for (int i = 0; i < 100 && gate.waiting() != 1U; ++i) std::this_thread::sleep_for(5ms);
+  gone = true;
+  waiter.join();
+  expect(refusal == std::optional<secure_frontend::GateRefusal>{secure_frontend::GateRefusal::cancelled}, "a gone client leaves silently");
+  expect(gate.waiting() == 0U, "and frees its queue place");
+}
+
+void gate_fast_fails_when_engine_not_ready() {
+  test_support::FakeFactory silent([](test_support::FakeChild&, std::uint64_t) {});   // never READY: stays starting
+  secure_frontend::EngineSupervisor supervisor({}, silent.factory(), std::make_shared<test_support::ManualClock>());
+  expect(supervisor.start(), "supervisor starts (engine never reaches READY)");
+  secure_frontend::SupervisorPort port(supervisor);
+  secure_frontend::GenerationGate gate({.max_queued = 4, .queue_timeout = 5000ms});
+  const auto started = std::chrono::steady_clock::now();
+  auto r = gate.admit(port, deadline_in(5s), kStaying);
+  expect(std::holds_alternative<secure_frontend::GateRefusal>(r) &&
+         std::get<secure_frontend::GateRefusal>(r) == secure_frontend::GateRefusal::engine_unavailable, "starting: engine_unavailable");
+  expect(std::chrono::steady_clock::now() - started < 100ms, "never waits for READY (SP2 V11)");
+  supervisor.shutdown(5s);
+}
+
+void gate_shutdown_refuses_waiters() {
+  GateFixture f;
+  secure_frontend::GenerationGate gate({.max_queued = 2, .queue_timeout = 5000ms});
+  auto holder = gate.admit(f.port, deadline_in(1s), kStaying);
+  std::optional<secure_frontend::GateRefusal> refusal;
+  std::thread waiter([&] {
+    auto r = gate.admit(f.port, deadline_in(5s), kStaying);
+    if (std::holds_alternative<secure_frontend::GateRefusal>(r)) refusal = std::get<secure_frontend::GateRefusal>(r);
+  });
+  for (int i = 0; i < 100 && gate.waiting() != 1U; ++i) std::this_thread::sleep_for(5ms);
+  gate.shutdown();
+  waiter.join();
+  expect(refusal == std::optional<secure_frontend::GateRefusal>{secure_frontend::GateRefusal::shutting_down}, "queued tickets get shutting_down");
+  auto late = gate.admit(f.port, deadline_in(1s), kStaying);
+  expect(std::holds_alternative<secure_frontend::GateRefusal>(late), "nothing is admitted after shutdown");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -184,5 +314,12 @@ int main(int argc, char** argv) {
       {"dos01_linger_list_overflow_closes_oldest", dos01_linger_list_overflow_closes_oldest},
       {"dos01_linger_closes_on_peer_eof", dos01_linger_closes_on_peer_eof},
       {"refusal_response_is_fixed_and_small", refusal_response_is_fixed_and_small},
+      {"gate_first_request_gets_the_slot", gate_first_request_gets_the_slot},
+      {"gate_queue_full_is_busy", gate_queue_full_is_busy},
+      {"gate_fifo_order", gate_fifo_order},
+      {"gate_timeout_returns_timeout", gate_timeout_returns_timeout},
+      {"gate_cancelled_waiter_leaves_queue", gate_cancelled_waiter_leaves_queue},
+      {"gate_fast_fails_when_engine_not_ready", gate_fast_fails_when_engine_not_ready},
+      {"gate_shutdown_refuses_waiters", gate_shutdown_refuses_waiters},
   }, failures);
 }

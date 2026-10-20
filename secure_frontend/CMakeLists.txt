@@ -279,6 +279,10 @@ target_link_libraries(secure_frontend_http_socket_server PUBLIC secure_frontend_
 secure_frontend_add_library(secure_frontend_connection_pool
     SOURCES src/admission.cpp src/linger_list.cpp src/connection_pool.cpp
     LINKS secure_frontend_http_socket_server secure_frontend_socket_io secure_frontend_api_core)
+# SP3 Task 13: SupervisorPort (one mutex into SP2, D-1) and the FIFO generation gate (§2.5).
+secure_frontend_add_library(secure_frontend_generation_gate
+    SOURCES src/supervisor_port.cpp src/generation_gate.cpp
+    LINKS secure_frontend_engine_supervisor secure_frontend_api_core)
 
 target_compile_features(secure_frontend_api_router PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_api_router
@@ -934,11 +938,13 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     endif()
 
     secure_frontend_add_test_executable(secure_frontend_concurrency_tests tests/concurrency_test.cpp
-        secure_frontend_connection_pool)
+        secure_frontend_connection_pool secure_frontend_generation_gate)
     secure_frontend_test_paths(secure_frontend_concurrency_tests)
     # Portable and unlabeled: these also run under wine.
     set(SECURE_FRONTEND_CONCURRENCY_CASES dos01_oldest_header_phase_connection_is_evicted dos01_remote_address_cap
-        dos01_linger_list_overflow_closes_oldest dos01_linger_closes_on_peer_eof refusal_response_is_fixed_and_small)
+        dos01_linger_list_overflow_closes_oldest dos01_linger_closes_on_peer_eof refusal_response_is_fixed_and_small
+        gate_first_request_gets_the_slot gate_queue_full_is_busy gate_fifo_order gate_timeout_returns_timeout
+        gate_cancelled_waiter_leaves_queue gate_fast_fails_when_engine_not_ready gate_shutdown_refuses_waiters)
     secure_frontend_add_cases(secure_frontend_concurrency_tests ${SECURE_FRONTEND_CONCURRENCY_CASES} TIMEOUT 120)
 
     secure_frontend_add_test_executable(secure_frontend_api_router_tests tests/api_router_test.cpp secure_frontend_api_router)
