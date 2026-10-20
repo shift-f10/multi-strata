@@ -717,7 +717,12 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
 
     # SP2 F1: test-only stand-in for `strata --serve`. Never installed. SP1's own
     # fake (tests/fake_engine_main.cpp, secure_frontend_fake_engine) is separate.
+    # SP3 Task 14: the fake reads stdin on a thread; the toolchain needs the
+    # thread library linked (find_package adds it portably: -pthread on Linux,
+    # winpthread for the mingw cross).
+    find_package(Threads REQUIRED)
     add_executable(strata-supervision-fake-engine tests/supervision_fake_engine_main.cpp)
+    target_link_libraries(strata-supervision-fake-engine PRIVATE Threads::Threads)
     target_include_directories(strata-supervision-fake-engine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_compile_features(strata-supervision-fake-engine PRIVATE cxx_std_20)
     secure_frontend_set_warnings(strata-supervision-fake-engine)
@@ -745,6 +750,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_test_paths(secure_frontend_fake_engine_tests)
     # Crash exit codes are Windows runtime semantics: MSYS2 only.
     secure_frontend_add_cases(secure_frontend_fake_engine_tests fake_engine_modes_selftest fake_engine_dump_is_parseable
+        fake_engine_stream_modes_selftest
         TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     # F3: start/stop the real server with the fake engine; process-tree helpers.
@@ -835,6 +841,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     if(WIN32)
         enable_language(RC)
         add_executable(strata-supervision-fake-engine-elevated tests/supervision_fake_engine_main.cpp tests/fake_engine_elevated.rc)
+        target_link_libraries(strata-supervision-fake-engine-elevated PRIVATE Threads::Threads)
         target_include_directories(strata-supervision-fake-engine-elevated PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
         target_compile_features(strata-supervision-fake-engine-elevated PRIVATE cxx_std_20)
         target_link_libraries(strata-supervision-fake-engine-elevated PRIVATE shell32 advapi32)
