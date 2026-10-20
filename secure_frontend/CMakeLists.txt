@@ -1039,6 +1039,13 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         renders_escaped_minimal_response
         renders_openai_completion_shape)
 
+    # SP3 Task 18: static egress tripwire (spec §6.2) over the server binary itself.
+    secure_frontend_add_test_executable(secure_frontend_egress_tests tests/egress_test.cpp secure_frontend_test_support)
+    secure_frontend_test_paths(secure_frontend_egress_tests)
+    set(SECURE_FRONTEND_EGRESS_CASES egress_server_imports_no_resolver_or_http_client
+        egress_static_tripwire_fails_on_binary_without_dynamic_section)
+    secure_frontend_add_cases(secure_frontend_egress_tests ${SECURE_FRONTEND_EGRESS_CASES} TIMEOUT 120)
+
     secure_frontend_add_test_executable(secure_frontend_json_tests tests/json_test.cpp secure_frontend_json)
     secure_frontend_add_cases(secure_frontend_json_tests
         json_accepts_strict_document json_rejects_duplicate_keys json_rejects_depth_over_limit
