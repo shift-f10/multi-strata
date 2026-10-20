@@ -284,6 +284,11 @@ secure_frontend_add_library(secure_frontend_generation_gate
     SOURCES src/supervisor_port.cpp src/generation_gate.cpp
     LINKS secure_frontend_engine_supervisor secure_frontend_api_core)
 
+secure_frontend_add_library(secure_frontend_chat_route
+    SOURCES src/chat_route.cpp
+    LINKS secure_frontend_generation_gate secure_frontend_chat_execution secure_frontend_chat_schema
+          secure_frontend_chat_generation_plan secure_frontend_secrets secure_frontend_api_core)
+
 target_compile_features(secure_frontend_api_router PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_api_router
     PUBLIC
@@ -402,7 +407,7 @@ target_link_libraries(strata-secure-server PRIVATE secure_frontend_config secure
 target_link_libraries(strata-secure-server PRIVATE secure_frontend_server_cli secure_frontend_typed_config)
 target_link_libraries(strata-secure-server PRIVATE secure_frontend_subsystem_limits secure_frontend_engine_supervisor)
 target_link_libraries(strata-secure-server PRIVATE secure_frontend_socket_io secure_frontend_api_core)
-target_link_libraries(strata-secure-server PRIVATE secure_frontend_connection_pool)
+target_link_libraries(strata-secure-server PRIVATE secure_frontend_connection_pool secure_frontend_chat_route)
 target_compile_features(strata-secure-server PRIVATE cxx_std_20)
 # Spec A2: UTF-8 argv from the wide command line on Windows, shared by
 # strata-secure-server and strata (CommandLineToArgvW: shell32).
@@ -797,7 +802,12 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         web03_untrusted_origin_no_cors_header web04_default_emits_no_cors_header_anywhere web05_only_exact_configured_origin_allowed web06_preflight_matrix
         web06_cross_origin_post_without_trust_rejected auth01_every_route_rejects_missing_malformed_wrong_token cfg01_wildcard_bind_requires_host_aliases
         dos01_eviction_over_tcp_admits_new_client dos01_slowloris_cannot_starve_a_real_client dos01_slow_body_clients_cannot_starve_a_real_client
-        net01_workers_add_no_listener net01_ipv6_loopback_listener_only)
+        net01_workers_add_no_listener net01_ipv6_loopback_listener_only
+        max_tokens_above_limit_is_clamped max_tokens_clamped_to_context_room prompt_alone_over_context_is_400
+        absent_max_tokens_uses_auto sampling_passthrough_reaches_gen dos01_context_rule_is_400_without_gen
+        chat_response_has_openai_shape dos02_excess_connections_get_503_retry_after dos02_queue_full_is_503
+        dos02_queue_timeout_is_503 dos02_queue_is_fifo dos02_health_answers_while_generation_places_full
+        dos02_serial_mode_one_worker)
     # Ruling R-J: these cases start the real server over sockets; wine excludes them, MSYS2 is authoritative.
     secure_frontend_add_cases(secure_frontend_api_server_tests ${SECURE_FRONTEND_API_SERVER_CASES}
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
@@ -950,7 +960,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # Portable and unlabeled: these also run under wine.
     set(SECURE_FRONTEND_CONCURRENCY_CASES dos01_oldest_header_phase_connection_is_evicted dos01_remote_address_cap
         dos01_linger_list_overflow_closes_oldest dos01_linger_closes_on_peer_eof refusal_response_is_fixed_and_small
-        gate_first_request_gets_the_slot gate_queue_full_is_busy gate_fifo_order gate_timeout_returns_timeout
+        gate_first_request_gets_the_slot gate_queue_full_is_busy gate_zero_queue_admits_one_at_a_time gate_fifo_order gate_timeout_returns_timeout
         gate_cancelled_waiter_leaves_queue gate_fast_fails_when_engine_not_ready gate_shutdown_refuses_waiters)
     secure_frontend_add_cases(secure_frontend_concurrency_tests ${SECURE_FRONTEND_CONCURRENCY_CASES} TIMEOUT 120)
 

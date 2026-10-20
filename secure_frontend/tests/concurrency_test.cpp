@@ -221,6 +221,26 @@ void gate_queue_full_is_busy() {
   waiter.join();
 }
 
+void gate_zero_queue_admits_one_at_a_time() {
+  // Task 16 (DOS-02 serial mode): max_queued bounds WAITERS only; an arrival
+  // that finds the slot idle is served even at max_queued = 0.
+  GateFixture f;
+  secure_frontend::GenerationGate gate({.max_queued = 0, .queue_timeout = 5000ms});
+  auto first = gate.admit(f.port, deadline_in(5s), kStaying);
+  expect(std::holds_alternative<secure_frontend::Lease>(first), "max_queued = 0 still admits when the slot is idle (serial mode)");
+  const auto started = std::chrono::steady_clock::now();
+  auto second = gate.admit(f.port, deadline_in(5s), kStaying);
+  expect(std::holds_alternative<secure_frontend::GateRefusal>(second) &&
+         std::get<secure_frontend::GateRefusal>(second) == secure_frontend::GateRefusal::busy, "with the slot taken, zero queue means busy at once");
+  expect(std::chrono::steady_clock::now() - started < 100ms, "at once");
+  { auto lease = std::get<secure_frontend::Lease>(std::move(first)); }
+  gate.release();
+  auto third = gate.admit(f.port, deadline_in(5s), kStaying);
+  expect(std::holds_alternative<secure_frontend::Lease>(third), "after release the next arrival gets the slot");
+  { auto lease = std::get<secure_frontend::Lease>(std::move(third)); }
+  gate.release();
+}
+
 void gate_fifo_order() {
   GateFixture f;
   secure_frontend::GenerationGate gate({.max_queued = 3, .queue_timeout = 10000ms});
@@ -316,6 +336,7 @@ int main(int argc, char** argv) {
       {"refusal_response_is_fixed_and_small", refusal_response_is_fixed_and_small},
       {"gate_first_request_gets_the_slot", gate_first_request_gets_the_slot},
       {"gate_queue_full_is_busy", gate_queue_full_is_busy},
+      {"gate_zero_queue_admits_one_at_a_time", gate_zero_queue_admits_one_at_a_time},
       {"gate_fifo_order", gate_fifo_order},
       {"gate_timeout_returns_timeout", gate_timeout_returns_timeout},
       {"gate_cancelled_waiter_leaves_queue", gate_cancelled_waiter_leaves_queue},

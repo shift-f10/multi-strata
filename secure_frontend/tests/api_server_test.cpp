@@ -16,8 +16,10 @@
 #include <iterator>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -608,6 +610,193 @@ void net01_ipv6_loopback_listener_only() {
   expect(listening_signature(again) == before, "the /health traffic added no listener");
   expect(!raw_http::Connection::open("127.0.0.1", server->port()).has_value(), "nothing listens on IPv4");
 }
+
+// SP3 Task 16 (ChatRoute; spec §5.4, B1/B2/B6, §3.5, DOS-02): the server-side
+// budget/sampling/response cases read the engine's --record-file, so they can
+// assert exactly what GEN reached the engine.
+std::vector<std::string> gen_lines(const std::string& record) {
+  std::vector<std::string> lines;
+  std::istringstream in(record);
+  for (std::string line; std::getline(in, line);) if (line.rfind("GEN ", 0) == 0) lines.push_back(line);
+  return lines;
+}
+std::size_t gen_max(const std::string& gen) { return std::stoul(gen.substr(4, gen.find(' ', 4) - 4)); }
+std::size_t gen_prompt(const std::string& gen) {
+  const std::string ids = gen.substr(gen.rfind(' ') + 1U);
+  return static_cast<std::size_t>(std::count(ids.begin(), ids.end(), ',')) + 1U;
+}
+struct Recorded final {
+  std::filesystem::path record;
+  std::unique_ptr<test_support::ServerProcess> server;
+};
+Recorded start_recorded(const std::string& tag, std::map<std::string, std::string> literals = {}, std::vector<std::string> engine = {}) {
+  Recorded r;
+  r.record = test_support::make_temp_dir(tag) / "record.txt";
+  engine.push_back("--record-file=" + test_support::utf8_path(r.record));
+  r.server = start_server(std::move(literals), std::move(engine));
+  return r;
+}
+
+void max_tokens_above_limit_is_clamped() {
+  auto r = start_recorded("mt1", {{"limits.chat.max_completion_tokens", "16"}, {"limits.chat.default_max_tokens", "0"}});
+  if (!r.server) return;
+  const auto response = raw(*r.server, chat_request(*r.server, chat_body(R"("max_tokens":16384)")));
+  expect(response && response->status == 200, "an over-limit max_tokens is clamped, not rejected (B2)");
+  const auto gens = gen_lines(record_of(r.record));
+  expect(gens.size() == 1U && gen_max(gens.front()) == 16U, "GEN max_new is the configured cap");
+}
+
+void max_tokens_clamped_to_context_room() {
+  auto r = start_recorded("mt2", {}, {"--ready-context=200"});
+  if (!r.server) return;
+  const auto response = raw(*r.server, chat_request(*r.server, chat_body(R"("max_tokens":1000)")));
+  expect(response && response->status == 200, "clamped to the context room");
+  const auto gens = gen_lines(record_of(r.record));
+  expect(gens.size() == 1U && gen_max(gens.front()) == 200U - gen_prompt(gens.front()) - 8U, "max_new = ctx - n - 8");
+}
+
+void prompt_alone_over_context_is_400() {
+  auto r = start_recorded("mt3", {}, {"--ready-context=64"});
+  if (!r.server) return;
+  const auto response = raw(*r.server, chat_request(*r.server, chat_body("", std::string(100, 'x'))));
+  expect(response && response->status == 400 &&
+         response->body == secure_frontend::render_error_body(ApiError::context_length_exceeded), "the prompt alone fills the context");
+  expect(gen_lines(record_of(r.record)).empty(), "no GEN was written");
+}
+
+void absent_max_tokens_uses_auto() {
+  auto r = start_recorded("mt4");
+  if (!r.server) return;
+  const auto response = raw(*r.server, chat_request(*r.server, chat_body("")));
+  expect(response && response->status == 200, "a request without max_tokens");
+  const auto gens = gen_lines(record_of(r.record));
+  expect(gens.size() == 1U && gen_max(gens.front()) == std::min<std::size_t>(4096U, 4096U - gen_prompt(gens.front()) - 8U),
+         "auto = min(max_completion_tokens, ctx - n - 8) (B1)");
+}
+
+void sampling_passthrough_reaches_gen() {
+  auto r = start_recorded("smp");
+  if (!r.server) return;
+  const auto response = raw(*r.server, chat_request(*r.server, chat_body(R"("max_tokens":2,"temperature":0.5,"top_p":0.9,"seed":42,"presence_penalty":0)")));
+  expect(response && response->status == 200, "sampling accepted");
+  const auto gens = gen_lines(record_of(r.record));
+  expect(gens.size() == 1U && gens.front().find(" temperature=0.5 top_p=0.9 seed=42 ") != std::string::npos, "GEN carries the keys: " +
+         (gens.empty() ? std::string{} : gens.front()));
+}
+
+void dos01_context_rule_is_400_without_gen() {
+  auto r = start_recorded("ctx", {}, {"--ready-context=64"});
+  if (!r.server) return;
+  const auto response = raw(*r.server, chat_request(*r.server, chat_body(R"("max_tokens":5)", std::string(100, 'y'))));
+  expect(response && response->status == 400 && response->body.find("context_length_exceeded") != std::string::npos, "400");
+  expect(gen_lines(record_of(r.record)).empty() && r.server->wait_for_health(test_support::kHealthReady, 2s),
+         "no GEN; the engine never saw a request it would refuse and stays ready");
+}
+
+void chat_response_has_openai_shape() {
+  auto r = start_recorded("shape");
+  if (!r.server) return;
+  const auto first = raw(*r.server, chat_request(*r.server, chat_body()));
+  const auto second = raw(*r.server, chat_request(*r.server, chat_body()));
+  expect(first && first->status == 200 && second && second->status == 200, "two chats");
+  if (!first || !second) return;
+  const auto id_of = [](const std::string& body) { const auto p = body.find("\"id\":\"chatcmpl-"); return p == std::string::npos ? std::string{} : body.substr(p + 15, 32); };
+  expect(id_of(first->body).size() == 32U && id_of(first->body).find_first_not_of("0123456789abcdef") == std::string::npos, "32 lowercase hex");
+  expect(id_of(first->body) != id_of(second->body), "a fresh id per response");
+  expect(first->body.find("\"created\":0") == std::string::npos && first->body.find("\"finish_reason\":") != std::string::npos &&
+         first->body.find("\"completion_tokens\":1") != std::string::npos, "created, finish_reason and usage are real");
+}
+
+void dos02_excess_connections_get_503_retry_after() {
+  auto r = start_recorded("exc", {{"limits.concurrency.max_concurrent_requests", "2"}}, {"--tokens=60", "--token-interval-ms=50"});
+  if (!r.server) return;
+  std::thread chat([&] { (void)raw(*r.server, chat_request(*r.server, chat_body("")), 30s); });
+  std::this_thread::sleep_for(300ms);   // worker 1 in P6
+  auto body_holder = raw_http::Connection::open("127.0.0.1", r.server->port());
+  expect(body_holder && body_holder->send("POST /v1/chat/completions HTTP/1.1\r\nHost: " + authority(*r.server) + "\r\n" +
+                                          raw_http::bearer(token()) + "\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{"),
+         "worker 2 held in P3 by an authenticated slow body");
+  std::this_thread::sleep_for(200ms);
+  const auto refused = raw(*r.server, raw_http::request("GET", "/health", authority(*r.server), {raw_http::bearer(token())}), 5s);
+  expect(refused && refused->status == 503 && refused->header("Retry-After") == std::optional<std::string>{"1"} &&
+         refused->body == secure_frontend::render_error_body(ApiError::server_busy), "no worker free: 503 server_busy, Retry-After: 1, JSON, got " +
+         (refused ? std::to_string(refused->status) + " " + refused->body : std::string{"<no response>"}));
+  body_holder.reset();
+  chat.join();
+}
+
+void dos02_queue_full_is_503() {
+  auto r = start_recorded("qf", {}, {"--tokens=20", "--token-interval-ms=50"});
+  if (!r.server) return;
+  std::vector<std::thread> holders;
+  for (int i = 0; i < 5; ++i) {
+    holders.emplace_back([&] { (void)raw(*r.server, chat_request(*r.server, chat_body("")), 30s); });
+    std::this_thread::sleep_for(50ms);
+  }
+  std::this_thread::sleep_for(200ms);   // 1 running + 4 queued
+  const auto started = std::chrono::steady_clock::now();
+  const auto refused = raw(*r.server, chat_request(*r.server, chat_body("")));
+  expect(refused && refused->status == 503 && refused->body == secure_frontend::render_error_body(ApiError::server_busy) &&
+         refused->header("Retry-After") == std::optional<std::string>{"1"}, "the sixth chat is refused at once");
+  expect(std::chrono::steady_clock::now() - started < 500ms, "without waiting");
+  for (auto& t : holders) t.join();
+}
+
+void dos02_queue_timeout_is_503() {
+  auto r = start_recorded("qt", {{"limits.concurrency.queue_timeout_ms", "1000"}}, {"--tokens=30", "--token-interval-ms=100"});
+  if (!r.server) return;
+  std::thread running([&] { (void)raw(*r.server, chat_request(*r.server, chat_body("")), 30s); });
+  std::this_thread::sleep_for(200ms);
+  const auto started = std::chrono::steady_clock::now();
+  const auto waited = raw(*r.server, chat_request(*r.server, chat_body("")), 10s);
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  expect(waited && waited->status == 503 && waited->body.find("server_busy") != std::string::npos, "queue timeout is 503 server_busy");
+  expect(elapsed >= 900ms && elapsed < 2500ms, "after about 1 s");
+  running.join();
+}
+
+void dos02_queue_is_fifo() {
+  auto r = start_recorded("fifo", {}, {"--tokens=8", "--token-interval-ms=50"});
+  if (!r.server) return;
+  std::mutex m;
+  std::vector<int> done;
+  std::vector<std::thread> clients;
+  for (int i = 0; i < 5; ++i) {
+    clients.emplace_back([&, i] {
+      const auto response = raw(*r.server, chat_request(*r.server, chat_body("", "client" + std::to_string(i))), 30s);
+      std::lock_guard g(m);
+      if (response && response->status == 200) done.push_back(i);
+    });
+    std::this_thread::sleep_for(100ms);
+  }
+  for (auto& t : clients) t.join();
+  expect(done == std::vector<int>{0, 1, 2, 3, 4}, "completion order equals admission order");
+}
+
+void dos02_health_answers_while_generation_places_full() {
+  auto r = start_recorded("hp", {}, {"--tokens=40", "--token-interval-ms=50"});
+  if (!r.server) return;
+  std::vector<std::thread> holders;
+  for (int i = 0; i < 5; ++i) holders.emplace_back([&] { (void)raw(*r.server, chat_request(*r.server, chat_body("")), 60s); });
+  std::this_thread::sleep_for(500ms);
+  const auto started = std::chrono::steady_clock::now();
+  const auto health = raw(*r.server, raw_http::request("GET", "/health", authority(*r.server), {raw_http::bearer(token())}));
+  const auto models = raw(*r.server, raw_http::request("GET", "/v1/models", authority(*r.server), {raw_http::bearer(token())}));
+  expect(health && health->status == 200 && health->body == "{\"status\":\"ok\",\"engine\":\"generating\"}\n", "/health answers at once");
+  expect(models && models->status == 200, "/v1/models answers at once");
+  expect(std::chrono::steady_clock::now() - started < 1s, "within one second while every generation place is taken");
+  for (auto& t : holders) t.join();
+}
+
+void dos02_serial_mode_one_worker() {
+  auto r = start_recorded("serial", {{"limits.concurrency.max_concurrent_requests", "1"}}, {"--tokens=40", "--token-interval-ms=50"});
+  if (!r.server) return;
+  std::thread first([&] { (void)raw(*r.server, chat_request(*r.server, chat_body("")), 30s); });
+  std::this_thread::sleep_for(300ms);
+  const auto second = raw(*r.server, chat_request(*r.server, chat_body("")));
+  expect(second && second->status == 503 && second->body.find("server_busy") != std::string::npos, "the second chat is busy in serial mode");
+  first.join();
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -634,6 +823,19 @@ int main(int argc, char** argv) {
       {"auth01_every_route_rejects_missing_malformed_wrong_token", auth01_every_route_rejects_missing_malformed_wrong_token},
       {"cfg01_wildcard_bind_requires_host_aliases", cfg01_wildcard_bind_requires_host_aliases},
       {"dos01_eviction_over_tcp_admits_new_client", dos01_eviction_over_tcp_admits_new_client},
+      {"max_tokens_above_limit_is_clamped", max_tokens_above_limit_is_clamped},
+      {"max_tokens_clamped_to_context_room", max_tokens_clamped_to_context_room},
+      {"prompt_alone_over_context_is_400", prompt_alone_over_context_is_400},
+      {"absent_max_tokens_uses_auto", absent_max_tokens_uses_auto},
+      {"sampling_passthrough_reaches_gen", sampling_passthrough_reaches_gen},
+      {"dos01_context_rule_is_400_without_gen", dos01_context_rule_is_400_without_gen},
+      {"chat_response_has_openai_shape", chat_response_has_openai_shape},
+      {"dos02_excess_connections_get_503_retry_after", dos02_excess_connections_get_503_retry_after},
+      {"dos02_queue_full_is_503", dos02_queue_full_is_503},
+      {"dos02_queue_timeout_is_503", dos02_queue_timeout_is_503},
+      {"dos02_queue_is_fifo", dos02_queue_is_fifo},
+      {"dos02_health_answers_while_generation_places_full", dos02_health_answers_while_generation_places_full},
+      {"dos02_serial_mode_one_worker", dos02_serial_mode_one_worker},
       {"dos01_slowloris_cannot_starve_a_real_client", dos01_slowloris_cannot_starve_a_real_client},
       {"dos01_slow_body_clients_cannot_starve_a_real_client", dos01_slow_body_clients_cannot_starve_a_real_client},
       {"net01_workers_add_no_listener", net01_workers_add_no_listener},

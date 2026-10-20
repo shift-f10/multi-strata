@@ -36,9 +36,11 @@ std::variant<Lease, GateRefusal> GenerationGate::admit(SupervisorPort& port, con
   if (const auto fast = refusal_for(port.snapshot().state)) return *fast;
   std::unique_lock lock(mutex_);
   if (shutdown_) return GateRefusal::shutting_down;
-  if (queue_.size() >= limits_.max_queued) return GateRefusal::busy;
-  const std::uint64_t ticket = next_ticket_++;
   if (running_ || !queue_.empty()) {
+    // max_queued bounds WAITERS; an arrival that finds slot and queue empty
+    // never waits, so it passes even at max_queued = 0 (serial mode, DOS-02).
+    if (queue_.size() >= limits_.max_queued) return GateRefusal::busy;
+    const std::uint64_t ticket = next_ticket_++;
     queue_.push_back(ticket);
     // A waiter wakes on release()/shutdown() or every kStreamPollSlice to
     // re-check client_gone, its deadline, and whether it became head.
