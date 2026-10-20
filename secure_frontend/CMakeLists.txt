@@ -807,7 +807,10 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         absent_max_tokens_uses_auto sampling_passthrough_reaches_gen dos01_context_rule_is_400_without_gen
         chat_response_has_openai_shape dos02_excess_connections_get_503_retry_after dos02_queue_full_is_503
         dos02_queue_timeout_is_503 dos02_queue_is_fifo dos02_health_answers_while_generation_places_full
-        dos02_serial_mode_one_worker)
+        dos02_serial_mode_one_worker
+        dos02_queued_client_disconnect_leaves_queue dos02_non_stream_disconnect_cancels
+        dos02_resources_return_to_idle shutdown_errors_never_report_fatal
+        dos01_service_healthy_after_each_attack)
     # Ruling R-J: these cases start the real server over sockets; wine excludes them, MSYS2 is authoritative.
     secure_frontend_add_cases(secure_frontend_api_server_tests ${SECURE_FRONTEND_API_SERVER_CASES}
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)

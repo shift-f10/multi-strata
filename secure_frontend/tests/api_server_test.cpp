@@ -12,6 +12,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <iterator>
 #include <map>
@@ -797,6 +798,121 @@ void dos02_serial_mode_one_worker() {
   expect(second && second->status == 503 && second->body.find("server_busy") != std::string::npos, "the second chat is busy in serial mode");
   first.join();
 }
+
+// SP3 Task 17 (acceptance: DOS-02 cancel/release, §2.6, §2.8; the behavior was
+// built in Tasks 6a/8a/8b/12/13/15/16 — these lock it in).
+void dos02_queued_client_disconnect_leaves_queue() {
+  auto r = start_recorded("qdc", {}, {"--tokens=40", "--token-interval-ms=50"});
+  if (!r.server) return;
+  std::thread a([&] { (void)raw(*r.server, chat_request(*r.server, chat_body("", "AAA")), 30s); });
+  std::this_thread::sleep_for(300ms);
+  {
+    auto b = raw_http::Connection::open("127.0.0.1", r.server->port());
+    expect(b && b->send(chat_request(*r.server, chat_body("", "BBB"))), "B queued");
+    std::this_thread::sleep_for(300ms);
+  }   // B goes away while queued
+  const auto c = raw(*r.server, chat_request(*r.server, chat_body("", "CCC")), 30s);
+  a.join();
+  expect(c && c->status == 200, "C is served");
+  expect(gen_lines(record_of(r.record)).size() == 2U, "only A and C reached the engine; B left the queue silently");
+}
+
+void dos02_non_stream_disconnect_cancels() {
+  auto r = start_recorded("ndc", {}, {"--tokens=10000", "--token-interval-ms=5"});
+  if (!r.server) return;
+  {
+    auto c = raw_http::Connection::open("127.0.0.1", r.server->port());
+    expect(c && c->send(chat_request(*r.server, chat_body(""))), "a long chat");
+    std::this_thread::sleep_for(300ms);
+  }   // client gone during P6
+  bool stopped = false;
+  for (int i = 0; i < 50 && !stopped; ++i) {
+    stopped = record_of(r.record).find("\nSTOP\n") != std::string::npos;
+    if (!stopped) std::this_thread::sleep_for(20ms);
+  }
+  expect(stopped, "STOP reached the engine within 1 s of the disconnect");
+  const auto started = std::chrono::steady_clock::now();
+  const auto next = raw(*r.server, chat_request(*r.server, chat_body(R"("max_tokens":2)")), 5s);
+  expect(next && next->status == 200 && std::chrono::steady_clock::now() - started < 1s, "the next request is served within 1 s");
+  expect(r.server->stderr_text().find("killed_by_supervisor") == std::string::npos, "a drained cancel never kills the engine");
+}
+
+void dos02_resources_return_to_idle() {
+  auto r = start_recorded("idle", {}, {"--tokens=10000", "--token-interval-ms=5"});
+  if (!r.server) return;
+  (void)raw(*r.server, raw_http::request("GET", "/health", authority(*r.server), {raw_http::bearer(token())}));
+  std::this_thread::sleep_for(300ms);
+  const auto threads0 = test_support::thread_count(r.server->pid());
+  const auto handles0 = test_support::handle_count(r.server->pid());
+  for (int i = 0; i < 100; ++i) {
+    auto c = raw_http::Connection::open("127.0.0.1", r.server->port());
+    if (c) (void)c->send(chat_request(*r.server, chat_body("")));
+    std::this_thread::sleep_for(30ms);
+  }
+  bool idle = false;
+  for (int i = 0; i < 100 && !idle; ++i) {
+    std::this_thread::sleep_for(50ms);
+    idle = test_support::thread_count(r.server->pid()) == threads0 && test_support::handle_count(r.server->pid()) == handles0;
+  }
+  expect(idle, "after 100 cancelled chats threads (" + std::to_string(test_support::thread_count(r.server->pid())) + "/" +
+               std::to_string(threads0) + ") and handles (" + std::to_string(test_support::handle_count(r.server->pid())) + "/" +
+               std::to_string(handles0) + ") return to their idle values");
+  const auto health = raw(*r.server, raw_http::request("GET", "/health", authority(*r.server), {raw_http::bearer(token())}));
+  expect(health && health->status == 200, "and the service is healthy");
+}
+
+void shutdown_errors_never_report_fatal() {
+  auto r = start_recorded("sd", {}, {"--tokens=10000", "--token-interval-ms=5"});
+  if (!r.server) return;
+  std::optional<raw_http::Response> answer;
+  std::string raw_answer;
+  std::thread chat([&] {
+    auto c = raw_http::Connection::open("127.0.0.1", r.server->port());
+    if (c && c->send(chat_request(*r.server, chat_body("")))) raw_answer = c->read_until_close(10s);
+  });
+  std::this_thread::sleep_for(500ms);
+  const auto started = std::chrono::steady_clock::now();
+#if defined(_WIN32)
+  r.server->stop(test_support::ServerProcess::Stop::ctrl_break);
+#else
+  r.server->stop(test_support::ServerProcess::Stop::term);
+#endif
+  const auto code = r.server->wait_exit(10s);
+  chat.join();
+  expect(code == std::optional<int>{0} && std::chrono::steady_clock::now() - started < 5s, "exit 0 within SP2's 5 s bound");
+  answer = raw_http::parse_response(raw_answer);
+  expect(raw_answer.empty() || (answer && answer->status == 503 && answer->body == secure_frontend::render_error_body(ApiError::server_shutting_down)),
+         "the in-flight chat gets 503 server_shutting_down or a close");
+  const std::string log = r.server->stderr_text();
+  expect(log.find("drain_failed") == std::string::npos && log.find("protocol_failed") == std::string::npos &&
+         log.find("write_timeout") == std::string::npos, "no worker-side failure was reported as fatal during shutdown");
+}
+
+void dos01_service_healthy_after_each_attack() {
+  auto server = start_server({{"limits.http.header_deadline_ms", "500"}, {"limits.http.request_deadline_ms", "1000"}});
+  if (!server) return;
+  const std::string a = authority(*server);
+  const std::vector<std::pair<std::string, std::function<void()>>> attacks{
+      {"oversize header", [&] { (void)raw(*server, "GET /health HTTP/1.1\r\nHost: " + a + "\r\nX: " + std::string(20000, 'x') + "\r\n\r\n"); }},
+      {"deep JSON", [&] { (void)raw(*server, chat_request(*server, R"({"model":"fake-model","messages":[{"role":"user","content":"Hi"}],"logit_bias":{"a":{"b":{"c":{"d":1}}}}})")); }},
+      {"chunked body", [&] { (void)raw(*server, raw_http::request("POST", "/v1/chat/completions", a, {raw_http::bearer(token()), "Transfer-Encoding: chunked"})); }},
+      {"slow then closed body", [&] {
+         auto c = raw_http::Connection::open("127.0.0.1", server->port());
+         if (c) (void)c->send(chat_request(*server, chat_body()).substr(0, 120));
+       }},
+      {"slow header", [&] {
+         auto c = raw_http::Connection::open("127.0.0.1", server->port());
+         if (c) { (void)c->send("GET /he"); (void)c->read_until_close(2s); }
+       }},
+      {"body over limit", [&] { (void)raw(*server, chat_request(*server, std::string(60000, ' '))); }},
+      {"garbage", [&] { (void)raw(*server, std::string("\x16\x03\x01\x02\x00", 5) + std::string(100, '\x01')); }}};
+  for (const auto& [name, attack] : attacks) {
+    attack();
+    const auto health = raw(*server, raw_http::request("GET", "/health", a, {raw_http::bearer(token())}));
+    const auto chat = raw(*server, chat_request(*server, chat_body()));
+    expect(health && health->status == 200 && chat && chat->status == 200, "healthy and serving after: " + name);
+  }
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -836,6 +952,11 @@ int main(int argc, char** argv) {
       {"dos02_queue_is_fifo", dos02_queue_is_fifo},
       {"dos02_health_answers_while_generation_places_full", dos02_health_answers_while_generation_places_full},
       {"dos02_serial_mode_one_worker", dos02_serial_mode_one_worker},
+      {"dos02_queued_client_disconnect_leaves_queue", dos02_queued_client_disconnect_leaves_queue},
+      {"dos02_non_stream_disconnect_cancels", dos02_non_stream_disconnect_cancels},
+      {"dos02_resources_return_to_idle", dos02_resources_return_to_idle},
+      {"shutdown_errors_never_report_fatal", shutdown_errors_never_report_fatal},
+      {"dos01_service_healthy_after_each_attack", dos01_service_healthy_after_each_attack},
       {"dos01_slowloris_cannot_starve_a_real_client", dos01_slowloris_cannot_starve_a_real_client},
       {"dos01_slow_body_clients_cannot_starve_a_real_client", dos01_slow_body_clients_cannot_starve_a_real_client},
       {"net01_workers_add_no_listener", net01_workers_add_no_listener},
