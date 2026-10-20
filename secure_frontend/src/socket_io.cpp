@@ -159,14 +159,20 @@ IoResult send_some(const NativeSocket socket, const std::string_view bytes) noex
 }
 
 WriteOutcome send_all_bounded(const NativeSocket socket, std::string_view bytes, const std::chrono::milliseconds stall,
-                              const Clock::time_point deadline) noexcept {
+                              const Clock::time_point deadline, const std::atomic<bool>* stop) noexcept {
   // A non-positive `stall` reports `stalled` before the first send (callers pass
   // write_stall_ms, which the schema keeps >= 1). The stall clock restarts on
   // every send that moves at least one byte (spec §2.7, E4).
   auto last_progress = Clock::now();
+  // Spec §2.8 (Task 12 carry-in): once `stop` is seen, the whole-write bound
+  // tightens to kShutdownDrainBudget from that observation; a write already in
+  // flight can never hold a worker past the shutdown drain budget.
+  std::optional<Clock::time_point> drain_bound;
   while (!bytes.empty()) {
     const auto now = Clock::now();
-    if (now >= deadline) return WriteOutcome::deadline;
+    if (stop != nullptr && stop->load() && !drain_bound.has_value()) drain_bound = now + api_constants::kShutdownDrainBudget;
+    const auto bound = drain_bound.has_value() && *drain_bound < deadline ? *drain_bound : deadline;
+    if (now >= bound) return WriteOutcome::deadline;
     if (now - last_progress >= stall) return WriteOutcome::stalled;
     const IoResult result = send_some(socket, bytes);
     if (result.status == IoStatus::done) {
@@ -176,7 +182,7 @@ WriteOutcome send_all_bounded(const NativeSocket socket, std::string_view bytes,
     }
     if (result.status != IoStatus::would_block) return WriteOutcome::failed;
     // Wait for writability, never past the stall bound or the deadline.
-    const auto wait = std::min({ceil_ms(deadline - now), ceil_ms(last_progress + stall - now), api_constants::kStreamPollSlice});
+    const auto wait = std::min({ceil_ms(bound - now), ceil_ms(last_progress + stall - now), api_constants::kStreamPollSlice});
     (void)wait_one(socket, false, wait);  // 0 (timeout or EINTR) loops back to the clock checks
   }
   return WriteOutcome::complete;

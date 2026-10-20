@@ -275,8 +275,9 @@ target_include_directories(secure_frontend_http_socket_server
 target_link_libraries(secure_frontend_http_socket_server PUBLIC secure_frontend_socket_io secure_frontend_http_request_handler
     secure_frontend_config secure_frontend_api_core)
 # SP3 Task 11: admission state (§2.3) and the lingering-close list (§2.4).
+# Task 12: the pool itself (§2.1, §2.8) — accept thread + fixed workers.
 secure_frontend_add_library(secure_frontend_connection_pool
-    SOURCES src/admission.cpp src/linger_list.cpp
+    SOURCES src/admission.cpp src/linger_list.cpp src/connection_pool.cpp
     LINKS secure_frontend_http_socket_server secure_frontend_socket_io secure_frontend_api_core)
 
 target_compile_features(secure_frontend_api_router PUBLIC cxx_std_20)
@@ -397,6 +398,7 @@ target_link_libraries(strata-secure-server PRIVATE secure_frontend_config secure
 target_link_libraries(strata-secure-server PRIVATE secure_frontend_server_cli secure_frontend_typed_config)
 target_link_libraries(strata-secure-server PRIVATE secure_frontend_subsystem_limits secure_frontend_engine_supervisor)
 target_link_libraries(strata-secure-server PRIVATE secure_frontend_socket_io secure_frontend_api_core)
+target_link_libraries(strata-secure-server PRIVATE secure_frontend_connection_pool)
 target_compile_features(strata-secure-server PRIVATE cxx_std_20)
 # Spec A2: UTF-8 argv from the wide command line on Windows, shared by
 # strata-secure-server and strata (CommandLineToArgvW: shell32).
@@ -783,11 +785,17 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         security_headers_on_every_response
         web01_bad_host_rejected_on_every_route web01_ipv6_bound_host_rules web02_bound_authority_and_localhost_alias_succeed web02_host_alias_from_config_succeeds
         web03_untrusted_origin_no_cors_header web04_default_emits_no_cors_header_anywhere web05_only_exact_configured_origin_allowed web06_preflight_matrix
-        web06_cross_origin_post_without_trust_rejected auth01_every_route_rejects_missing_malformed_wrong_token cfg01_wildcard_bind_requires_host_aliases)
+        web06_cross_origin_post_without_trust_rejected auth01_every_route_rejects_missing_malformed_wrong_token cfg01_wildcard_bind_requires_host_aliases
+        dos01_eviction_over_tcp_admits_new_client dos01_slowloris_cannot_starve_a_real_client dos01_slow_body_clients_cannot_starve_a_real_client
+        net01_workers_add_no_listener net01_ipv6_loopback_listener_only)
     # Ruling R-J: these cases start the real server over sockets; wine excludes them, MSYS2 is authoritative.
     secure_frontend_add_cases(secure_frontend_api_server_tests ${SECURE_FRONTEND_API_SERVER_CASES}
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
     set_tests_properties(secure_frontend_api_server_tests.web01_ipv6_bound_host_rules PROPERTIES SKIP_RETURN_CODE 77)
+    set_tests_properties(secure_frontend_api_server_tests.net01_ipv6_loopback_listener_only PROPERTIES SKIP_RETURN_CODE 77)
+    if(WIN32)
+        target_link_libraries(secure_frontend_api_server_tests PRIVATE iphlpapi)
+    endif()
 
     secure_frontend_add_test_executable(secure_frontend_deadline_tests tests/deadline_test.cpp secure_frontend_engine_stdio_process)
     secure_frontend_test_paths(secure_frontend_deadline_tests)
@@ -913,7 +921,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         listener_and_accepted_sockets_are_not_inherited
         send_retries_on_eintr accept_backs_off_on_transient_failure send_some_slices_to_max_send_chunk
         send_all_bounded_stops_at_stall_on_a_stalled_reader send_all_bounded_meets_deadline_and_completes
-        send_all_bounded_stall_restarts_on_progress socket_io_poll_probe_and_recv set_no_inherit_marks_the_socket
+        send_all_bounded_stall_restarts_on_progress send_all_bounded_stop_flag_cuts_an_inflight_write_within_the_drain_budget
+        socket_io_poll_probe_and_recv set_no_inherit_marks_the_socket
         TIMEOUT 300)
     target_link_libraries(secure_frontend_http_socket_server_tests PRIVATE secure_frontend_socket_io
         secure_frontend_api_router secure_frontend_secrets secure_frontend_http_policy)

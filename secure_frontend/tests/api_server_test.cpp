@@ -1,11 +1,14 @@
 #include "secure_frontend/api_errors.hpp"
 #include "secure_frontend/request_router.hpp"
 #include "secure_frontend/socket_io.hpp"
+#include "support/connection_scan.hpp"
 #include "support/raw_http.hpp"
 #include "support/server_harness.hpp"
 #include "support/test_paths.hpp"
 #include "support/test_support.hpp"
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -430,6 +433,181 @@ void cfg01_wildcard_bind_requires_host_aliases() {
   expect(server->stderr_text().find("listener.host_aliases") != std::string::npos, "the error names the key: " + server->stderr_text());
   expect(!std::filesystem::exists(dir / "record.txt"), "no engine was spawned (the fake creates its record file at start)");
 }
+
+// DOS-01 / §2.3: eight slow-header clients hold all eight workers in P1; a ninth
+// connection evicts the oldest of them and is answered anyway (spec §2.3).
+void dos01_eviction_over_tcp_admits_new_client() {
+  auto server = start_server({{"limits.http.header_deadline_ms", "30000"}});
+  if (!server) return;
+  std::vector<raw_http::Connection> holders;
+  for (int i = 0; i < 8; ++i) {
+    auto c = raw_http::Connection::open("127.0.0.1", server->port());
+    expect(c && c->send("GET /health HTTP/1.1\r\nHost: "), "slow-header client " + std::to_string(i));
+    if (c) holders.push_back(std::move(*c));
+    std::this_thread::sleep_for(20ms);
+  }
+  std::this_thread::sleep_for(200ms);   // all eight workers now sit in P1
+  const auto r = raw(*server, raw_http::request("GET", "/health", authority(*server), {raw_http::bearer(token())}), 5s);
+  expect(r && r->status == 200, "a ninth client completes while eight workers are held in P1");
+  bool someone_closed = false;
+  for (auto& h : holders) someone_closed = someone_closed || h.wait_closed(100ms);
+  expect(someone_closed, "one P1 client was evicted (closed without a response)");
+}
+
+// DOS-01 / §2.3: 16 one-byte-per-second header clients can never hold every
+// worker: eviction cycles through them and a real chat completes promptly.
+void dos01_slowloris_cannot_starve_a_real_client() {
+  auto server = start_server({{"limits.http.header_deadline_ms", "30000"}});
+  if (!server) return;
+  std::atomic<bool> stop{false};
+  std::vector<std::thread> lorises;
+  for (int i = 0; i < 16; ++i) {
+    lorises.emplace_back([&stop, port = server->port()] {
+      while (!stop) {
+        auto c = raw_http::Connection::open("127.0.0.1", port);
+        if (!c) continue;
+        const std::string head = "GET /health HTTP/1.1\r\nHost: x\r\nX-Slow: ";
+        for (std::size_t i = 0; i < head.size() && !stop; ++i) {
+          if (!c->send(std::string_view{head}.substr(i, 1U))) break;
+          std::this_thread::sleep_for(1s);
+        }
+      }
+    });
+  }
+  std::this_thread::sleep_for(500ms);
+  const auto started = std::chrono::steady_clock::now();
+  const auto r = raw(*server, chat_request(*server, chat_body()), 20s);
+  expect(r && r->status == 200, "a real chat completes under 16 one-byte-per-second header clients");
+  expect(std::chrono::steady_clock::now() - started < 10s, "and promptly");
+  stop = true;
+  for (auto& t : lorises) t.join();
+}
+
+// DOS-01 / §2.2 + §2.3: an unauthenticated slow-body client never reaches P3 —
+// it is answered at once with 401 (auth before the body, Task 9) or, while all
+// eight workers drain a previous 401, refused with 503 server_busy at accept.
+// Neither can starve a real client: every dribbler answer is instant and the
+// real chat completes (Retry-After: 1 is honored by the retry loop).
+void dos01_slow_body_clients_cannot_starve_a_real_client() {
+  auto server = start_server();
+  if (!server) return;
+  std::vector<raw_http::Connection> dribblers;
+  int fortyones = 0;
+  for (int i = 0; i < 16; ++i) {
+    auto c = raw_http::Connection::open("127.0.0.1", server->port());
+    const auto started = std::chrono::steady_clock::now();
+    expect(c && c->send("POST /v1/chat/completions HTTP/1.1\r\nHost: " + authority(*server) +
+                        "\r\nAuthorization: Bearer nope-0123456789abcdefghijklmnopqrstuvw\r\nContent-Type: application/json\r\n"
+                        "Content-Length: 40000\r\n\r\n{"), "header with a bad token, then a dribbled body");
+    const std::string reply = c ? c->read_until_close(2s) : "";
+    const bool refused = reply.rfind("HTTP/1.1 503", 0) == 0;
+    expect((reply.rfind("HTTP/1.1 401", 0) == 0 || refused) && std::chrono::steady_clock::now() - started < 1s,
+           "answered at once: 401, or 503 server_busy while every worker drains an earlier 401 (spec §2.3)");
+    if (reply.rfind("HTTP/1.1 401", 0) == 0) ++fortyones;
+    if (c) dribblers.push_back(std::move(*c));
+  }
+  expect(fortyones >= 1, "at least one dribbling bad-token client got the 401 auth-before-body answer");
+  std::optional<raw_http::Response> r;
+  for (int attempt = 0; attempt < 12 && !(r && r->status == 200); ++attempt) {
+    r = raw(*server, chat_request(*server, chat_body()), 10s);
+    if (!(r && r->status == 200)) std::this_thread::sleep_for(300ms);
+  }
+  expect(r && r->status == 200, "a real chat completes once the P8 drains free the workers");
+}
+
+// Ruling T12-net01: differential listener comparison helper (see below).
+std::vector<std::string> listening_signature(const std::vector<test_support::SocketRow>& rows) {
+  std::vector<std::string> sig;
+  for (const auto& row : rows)
+    if (row.listening) sig.push_back(row.kind + ":" + std::to_string(row.local_port) + ":" + row.local_address);
+  std::sort(sig.begin(), sig.end());
+  return sig;
+}
+
+// NET-01 / §2.1: a fixed worker pool adds no listener. D3: the traffic is
+// asserted, not asserted-away. Ruling T12-net01b: the plan's fixed "20 x 200"
+// expectation contradicts spec §2.3 — with ten concurrent chats holding all
+// eight workers past P1 (one lease; the queue arrives in Task 16), later
+// clients, GETs included, are legitimately refused 503 server_busy at accept.
+// The asserted invariants: every client gets a COMPLETE response (no nulls, no
+// hangs), every status is 200 or 503, at least one client got 200 (the pool
+// served), a sequential health check succeeds after the burst (the workers
+// came back), and the listening-socket set is unchanged (ruling T12-net01:
+// differential, because the non-dumpable server forces uid attribution and the
+// dev container has other same-uid listeners).
+void net01_workers_add_no_listener() {
+  auto server = start_server();
+  if (!server) return;
+  const auto before = listening_signature(test_support::sockets_of(server->pid()));
+  std::atomic<int> twos{0};
+  std::atomic<int> refused{0};
+  std::atomic<int> evicted{0};
+  std::atomic<int> wrong{0};
+  std::vector<std::thread> clients;
+  for (int i = 0; i < 20; ++i) {
+    clients.emplace_back([&server, &twos, &refused, &evicted, &wrong, i] {
+      const auto r = i % 2 == 0
+          ? raw(*server, raw_http::request("GET", i % 4 == 0 ? "/health" : "/v1/models", authority(*server), {raw_http::bearer(token())}))
+          : raw(*server, chat_request(*server, chat_body()));
+      if (!r) ++evicted;   // closed without a response: the §2.3 eviction outcome
+      else if (r->status == 200) ++twos;
+      else if (r->status == 503) ++refused;
+      else ++wrong;
+    });
+  }
+  for (auto& t : clients) t.join();
+  expect(wrong == 0, "no client of the burst got a status outside {200,503}");
+  expect(twos >= 1, "at least one client of the burst got 200 (the pool served)");
+  // A burst of 20 near-simultaneous clients is exactly the §2.3 admission
+  // situation: late arrivals evict the oldest not-yet-authenticated connection
+  // (closed without a response -> a nullopt exchange) or arrive with no idle
+  // worker and no P1 victim (503 server_busy). Both are complete outcomes;
+  // nothing may hang, and the server must serve again right after.
+  std::cerr << "net01 burst: 200=" << twos.load() << " refused503=" << refused.load()
+            << " evicted=" << evicted.load() << " wrong=" << wrong.load() << '\n';
+  std::optional<raw_http::Response> health;
+  for (int attempt = 0; attempt < 10 && !(health && health->status == 200); ++attempt) {
+    health = raw(*server, raw_http::request("GET", "/health", authority(*server), {raw_http::bearer(token())}), 2s);
+    if (!(health && health->status == 200)) std::this_thread::sleep_for(300ms);
+  }
+  expect(health && health->status == 200, "after the burst a sequential /health answers 200: the workers came back");
+  const auto after_rows = test_support::sockets_of(server->pid());
+  const auto after = listening_signature(after_rows);
+  expect(after == before, "20 mixed requests added no listening socket to the server");
+  bool server_listener = false;
+  for (const auto& row : after_rows) {
+    if (!row.listening || row.local_port != server->port()) continue;
+    server_listener = true;
+    expect(test_support::is_loopback_row(row), "the server's listener is the loopback one");
+  }
+  expect(server_listener, "the server still listens on its port after the traffic");
+}
+
+// NET-01: on a ::1 bind the server's listener is the v6 loopback one, serving
+// adds no listener (differential, ruling T12-net01), and nothing answers on
+// IPv4. D2: reuses wait_health_on.
+void net01_ipv6_loopback_listener_only() {
+  if (!test_support::ipv6_loopback_available()) test_support::skip("no IPv6 loopback on this host");
+  test_support::ServerOptions options;
+  options.config_literals = {{"listener.host", "\"::1\""}};
+  auto server = test_support::ServerProcess::start(options);
+  expect(server != nullptr, "server starts on ::1");
+  if (!server) return;
+  const auto r = wait_health_on("::1", server->port(), "[::1]:" + std::to_string(server->port()));
+  expect(r && r->status == 200, "served on ::1");
+  const auto rows = test_support::sockets_of(server->pid());
+  const auto before = listening_signature(rows);
+  std::size_t own_listeners = 0;
+  for (const auto& row : rows) {
+    if (!row.listening || row.local_port != server->port()) continue;
+    ++own_listeners;
+    expect(row.kind == "tcp6" && test_support::is_loopback_row(row), "the server's listener is ::1 only");
+  }
+  expect(own_listeners == 1U, "the server has exactly one listener, on its port");
+  const auto again = test_support::sockets_of(server->pid());
+  expect(listening_signature(again) == before, "the /health traffic added no listener");
+  expect(!raw_http::Connection::open("127.0.0.1", server->port()).has_value(), "nothing listens on IPv4");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -455,5 +633,10 @@ int main(int argc, char** argv) {
       {"web06_cross_origin_post_without_trust_rejected", web06_cross_origin_post_without_trust_rejected},
       {"auth01_every_route_rejects_missing_malformed_wrong_token", auth01_every_route_rejects_missing_malformed_wrong_token},
       {"cfg01_wildcard_bind_requires_host_aliases", cfg01_wildcard_bind_requires_host_aliases},
+      {"dos01_eviction_over_tcp_admits_new_client", dos01_eviction_over_tcp_admits_new_client},
+      {"dos01_slowloris_cannot_starve_a_real_client", dos01_slowloris_cannot_starve_a_real_client},
+      {"dos01_slow_body_clients_cannot_starve_a_real_client", dos01_slow_body_clients_cannot_starve_a_real_client},
+      {"net01_workers_add_no_listener", net01_workers_add_no_listener},
+      {"net01_ipv6_loopback_listener_only", net01_ipv6_loopback_listener_only},
   }, failures);
 }

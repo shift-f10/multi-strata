@@ -3,6 +3,7 @@
 #include "secure_frontend/chat_execution.hpp"
 #include "secure_frontend/chat_schema.hpp"
 #include "secure_frontend/config.hpp"
+#include "secure_frontend/connection_pool.hpp"
 #include "secure_frontend/engine_arguments.hpp"
 #include "secure_frontend/engine_environment.hpp"
 #include "secure_frontend/engine_supervisor.hpp"
@@ -277,18 +278,25 @@ int run(const FrontendConfig& config, const bool expert) {
   } stop_supervisor{supervisor};
   std::cout << "Secure server listening on http://" << authority << " (authenticated; Ctrl-C to stop)\n";
   std::cout.flush();
-  for (;;) {
-    std::string error;
-    const bool served = server->serve_one(router, connection_bounds, &error);
-    if (supervisor.stop_requested()) break;
-    // The on-stopped hook closed the listener (pre-flight P33): nothing more to accept.
-    if (server->native_handle() == secure_frontend::kInvalidNativeSocket) break;
-    if (!served && server->listener_failed()) {
-      std::cerr << "listener stopped: " << error << '\n';
-      supervisor.shutdown(secure_frontend::config_defaults::kShutdownBound);
-      return EXIT_FAILURE;
-    }
-    // Any other failure was one client's; keep serving.
+  // Task 12: the server is concurrent (spec §2.1). The accept loop runs on this
+  // thread; the workers exist for the life of the pool, which is constructed
+  // after supervisor.start() and destroyed (already joined) before the
+  // supervisor shutdown below.
+  secure_frontend::ConnectionPool pool(
+      *server,
+      secure_frontend::PoolLimits{.workers = config.limits.concurrency.max_concurrent_requests,
+                                  .per_remote_cap = config.limits.concurrency.max_connections_per_remote_address,
+                                  .connection = connection_bounds},
+      router);
+  // Pre-flight P33: the supervisor's stop request ends the accept loop; the
+  // on-stopped hook closing the listener is the second exit path. T12b: a dead
+  // listener ends the loop with PoolExit::listener_failed, handled exactly as
+  // SP2's loop handled it: orderly supervisor shutdown, exit non-zero.
+  const auto pool_exit = pool.run_until([&supervisor] { return supervisor.stop_requested(); });
+  if (pool_exit == secure_frontend::PoolExit::listener_failed) {
+    std::cerr << "listener stopped\n";
+    supervisor.shutdown(secure_frontend::config_defaults::kShutdownBound);
+    return EXIT_FAILURE;
   }
   supervisor.shutdown(secure_frontend::config_defaults::kShutdownBound);
   // Spec C4: exit 0 means no engine is left; an unreaped one was logged.

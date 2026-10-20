@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <optional>
@@ -88,8 +89,13 @@ enum class WriteOutcome { complete, stalled, deadline, failed };
 // `deadline` bounds the whole write. Precondition: `socket` is non-blocking
 // (set_non_blocking). Every send is sliced to kMaxSendChunk and waits for
 // writability in kStreamPollSlice steps, on POSIX and Windows alike.
+// Task 12 carry-in (spec §2.8): when `stop` is set, the write is cut within
+// api_constants::kShutdownDrainBudget of the first observation, even if the
+// whole-write deadline is later — an in-flight write can never outlive
+// shutdown by more than the drain budget. `stop` may be null (never set).
 [[nodiscard]] WriteOutcome send_all_bounded(NativeSocket socket, std::string_view bytes, std::chrono::milliseconds stall,
-                                            std::chrono::steady_clock::time_point deadline) noexcept;
+                                            std::chrono::steady_clock::time_point deadline,
+                                            const std::atomic<bool>* stop = nullptr) noexcept;
 
 enum class PeerState { alive, gone };
 // recv(MSG_PEEK) on the non-blocking socket: EOF, reset or ANY byte -> gone (spec §2.6).

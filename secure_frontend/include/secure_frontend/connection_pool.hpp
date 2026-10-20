@@ -6,12 +6,19 @@
 #include "secure_frontend/socket_io.hpp"
 
 #include <array>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <map>
+#include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 // Accept-time admission (SP3 spec §2.3) and the lingering-close list for
@@ -87,5 +94,60 @@ class LingerList final {
 
 [[nodiscard]] std::string refusal_response(std::chrono::system_clock::time_point now);   // fixed 503 server_busy, <= 512 bytes
 void refuse_connection(Socket socket, LingerList& linger, LingerList::Clock::time_point now);  // one non-blocking send, half-close, linger
+
+// Per-connection bounds plus the admission caps (spec §2.1, §2.3): workers =
+// limits.concurrency.max_concurrent_requests, per_remote_cap =
+// max_connections_per_remote_address.
+struct PoolLimits final {
+  std::uint32_t workers;
+  std::uint32_t per_remote_cap;
+  ConnectionLimits connection;
+};
+
+struct FinishedConnection final {
+  ConnectionResult result;
+  AddressScope peer;
+  std::chrono::milliseconds elapsed;
+};
+using ConnectionObserver = std::function<void(const FinishedConnection&)>;  // Task 21 request logging
+
+enum class PoolExit { stopped, listener_failed };
+
+// The concurrent server (spec §2.1): one accept loop on the calling thread plus
+// a fixed pool of workers created at construction and joined on exit. Every
+// AdmissionState call (admit, header_complete, finished) runs under the single
+// mutex_; the LingerList is touched by the accept thread only. The listener and
+// the linger list share one poll_sockets call per 100 ms slice, at most
+// 1 + kLingerListMax (65) entries, within api_constants::kMaxPollEntries (128).
+class ConnectionPool final {
+ public:
+  ConnectionPool(HttpSocketServer& listener, PoolLimits limits, RequestRouter& router, ConnectionObserver observer = {});
+  ~ConnectionPool();                                  // joins (run_until normally already did)
+  // Accept loop on the calling thread until stop() is true or the listener fails; then spec §2.8:
+  // shutting_down set, on_shutdown() (main: gate.shutdown()), listener closed, lingering sockets closed, workers joined.
+  PoolExit run_until(const std::function<bool()>& stop, const std::function<void()>& on_shutdown = {});
+  [[nodiscard]] const std::atomic<bool>& shutting_down() const noexcept;
+
+ private:
+  struct Worker final {
+    std::thread thread;
+    std::atomic<bool> abort{false};
+    std::optional<HttpSocketServer::Accepted> handoff;
+    std::uint64_t connection{0};
+    AddressScope peer{AddressScope::remote};
+    std::condition_variable wake;
+  };
+  void worker_loop(std::size_t index);
+  HttpSocketServer& listener_;
+  PoolLimits limits_;
+  RequestRouter& router_;
+  ConnectionObserver observer_;
+  std::mutex mutex_;
+  AdmissionState admission_;
+  LingerList linger_;
+  std::vector<std::unique_ptr<Worker>> workers_;
+  std::atomic<bool> shutting_down_{false};
+  bool stopping_{false};
+};
 
 }  // namespace secure_frontend

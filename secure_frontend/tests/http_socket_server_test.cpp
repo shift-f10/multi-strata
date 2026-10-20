@@ -737,6 +737,39 @@ void send_all_bounded_stall_restarts_on_progress() {
   expect(received == payload.size(), "the reader got every byte");
 }
 
+// Task 12 carry-in (spec §2.8): once the stop flag is set, an in-flight write
+// ends within api_constants::kShutdownDrainBudget of that observation, not at
+// its whole-write deadline — the pool's join stays inside SP2's shutdown bound
+// even with a stalled reader.
+void send_all_bounded_stop_flag_cuts_an_inflight_write_within_the_drain_budget() {
+  auto pair = make_loopback_pair(1);
+  if (!pair) { expect(false, "loopback pair"); return; }
+  std::atomic<bool> stop{false};
+  std::thread reader([&] {
+    char chunk[512];
+    while (!stop.load()) {
+      if (recv_bytes(pair->client.get(), chunk, sizeof(chunk)) <= 0) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+  });
+  std::thread stopper([&] { std::this_thread::sleep_for(std::chrono::milliseconds(300)); stop.store(true); });
+  // Enough payload that the flag always lands mid-write: the kernel send
+  // buffer autotunes to megabytes, so 32 MiB is never drained in 300 ms.
+  const std::string payload(32U * 1024U * 1024U, 'x');
+  const auto start = std::chrono::steady_clock::now();
+  const auto outcome = secure_frontend::send_all_bounded(pair->server.get(), payload, std::chrono::seconds(10),
+                                                         start + std::chrono::seconds(30), &stop);
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  stop.store(true);      // releases the reader even if the flag had not been set yet
+  pair->server.reset();  // unblocks the reader with EOF
+  stopper.join();
+  reader.join();
+  expect(outcome == secure_frontend::WriteOutcome::deadline, "the stop flag cuts the write at the drain budget");
+  expect(elapsed >= std::chrono::milliseconds(300), "the write outlived the flag's setting, so it was in flight");
+  expect(elapsed < std::chrono::milliseconds(2900),
+         "stop at 300 ms + kShutdownDrainBudget (2 s) + slice slack, never the 30 s deadline");
+}
+
 // poll_sockets, recv_some, probe_peer and bytes_pending on a live pair.
 void socket_io_poll_probe_and_recv() {
   auto pair = make_loopback_pair();
@@ -818,6 +851,8 @@ int main(int argc, char** argv) {
       {"send_all_bounded_stops_at_stall_on_a_stalled_reader", send_all_bounded_stops_at_stall_on_a_stalled_reader},
       {"send_all_bounded_meets_deadline_and_completes", send_all_bounded_meets_deadline_and_completes},
       {"send_all_bounded_stall_restarts_on_progress", send_all_bounded_stall_restarts_on_progress},
+      {"send_all_bounded_stop_flag_cuts_an_inflight_write_within_the_drain_budget",
+       send_all_bounded_stop_flag_cuts_an_inflight_write_within_the_drain_budget},
       {"socket_io_poll_probe_and_recv", socket_io_poll_probe_and_recv},
       {"set_no_inherit_marks_the_socket", set_no_inherit_marks_the_socket},
   }, failures);

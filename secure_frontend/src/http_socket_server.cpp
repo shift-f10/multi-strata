@@ -256,7 +256,13 @@ bool HttpSocketServer::listener_failed() const noexcept { return state_ && state
 void HttpSocketServer::shutdown_listener() noexcept {
   if (!state_) return;
   state_->stopped = true;   // first: a racing accept_next sees it before it could use a closed handle
-  close_native_socket(state_->socket.exchange(kInvalidNativeSocket));
+  const NativeSocket socket = state_->socket.exchange(kInvalidNativeSocket);
+#if !defined(_WIN32)
+  // Task 8b carry-in: close() alone does not reliably wake an in-progress poll
+  // on the listener; shutdown(SHUT_RDWR) first so the accept slice ends at once.
+  if (socket != kInvalidNativeSocket) ::shutdown(socket, SHUT_RDWR);
+#endif
+  close_native_socket(socket);
 }
 
 NativeSocket HttpSocketServer::native_handle() const noexcept {

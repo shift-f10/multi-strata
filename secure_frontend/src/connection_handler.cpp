@@ -38,7 +38,7 @@ ConnectionResult respond_complete(const NativeSocket socket, const HttpResponse&
   result.status = response.status;
   result.code = response.log_code;
   const std::string wire = serialize_response(response, std::chrono::system_clock::now());
-  const WriteOutcome written = send_all_bounded(socket, wire, limits.write_stall, write_deadline(limits, signals));
+  const WriteOutcome written = send_all_bounded(socket, wire, limits.write_stall, write_deadline(limits, signals), signals.shutting_down);
   if (written == WriteOutcome::complete) {
     result.bytes_out = wire.size();
     result.outcome = outcome;
@@ -95,7 +95,7 @@ class SocketStreamSink final : public StreamSink {
 
  private:
   bool write(const std::string_view bytes) {
-    const WriteOutcome outcome = send_all_bounded(socket_, bytes, limits_.write_stall, write_deadline(limits_, signals_));
+    const WriteOutcome outcome = send_all_bounded(socket_, bytes, limits_.write_stall, write_deadline(limits_, signals_), signals_.shutting_down);
     if (outcome != WriteOutcome::complete) { failed_ = true; return false; }
     bytes_ += bytes.size();
     return true;
@@ -196,7 +196,7 @@ ConnectionResult serve_connection(const NativeSocket socket, RequestRouter& rout
   if (body.size() > decision.body_limit) return respond(make_error_response(ApiError::invalid_request), ConnectionOutcome::responded);
   // Review Focus 3: the interim 100 only while no body byte has arrived.
   if (decision.expect_continue && decision.body_limit > 0U && body.empty()) {
-    if (send_all_bounded(socket, kContinueResponse, limits.write_stall, write_deadline(limits, signals)) != WriteOutcome::complete) {
+    if (send_all_bounded(socket, kContinueResponse, limits.write_stall, write_deadline(limits, signals), signals.shutting_down) != WriteOutcome::complete) {
       result.outcome = ConnectionOutcome::client_gone;
       return result;
     }
