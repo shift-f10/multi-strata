@@ -980,6 +980,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         rejects_malformed_and_unexpected_engine_output bounds_and_engine_errors_fail_closed
         prefill_progress_is_bounded_in_both_profiles
         resume_and_reused_progress_is_consumed_in_the_strata_profile
+        gen_carries_bounded_sampling_keys
         generation_total_deadline_is_enforced
         gen_line_fits_max_prompt_tokens derived_line_cap_is_clamped_to_protocol_max stop_cause_and_completed_generations)
 
@@ -1022,7 +1023,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_test_executable(secure_frontend_chat_schema_tests tests/chat_schema_test.cpp secure_frontend_chat_schema)
     secure_frontend_add_cases(secure_frontend_chat_schema_tests
         parses_minimal_text_request rejects_unsupported_and_unsafe_features rejects_duplicate_and_malformed_json
-        renders_escaped_minimal_response)
+        renders_escaped_minimal_response
+        renders_openai_completion_shape)
 
     secure_frontend_add_test_executable(secure_frontend_json_tests tests/json_test.cpp secure_frontend_json)
     secure_frontend_add_cases(secure_frontend_json_tests
@@ -1117,7 +1119,10 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         chat_rejects_nonfinite_done_and_stays_ready health_reflects_protocol_state
         health_is_failed_after_engine_closed_mid_generation health_is_failed_when_engine_closes_before_ready
         chat_applies_engine_context_rule_with_eight_token_margin chat_uses_adopted_ready_without_waiting
-        resolve_max_tokens_follows_decisions_1_and_2)
+        resolve_max_tokens_follows_decisions_1_and_2
+        run_generation_reports_finish_usage_and_context run_generation_cancel_sends_stop_and_drains
+        run_generation_timeout_stops_and_reports_timed_out run_generation_drain_failure_abandons
+        run_generation_shutdown_uses_short_drain run_generation_maps_engine_errors)
 
     secure_frontend_add_test_executable(secure_frontend_subsystem_limits_tests tests/subsystem_limits_test.cpp
         secure_frontend_subsystem_limits)

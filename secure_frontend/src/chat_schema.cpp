@@ -282,4 +282,19 @@ std::optional<std::string> render_chat_completion_response(const ChatCompletionR
   return response;
 }
 
+std::optional<std::string> render_chat_completion(const CompletionView& view, const ChatSchemaLimits& limits) {
+  if (view.text.size() > limits.max_generated_bytes || !valid_utf8(view.text) || !valid_utf8(view.model)) return std::nullopt;
+  std::string out{"{\"id\":"};
+  append_json_string(&out, view.id);
+  out += ",\"object\":\"chat.completion\",\"created\":" + std::to_string(view.created) + ",\"model\":";
+  append_json_string(&out, view.model);
+  out += ",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":";
+  append_json_string(&out, view.text);
+  out += "},\"logprobs\":null,\"finish_reason\":";
+  append_json_string(&out, view.finish_reason);
+  out += "}],\"usage\":{\"prompt_tokens\":" + std::to_string(view.prompt_tokens) + ",\"completion_tokens\":" +
+         std::to_string(view.completion_tokens) + ",\"total_tokens\":" + std::to_string(view.prompt_tokens + view.completion_tokens) + "}}\n";
+  return out;
+}
+
 }  // namespace secure_frontend

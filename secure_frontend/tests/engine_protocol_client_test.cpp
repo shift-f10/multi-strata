@@ -304,6 +304,34 @@ void stop_cause_and_completed_generations() {
   expect(client.completed_generations() == 1U, "a nonfinite DONE is not a successful one");
 }
 
+// SP3 Task 15: GEN carries the bounded sampling keys between max_new and the
+// ids; absent params stay greedy; numbers take the shortest round-trip form.
+// SP3 Task 15 (ruling T15-fake): uses this file's existing FakeTransport
+// instead of the plan's near-duplicate RecordingTransport; assertions identical.
+void gen_carries_bounded_sampling_keys() {
+  FakeTransport transport;
+  transport.reads = {line("READY 4096 stop")};
+  secure_frontend::EngineProtocolClient client(transport);
+  secure_frontend::EngineReady ready{};
+  expect(!client.await_ready(std::chrono::seconds(1), ready).has_value(), "ready");
+  secure_frontend::SamplingParams sampling;
+  sampling.temperature = 0.5;
+  sampling.top_p = 0.9;
+  sampling.seed = 42U;
+  expect(!client.begin_generation(16U, {1U, 2U, 3U}, secure_frontend::deadline_after(std::chrono::seconds(5)), sampling)
+              .has_value(),
+         "GEN written");
+  expect(transport.writes.back() == "GEN 16 temperature=0.5 top_p=0.9 seed=42 1,2,3", "keys between max_new and the ids: " + transport.writes.back());
+  expect(secure_frontend::render_sampling_keys({}).empty(), "no keys when the request sets none (engine stays greedy)");
+  secure_frontend::SamplingParams ints;
+  ints.temperature = 1.0;
+  ints.top_p = 1.0;
+  expect(secure_frontend::render_sampling_keys(ints) == " temperature=1 top_p=1", "shortest round-trip form, never request bytes");
+  secure_frontend::SamplingParams big;
+  big.seed = 9223372036854775807ULL;
+  expect(secure_frontend::render_sampling_keys(big) == " seed=9223372036854775807", "full seed range");
+}
+
 }  // namespace
 
 // E4: a prompt at the engine's advertised context must fit the GEN line.
@@ -347,5 +375,6 @@ int main(int argc, char** argv) {
       {"gen_line_fits_max_prompt_tokens", gen_line_fits_max_prompt_tokens},
       {"derived_line_cap_is_clamped_to_protocol_max", derived_line_cap_is_clamped_to_protocol_max},
       {"stop_cause_and_completed_generations", stop_cause_and_completed_generations},
+      {"gen_carries_bounded_sampling_keys", gen_carries_bounded_sampling_keys},
   }, failures);
 }

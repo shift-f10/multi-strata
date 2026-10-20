@@ -63,4 +63,18 @@ using ChatRequestResult = std::variant<ChatCompletionRequest, ChatRequestError>;
 [[nodiscard]] std::optional<std::string> render_chat_completion_response(
     const ChatCompletionRequest& request, std::string_view generated_text, const ChatSchemaLimits& limits = {});
 
+// SP3 Task 15 (spec §3.5): the OpenAI chat.completion body for a finished
+// generation — the form M2's streaming path finalizes with too.
+struct CompletionView final {
+  std::string_view id;
+  std::int64_t created;
+  std::string_view model;
+  std::string_view text;
+  std::string_view finish_reason;
+  std::size_t prompt_tokens;
+  std::size_t completion_tokens;
+};
+
+[[nodiscard]] std::optional<std::string> render_chat_completion(const CompletionView& view, const ChatSchemaLimits& limits = {});
+
 }  // namespace secure_frontend

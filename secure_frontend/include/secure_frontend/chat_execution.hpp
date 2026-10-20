@@ -3,12 +3,16 @@
 #include "secure_frontend/chat_generation_plan.hpp"
 #include "secure_frontend/config_defaults.hpp"
 #include "secure_frontend/engine_protocol_client.hpp"
+#include "secure_frontend/sampling_params.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <functional>
 #include <optional>
 #include <string>
 #include <variant>
+#include <vector>
 
 namespace secure_frontend {
 
@@ -67,6 +71,35 @@ enum class EngineHealth { starting, ready, generating, failed };
                                                             std::size_t context_tokens, std::size_t max_completion_tokens,
                                                             std::size_t default_max_tokens) noexcept;
 
+// SP3 Task 15 (spec §2.6 P6): the concurrent generation path. run_generation
+// owns one engine generation end to end — GEN, 20 ms read slices, and the
+// cancel/timeout/shutdown exits (STOP + bounded drain) — and reports the §3.5
+// ingredients. The pool's shutdown flag and SP2's signal flag are both watched
+// (ruling R-H: ChatRoute may supply either).
+enum class FinishReason { stop, length };
+
+struct GenerationSettings final {
+  std::size_t max_tokens;
+  SamplingParams sampling{};
+};
+
+struct ExecutionControl final {
+  std::function<bool()> cancelled;
+  const std::atomic<bool>* shutting_down{nullptr};
+  std::function<bool()> shutdown_requested{};
+};
+
+struct GenerationResult final {
+  std::string text;
+  std::size_t prompt_tokens;
+  std::size_t completion_tokens;
+  FinishReason finish;
+};
+
+enum class GenerationFailure { cancelled, timed_out, engine_error, engine_unavailable, decode_failed, shutting_down };
+
+using GenerationOutcome = std::variant<GenerationResult, GenerationFailure>;
+
 // Stateful adapter for one private Strata --serve connection. It accepts a
 // schema-validated request, uses the startup-selected fixed prompt renderer
 // and offline tokenizer, and decodes only ordinary generated token IDs. It does not load
@@ -88,6 +121,12 @@ class ChatExecutionService final {
   // Eager READY (SP2): the supervisor consumed READY on `protocol` before the
   // first request; execute() then never waits for it. Call once, before execute().
   void adopt_ready(const EngineReady& ready) noexcept;
+
+  // READY context from adopt_ready/await_ready; 0 before READY.
+  [[nodiscard]] std::size_t context_tokens() const noexcept;
+
+  [[nodiscard]] GenerationOutcome run_generation(const std::vector<std::uint32_t>& prompt_ids, const GenerationSettings& settings,
+                                                 const ExecutionControl& control, const TokenizerPack& tokenizer);
 
  private:
   EngineProtocolClient& protocol_;
