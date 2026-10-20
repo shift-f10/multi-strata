@@ -40,7 +40,7 @@ using EngineArgumentsResult = std::variant<std::vector<std::string>, EngineArgum
 // `--gpu` is owned too (spec §3.9): GPUs are selected only by the typed `gpus`
 // list (engine.gpu), rendered `--gpu i,j` before `--native`; the engine sets
 // CUDA_DEVICE_ORDER/CUDA_VISIBLE_DEVICES (or HIP) itself (upstream
-// generate.cpp:1844-1865, usage :706-708, at v0.1.44.1), so the strata
+// generate.cpp:2334-2352, usage :797, at v0.2.1.3), so the strata
 // family's environment carries no GPU variable.
 //
 // lighttransport_glm53: the GLM runner's CLI is not characterized, so the

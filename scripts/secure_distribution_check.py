@@ -40,6 +40,9 @@ FORBIDDEN_PYTHON_NAMES = {
 }
 MANIFEST_NAME = "secure-release-manifest.json"
 SBOM_NAME = "sbom.spdx.json"
+# SP4 §10.5: hooks builds embed this marker (built from two parts so this file
+# and the C++ tests that search for it never contain it whole).
+HOOK_MARKER = b"SECURE_FRONTEND_TEST_" + b"HOOKS_COMPILED_IN"
 
 
 def normal_relative(path: Path, root: Path) -> str:
@@ -140,6 +143,10 @@ def inspect(package_root: Path, require_release_evidence: bool) -> list[str]:
         reason = forbidden_reason(relative)
         if reason:
             errors.append(f"{relative}: {reason}")
+        if entry.is_file():
+            with entry.open("rb") as handle:
+                if HOOK_MARKER in handle.read():
+                    errors.append(f"{relative}: built with SECURE_FRONTEND_TEST_HOOKS; never ship a test-hooks build")
 
     if require_release_evidence:
         check_manifest(package_root, errors)

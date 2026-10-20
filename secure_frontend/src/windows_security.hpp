@@ -18,7 +18,9 @@ bool has_private_owner_dacl(HANDLE handle, PSID current_user);
 enum class Trust { trusted, untrusted_owner, shared_writable, unreadable };
 // Owner is the user/SYSTEM/Administrators and no effective allow-ACE grants a
 // write right to anyone else (the Windows form of "not group/other-writable").
-Trust write_access_is_private(HANDLE handle);
+// also_trusted_installer (SP4 §3.2, pull.downloader only): the TrustedInstaller
+// service SID is an additional permitted owner and writer. Default: unchanged.
+Trust write_access_is_private(HANDLE handle, bool also_trusted_installer = false);
 std::wstring final_path_for_handle(HANDLE handle);
 bool is_reparse_point(HANDLE handle);
 std::wstring extended_path(const std::wstring& absolute);

@@ -97,7 +97,8 @@ PublishResult entry_result(const TrustedManifest& manifest, const std::string& d
 RelativePath staging_dir_path(const std::string_view key) { return must_rel(std::string{kStagingDirName} + "/" + std::string{key}); }
 
 std::optional<AcquireError> verify_tree(const CanonicalRoot& root, const RelativePath& dir, const TrustedManifest& manifest,
-                                        const std::string_view manifest_file_name, const bool hash_files) {
+                                        const std::string_view manifest_file_name, const bool hash_files,
+                                        const std::atomic<bool>* interrupted) {
   const auto& m = manifest.parsed.manifest;
   auto listed = list_files_recursive(root, dir);
   if (auto* failure = std::get_if<AcquireError>(&listed)) {
@@ -122,7 +123,10 @@ std::optional<AcquireError> verify_tree(const CanonicalRoot& root, const Relativ
   if (hash_files) {
     for (const auto& f : m.files) {
       Sha256 hasher;
-      auto counted = hash_into(root, join_rel(dir, f.path), hasher, f.size);
+      auto counted = hash_into(root, join_rel(dir, f.path), hasher, f.size, interrupted);
+      if (const auto* failure = std::get_if<AcquireError>(&counted); failure != nullptr && failure->reason == AcquireReason::interrupted) {
+        return *failure;
+      }
       if (std::holds_alternative<AcquireError>(counted) || std::get<std::uint64_t>(counted) != f.size ||
           to_hex(hasher.finish()) != f.sha256) {
         return AcquireError{AcquireReason::digest_mismatch, f.path};
@@ -194,7 +198,8 @@ std::variant<PublishResult, AcquireError> publish_staged(const CanonicalRoot& mo
 }
 
 std::optional<std::variant<PublishResult, AcquireError>> adopt_orphan(const CanonicalRoot& models, const TrustedManifest& manifest,
-                                                                      LoadedVersions& loaded, const StoreEnvironment& env) {
+                                                                      LoadedVersions& loaded, const StoreEnvironment& env,
+                                                                      const std::atomic<bool>* interrupted) {
   (void)env;
   using Outcome = std::variant<PublishResult, AcquireError>;
   const auto& m = manifest.parsed.manifest;
@@ -212,7 +217,10 @@ std::optional<std::variant<PublishResult, AcquireError>> adopt_orphan(const Cano
   if (const auto* current = find_model(index, m.name, m.tag); current != nullptr && current->dir == dir) return std::nullopt;
   // Final review I2: a tree that does not verify is not adoptable; publish then reports
   // "target exists" (the orphan hint), never a verb failure with digest_mismatch.
-  if (verify_tree(models, path, manifest, kVersionManifestName, true)) return std::nullopt;
+  if (auto failure = verify_tree(models, path, manifest, kVersionManifestName, true, interrupted)) {
+    if (failure->reason == AcquireReason::interrupted) return Outcome{*failure};
+    return std::nullopt;
+  }
   PublishResult result = entry_result(manifest, dir, true);
   // with_installed drops a retired row naming `dir` (a downgrade to a retired version): one live directory.
   index = with_installed(std::move(index), result.entry);

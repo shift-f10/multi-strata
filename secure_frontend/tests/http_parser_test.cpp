@@ -107,6 +107,20 @@ void err_param_is_key_only() {
   expect(!secure_frontend::is_fixed_param_key("model") && !secure_frontend::is_fixed_param_key(""), "other keys are not fixed");
 }
 
+void imf_fixdate_is_bounded_for_out_of_range_clocks() {
+  using namespace std::chrono;
+  // The extreme clocks system_clock can even represent (nanoseconds): years
+  // ~2262 and ~1677. Every one still yields a well-formed 29-byte IMF-fixdate.
+  const std::string far_future = secure_frontend::imf_fixdate(system_clock::time_point{system_clock::duration::max()});
+  expect(far_future.size() == 29 && far_future.ends_with(" GMT") && far_future[19] == ':' && far_future[22] == ':',
+         "the latest representable clock still yields a bounded IMF-fixdate");
+  const std::string far_past = secure_frontend::imf_fixdate(system_clock::time_point{system_clock::duration::min()});
+  expect(far_past.size() == 29 && far_past.ends_with(" GMT") && far_past[19] == ':' && far_past[22] == ':',
+         "the earliest representable clock still yields a bounded IMF-fixdate");
+  expect(secure_frontend::imf_fixdate(system_clock::time_point{seconds{0}}) == "Thu, 01 Jan 1970 00:00:00 GMT",
+         "the epoch renders exactly: bounds change nothing for real clocks");
+}
+
 void wire_response_has_security_headers_and_date() {
   using namespace std::chrono;
   const auto now = system_clock::time_point{seconds{1791963785}};   // 2026-10-14 07:43:05 UTC
@@ -504,6 +518,7 @@ int main(int argc, char** argv) {
       {"dos01_content_length_variants", dos01_content_length_variants},
       {"head_request_line_and_header_syntax", head_request_line_and_header_syntax},
       {"wire_head_has_no_content_length", wire_head_has_no_content_length},
+      {"imf_fixdate_is_bounded_for_out_of_range_clocks", imf_fixdate_is_bounded_for_out_of_range_clocks},
       {"route_result_seam_returns_complete_response", route_result_seam_returns_complete_response},
       {"dos01_status_matrix_415_417_505", dos01_status_matrix_415_417_505},
       {"content_type_variants_accepted", content_type_variants_accepted},

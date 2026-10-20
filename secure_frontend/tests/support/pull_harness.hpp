@@ -10,8 +10,10 @@
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -32,16 +34,46 @@ class FakeProbe final : public secure_frontend::DownloaderProbe {
   std::string confinement() const override { return label; }
 };
 
+// Task 27 (ruling I13): thin forwarders, so a CliServices factory can hand the CLI an owned
+// unique_ptr while the test keeps the recording object.
+class ForwardTransport final : public secure_frontend::HopTransport {
+ public:
+  explicit ForwardTransport(secure_frontend::HopTransport& target) : target_(target) {}
+  secure_frontend::HopExit run(const secure_frontend::TransferRequest& request,
+                               const std::function<bool(std::string_view)>& on_bytes) override {
+    return target_.run(request, on_bytes);
+  }
+
+ private:
+  secure_frontend::HopTransport& target_;
+};
+
+class ForwardProbe final : public secure_frontend::DownloaderProbe {
+ public:
+  explicit ForwardProbe(secure_frontend::DownloaderProbe& target) : target_(target) {}
+  std::optional<secure_frontend::AcquireError> probe() override { return target_.probe(); }
+  std::string confinement() const override { return target_.confinement(); }
+
+ private:
+  secure_frontend::DownloaderProbe& target_;
+};
+
 class InterruptingProgress final : public secure_frontend::ProgressSink {
  public:
-  InterruptingProgress(std::atomic<bool>& flag, const bool& armed) : flag_(flag), armed_(armed) {}
+  InterruptingProgress(std::atomic<bool>& flag, const bool& armed, const bool& mid_file)
+      : flag_(flag), armed_(armed), mid_file_(mid_file) {}
   void notice(const std::string_view line) override {
     if (armed_ && line == "verifying") flag_.store(true);
+  }
+  // Final fix F1: the flag is raised after the first chunk of a file that has more to come.
+  void file_bytes(const std::string_view, const std::uint64_t done, const std::uint64_t total) override {
+    if (mid_file_ && done < total) flag_.store(true);
   }
 
  private:
   std::atomic<bool>& flag_;
   const bool& armed_;
+  const bool& mid_file_;
 };
 
 class FakeConfirmer final : public secure_frontend::Confirmer {
@@ -140,7 +172,8 @@ struct PullHarness final {
   fx::FakeLoaded loaded;
   std::atomic<bool> interrupted{false};
   bool progress_interrupt{false};  // dl04_interrupt_during_verification: interrupt at the "verifying" notice
-  InterruptingProgress progress{interrupted, progress_interrupt};
+  bool mid_file_interrupt{false};  // final fix F1: interrupt after the first chunk of a multi-chunk file
+  InterruptingProgress progress{interrupted, progress_interrupt, mid_file_interrupt};
   secure_frontend::PullSettings settings;
   int manifests{0};
 };

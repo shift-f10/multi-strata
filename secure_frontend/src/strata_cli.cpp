@@ -391,10 +391,27 @@ std::string implied_engine_arguments(const InstalledModel& model) {
   return text;
 }
 
-int run_strata(const std::span<const std::string> args, CliStreams& io, CliServices& services) {
+int run_strata(const std::span<const std::string> all_args, CliStreams& io, CliServices& services) {
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
   io.err << "warning: test hooks compiled in (" << kTestHooksMarker << "); never ship this binary\n";
 #endif
+  // Task 27: hooks-only global options, before --config. A release build has none, so there
+  // they reach the "--config is required" usage error below (exit 1).
+  std::size_t first = 0;
+#if defined(SECURE_FRONTEND_TEST_HOOKS)
+  while (first < all_args.size()) {
+    if (all_args[first] == "--test-record-file" && first + 1 < all_args.size()) {
+      services.test_record_file = path_from_utf8(all_args[first + 1]);
+      first += 2;
+    } else if (all_args[first] == "--test-force-no-landlock") {
+      services.test_force_no_landlock = true;
+      first += 1;
+    } else {
+      break;
+    }
+  }
+#endif
+  const auto args = all_args.subspan(first);
   if (args.empty() || args[0] == "--help" || args[0] == "-h") {
     io.out << "usage: " << kUsage << '\n';
     return args.empty() ? exit_code_value(ExitCode::usage) : 0;
@@ -441,13 +458,6 @@ int run_strata(const std::span<const std::string> args, CliStreams& io, CliServi
   if (verb == "list") return verb_list(config, *parsed, io);
   if (verb == "show") return verb_show(config, *parsed, io);
   return verb_rm(config, *parsed, io, services);
-}
-
-// Until Task 27 adds strata_cli_network.cpp (and deletes this stub).
-int run_network_verb(const std::string& verb, const FrontendConfig&, const std::filesystem::path&, std::span<const std::string>,
-                     CliStreams& io, CliServices&) {
-  io.err << "strata: " << verb << " is not available in this build yet\n";
-  return exit_code_value(ExitCode::usage);
 }
 
 }  // namespace secure_frontend

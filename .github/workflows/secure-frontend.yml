@@ -2,7 +2,7 @@ name: secure-frontend
 
 # Blocking: linux-gcc, linux-clang, linux-release, windows-llvm-mingw-cross,
 # windows-msys2-clang, top-level-integration. Non-blocking: windows-msvc (informational).
-# Upstream Strata is the git submodule upstream/ (gitlink 296b59d2, tag v0.1.44.1).
+# Upstream Strata is the git submodule upstream/ (gitlink cbfd5b92, tag v0.2.1.3).
 # Jobs that run pytest or configure our root CMakeLists.txt check it out with
 # `submodules: true` (depth 1: about a 19.7 MB pack, 50.7 MB and 2,976 files
 # checked out); preset-only jobs build secure_frontend/ alone and do not.
@@ -87,6 +87,11 @@ jobs:
         working-directory: secure_frontend
       - run: ctest --preset linux-gcc-release
         working-directory: secure_frontend
+      - name: no test hooks in the shipped binaries (marker scan; --release needs SP7's manifest/SBOM)
+        run: |
+          mkdir -p "$RUNNER_TEMP/stage/bin"
+          cp secure_frontend/out/build/linux-gcc-release/strata secure_frontend/out/build/linux-gcc-release/strata-secure-server "$RUNNER_TEMP/stage/bin/"
+          python3 -I scripts/secure_distribution_check.py --package-dir "$RUNNER_TEMP/stage"
 
   windows-cross:
     name: windows-llvm-mingw-cross (compile+link on Linux)

@@ -224,20 +224,59 @@ std::optional<EngineProtocolError> EngineProtocolClient::read_generation(const s
       continue;
     }
     if (response.line.rfind("PP ", 0) == 0) {
-      // PP is allowed only for the startup-selected GLM wire profile. Its
-      // exact shape is either `PP <read> <total>` or the extended
-      // `PP <read> <total> <milliseconds> <tokens-per-second>` form. It is a
-      // private prefill heartbeat, not client-visible output.
+      // PP is a private prefill-progress heartbeat, never client-visible
+      // output. Both engine profiles emit it, with different semantics:
+      //
+      // Strata (unchanged from v0.1.44.1 through v0.2.1.3): `generate.cpp`
+      // prints
+      // `PP <position reached> <prompt tokens> <ms> <fresh tokens/s>` after
+      // every batched prompt chunk (`%lld %lld %.0f %.1f`, :9673/:12937/
+      // :12998/:13852 at v0.2.1.3), and the
+      // `qwen35moe` engine (`q36_engine.cu`) prints `PP <done> <fresh> <ms>
+      // <tokens/s>` where the second field counts only the tokens not reused
+      // from the held state. Upstream's own server accepts any `PP` with two
+      // decimal fields (`serve/server.py`). The frontend accepts the same
+      // family of shapes, bounded: 3 to 5 fields, two decimal counters,
+      // optional non-negative metrics. No ordering between the two counters
+      // is assumed, because `fresh` is not a total.
+      //
+      // GLM (startup-selected LightTransport profile): exactly
+      // `PP <read> <total>` or `PP <read> <total> <ms> <tokens/s>` with
+      // `0 < total` and `read <= total` (SP6 research §4; strict on purpose,
+      // the engine is built and audited independently).
       const auto progress = fields(response.line);
-      std::uint32_t read = 0;
-      std::uint32_t total = 0;
-      const bool extended = progress.size() == 5U &&
-          nonnegative_decimal_metric(progress[3]) && nonnegative_decimal_metric(progress[4]);
-      if (flavor_ != EngineProtocolFlavor::lighttransport_glm53 ||
-          (progress.size() != 3U && !extended) || !parse_decimal(progress[1], read) ||
-          !parse_decimal(progress[2], total) || total == 0U || read > total) {
+      std::uint32_t first = 0;
+      std::uint32_t second = 0;
+      const bool metrics_ok = (progress.size() < 4U || nonnegative_decimal_metric(progress[3])) &&
+                              (progress.size() < 5U || nonnegative_decimal_metric(progress[4]));
+      const bool counters_ok = progress.size() >= 3U && progress.size() <= 5U &&
+                               parse_decimal(progress[1], first) && parse_decimal(progress[2], second);
+      bool accepted = counters_ok && metrics_ok;
+      if (flavor_ == EngineProtocolFlavor::lighttransport_glm53) {
+        accepted = accepted && progress.size() != 4U && second != 0U && first <= second;
+      }
+      if (!accepted) {
         return fail(EngineProtocolErrorCode::unexpected_line,
                     "engine emitted an invalid or unsupported prefill progress line");
+      }
+      continue;
+    }
+    if ((response.line.rfind("RESUME ", 0) == 0 || response.line.rfind("REUSED ", 0) == 0) &&
+        flavor_ == EngineProtocolFlavor::strata_0143) {
+      // RESUME/REUSED are private prompt-progress records of the main engine
+      // family, printed for every accepted GEN and unconditionally: `RESUME <n>`
+      // before reading the prompt (v0.1.44.1 generate.cpp:11214, v0.2.1.3
+      // :12809) and `REUSED <n>` once it is read (:11849 / :13910). Upstream's
+      // own server consumes them (serve/server.py). Like PP they are never
+      // client output and must never fail a request; the qwen35moe engine
+      // prints neither, and YIELDED needs the --batch/--slots flags the
+      // frontend refuses. Bounded grammar, fail-closed otherwise; the GLM
+      // profile keeps its exact record and never reaches this branch.
+      const auto progress = fields(response.line);
+      std::uint32_t reused = 0;
+      if (progress.size() != 2U || !parse_decimal(progress[1], reused)) {
+        return fail(EngineProtocolErrorCode::unexpected_line,
+                    "engine emitted an invalid or unsupported prompt progress line");
       }
       continue;
     }

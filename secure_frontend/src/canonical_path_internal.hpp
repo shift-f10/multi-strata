@@ -20,7 +20,9 @@ inline PathError path_error(const PathErrorCode code, std::string message) { ret
 
 // Opens an existing root (platform files); open_root() wraps it. RootPolicy::external
 // skips the owner/writability checks and marks the root external.
+// also_trusted_installer: Windows only (see ExecutableWriters); ignored on POSIX.
 std::variant<CanonicalRoot, PathError> open_existing_root(const std::filesystem::path& requested,
-                                                          RootPolicy policy = RootPolicy::existing);
+                                                          RootPolicy policy = RootPolicy::existing,
+                                                          bool also_trusted_installer = false);
 
 }  // namespace secure_frontend::detail

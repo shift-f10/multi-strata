@@ -4,6 +4,8 @@
 #include "support/expect.hpp"
 #include "support/test_support.hpp"
 
+#include <atomic>
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <variant>
@@ -134,6 +136,25 @@ void hash_into_rejects_hard_links_and_counts_bytes() {
   const auto listed = std::get<std::vector<secure_frontend::StagedEntry>>(secure_frontend::list_files_recursive(root));
   expect(listed.size() == 2 && !listed[0].regular && !listed[1].regular, "hard-linked files are listed as not regular");
 #endif
+}
+
+// Final fix F1 (§8.3): a whole-file re-hash honours the interrupt flag between chunks.
+void hash_into_stops_when_interrupted() {
+  const auto root = scratch_root();
+  const std::string two_chunks(secure_frontend::kSha256ReadChunkBytes + 1, 'b');
+  expect(!secure_frontend::write_new_file(root, must_rel("big"), two_chunks), "two chunks");
+  const std::atomic<bool> clear{false};
+  secure_frontend::Sha256 whole;
+  const auto counted = secure_frontend::hash_into(root, must_rel("big"), whole, ~std::uint64_t{0}, &clear);
+  expect(std::holds_alternative<std::uint64_t>(counted) && std::get<std::uint64_t>(counted) == two_chunks.size(),
+         "a clear flag hashes the whole file");
+  const std::atomic<bool> set{true};
+  secure_frontend::Sha256 stopped;
+  const auto failure = secure_frontend::hash_into(root, must_rel("big"), stopped, ~std::uint64_t{0}, &set);
+  expect(std::holds_alternative<secure_frontend::AcquireError>(failure) &&
+             std::get<secure_frontend::AcquireError>(failure).reason == secure_frontend::AcquireReason::interrupted,
+         "a set flag stops the hash with `interrupted`");
+  expect(secure_frontend::exists_within(root, must_rel("big")), "the file is left in place");
 }
 
 void store_environment_seams_report_space_and_fs_kind() {

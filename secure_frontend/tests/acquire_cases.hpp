@@ -8,6 +8,7 @@ void rename_within_never_replaces();
 void rename_fallback_never_replaces();
 void remove_tree_removes_links_without_following();
 void hash_into_rejects_hard_links_and_counts_bytes();
+void hash_into_stops_when_interrupted();
 void store_environment_seams_report_space_and_fs_kind();
 void overlong_joined_paths_fail_closed_without_throwing();
 // acquire_publish_test.cpp (Task 19)
@@ -65,6 +66,8 @@ void abandoned_staging_reported_and_offered_for_deletion();
 void all_sources_failed_exits_3_and_keeps_part();
 void enospc_mid_stream_keeps_part_and_exits_6();
 void update_reuses_unchanged_files();
+void update_reuse_copy_interrupted_mid_file_exits_8();
+void pull_verify_interrupted_exits_8();
 void license_change_requires_interactive_yes();
 void pull_without_bundle_refuses_sourceless_files();
 void confirmation_answers_parsed_strictly();
@@ -82,5 +85,22 @@ void rm_retired_deletes_unheld_versions();
 void rm_partials_deletes_other_staging();
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
 void list_outdated_uses_catalog_sequence();
+#endif
+// acquire_network_cli_test.cpp (Task 27)
+void pull_cli_prints_summary_and_installs();
+void run_installed_model_needs_no_network();
+void run_refuses_glm53_without_engine();
+#if defined(SECURE_FRONTEND_TEST_HOOKS)
+void run_missing_model_non_interactive_exits_2();
+void run_missing_model_prompts_and_decline_exits_2();
+void update_models_pulls_outdated_catalog_models();
+#endif
+#if !defined(_WIN32) && defined(SECURE_FRONTEND_TEST_HOOKS)
+void dl04_sigint_during_download_exits_8();
+void dl04_sigterm_during_download_exits_8();
+void interrupt_at_confirmation_prompt_exits_8();
+#endif
+#if defined(_WIN32) && defined(SECURE_FRONTEND_TEST_HOOKS)
+void dl04_interrupt_during_download_never_indexed_windows();
 #endif
 }  // namespace acquire_cases

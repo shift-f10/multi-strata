@@ -102,10 +102,23 @@ std::string imf_fixdate(const std::chrono::system_clock::time_point now) {
   const long long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
   const long long doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
   const long long mp = (5 * doy + 2) / 153;
-  const long long day = doy - (153 * mp + 2) / 5 + 1;
-  const long long month = mp < 10 ? mp + 3 : mp - 9;
-  const long long year = yoe + era * 400 + (month <= 2 ? 1 : 0);
-  char buffer[40];
+  long long day = doy - (153 * mp + 2) / 5 + 1;
+  long long month = mp < 10 ? mp + 3 : mp - 9;
+  long long year = yoe + era * 400 + (month <= 2 ? 1 : 0);
+  // Bounded for the compiler: day and month are mathematically in range for
+  // every `days` (the identities above), so these clamps are no-ops for every
+  // representable clock; with them g++ 13.3's -Werror=format-truncation can
+  // prove the line fits the buffer (it could not without, and rejected this
+  // function). system_clock's own span is 1677..2262, so year never leaves
+  // four digits anyway; secure_frontend_http_parser_tests.
+  // imf_fixdate_is_bounded_for_out_of_range_clocks pins both extreme
+  // representable clocks and the epoch.
+  if (day < 1) day = 1; else if (day > 31) day = 31;
+  if (month < 1) month = 1; else if (month > 12) month = 12;
+  if (year < 0) year = 0; else if (year > 9999) year = 9999;
+  // 48 = the compiler-provable worst case (41) with room, so snprintf never
+  // truncates a date line at all.
+  char buffer[48];
   std::snprintf(buffer, sizeof(buffer), "%s, %02lld %s %04lld %02lld:%02lld:%02lld GMT", kDays[weekday], day,
                 kMonths[month - 1], year, secs / 3600, (secs / 60) % 60, secs % 60);
   return buffer;

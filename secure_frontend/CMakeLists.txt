@@ -506,6 +506,24 @@ if(WIN32)
 endif()
 secure_frontend_set_warnings(secure_frontend_acquire)
 
+# SP4 Tasks 25/26 (spec §3.1-§3.3): the confined system curl. Linked only by
+# secure_frontend_strata_cli and tests; strata-secure-server never links it (§7.1).
+add_library(secure_frontend_downloader src/downloader_common.cpp)
+target_compile_features(secure_frontend_downloader PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_downloader PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_link_libraries(secure_frontend_downloader PUBLIC secure_frontend_acquire)
+if(WIN32)
+    # Task 26: win_launch::launch_in_job lives in secure_frontend_engine_stdio_process (ruling B3).
+    target_sources(secure_frontend_downloader PRIVATE src/downloader_windows.cpp)
+    target_link_libraries(secure_frontend_downloader PUBLIC secure_frontend_engine_stdio_process advapi32)
+else()
+    target_sources(secure_frontend_downloader PRIVATE src/downloader_posix.cpp)
+    # secure_frontend_engine_process provides EngineCommand for posix_launch::prepare.
+    target_link_libraries(secure_frontend_downloader PUBLIC secure_frontend_engine_process)
+endif()
+secure_frontend_set_warnings(secure_frontend_downloader)
+
 # SP4 §2.3 / ruling R-1: the engine version is the committed ../upstream.version
 # (one line, "v<x.y.z[.n]>"). When upstream/ has a reachable exact tag it must equal
 # the file (FATAL_ERROR only on a mismatch); a missing tag never fails configure.
@@ -574,6 +592,9 @@ target_include_directories(secure_frontend_strata_cli PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
 target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_acquire secure_frontend_typed_config)
 target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_launch)
+# SP4 Task 27: pull, run, update --models and doctor drive the confined downloader.
+target_sources(secure_frontend_strata_cli PRIVATE src/strata_cli_network.cpp)
+target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_downloader)
 secure_frontend_set_warnings(secure_frontend_strata_cli)
 
 # PX §2: the one user-facing binary. SP4 provides only its acquisition verbs (Controller note 1);
@@ -853,7 +874,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_test_executable(secure_frontend_http_parser_tests tests/http_parser_test.cpp
         secure_frontend_api_core secure_frontend_http_request_handler)
     secure_frontend_add_cases(secure_frontend_http_parser_tests
-        err_every_code_renders_fixed_body err_param_is_key_only wire_response_has_security_headers_and_date
+        err_every_code_renders_fixed_body err_param_is_key_only
+        imf_fixdate_is_bounded_for_out_of_range_clocks
+        wire_response_has_security_headers_and_date
         dos01_request_line_over_limit_is_414 dos01_header_block_over_limit_is_431 dos01_too_many_headers_is_431
         dos01_transfer_encoding_variants_are_411 dos01_content_length_variants head_request_line_and_header_syntax
         wire_head_has_no_content_length route_result_seam_returns_complete_response
@@ -933,7 +956,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_engine_protocol_client_tests
         runs_the_solo_protocol stop_and_quit_are_explicit write_deadlines_reach_the_transport refuses_stop_when_not_advertised
         rejects_malformed_and_unexpected_engine_output bounds_and_engine_errors_fail_closed
-        prefill_progress_is_glm_only_and_strictly_bounded generation_total_deadline_is_enforced
+        prefill_progress_is_bounded_in_both_profiles
+        resume_and_reused_progress_is_consumed_in_the_strata_profile
+        generation_total_deadline_is_enforced
         gen_line_fits_max_prompt_tokens derived_line_cap_is_clamped_to_protocol_max stop_cause_and_completed_generations)
 
     secure_frontend_add_test_executable(secure_frontend_model_inventory_tests tests/model_inventory_test.cpp
@@ -1150,6 +1175,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_acquire_tests concurrent_pull_same_manifest_second_is_models_busy
         part_file_create_append_resume_truncate rename_within_never_replaces rename_fallback_never_replaces
         remove_tree_removes_links_without_following hash_into_rejects_hard_links_and_counts_bytes
+        hash_into_stops_when_interrupted
         store_environment_seams_report_space_and_fs_kind overlong_joined_paths_fail_closed_without_throwing
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     if(WIN32)
@@ -1186,6 +1212,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         dl04_interrupt_during_download_never_indexed dl04_interrupt_during_verification dl04_stale_staging_from_other_manifest_discarded
         abandoned_partials_kept_with_yes abandoned_staging_reported_and_offered_for_deletion all_sources_failed_exits_3_and_keeps_part
         enospc_mid_stream_keeps_part_and_exits_6 update_reuses_unchanged_files license_change_requires_interactive_yes
+        update_reuse_copy_interrupted_mid_file_exits_8 pull_verify_interrupted_exits_8
         pull_without_bundle_refuses_sourceless_files confirmation_answers_parsed_strictly already_installed_needs_no_network
         pull_budgets_map_to_exit_classes discard_partial_runs_only_after_confirmation
         unreadable_installed_license_requires_interactive_yes
@@ -1207,6 +1234,26 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     endif()
     if(WIN32)
         secure_frontend_add_cases(secure_frontend_acquire_tests dl02_published_files_have_private_dacl_windows LABELS windows-runtime)
+    endif()
+    # SP4 Task 27 (spec §1.3, §6.1, §8.3, D6): the network verbs through CliServices seams.
+    target_sources(secure_frontend_acquire_tests PRIVATE tests/acquire_network_cli_test.cpp)
+    secure_frontend_add_cases(secure_frontend_acquire_tests pull_cli_prints_summary_and_installs run_installed_model_needs_no_network
+        run_refuses_glm53_without_engine LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    if(SECURE_FRONTEND_TEST_HOOKS)
+        secure_frontend_add_cases(secure_frontend_acquire_tests run_missing_model_prompts_and_decline_exits_2
+            run_missing_model_non_interactive_exits_2 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+        secure_frontend_add_cases(secure_frontend_acquire_tests update_models_pulls_outdated_catalog_models
+            ARGS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/payload/fixture-qwen-t1 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+        add_dependencies(secure_frontend_acquire_tests strata secure_frontend_fake_curl)
+        if(WIN32)
+            secure_frontend_add_cases(secure_frontend_acquire_tests dl04_interrupt_during_download_never_indexed_windows
+                ARGS $<TARGET_FILE:strata> $<TARGET_FILE:secure_frontend_fake_curl> LABELS windows-runtime TIMEOUT 120)
+        else()
+            # Fix round 1: §8.3/§8.2 signals end to end through a strata child (TIMEOUT: each waits <= 15 s).
+            secure_frontend_add_cases(secure_frontend_acquire_tests dl04_sigint_during_download_exits_8
+                dl04_sigterm_during_download_exits_8 interrupt_at_confirmation_prompt_exits_8
+                ARGS $<TARGET_FILE:strata> $<TARGET_FILE:secure_frontend_fake_curl> TIMEOUT 120)
+        endif()
     endif()
     secure_frontend_add_test_executable(secure_frontend_bundle_tests tests/bundle_test.cpp secure_frontend_acquire_core)
     secure_frontend_add_cases(secure_frontend_bundle_tests sha256sums_render_sorted_bytewise sha256sums_parse_is_strict
@@ -1345,6 +1392,121 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     target_sources(secure_frontend_fetch_tests PRIVATE tests/fetch_pull_test.cpp)
     secure_frontend_add_cases(secure_frontend_fetch_tests dl03_wrong_digest_rejected_prior_version_intact
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # SP4 Tasks 25/26 (spec §3.1-§3.3, §10.3): the confined downloader on Linux and Windows.
+    target_link_libraries(secure_frontend_fetch_tests PRIVATE secure_frontend_downloader)
+    if(WIN32)
+        # Task 26 (spec §3.2 Windows column). Ruling I11: two unconditional cases, the two
+        # record-reading cases hooks-only. All windows-runtime: MSYS2 CI is authoritative.
+        target_sources(secure_frontend_fetch_tests PRIVATE tests/fetch_spawn_windows_test.cpp)
+        secure_frontend_add_cases(secure_frontend_fetch_tests downloader_transfer_through_job_windows
+            dl03_default_windows_curl_path_accepted_windows ARGS $<TARGET_FILE:secure_frontend_fake_curl>
+            LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+        # Fix round 1: SP1 normalisation/root-form rules on the downloader path (wine-runnable).
+        secure_frontend_add_cases(secure_frontend_fetch_tests dl03_downloader_path_normalised_windows
+            dl03_downloader_unc_path_rejected_windows ARGS $<TARGET_FILE:secure_frontend_fake_curl>)
+        if(SECURE_FRONTEND_TEST_HOOKS)
+            secure_frontend_add_cases(secure_frontend_fetch_tests dl03_downloader_runs_at_low_integrity_windows
+                priv04_downloader_env_is_systemroot_only_windows ARGS $<TARGET_FILE:secure_frontend_fake_curl>
+                LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+        endif()
+    else()
+        target_sources(secure_frontend_fetch_tests PRIVATE tests/fetch_spawn_test.cpp)
+        secure_frontend_add_cases(secure_frontend_fetch_tests downloader_spawn_report_classified)
+        # Record-channel and hook-switch cases (plan Global Constraints).
+        if(SECURE_FRONTEND_TEST_HOOKS)
+            secure_frontend_add_cases(secure_frontend_fetch_tests priv04_downloader_argv_exact priv04_downloader_env_is_empty
+                redirect_url_absent_from_downloader_argv dl03_downloader_untrusted_path_rejected downloader_below_floor_exits_9
+                dl03_downloader_cannot_write_files dl03_downloader_cannot_read_home pre_exec_failure_fails_closed_exit_9
+                probe_interrupted_exits_8
+                ruleset_failure_fails_closed_exit_9 record_fd_does_not_clobber_report_pipe
+                confinement_reduced_is_announced_without_landlock
+                ARGS $<TARGET_FILE:secure_frontend_fake_curl>)
+            # Ruling R7: skipped only on a kernel without Landlock; a rejected ruleset is a failure.
+            set_tests_properties(secure_frontend_fetch_tests.dl03_downloader_cannot_write_files
+                secure_frontend_fetch_tests.dl03_downloader_cannot_read_home
+                secure_frontend_fetch_tests.ruleset_failure_fails_closed_exit_9
+                PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED: Landlock is unavailable")
+        endif()
+    endif()
+    # SP4 Task 28 (spec §7, §10.3 DL-01/PRIV-01..04, §10.5): privacy lifecycle and release-only proofs.
+    secure_frontend_add_test_executable(secure_frontend_privacy_tests tests/privacy_test.cpp secure_frontend_strata_cli)
+    add_dependencies(secure_frontend_privacy_tests strata strata-secure-server secure_frontend_fake_engine secure_frontend_fake_curl
+        strata-supervision-fake-engine)
+    if(WIN32)
+        target_link_libraries(secure_frontend_privacy_tests PRIVATE iphlpapi ws2_32)
+    endif()
+    set(_sf_server_args ARGS $<TARGET_FILE:strata-secure-server> $<TARGET_FILE:secure_frontend_fake_engine>)
+    secure_frontend_add_cases(secure_frontend_privacy_tests priv03_api_payloads_resembling_pull_trigger_nothing ${_sf_server_args}
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+    secure_frontend_add_cases(secure_frontend_privacy_tests doctor_proxy_hint_is_presence_only ARGS $<TARGET_FILE:strata>
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    secure_frontend_add_cases(secure_frontend_privacy_tests priv04_secure_server_does_not_link_acquisition
+        ARGS ${CMAKE_CURRENT_BINARY_DIR}/strata-secure-server.link-set.txt ${CMAKE_CURRENT_BINARY_DIR}/strata.link-set.txt
+        LABELS release-also)
+    secure_frontend_add_cases(secure_frontend_privacy_tests release_binary_lacks_hook_marker
+        ARGS $<TARGET_FILE:strata> $<TARGET_FILE:strata-secure-server> LABELS release-only)
+    if(UNIX)
+        # Linux LD_PRELOAD socket audit (logs, and with SF_CONNECT_AUDIT_BLOCK refuses, non-loopback use).
+        add_library(secure_frontend_connect_audit SHARED tests/connect_audit_shim.cpp)
+        set_target_properties(secure_frontend_connect_audit PROPERTIES PREFIX "")
+        target_compile_features(secure_frontend_connect_audit PRIVATE cxx_std_20)
+        target_link_libraries(secure_frontend_connect_audit PRIVATE dl)
+        secure_frontend_set_warnings(secure_frontend_connect_audit)
+        add_executable(secure_frontend_fd_census tests/fd_census_main.cpp)
+        secure_frontend_set_warnings(secure_frontend_fd_census)
+        add_executable(secure_frontend_resolve_probe tests/resolve_probe_main.cpp)
+        secure_frontend_set_warnings(secure_frontend_resolve_probe)
+        target_link_libraries(secure_frontend_resolve_probe PRIVATE dl)
+        add_dependencies(secure_frontend_privacy_tests secure_frontend_connect_audit secure_frontend_resolve_probe)
+        secure_frontend_add_cases(secure_frontend_privacy_tests dl01_server_makes_no_outbound_connection
+            ARGS $<TARGET_FILE:strata-secure-server> $<TARGET_FILE:secure_frontend_fake_engine>
+                 $<TARGET_FILE:secure_frontend_connect_audit> $<TARGET_FILE:secure_frontend_resolve_probe>
+            LABELS release-also TIMEOUT 120)
+        secure_frontend_add_cases(secure_frontend_privacy_tests priv01_lifecycle_and_crash_restart_make_no_network_use
+            ARGS $<TARGET_FILE:strata-secure-server> $<TARGET_FILE:strata-supervision-fake-engine>
+                 $<TARGET_FILE:secure_frontend_connect_audit>
+            TIMEOUT 120)
+        target_sources(secure_frontend_fetch_tests PRIVATE tests/fetch_release_test.cpp)
+        add_dependencies(secure_frontend_fetch_tests secure_frontend_fd_census strata)
+        secure_frontend_add_cases(secure_frontend_fetch_tests release_spawn_has_no_fd4
+            ARGS $<TARGET_FILE:strata> $<TARGET_FILE:secure_frontend_fd_census> LABELS release-only)
+    else()
+        secure_frontend_add_cases(secure_frontend_privacy_tests dl01_server_makes_no_outbound_connection_windows ${_sf_server_args}
+            LABELS windows-runtime release-also TIMEOUT 120)
+    endif()
+    if(SECURE_FRONTEND_TEST_HOOKS)
+        # Record-channel cases (plan Global Constraints): hooks builds only.
+        secure_frontend_add_cases(secure_frontend_privacy_tests dl01_serve_and_infer_never_spawn_downloader ${_sf_server_args}
+            LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+        foreach(_case IN ITEMS dl01_positive_control_pull_spawn_is_recorded priv01_local_verbs_never_spawn_downloader
+                priv02_pull_output_and_logs_contain_no_url_query priv02_errors_contain_no_proxy_or_address)
+            secure_frontend_add_cases(secure_frontend_privacy_tests ${_case}
+                ARGS $<TARGET_FILE:strata> $<TARGET_FILE:secure_frontend_fake_curl> LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+        endforeach()
+        # Ruling R6: on Linux the probe's strata child also runs under the connect-audit shim.
+        if(UNIX)
+            secure_frontend_add_cases(secure_frontend_privacy_tests priv01_positive_control_doctor_downloader_probe_is_recorded
+                ARGS $<TARGET_FILE:strata> $<TARGET_FILE:secure_frontend_fake_curl> $<TARGET_FILE:secure_frontend_connect_audit>
+                TIMEOUT 120)
+        else()
+            secure_frontend_add_cases(secure_frontend_privacy_tests priv01_positive_control_doctor_downloader_probe_is_recorded
+                ARGS $<TARGET_FILE:strata> $<TARGET_FILE:secure_frontend_fake_curl> LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+        endif()
+        secure_frontend_add_cases(secure_frontend_privacy_tests hooks_build_announces_marker
+            ARGS $<TARGET_FILE:strata> $<TARGET_FILE:strata-secure-server>)
+    endif()
+    # SP4 Task 27 (spec §3.2, §7.3, §10.3): confinement through the strata CLI and acquire.log.
+    target_sources(secure_frontend_fetch_tests PRIVATE tests/fetch_cli_test.cpp)
+    target_link_libraries(secure_frontend_fetch_tests PRIVATE secure_frontend_strata_cli)
+    secure_frontend_add_cases(secure_frontend_fetch_tests confinement_reduced_written_to_log_record LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    if(NOT WIN32)
+        secure_frontend_add_cases(secure_frontend_fetch_tests doctor_downloader_probes_on_fresh_store
+            ARGS $<TARGET_FILE:secure_frontend_fake_curl>)
+        if(SECURE_FRONTEND_TEST_HOOKS)
+            secure_frontend_add_cases(secure_frontend_fetch_tests confinement_reduced_when_root_beneath_allowed_dir
+                ARGS $<TARGET_FILE:secure_frontend_fake_curl>)
+        endif()
+    endif()
 
     add_test(NAME strata_secure_server_help COMMAND strata-secure-server --help)
     # G4: past --help the server refuses an elevated token, and the Windows CI
@@ -1377,3 +1539,47 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
             PROPERTIES LABELS windows-runtime)
     endif()
 endif()
+
+# PRIV-04 supplement (SP4 §7.1): the transitive link closures of strata-secure-server and
+# (its positive control) strata, read by privacy.priv04_secure_server_does_not_link_acquisition.
+# Kept last so every target_link_libraries above is already recorded. Generator
+# expressions ($<LINK_ONLY:x>, $<$<PLATFORM_ID:Windows>:x>, ...) are handled
+# conservatively: every name inside one that is a target is followed, whatever the condition.
+function(secure_frontend_link_closure target out_var)
+    set(_seen "")
+    set(_queue ${target})
+    while(_queue)
+        list(POP_FRONT _queue _item)
+        if(NOT TARGET ${_item} OR _item IN_LIST _seen)
+            continue()
+        endif()
+        list(APPEND _seen ${_item})
+        get_target_property(_direct ${_item} LINK_LIBRARIES)
+        get_target_property(_interface ${_item} INTERFACE_LINK_LIBRARIES)
+        foreach(_lib IN LISTS _direct _interface)
+            if(NOT _lib OR _lib MATCHES "-NOTFOUND$")
+                continue()
+            endif()
+            if(_lib MATCHES "[<>]")
+                # A generator expression, or a piece of one split at a ';' inside it. Keep
+                # "ns::name" whole; every other separator splits the text into words.
+                string(REPLACE "::" "@@" _words "${_lib}")
+                string(REGEX MATCHALL "[A-Za-z0-9_.+@-]+" _words "${_words}")
+                foreach(_word IN LISTS _words)
+                    string(REPLACE "@@" "::" _word "${_word}")
+                    list(APPEND _queue ${_word})
+                endforeach()
+            else()
+                list(APPEND _queue ${_lib})
+            endif()
+        endforeach()
+    endwhile()
+    set(${out_var} ${_seen} PARENT_SCOPE)
+endfunction()
+foreach(_sf_link_target IN ITEMS strata-secure-server strata)
+    secure_frontend_link_closure(${_sf_link_target} _sf_link_set)
+    list(JOIN _sf_link_set "\n" _sf_link_text)
+    # file(WRITE) writes text mode on a native Windows host (CRLF on MSYS2); pin LF on every host.
+    file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${_sf_link_target}.link-set.txt"
+        CONTENT "@_sf_link_text@\n" @ONLY NEWLINE_STYLE UNIX)
+endforeach()

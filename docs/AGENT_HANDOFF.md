@@ -1,10 +1,16 @@
 # Secure Strata agent handoff
 
+> **Agents: read `docs/superpowers/handoff/2026-10-16-controller-resume.md` first.**
+> It holds the orchestration-level state at the owner's stop (2026-10-15), the
+> owner's binding rules, the sub-controller briefs and lane reports, what waits
+> on the owner, and the exact resume procedure. The project is stopped until the
+> owner says otherwise. This document is the code-level truth it points at.
+
 ## Purpose
 
 This repository is a Windows-and-Linux, security- and privacy-first successor
 to Strata. It must retain the model/backend flexibility of upstream Strata
-`v0.1.44.1` while replacing its public service boundary with a small portable
+`v0.2.1.3` while replacing its public service boundary with a small portable
 native frontend. UnbiasedStrata is a security-design reference, not a direct
 code base.
 
@@ -37,7 +43,12 @@ without asking the owner.
      CI run covers SP2).
    - SP3 — API concurrency, streaming, and `NET-*`/`WEB-*`/`DOS-*`/`EXT-*` tests.
    - SP4 — the explicit `acquire` command. **Tasks 1–24b merged into `main`
-     at `4b9fdd31`** (Windows-runtime rows pending MSYS2).
+     at `4b9fdd31`**; their `windows-runtime` rows passed in
+     `windows-msys2-clang` (CI run `38625663621` on `557a2cc7`, 488/488).
+     **Tasks 25–29 done on branch `sp4-acquire-part2`** (`06630dbd` …
+     Task 29; not pushed); their new `windows-runtime` cases passed on real
+     Windows in CI run `38655938748` (`9044a5bc`, 515/516); the one failure,
+     PRIV-04's link-set reader (CRLF), is fixed and its re-run is pending.
    - SP5 — frontend parity with the upstream service.
    - SP6 — GLM engine port, in its own directory, tracking
      `lighttransport/Strata` branch `glm53f` and, since 2026-10-14,
@@ -59,7 +70,7 @@ without asking the owner.
    lands in SP1 and SP7.
 6. **Upstream-trackability.** Upstream Strata is the git submodule `upstream/`
    (`https://github.com/Niko1221/Strata.git`), pinned by its gitlink at
-   `296b59d2f73c8f04a805df29c2fa97655adace78` (tag `v0.1.44.1`) and never
+   `cbfd5b926b794b356195d3cb600191b0c3567540` (tag `v0.2.1.3`) and never
    edited, inside or outside the submodule. The repository root holds only our
    code; our additions to upstream behavior are wrappers that import upstream
    (`tools/secure/secure_tokenizer.py`). The upstream Python service stays in
@@ -102,10 +113,31 @@ Approved by rflores ("approve all"); binding for plans and implementation.
   (section 12), `docs/superpowers/research/2026-10-14-sp6-glm-engine-sources.md`
   (section 6).
 
+### Owner decisions, 2026-10-20
+
+Approved by rflores during the upstream update; binding.
+
+- Upstream bumped to `Niko1221/Strata` **`v0.2.1.3`** (owner chose the latest
+  tag of the 0.2.1 line); the `RESUME`/`REUSED` protocol gap was fixed as a
+  hotfix on main immediately before the bump (`01ad7226`).
+- **Tag version governs:** `upstream.version` → `kEngineVersion`, and manifest
+  `min_version` compare against the tag number (`0.2.1.3`); the engine's CMake
+  self-version `0.1.46.2` is informational for the frontend.
+- **GitHub is storage only:** Actions disabled at the repo level by the owner
+  ("do not do GitHub Actions on GitHub, we just need to save there"). Push to
+  save; never rely on, await, or watch workflow runs.
+- **Windows runtime proof deferred:** agents prove only the local
+  `windows-llvm-mingw-cross` cross-build (`-Werror`); real-Windows runtime
+  claims wait for the owner's own hardware. The green `windows-msys2-clang`
+  run at `7bddb9e1` is the last CI-authorized Windows runtime proof and stands
+  for the `v0.2.1.3` pin.
+- New commits drop the `Claude-Session:` trailer (keep `Co-Authored-By`
+  literal; existing trailers never rewritten). wine stays uninstalled locally.
+
 ## Current baseline
 
 - Upstream baseline: the `upstream` submodule gitlink, `Niko1221/Strata` tag
-  `v0.1.44.1`, commit `296b59d2f73c8f04a805df29c2fa97655adace78`
+  `v0.2.1.3`, commit `cbfd5b926b794b356195d3cb600191b0c3567540`
   (`git submodule status`).
 - Git remotes: `origin` is the owner's repository. Only the owner pushes. The
   older `upstream` remote of this repository is no longer used for tracking;
@@ -134,7 +166,7 @@ Approved by rflores ("approve all"); binding for plans and implementation.
 Upstream Strata is the git submodule `upstream/`; the repository root holds
 only our code. Deleting `upstream/` leaves exactly our code.
 
-| Ours, at the root | Pristine, under `upstream/` (submodule @ `296b59d2`, tag `v0.1.44.1`) |
+| Ours, at the root | Pristine, under `upstream/` (submodule @ `cbfd5b92`, tag `v0.2.1.3`) |
 | --- | --- |
 | `CMakeLists.txt` (builds `secure_frontend/` and, by default, the engine from `upstream/`) | `upstream/CMakeLists.txt`, `upstream/src/`, `upstream/include/`, `upstream/cmake/`, `upstream/third_party/`, `upstream/sycl/` |
 | `secure_frontend/` (own `CMakePresets.json`; builds without `upstream/`) | `upstream/serve/`, `upstream/setup.py`, `upstream/setup.sh`, `upstream/requirements.txt`, `upstream/chat.py`, the launchers |
@@ -165,6 +197,19 @@ Follow [`PROVENANCE.md`](PROVENANCE.md), "Updating the baseline" (the only copy 
 
 Plan: `docs/superpowers/plans/2026-10-14-sp4-acquire.md`. One line per task.
 
+Real-Windows status: CI run `38625663621` (base `557a2cc7`: the SP4 merge `4b9fdd31`
+plus its merge-time handoff commit) ran `windows-msys2-clang`
+488/488 and the `linux-gcc-release` job green, so every `windows-runtime`
+case named in the Task 1–24b lines and in merge-time change (a) below is
+**verified on real Windows** there (merge-time change (c), the `strata`
+binary's own argv, had no case there; Known small gaps). Tasks 25–28 did not change
+that code except where their own lines say so (Task 26's additive SP1
+`ExecutableWriters::also_trusted_installer` option). The new
+`windows-runtime` cases of Tasks 25–28 are **verified on real Windows** by
+CI run `38655938748` (`9044a5bc`, `windows-msys2-clang` 515/516); the one
+failure, `privacy.priv04_secure_server_does_not_link_acquisition`, is fixed
+(see SP4 part 2) and its MSYS2 re-run is pending.
+
 - Task 1: `SECURE_FRONTEND_TEST_HOOKS` option (ON in test presets), `linux-gcc-release` preset (hooks OFF; runs `release-only|release-also`), in-tree FIPS 180-4 SHA-256; `secure_frontend_sha256_tests` (7 cases; 2 `release-also`).
 - Task 2: §8 reasons, exit classes and error text in `secure_frontend_manifest_core`; `acquire.exit_classes_match_spec_table`, `reason_table_is_complete_and_ordered`, `error_text_states_resumable`.
 - Task 3: URL/host/wildcard/proxy grammar (spec §2.2, §3.4, §3.8); manifest.source_url_grammar_matrix, dns_names_and_wildcards, proxy_grammar; fetch.dl03_location_with_glob_characters_rejected, location_resolution_and_host_normalization, location_query_characters.
@@ -181,7 +226,7 @@ Plan: `docs/superpowers/plans/2026-10-14-sp4-acquire.md`. One line per task.
 - Task 14: strict manifest parser, embedded catalog (production empty; hooks-only fixture-qwen:t1), --trust-manifest rules, kEngineVersion from upstream.version (checked against a reachable submodule tag), linux-release CI job; validate_manifest now enforces P1 paths for every caller; manifest.dl03_invalid_manifest_matrix, dl03_http_url_rejected, dl05_catalog_pins_match_committed_list (release-also), +4; pytest test_catalog_provenance.py.
 - Task 15: SP1 deltas a (inventory skips dot entries), b (scan_model_root_files), e (pull.* keys, lazy downloader); model_inventory.dl04_staging_ignored_by_inventory_scan, model_index.scan_tolerates_repeated_shard_names_across_versions, typed_config.cfg01_pull_keys_table_driven; server_cli auth04 allow-lists pull.allow_private_addresses.
 - Task 16: models store primitives on POSIX (lock, part files with KEEP_SIZE preallocation, no-replace rename with fallback, tree removal, hashing, seams); acquire.concurrent_pull_same_manifest_second_is_models_busy +7 (incl. overlong_joined_paths_fail_closed_without_throwing, F-6). Store skipped on WIN32 until Task 17 adds models_store_windows.cpp (F-34 guard; Task 17 removes it).
-- Task 17: models store primitives on Windows (pinned parents, CREATE_NEW private DACL, FileAllocationInfo, LockFileEx, MoveFileExW without replace, sharing retries); acquire.store_primitives_windows + store_adopts_only_private_files_windows (windows-runtime, MSYS2 CI; adopted .lock/.part need owner + protected DACL). F-34 guard removed: the store and its 8+2 cases build on every platform.
+- Task 17: models store primitives on Windows (pinned parents, CREATE_NEW private DACL, FileAllocationInfo, LockFileEx, MoveFileExW without replace, sharing retries); acquire.store_primitives_windows + store_adopts_only_private_files_windows (windows-runtime; passed in MSYS2, CI run `38625663621`; adopted .lock/.part need owner + protected DACL). F-34 guard removed: the store and its 8+2 cases build on every platform.
 - Task 18: index.json strict read/write, installed-model load with manifest re-hash; model_index.index_inconsistent_manifest_fails_closed +3 (round trip windows-runtime). Ruling A: validate_manifest rejects a files[].path whose longest stored form (.staging/<key>/…part, <name>/<tag>/v…/…, files/…) exceeds P1's kRelativePathMaxBytes; manifest.stored_path_length_fits_p1.
 - Task 19: §4.4 checks, §4.5 publish/retire/orphan adoption, §4.7 install decisions, §4.8 rm library; acquire.dl04_publish_uses_noreplace_and_never_overwrites, publish_falls_back_when_noreplace_unsupported, dl04_crash_between_publish_and_index_is_not_loaded (hooks), dl04_orphan_adopted_after_rehash_by_digest, replace_loaded_model_retires_old_version(_windows), +9 (F-39 key check, read-only retire/rm, downgrade single-live, unreachable rm is an error). remove_tree_within restores owner write (0500/FRFX) by handle; remove_*_within report an unreachable parent as publish_failed, only a missing one as absent.
 - Task 20: bundles (open/verify/import/export, finish with SHA256SUMS + marker last, FAT and license refusals) and SP1 delta f RootPolicy::external; bundle.dl02_import_bundle_publishes_same_as_pull, dl03_bundle_digest_mismatch_publishes_nothing, bundle_rejects_* (traversal, symlink|junction, hard link, unlisted), bundle_sha256sums_must_match_manifest, export_refuses_*, export_rehashes_and_rejects_bit_rot, verify_writes_nothing, import_from_read_only_bundle_directory, export_onto_shared_writable_target, +5 (per-file license exit 10, drive root F-46 (read: "/"/"X:\\" only; write also refuses a mount point), mount-root bundle imports, F-6 over-long/odd names, make_bundle.py fixture with pytest drift guard); paths.external_root_skips_ownership_checks.
@@ -196,9 +241,199 @@ Merge into `main` (`4b9fdd31`, SP2 run 2 + SP4; merge-time changes, report `merg
 
 - (a) GPU list: `compose_engine_launch` renders SP2's typed `engine.gpu` list in both modes (SP2 §3.9): `--expert` passes `config.engine.gpus` to `build_engine_arguments`; a managed model appends `--gpu <list>` after `engine.args` (`--gpu` in `engine.args` stays refused); engine_arguments.managed_launch_renders_typed_gpu_list (windows-runtime).
 - (b) SP4's manifest-side `EngineFamily { strata, glm, none }` is renamed `ManifestFamily` (beside `ManifestProfile`) so it coexists with SP2's environment `EngineFamily { strata, glm }`; no behaviour change (the SP4 plan text still says `EngineFamily`).
-- (c) Shared Windows UTF-8 argv: `utf8_command_line(argc, argv)` (`include/secure_frontend/utf8_argv.hpp`, `src/utf8_argv.cpp`) in library `secure_frontend_utf8_argv` (links `shell32`), used by `strata-secure-server` and `strata`; POSIX returns argv as given. `strata`'s Windows runtime proof is pending MSYS2 (Known small gaps).
+- (c) Shared Windows UTF-8 argv: `utf8_command_line(argc, argv)` (`include/secure_frontend/utf8_argv.hpp`, `src/utf8_argv.cpp`) in library `secure_frontend_utf8_argv` (links `shell32`), used by `strata-secure-server` and `strata`; POSIX returns argv as given. `strata`'s Windows runtime proof is pending MSYS2 (Known small gaps): CI run `38625663621` ran the in-process CLI cases only; no case at `557a2cc7` starts the `strata` binary. Task 25 later added only a POSIX `SIGPIPE` ignore to `strata_main.cpp`.
 - (d) The supervisor's chat profile and protocol flavor come from `launch.profile` (the manifest's for a managed model), not `config.engine.profile` (`--expert` only); identical today (managed is qwen).
 - SP2's `tests/support/server_harness.cpp` passes `--expert` (SP1-style inventory fixture); server fixtures pass `--expert` and `--state-dir`.
+- Task 25: confined downloader on Linux (SP2 seam: keep_fds + pre-exec hook; NO_NEW_PRIVS, Landlock read-only system dirs, record fd 4 in hooks builds; probe + C3 floor); fetch.priv04_downloader_argv_exact, priv04_downloader_env_is_empty, dl03_downloader_untrusted_path_rejected, dl03_downloader_cannot_write_files, dl03_downloader_cannot_read_home, pre_exec_failure_fails_closed_exit_9, record_fd_does_not_clobber_report_pipe, downloader_below_floor_exits_9, redirect_url_absent_from_downloader_argv, confinement_reduced_is_announced_without_landlock.
+  Commit "sp4: confined curl downloader on Linux via the SP2 pre-exec seam (SP4 Task 25; spec §3.1-§3.3)". Controller rulings: B2 ruleset creation failure with Landlock present → downloader_confinement_failed, no spawn (fetch.ruleset_failure_fails_closed_exit_9, EMFILE via RLIMIT_NOFILE); R2 SP2 read_report/classify_report (fetch.downloader_spawn_report_classified, all builds); I7 record fd opened before the ruleset; I8 downloader-specific path texts; `strata` ignores SIGPIPE. Library `secure_frontend_downloader` is POSIX-only until Task 26; not yet linked by `secure_frontend_strata_cli`.
+- Task 26: confined downloader on Windows (restricted Low-integrity primary token in a Job, SystemRoot-only env, explicit handle list, CRT block entry 4 in hooks builds, TrustedInstaller-aware executable check); fetch.*_windows (4, windows-runtime: MSYS2 CI).
+  Commit "sp4: confined curl downloader on Windows: Low-integrity token, Job, explicit handles (SP4 Task 26; spec §3.2, §11)". Cases fetch.downloader_transfer_through_job_windows, dl03_default_windows_curl_path_accepted_windows (all builds), dl03_downloader_runs_at_low_integrity_windows, priv04_downloader_env_is_systemroot_only_windows (hooks only; ruling I11) — pending MSYS2 (not triggered by us; wine smoke: the transfer case passes, the integrity/env cases fail only on wine artifacts — wine ignores token integrity and injects WINE* variables). Controller rulings: B3 link secure_frontend_engine_stdio_process + advapi32 (no userenv); I2 WinLaunched::thread closed, Job limits left ON; R5 record OPEN_ALWAYS + append per spawn; I12 MSVCRT quoting copied file-locally; classify_spawn_report stays POSIX-only (launch_in_job DWORD mapped directly). `secure_frontend_downloader` now builds on both platforms; still not linked by `secure_frontend_strata_cli`.
+  Fix round 1: validate_downloader is shared (downloader_common.cpp) and uses SP1 open_executable with the new default-preserving `ExecutableWriters::also_trusted_installer` (threaded to `windows_security::write_access_is_private(handle, also_trusted_installer = false)` and `detail::open_existing_root`), so Windows gets GetFullPathNameW normalisation, root-form/UNC refusal, FILE_TYPE_DISK and a prefix-free path; argv uses path_to_utf8 (POSIX bytes unchanged); fetch.dl03_downloader_path_normalised_windows, dl03_downloader_unc_path_rejected_windows (wine-runnable; wine 258/258).
+- Task 27: strata pull/run (D6)/update --models/doctor [--downloader], SIGINT/SIGTERM/console interrupts → exit 8, §7.3 acquire.log with confinement; acquire.run_missing_model_prompts_and_decline_exits_2, run_missing_model_non_interactive_exits_2, run_refuses_glm53_without_engine, dl04_interrupt_during_download_never_indexed_windows, +3; fetch.confinement_reduced_written_to_log_record, confinement_reduced_when_root_beneath_allowed_dir, doctor_downloader_probes_on_fresh_store.
+  Commit "sp4: strata pull, run (D6), update --models and doctor with interrupts and log records (SP4 Task 27; spec §1.3, §6.1, §7.3, D6)". `secure_frontend_strata_cli` now links `secure_frontend_downloader` (src/strata_cli_network.cpp; stub removed); hooks-only global options `--test-record-file <path>` / `--test-force-no-landlock` before `--config` (a release build rejects them: exit 1); fake-curl scenario directive `delay-ms <N>`. Controller rulings: B1 the downloader cwd `roots.models/.staging/.cwd` is created before any probe or transfer spawn (pull, pull --bundle, doctor --downloader; plain doctor writes nothing) — fetch.doctor_downloader_probes_on_fresh_store; R1 hooks builds copy CliServices::test_cacert into the pull request; R3 strata_cli_internal.hpp helpers reused; R8 the root/config-beneath-the-downloader case also checks `reduced:readable:config file` and a hooks pull through the fake logging `confinement=reduced:readable:roots.models`; R11 `run` of a model neither installed nor in the catalog → `model_unknown`, exit 5, plus a `strata import` hint; R12 acquire.log is one record per **transferred** file (reused, bundle-copied or already-staged files get none); I13 ForwardTransport/ForwardProbe in tests/support/pull_harness.hpp. update_models_pulls_outdated_catalog_models answers the §6.1 license question interactively (the committed catalog fixture's license url/notice differ, so --yes alone declines). Label form stays the merged `reduced:readable:<key>` (spec §3.2/§7.3 text differs; I20). Every new acquire/fetch CLI case on Windows is windows-runtime (wine cannot open the private-DACL roots; existing CLI cases fail the same way there): pending MSYS2 CI, including the Ctrl-Break DL-04 case (it calls AllocConsole when the runner has no console window; ruling I15).
+  Fix round 1: InterruptScope now covers the whole network verb; a SIGINT/SIGTERM at a pending [y/N] ends `interrupted`, exit 8, nothing spawned (spec §8.2 controller ruling; EOF/Ctrl-D stays `declined`, exit 2); acquire.dl04_sigint_during_download_exits_8, dl04_sigterm_during_download_exits_8, interrupt_at_confirmation_prompt_exits_8 (Linux, hooks: a real strata child with the fake curl; the prompt case uses a pseudo-terminal stdin).
+- Task 28: privacy lifecycle proofs (record channel with positive controls, LD_PRELOAD socket audit with a blocked positive control, Windows TCP table, link-set check) and hooks-OFF proofs (fd census, marker scan in C++ and in secure_distribution_check.py); privacy.* (13), fetch.release_spawn_has_no_fd4.
+  Commit "sp4: DL-01 and PRIV-01..04 lifecycle proofs, release-only checks and the hooks marker scan (SP4 Task 28; spec §7, §10.3, §10.5)". New targets: `secure_frontend_privacy_tests`, `secure_frontend_connect_audit` (Linux LD_PRELOAD shim; `SF_CONNECT_AUDIT`, `SF_CONNECT_AUDIT_BLOCK`, plus `SF_CONNECT_AUDIT_LOADED` so an empty audit is proven to come from a process the shim was loaded into), `secure_frontend_resolve_probe`, `secure_frontend_fd_census`; `${CMAKE_BINARY_DIR}/strata-secure-server.link-set.txt` (written at the end of CMakeLists.txt). DL-01 = tripwire + socket audit + link-set check together (R10). Controller rulings: R6 doctor --downloader's strata child runs under the shim (audit empty); R7 Windows DL-01 also scans the UDP tables (and TCP/UDP IPv6); R9 every local verb's exit code asserted (update 12, the rest 0) plus `update --models` on fixture-qwen:t1 installed at sequence 1, declined both non-interactively and with an explicit `n` (exit 2, no spawn); R10 lifecycle waits for READY and asserts a 200 chat — the crash case kills the engine with SIGSEGV after READY (classified `crashed`) instead of `--crash-after-ready`, because that SP2 fake mode stops reading stdin until it crashes, so no chat could ever succeed; it then sees /health leave ready and return before auditing; I17 non-INET families are local; I18 dependencies. `linux-release` CI step stages strata + strata-secure-server and runs `secure_distribution_check.py` (no `--release` until SP7). Counts: linux-gcc 556/556 (+2 skips), linux-gcc-release 523/523 (10/10 `release-only|release-also`), wine 260/260, pytest 25. Pending MSYS2 CI: privacy.dl01_server_makes_no_outbound_connection_windows and the windows-runtime privacy cases.
+  Fix round 1: the Windows DL-01 scan fails on any GetExtended{Tcp,Udp}Table error and must find the server's own 127.0.0.1:<port> listener under its pid each round (positive control); the link closure follows names inside generator expressions ($<LINK_ONLY:…>, conditional) and is also written for `strata`, whose set must contain secure_frontend_acquire/downloader/strata_cli (positive control); the shim also audits sendmsg/sendmmsg/getnameinfo/gethostbyname[_r]/gethostbyaddr (raw syscalls and io_uring are out of its reach) and the blocked probe must record all 9 calls, including connect.
+- Task 29: docs only — threat-model amendment (spec §7.4: "Privacy and offline operation" names `strata pull`/`update`/`run`-on-missing as the networked operations; "Artifact acquisition" states the manifest pins, our-redirects-only rule and what confinement does not stop), `PROVENANCE.md` "Model catalog (SP4)" (empty v1 catalog, developer-bundle shard pins) and the `upstream.version` pin site in runbook step 5, the part-2 verification record below; no tests added.
+  Commit "docs: SP4 threat-model amendment, catalog provenance, handoff verification (SP4 Task 29; spec §7.4, §13.5)". CI check (Step 4): `grep -n SECURE_STRATA_ENGINE_VERSION .github/workflows/secure-frontend.yml` prints nothing, and both `paths:` filters list `upstream.version`.
+- Final-review fix wave: commit "sp4: final-review fixes — interruptible hashing and copying, probe interrupt exit 8, update --models interrupt exit, SP1 SID literal (SP4 final review; spec §8.3)". F1 `hash_into`, `copy_verified`, `verify_tree` and `adopt_orphan` take an optional interrupt flag (default nullptr: unchanged for import/export) checked before every 8 MiB chunk; `run_pull` passes its flag, so Ctrl-C/SIGTERM during a resume re-hash, an update's reuse copy, `pull --verify` or orphan adoption exits 8 within one chunk (the half copy removed, a `.part` never restarted from zero, nothing indexed); F3 a probe killed by the interrupt flag is `interrupted` (exit 8), not `downloader_unsupported`; F4 `update --models` returns 8 when a target is interrupted even after an earlier failure; F6 strata_cli.hpp comments; F7 DL-01 scope line (Part 2 deviations); C1 SP1 `windows_security.cpp` uses a file-local TrustedInstaller SID (no SP4 include); C2 Windows `untrusted_owner` text names the current user, SYSTEM, Administrators or TrustedInstaller. Tests added: acquire.hash_into_stops_when_interrupted, acquire.update_reuse_copy_interrupted_mid_file_exits_8, acquire.pull_verify_interrupted_exits_8 (windows-runtime label like their neighbours), fetch.probe_interrupted_exits_8 (Linux, hooks). Counts: linux-gcc 560/560 (+2 skips), linux-gcc-release 526/526 (10/10 `release-only|release-also`), wine 260/260 (518 registered), pytest 25. F4 has no case (the test catalog has one entry, so no two-target update exists).
+
+Part 2 deviations from the spec text (controller rulings, recorded here so a
+spec reader is not surprised):
+
+- **R5, spec §10.1 "record channel":** the hooks-only record file is opened
+  `O_WRONLY|O_APPEND|O_CREAT|O_CLOEXEC|O_NOFOLLOW` 0600 (Windows
+  `OPEN_ALWAYS` + `FILE_APPEND_DATA`) once per spawn, **not** `O_EXCL`, so one
+  file collects the probe and every transfer of a run. Tests always use a
+  fresh scratch directory.
+- **I20, labels:** the code and log use the merged form `full`,
+  `reduced:no_landlock`, `reduced:readable:<key>` (for example
+  `reduced:readable:roots.models`, `reduced:readable:config file`). Spec
+  §3.2 prints `confinement: reduced (readable: <key path>)` and §7.3 writes
+  `reduced:<cause>`; the spec text is inconsistent with itself and with the
+  code. The key may contain a space (`config file`), so a strict
+  `key=value` log parser must take the rest of the field.
+- **Spec §8.2 over the Task 27 brief:** SIGINT/SIGTERM (Ctrl-C) at a pending
+  `[y/N]` ends `interrupted`, **exit 8**, nothing spawned; EOF/Ctrl-D stays
+  `declined`, exit 2. Known race: a SIGINT landing after the prompt flush and
+  before `read()` starts needs a second Ctrl-C (the result is still exit 8).
+- **R10, Task 28 crash case:** the crash-restart lifecycle kills the fake
+  engine with SIGSEGV after READY (classified `crashed`) instead of SP2's
+  `--crash-after-ready`, under which the fake stops reading stdin and no 200
+  chat is possible.
+- **Additive SP1 change (Task 26 fix round 1):** `ExecutableWriters
+  { standard, also_trusted_installer }` and `open_executable(requested,
+  ExecutableWriters = standard)` in `canonical_path.hpp`;
+  `windows_security::write_access_is_private(HANDLE, bool
+  also_trusted_installer = false)`; `detail::open_existing_root(…, bool
+  also_trusted_installer = false)`. Defaults keep every SP1 caller's
+  behaviour; only `validate_downloader` passes `also_trusted_installer` (spec
+  §3.2 "same rules as `engine.executable`" plus TrustedInstaller for
+  `System32\curl.exe`).
+- **B1, spec §3.2 cwd row:** `pull`, `pull --bundle`, `run` → pull,
+  `update --models` and `doctor --downloader` create
+  `roots.models/.staging` and the read-only `.staging/.cwd` before any
+  downloader spawn (and before the `[y/N]`, so a declined pull leaves that
+  empty 0500 directory); plain `doctor` writes nothing.
+- **Shim scope (Task 28):** the `LD_PRELOAD` connect audit hooks the libc
+  entry points (`connect`, `sendto`, `sendmsg`, `sendmmsg`, `getaddrinfo`,
+  `getnameinfo`, `gethostbyname[_r]`, `gethostbyaddr`); raw `syscall()` and
+  io_uring are out of its reach, so DL-01 rests on the tripwire, the audit
+  and the link-set check together.
+- **`classify_spawn_report` is POSIX-only** (Windows has no report pipe;
+  `launch_in_job`'s DWORD is mapped directly).
+- **DL-01 audit scope (Task 28):** the Linux shim audits the `strata-secure-server` process only (the engine child's allowlisted environment drops `LD_PRELOAD`), and the Windows socket-table scan filters by the server's pid; the engine child's network isolation is SP2's.
+
+SP4 closing summary (after Task 29).
+
+New user-visible surface, all through the new `strata` binary (never
+`strata-secure-server`): `strata --config <file> import|verify|export|list|show|rm|pull|run|update|doctor`
+(`update --models [<name:tag> …]` is the models part; bare `strata update` is
+the program part and exits 12 until SP7; `doctor --downloader` probes curl).
+`--config <file>` is required on every verb. The production catalog is empty
+(D5 (D)), so a model arrives today through `make_bundle.py` + `strata import
+--trust-manifest sha256:<hex>` or `pull --manifest <file> --trust-manifest
+sha256:<hex>`.
+
+Open items (plan "Controller notes", one line each):
+
+1. `strata` is SP4's own binary with its own verbs; the later PX CLI skeleton must absorb `secure_frontend_strata_cli`.
+2. No default config location: every verb needs `--config <file>` until PX/SP1 picks one.
+3. `strata run` stops at "model ready" + the `strata-secure-server` hint; the chat client (SP2 auto-start + SP3 streaming) replaces that tail.
+4. `--expert` exists only on `strata-secure-server`, not on `strata`.
+5. No server discovery: `LoadedVersions` = `NoServerDiscovery` ("not held"); the OS is the backstop and `rm --force` has nothing to override yet (SP2/CLI).
+6. Spec §4.4's `load_tokenizer_pack` is SP1's `load_local_tokenizer_pack(const CanonicalRoot&)` (spec text to align).
+7. Spec §4.1's `atomic_replace_within` is `replace_small_file` over SP1's `write_private_file(…, replace)` (spec text to align).
+8. SP4's `cfg01_*` cases live in `secure_frontend_typed_config_tests` (spec §4.9 names `config_tests`).
+9. `kEngineVersion` is `0.1.44.1` (spec cites `v0.1.43` line numbers); GSQ-RCO packs are still built by upstream `tools/iq_pack.py` without `pack_args`.
+10. The v1 production catalog is EMPTY until D5 (A) owner determinism check or (C) a C++ pack builder; Hub-read shard pins await owner confirmation (`PROVENANCE.md`, "Model catalog (SP4)").
+11. `upstream.version` is the engine-version source and a runbook pin site; no CI `-D` or env pin.
+12. Retry schedule read as 5 attempts per source, 2/4/8/16 s between them, 32 s before the next source (spec §3.6 wording).
+13. Unknown curl exits → `transport_failed`, next source, not retried (§3.4 over §8.2; spec text to align).
+14. Landlock ABI ≥ 6 `scoped` rights are left unhandled (review with SP2).
+15. SP2 seam names are authoritative (`ExecOptions`, `PreExecHook`, `WinLaunchSpec`, `launch_in_job`); Tasks 25/26 used them as built.
+16. `strata update` = program part (exit 12); `strata update --models` = models part.
+17. SP4 is the first writer of `roots.logs` (`acquire.log`; one record per transferred file, see Known small gaps).
+18. SP1 delta f `RootPolicy::external` (bundle source/target only) is an SP1 addition to note in the SP1 docs.
+19. CI runs `secure_distribution_check.py` without `--release` until SP7 provides the release manifest and SBOM.
+20. Facts SP3 M1 must re-anchor on (`FrontendConfig::pull`, optional `tokenizer_pack`/`profile`, +7 schema rows, `compose_engine_launch`, `--expert` fixtures, the connect-audit shim to reuse).
+
+PX amendments of spec §13.3 — **to apply in a PX addendum (owner/controller)**:
+`pull.manifest_sources` dropped (catalog in the binary, D2); staging is
+`roots.models/.staging/`, no `paths.staging`; bundle manifests trusted by
+catalog digest or `--trust-manifest` (D7), signatures SP7; publish to
+`models/<name>/<tag>/v<sequence>-<h12>/` with retired older versions; file
+roles `weights`/`pack`/`tokenizer` plus the manifest `launch` block; PX §3
+step 6 "`run` … asks Download?" — **kept (D6 (a))**; the TLS question
+answered by D1; `strata update` model part §6.1, program part exit 12 until
+SP7; `STRATA_CONFIG` untouched (open for the PX addendum, §3.9); SP4 row
+signatures move to SP7.
+
+### Upstream bump to `v0.2.1.3` (2026-10-20)
+
+Owner lifted the stop and named the target; after analysis of `v0.2.1` →
+`v0.2.1.3` (engine code identical to `v0.2.1.2` plus Windows-HIP fixes) the
+owner chose the latest tag. Pin: `v0.1.44.1` (`296b59d2`) → **`v0.2.1.3`**
+(gitlink `cbfd5b926b794b356195d3cb600191b0c3567540`, tag object
+`1ab44ace2e4db985503ab9388b65405a63600dd7`). Pin sites re-pointed:
+`upstream.version`, `README.md`, the CI workflow header, this file,
+`docs/secure-frontend-ci.md` (offline bundle names), `docs/PROVENANCE.md`
+(baseline, runbook, license links, ggml `FetchContent` lines 1552–1555),
+`docs/security/*` headers, and the `engine_arguments` code comments
+(`--gpu` re-anchored to `generate.cpp:2334-2352`, usage `:797`). The limits
+doc was fully re-pinned to `v0.2.1.3` line numbers and gained rows for the
+`DONE` tail, HIP-Windows `rocm\bin` delay-load, batch telemetry and the
+version-numbering split.
+
+Owner rulings (2026-10-20, this bump): **tag version governs** —
+`kEngineVersion` (from `upstream.version`) and manifest `min_version` carry
+`0.2.1.3`; the engine's CMake self-version `0.1.46.2` (`strata --version`) is
+informational only. **wine stays off this host** — Windows proof comes from the
+`windows-msys2-clang` CI job. New commits drop the `Claude-Session:` trailer
+(keep `Co-Authored-By`).
+
+Gates this host, old pin → new pin (linux-gcc build 0 warnings both):
+
+| Gate | `v0.1.44.1` | `v0.2.1.3` |
+| --- | --- | --- |
+| pytest (ours) | 25 | 25 |
+| linux-gcc ctest | 560 reg., 556 pass, 4 env skips | 561 reg., 557 pass, 4 env skips |
+| windows-llvm-mingw-cross build (`-Werror`) | 0 warnings, 47 exes | 0 warnings |
+| root build + ctest | 239 steps; 526 reg., 522 pass, 4 skips | 240 steps; 527 reg., 523 pass, 4 skips |
+| upstream tools (own venv) | 760/2 skipped/5 desel. | 1027/13/6 |
+| upstream serve (own venv) | 774/11 | 878/14/1 |
+
+(Registered grew by one at both ctest levels from the `RESUME`/`REUSED`
+hotfix, `01ad7226`, landed immediately before the bump.)
+
+Two upstream tests fail deterministically at `v0.2.1.3` — both NEW in the
+0.2.1.x range, both quarantined Python, diagnosed to root cause (see the
+runbook bullet list): the parallel-download test (`04221c3e`/`e2071c2f`: the
+new length probe issues a whole-file ranged GET its own `asked()` counts
+twice) and the lifeline watcher test (`48e6d64c`: the `ps lstart,stat` token
+is unstable because `stat` flips `R`→`S`; the `pdeathsig` production path
+passes). Both added to the exclusion list with reasons. Nothing we build or
+ship failed.
+
+Upstream changes relevant to us (audited against the checked-out tag; full
+facts in `docs/security/engine-protocol-limits.md`): the `RESUME`/`REUSED`
+serve records (fixed in `01ad7226`); the main engine's `DONE` gained a
+` chunk=… experts_streamed=…` tail (opaque to our client, finish field
+position unchanged); `qwen35moe` now PARSES `--vision`/`--batch`/`--slots` —
+the frontend deny-list is now the only guard, and it holds; `qwen35moe`
+answers stray lines with `ERR expected: GEN …` instead of exiting; HIP
+gfx906 builds exclude the qwen35 engine; HIP-Windows gained the
+`<exe>\rocm\bin` delay-load search (SP7 packaging item, like `strata_kq`);
+`STRATA_MMQ_TQ_OVERLAY` defaults ON (GPU builds only, no CPU/root effect);
+`apps/desktop` and `apps/host` are new upstream trees — not packaged, and SP7
+must keep them out; the ggml pin `3cf03257` is unchanged; CMake surface
+re-audited: one `FetchContent` at `:1552`, no `tests/CMakeLists.txt`, option
+defaults compatible with our root seeds. The engine CLI gained three local
+tuning flags (pass-through candidates; deny-list unchanged and still
+complete for everything it refuses).
+
+### Protocol hotfix: `RESUME`/`REUSED` prompt-progress records are consumed (2026-10-20)
+
+Found while re-auditing the `--serve` protocol for the upstream v0.2.1.x bump:
+the main engine family's serve loop prints `RESUME <n>` before reading the
+prompt and `REUSED <n>` once it is read, for **every** accepted GEN and
+unconditionally (`generate.cpp:11214`/`:11849` at `v0.1.44.1`, `:12809`/`:13910`
+at `v0.2.1.3`; upstream's own server consumes both). The strict client failed
+such a response with `unexpected_line`, so **every real-engine chat would have
+failed at both pins** — the same latent-blocker class as the PP fix (`c9629e6e`),
+found by reading, never yet observed against a real engine. Fix mirrors PP: under
+the Strata profile a `RESUME`/`REUSED` line with exactly two fields and a
+32-bit decimal count is consumed silently; any other shape still fails closed;
+the GLM profile keeps its exact record and refuses them. `YIELDED <slot>
+<tokens>` is left strict — it needs the `--batch`/`--slots` paths, which the
+frontend refuses at argv level.
+
+Tests: `secure_frontend_engine_protocol_client_tests.resume_and_reused_progress_is_consumed_in_the_strata_profile`
+(RED on the unfixed client: "RESUME/REUSED records of the main engine family
+must be consumed silently" + "a held-state reuse count must be accepted as a
+decimal"; GREEN after). Limits doc: new `RESUME`/`REUSED` row in
+`docs/security/engine-protocol-limits.md`.
 
 ### Upstream bump to `v0.1.44.1` (2026-10-14, branch `upstream/bump-v0.1.44.1`)
 
@@ -226,11 +461,18 @@ network code. Upstream changes that matter to the frontend:
   path): a DLL search-order and packaging question for GPU builds.
 - New family check: the engine refuses any `general.architecture` other than
   `qwen4exp` / `qwen35moe` — affects the SP6 GLM port.
-- Open item for the controller (pre-existing since `v0.1.43`, not fixed here):
-  the engine emits `PP <done> <total> <ms> <tok/s>` during batched prompt
-  reads, and `engine_protocol_client.cpp` rejects `PP` outside the GLM
-  profile, so such a Strata-profile request would fail. Not observed at run
-  time (no GPU).
+- RESOLVED 2026-10-14 (commit on `main`, "protocol: Strata-profile PP prefill
+  heartbeats are consumed"): the engine emits `PP <position> <prompt tokens>
+  <ms> <tok/s>` during batched prompt reads (`generate.cpp`), and the
+  `qwen35moe` engine emits `PP <done> <fresh> <ms> <tok/s>` (`q36_engine.cu`);
+  `engine_protocol_client.cpp` used to reject `PP` outside the GLM profile, so
+  every real Strata-profile request with a batched prefill would have failed
+  with a generic `503`. It now consumes bounded `PP` records (3–5 fields, two
+  decimal counters, optional non-negative metrics, no ordering assumed) under
+  the Strata profile; the GLM profile keeps its exact 3-/5-field record with
+  `read <= total`. Case `engine_protocol_client_tests.prefill_progress_is_bounded_in_both_profiles`
+  (RED against the old client on the first Strata-shaped line). Still never
+  observed against a real engine (no GPU here).
 
 The runbook in `PROVENANCE.md` was corrected on its first real run (gates at
 the old pin first, per-run `out/<name>-<L>` dirs, rule for new upstream test
@@ -512,8 +754,9 @@ The native frontend enforces these in-process boundaries: configuration
 validation, secret-source metadata, Linux/Windows protected-file token reading,
 exact Host/Origin/CORS policy, bounded HTTP request parsing with a total request
 deadline plus bearer authentication, portable child-process supervision, and a
-serial native Qwen (or selected GLM-5.3) text-chat route. It does **not**
-download artifacts, package a secure release, implement every upstream serving
+serial native Qwen (or selected GLM-5.3) text-chat route. The server does **not**
+download artifacts (since SP4 only the separate, operator-invoked `strata`
+binary does), package a secure release, implement every upstream serving
 profile, or replace the upstream Python service in a release. Therefore the
 repository must not yet be described as privacy-hardened or as having removed
 upstream network-capable behavior.
@@ -684,14 +927,17 @@ analytics, telemetry, crash upload, remote configuration, advertising, or
 automatic update client. Prompts, completions, images, and usage data remain
 local; request logging is off by default.
 
-The only permitted future network operations are separately invoked,
-foreground commands: `acquire` (the product name may become `strata pull`) and
-the explicit `strata update` in the owner's north star. Each must use a
-user-visible, digest-pinned HTTPS manifest and cannot be triggered by an API
-request, model content, plugin, or automatic updater. See the threat model for
-the full rules. `threat-model.md` currently lists `acquire` as the sole
-networked operation; it must be amended under review, together with the
-product-experience spec, before `strata update` is designed.
+The only permitted network operations are separately invoked, foreground
+`strata` commands: `strata pull` (acquire), `strata update` (today the
+models part, `update --models`; the program part exits 12 until SP7) and
+`strata run` for a model that is not installed, after the same confirmation.
+Each uses a user-visible, digest-pinned HTTPS manifest and cannot be
+triggered by an API request, model content, plugin, configuration or
+automatic logic; `strata-secure-server` links no acquisition code (PRIV-04).
+See the threat model ("Privacy and offline operation", "Artifact
+acquisition"; amended by SP4 Task 29, spec §7.4) for the full rules. The
+matching product-experience-spec amendments (SP4 spec §13.3) await a PX
+addendum (SP4 closing summary, "What has changed").
 
 ## Ordered implementation backlog
 
@@ -752,9 +998,16 @@ owns it (see the decisions above).
 1. Implement an offline-by-default model inventory and local-file validation.
    **Inventory done; canonical-root validation done (SP1).**
 2. Implement the explicit `acquire` command with HTTPS-only sources, byte
-   limits, SHA-256 verification, temporary staging, and atomic publish. **SP4.**
+   limits, SHA-256 verification, temporary staging, and atomic publish.
+   **Done in SP4** (branches `sp4-acquire`, merged at `4b9fdd31`, and
+   `sp4-acquire-part2`): `strata pull`/`import`/`run`/`update --models`
+   through a confined system curl. The real-HTTPS run is the manual step in
+   "Verification performed", SP4 part 2.
 3. Add `DL-*` tests using only local fixture servers. Never make tests fetch
-   public model files. **SP4.**
+   public model files. **Done in SP4** (same branches): DL-01..05 and
+   PRIV-01..04 with a fake downloader and scripted resolver; Windows runtime
+   cases of Tasks 25–28 verified in CI run `38655938748` (PRIV-04 link-set
+   re-run pending).
 
 ### Phase 5 — compatibility, packaging, and release
 
@@ -788,6 +1041,79 @@ owns it (see the decisions above).
    do not weaken the gate to make a source archive pass. **SP7.**
 
 ## Verification performed
+
+### SP4 part 2 (2026-10-14, branch `sp4-acquire-part2`, Tasks 25–29)
+
+Commits on base `557a2cc7`: `06630dbd` (Task 25, Linux confined
+downloader), `563dd0e9` + `a79e8b02` (Task 26, Windows downloader + fix
+round 1), `ecff71dc` + `1582fba4` (Task 27, network verbs + signals fix
+round 1), `68273f72` + `e7a16999` (Task 28, privacy/release proofs +
+positive controls), then the Task 29 docs commit. Each task was reviewed
+(spec + quality); each fix round was re-reviewed. Run at `e7a16999` (Task 29
+changes docs only) on the dev host: Linux 5.15.0 x86_64, no GPU, LSMs
+`lockdown,capability,landlock,yama,apparmor` (Landlock ABI 1, so the
+confinement proofs ran, not skipped), cmake 4.4.3, wine 6.0.3, worktree
+`.worktrees/sp4b`, `.venv-dev/bin` first on `PATH`.
+
+| Command (in `secure_frontend/` unless noted) | Result |
+| --- | --- |
+| `cmake --preset linux-gcc && cmake --build --preset linux-gcc && ctest --preset linux-gcc` (hooks ON) | builds clean (`-Werror`, no warning lines); `100% tests passed out of 556` (2 skipped: `proc03_other_uid_cannot_open_engine_fd`, `proc05_cgroup_kill_when_delegated`); 520 at the base + 36 |
+| `ctest --preset linux-gcc -N -L 'release-only\|release-also'` | `Total Tests: 7` (the preset excludes the 3 `release-only` cases; `ctest --test-dir out/build/linux-gcc -N` lists 559) |
+| `cmake --preset linux-gcc-release && cmake --build --preset linux-gcc-release && ctest --preset linux-gcc-release` (hooks OFF, `release-only\|release-also`) | builds clean (`-Werror`); `100% tests passed out of 10` (6 at the base + `privacy.priv04_secure_server_does_not_link_acquisition`, `privacy.release_binary_lacks_hook_marker`, `privacy.dl01_server_makes_no_outbound_connection`, `fetch.release_spawn_has_no_fd4`) |
+| `ctest --test-dir out/build/linux-gcc-release` (full, hooks OFF) | `100% tests passed out of 523` (same 2 skipped) |
+| stage `strata` + `strata-secure-server` (release) into `out/stage-release/bin`; `python3 -I ../scripts/secure_distribution_check.py --package-dir out/stage-release` | `secure distribution check: PASS`, rc 0 (without `--release` until SP7, Controller note 19) |
+| `cmake --preset windows-llvm-mingw-cross && cmake --build --preset windows-llvm-mingw-cross` | builds clean (`-Werror`, no warning lines) |
+| `WINEPREFIX=$PWD/out/wineprefix WINEDLLOVERRIDES=mscoree,mshtml= ctest --preset windows-llvm-mingw-cross` | `100% tests passed out of 260` (515 registered; `windows-runtime\|release-only` excluded) |
+| `.venv-dev/bin/pytest -q` (worktree root) | `25 passed` |
+| `.venv-dev/bin/pytest -q tools/secure/test_catalog_provenance.py` (worktree root) | `2 passed` |
+| spec case-name check (Task 29 Step 1 loop, over `ctest -N` of the linux-gcc, linux-gcc-release and cross build directories, so `release-only` and `windows-runtime` cases are listed) | every `<binary>.<case>` named in spec §10.3, §4.9 and §10.5 is registered except the SP7-deferred `fetch.release_spawn_has_no_extra_handle_windows`; the other non-matches are config keys and file names, not case names |
+| `grep -n SECURE_STRATA_ENGINE_VERSION .github/workflows/secure-frontend.yml` (root) | no output; both `paths:` filters list `upstream.version` |
+
+Real Windows: CI run `38625663621` on the base `557a2cc7` is green
+(`windows-msys2-clang` 488/488, `linux-gcc-release` job green); it covers
+Tasks 1–24b and SP2 run 2, not Tasks 25–28. **Verified on real Windows by
+CI run `38655938748` (`9044a5bc`, `windows-msys2-clang` 515/516; was
+pending MSYS2)**: every new `windows-runtime` case of Tasks 25–28 —
+`fetch.downloader_transfer_through_job_windows`,
+`dl03_default_windows_curl_path_accepted_windows`,
+`dl03_downloader_runs_at_low_integrity_windows`,
+`priv04_downloader_env_is_systemroot_only_windows`; the Task 27 Windows
+acquire/fetch CLI cases including the Ctrl-Break
+`acquire.dl04_interrupt_during_download_never_indexed_windows` (ruling I15)
+and `fetch.confinement_reduced_written_to_log_record`;
+`privacy.dl01_server_makes_no_outbound_connection_windows` (TCP and UDP,
+IPv4 and IPv6 tables, listener positive control) and the Windows
+`windows-runtime` privacy cases (tripwire, priv03, doctor proxy hint,
+record-channel strata cases, doctor positive control). Also first proven
+there: the Job `ActiveProcessLimit = 1` against conhost and the
+Low-integrity child's access to `.staging/.cwd`. Wine-runnable additions
+(`dl03_downloader_path_normalised_windows`,
+`dl03_downloader_unc_path_rejected_windows`, priv04 and the hooks marker
+case) are in the wine 260. Still pending on real Windows (no case in run
+`38655938748` covers it): Ctrl-C at a
+pending `[y/N]` may race the console-handler thread (the handler runs on its
+own thread, so the read can return EOF before the flag is set: exit 2
+instead of 8). MSYS2 run id for this branch: `38655938748` (`9044a5bc`).
+
+- CI run `38655938748` (`9044a5bc`, `windows-msys2-clang`): 515/516; every other Tasks 25–28 `windows-runtime` case passed on real Windows (rows above flipped from pending to verified). The failure, `privacy.priv04_secure_server_does_not_link_acquisition` ("the strata link set was generated" + all three positive controls), was CRLF: native-Windows CMake's `file(WRITE)` writes text mode, so `strata\r\n` never matched the test's `"strata\n"` (the server's newline-free check passed and its `\n`-suffixed negative checks were vacuous). Fix commit "sp4: PRIV-04 link sets written LF and parsed per line, CRLF-proof with path/size/entries diagnostics (SP4 merge gate; spec §7.1)": `file(CONFIGURE ... NEWLINE_STYLE UNIX)` and an exact per-line entry parse dropping `\r`, positive controls unchanged in strength. linux-gcc 560/560 (+2 skips), linux-gcc-release 526/526 (10/10), wine 260/260, pytest 25, cross 0 warnings. MSYS2 re-run: pending.
+
+**Required manual step (spec §13.5 item 4, the only real-HTTPS proof of DL-02), not yet run:**
+on the online dev machine,
+1. hooks build: a third-party manifest of profile `raw` for the 9 426 880-byte
+   `vision/GLM-5.3-Flash-vocab.gguf` (`peasantsmith/GLM-5.3-Flash-Maya-GGUF` @ `f16ee4ba50d8fd2bb726ea1862ca6ca14ba188da`),
+   `strata --config <cfg> pull --manifest raw.json --trust-manifest sha256:<hex> --yes`;
+2. release build, stock curl: `strata --config <cfg> pull <name:tag> --bundle <dir>` once a catalog
+   entry exists (D5 (A)/(C)); until then, `make_bundle.py` + `strata import` of a developer bundle.
+Record curl version, TLS backend, confinement label and the result here; `import`
+on an offline box is recorded when the owner runs it. Also to verify on the boxes
+(§3.2, §10.4): Schannel and revocation checks at Low integrity; the inherited stdout
+pipe accepting a Low-integrity writer; Landlock on the offline Linux kernel (`strata doctor`);
+`--resolve host:443:[v6]` on curl 7.81.0 (until then IPv6-only hops fail closed).
+
+What this does **not** show: no real curl, no network and no real model was
+used (fake downloader, scripted resolver, local fixtures only); nothing ran
+on Windows or on a GPU; Landlock ABI ≥ 2 rights (`REFER`, `TRUNCATE`, the
+ABI 4 TCP rule) were not exercised on this ABI 1 kernel.
 
 ### SP4 merge into `main` (2026-10-14, merge `4b9fdd31`)
 
@@ -981,8 +1307,12 @@ Deferred from the SP0 task reviews; none blocks SP0, each is worth a look in the
 sub-project named.
 
 - `strata`'s Windows UTF-8 argv (shared `secure_frontend_utf8_argv`, SP4 merge
-  `4b9fdd31`) builds and runs under wine only; a non-ASCII path through a
-  `strata` verb on real Windows is pending the MSYS2 job.
+  `4b9fdd31`) builds and runs under wine only. CI run `38625663621` did not
+  cover it: the CLI cases there call `run_strata` in-process. The first cases
+  that start the `strata` binary on Windows are Task 27's DL-04 Ctrl-Break
+  case and Task 28's privacy cases (passed in CI run `38655938748`), all with ASCII arguments;
+  a non-ASCII path through a `strata` verb on real Windows has no case yet
+  (nor has Task 26's downloader argv, built with `path_to_utf8`).
 - The fallback descriptor sweep (used only where `close_range(2)` is missing
   or fails) stops at `kSweepCap` = 65536 (documented at the constant, SP2
   Task 28). The listening and accepted sockets are created without
@@ -1001,9 +1331,6 @@ sub-project named.
   with an unrelated IPv4 listener. SP3.
 - A small general backoff on any transient accept failure (not only resource
   exhaustion) is worth considering. SP3.
-- `docs/security/threat-model.md` lists `acquire` as the sole future networked
-  operation; it must be amended under review before `strata update` is
-  designed. Product-experience spec / SP4.
 - Submodule layout: closed in the final fix wave. `top-level-integration`
   now first configures our root with no `-D` flags (`out/root-defaults`) and
   asserts `STRATA_NATIVE_EXPERTS`, `STRATA_ENABLE_CUDA`, `STRATA_ENABLE_HIP`
@@ -1018,6 +1345,45 @@ sub-project named.
   pointer bump ("Update upstream"). Since the final fix wave `extract()`
   raises ("upstream layout changed; re-verify the wrapper") when upstream did
   not write that file, instead of creating it.
+
+SP4 part 2 (Tasks 25–29, branch `sp4-acquire-part2`). Removed from the list
+above: the threat-model "`acquire` is the sole networked operation" bullet
+(amended in Task 29). Added (each a deferred review minor or a ruling's
+residue; none blocks the merge):
+
+- `acquire.log` has one record per **transferred** file (ruling R12):
+  files reused from a prior version, copied from a bundle or already staged
+  get no record, although spec §7.3 says "one record per file". Task 22's
+  `fetch_file` is the only writer.
+- `LoggingProgress` reopens the logs root per record and its
+  exists-then-create step can race and drop a record; logging never fails a
+  pull (I14).
+- A declined pull leaves the empty `roots.models/.staging/.cwd` (B1 creates
+  it before the `[y/N]`); a lazy creation in the downloader would remove it.
+- Interrupts: `InterruptScope` does not honour an inherited `SIG_IGN` for
+  SIGINT; a SIGINT during `doctor` is swallowed (exit 0); the
+  prompt-flush/`read()` race above; the Windows console handler returns TRUE
+  at once for `CTRL_CLOSE`/logoff/shutdown.
+- Downloader: the executable is validated, then executed by path (no
+  `fexecve`; same-user race, as for the engine); `probe_result_` is not
+  cleared by a later failed probe; a failed record-file open is silently
+  ignored (hooks builds only); Windows maps every `launch_in_job` failure
+  by DWORD, ignoring `WinLaunchStep` (Job/attribute failures should be
+  `downloader_confinement_failed`); an empty `cwd` inherits the parent's on
+  Windows (POSIX fails closed; every caller passes `.staging/.cwd`); the
+  stdin write precedes the interrupt-aware loop. (The POSIX-worded Windows
+  `untrusted_owner` text and SP1 `windows_security.cpp`'s include of SP4's
+  `confinement_plan.hpp` were fixed in the final fix wave.)
+- Tests: no negative Windows validator case (writable file/parent, NULL
+  DACL) and no non-ASCII downloader-argv case; the DL-04 Windows case leaks
+  `strata` on timeout; the Linux prompt test re-sends SIGINT every 200 ms;
+  the fd census stops at fd 1024 and has no committed negative control;
+  priv02's `127.0.0.1`/`93.184.216.34` sentinels are weak (the proxy
+  sentinel is the real check); the crash case needs
+  `CONFIG_PROC_CHILDREN`; the Windows DL-01 case fails hard on a host
+  without IPv6 tables; the link-set check matches `strata\n` as a
+  substring; the shim reads `sa_family` without checking `msg_namelen`.
+- The interrupted error detail names the file twice (Task 22 text).
 
 SP2 (2026-10-14, Task 28). Removed from the list above: the undocumented
 sweep cap (now documented at `kSweepCap`; the remaining socket gap is the

@@ -130,7 +130,12 @@ enum class RootPolicy { existing, create_private, external };
 
 [[nodiscard]] std::variant<CanonicalRoot, PathError> open_root(const std::filesystem::path& requested,
                                                                RootPolicy policy = RootPolicy::existing);
-[[nodiscard]] std::variant<CanonicalFile, PathError> open_executable(const std::filesystem::path& requested);
+// also_trusted_installer (SP4 §3.2, pull.downloader): on Windows the TrustedInstaller
+// service is an additional permitted owner/writer of the file and its directory
+// (System32\curl.exe). Ignored on POSIX. The default is SP1's rule, unchanged.
+enum class ExecutableWriters { standard, also_trusted_installer };
+[[nodiscard]] std::variant<CanonicalFile, PathError> open_executable(const std::filesystem::path& requested,
+                                                                    ExecutableWriters writers = ExecutableWriters::standard);
 
 // Creates every missing component of `path` below `root` with mode 0700
 // (Linux) or a protected owner-only DACL (Windows), refusing links and

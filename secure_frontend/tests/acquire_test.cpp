@@ -257,6 +257,7 @@ int main(int argc, char** argv) {
       {"rename_fallback_never_replaces", acquire_cases::rename_fallback_never_replaces},
       {"remove_tree_removes_links_without_following", acquire_cases::remove_tree_removes_links_without_following},
       {"hash_into_rejects_hard_links_and_counts_bytes", acquire_cases::hash_into_rejects_hard_links_and_counts_bytes},
+      {"hash_into_stops_when_interrupted", acquire_cases::hash_into_stops_when_interrupted},
       {"store_environment_seams_report_space_and_fs_kind", acquire_cases::store_environment_seams_report_space_and_fs_kind},
       {"overlong_joined_paths_fail_closed_without_throwing", acquire_cases::overlong_joined_paths_fail_closed_without_throwing},
       {"dl04_publish_uses_noreplace_and_never_overwrites", acquire_cases::dl04_publish_uses_noreplace_and_never_overwrites},
@@ -291,6 +292,8 @@ int main(int argc, char** argv) {
       {"all_sources_failed_exits_3_and_keeps_part", acquire_cases::all_sources_failed_exits_3_and_keeps_part},
       {"enospc_mid_stream_keeps_part_and_exits_6", acquire_cases::enospc_mid_stream_keeps_part_and_exits_6},
       {"update_reuses_unchanged_files", acquire_cases::update_reuses_unchanged_files},
+      {"update_reuse_copy_interrupted_mid_file_exits_8", acquire_cases::update_reuse_copy_interrupted_mid_file_exits_8},
+      {"pull_verify_interrupted_exits_8", acquire_cases::pull_verify_interrupted_exits_8},
       {"license_change_requires_interactive_yes", acquire_cases::license_change_requires_interactive_yes},
       {"pull_without_bundle_refuses_sourceless_files", acquire_cases::pull_without_bundle_refuses_sourceless_files},
       {"confirmation_answers_parsed_strictly", acquire_cases::confirmation_answers_parsed_strictly},
@@ -307,6 +310,22 @@ int main(int argc, char** argv) {
       {"rm_partials_deletes_other_staging", acquire_cases::rm_partials_deletes_other_staging},
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
       {"list_outdated_uses_catalog_sequence", acquire_cases::list_outdated_uses_catalog_sequence},
+#endif
+      {"pull_cli_prints_summary_and_installs", acquire_cases::pull_cli_prints_summary_and_installs},
+      {"run_installed_model_needs_no_network", acquire_cases::run_installed_model_needs_no_network},
+      {"run_refuses_glm53_without_engine", acquire_cases::run_refuses_glm53_without_engine},
+#if defined(SECURE_FRONTEND_TEST_HOOKS)
+      {"run_missing_model_non_interactive_exits_2", acquire_cases::run_missing_model_non_interactive_exits_2},
+      {"run_missing_model_prompts_and_decline_exits_2", acquire_cases::run_missing_model_prompts_and_decline_exits_2},
+      {"update_models_pulls_outdated_catalog_models", acquire_cases::update_models_pulls_outdated_catalog_models},
+#endif
+#if !defined(_WIN32) && defined(SECURE_FRONTEND_TEST_HOOKS)
+      {"dl04_sigint_during_download_exits_8", acquire_cases::dl04_sigint_during_download_exits_8},
+      {"dl04_sigterm_during_download_exits_8", acquire_cases::dl04_sigterm_during_download_exits_8},
+      {"interrupt_at_confirmation_prompt_exits_8", acquire_cases::interrupt_at_confirmation_prompt_exits_8},
+#endif
+#if defined(_WIN32) && defined(SECURE_FRONTEND_TEST_HOOKS)
+      {"dl04_interrupt_during_download_never_indexed_windows", acquire_cases::dl04_interrupt_during_download_never_indexed_windows},
 #endif
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
       {"dl03_third_party_cannot_shadow_catalog", acquire_cases::dl03_third_party_cannot_shadow_catalog},

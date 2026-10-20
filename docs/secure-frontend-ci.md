@@ -137,19 +137,19 @@ The runbook (gates at the old pin, bump, gates incl. upstream's own suites with 
 An offline box cannot fetch the submodule. The offline kit carries a git bundle
 of the pinned upstream commit next to the bundle of our repository:
 
-    git -C upstream bundle create ../out/upstream-v0.1.44.1-296b59d2.bundle v0.1.44.1
-    git bundle verify out/upstream-v0.1.44.1-296b59d2.bundle
+    git -C upstream bundle create ../out/upstream-v0.2.1.3-cbfd5b92.bundle v0.2.1.3
+    git bundle verify out/upstream-v0.2.1.3-cbfd5b92.bundle
 
 On the offline box, after cloning our repository from its bundle:
 
     git submodule init
-    git config submodule.upstream.url /path/to/upstream-v0.1.44.1-296b59d2.bundle
+    git config submodule.upstream.url /path/to/upstream-v0.2.1.3-cbfd5b92.bundle
     git -c protocol.file.allow=always submodule update
-    git submodule status   # 296b59d2f73c8f04a805df29c2fa97655adace78 upstream (v0.1.44.1)
+    git submodule status   # cbfd5b926b794b356195d3cb600191b0c3567540 upstream (v0.2.1.3)
 
-The bundle holds tag `v0.1.44.1` (tag object
-`9791ea335ba2001c87b5f783146d6eb08fdd9e5e`, commit
-`296b59d2f73c8f04a805df29c2fa97655adace78`).
+The bundle holds tag `v0.2.1.3` (tag object
+`1ab44ace2e4db985503ab9388b65405a63600dd7`, commit
+`cbfd5b926b794b356195d3cb600191b0c3567540`).
 
 ## Workflow
 
@@ -162,6 +162,8 @@ The bundle holds tag `v0.1.44.1` (tag object
 | `windows-msys2` (`windows-msys2-clang`) | windows-latest, MSYS2 CLANG64; runs `ctest` | no | yes |
 | `windows-msvc` | windows-latest | no | no |
 | `top-level-integration` | ubuntu-24.04 (pinned; `ubuntu-latest` becomes Ubuntu 26 on 2026-10-19); first configures **our** root with no `-D` flags (`out/root-defaults`, configure only) and asserts `STRATA_NATIVE_EXPERTS`/`STRATA_ENABLE_CUDA`/`STRATA_ENABLE_HIP` `OFF`, `CMAKE_BUILD_TYPE=Release` and no `_deps`; then configures it with CUDA/HIP/native experts off, builds `strata-secure-server`, `secure_frontend_config_tests`, `strata-plan`, runs `ctest -R secure_frontend_config_tests`, checks no `out/root/_deps` | yes | yes |
+
+The `linux-release` job runs `secure_distribution_check.py` without `--release` until SP7 provides the release manifest and SBOM that `--release` requires; the test-hooks marker scan runs in every mode and covers `strata` and `strata-secure-server` (SP4 Controller note 19).
 
 The jobs that check out the submodule end with the step "upstream submodule
 pinned and unmodified": `git submodule status` must show no `+`/`-`/`U` prefix

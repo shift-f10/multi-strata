@@ -3,14 +3,14 @@
 ## Baseline
 
 Upstream [Niko1221/Strata][strata] is the git submodule `upstream/`, pinned by
-its gitlink at the annotated release tag `v0.1.44.1`.
+its gitlink at the annotated release tag `v0.2.1.3`.
 
 - Submodule (`.gitmodules`): path `upstream`, URL
   `https://github.com/Niko1221/Strata.git`, no branch tracking.
-- Pinned commit (the gitlink): `296b59d2f73c8f04a805df29c2fa97655adace78`
-- Tag object: `9791ea335ba2001c87b5f783146d6eb08fdd9e5e`
+- Pinned commit (the gitlink): `cbfd5b926b794b356195d3cb600191b0c3567540`
+- Tag object: `1ab44ace2e4db985503ab9388b65405a63600dd7`
 - Check: `git submodule status` prints
-  ` 296b59d2f73c8f04a805df29c2fa97655adace78 upstream (v0.1.44.1)`.
+  ` cbfd5b926b794b356195d3cb600191b0c3567540 upstream (v0.2.1.3)`.
 
 The gitlink is the baseline record. Nothing under `upstream/` is edited and no
 upstream file exists outside it; the repository root holds only our code (see
@@ -20,7 +20,7 @@ different behavior we wrap upstream from our own tree
 none. `git -C upstream status --porcelain` is empty.
 
 Everything under `upstream/` is under upstream's license
-([`LICENSE` at `v0.1.44.1`](https://github.com/Niko1221/Strata/blob/v0.1.44.1/LICENSE);
+([`LICENSE` at `v0.2.1.3`](https://github.com/Niko1221/Strata/blob/v0.2.1.3/LICENSE);
 offline: `upstream/LICENSE` in a checkout with the submodule initialized). The
 root [`LICENSE`](../LICENSE)
 is the MIT text with the retained "Copyright (c) 2026 Niko1221 and the Strata
@@ -43,7 +43,7 @@ An upstream update moves the gitlink; it is never a merge into our tree.
 This is the only copy of the runbook; [`AGENT_HANDOFF.md`](AGENT_HANDOFF.md)
 and [`secure-frontend-ci.md`](secure-frontend-ci.md) link here instead of
 repeating it. `<old tag>` / `<old short sha>` / `<old tag object>` are the
-current pin (today `v0.1.44.1` / `296b59d2` / `9791ea33`), `<new tag>` the
+current pin (today `v0.2.1.3` / `cbfd5b92` / `1ab44ace`), `<new tag>` the
 target. `<L>` is a label unique to the run (for example `old-<old tag>` and
 `new-<new tag>`): build directories and venvs are never reused or deleted
 between runs, so every run uses its own `out/<name>-<L>`.
@@ -89,13 +89,16 @@ For direct wine calls (not the test preset, which sets it) prefix
            --deselect upstream/tools/test_setup_choices.py::CudaVision::test_the_encoder_is_built_native \
            --deselect upstream/tools/test_setup_golden.py::Golden::test_yes \
            --deselect upstream/tools/test_setup_golden.py::Golden::test_enter_for_every_question \
-           && ../out/venv-upstream-<L>/bin/pytest -q serve )
+           --deselect upstream/tools/test_setup_download.py::ParallelDownload::test_a_big_file_comes_over_several_connections \
+           && ../out/venv-upstream-<L>/bin/pytest -q serve \
+           --deselect upstream/serve/test_lifeline.py::Lifeline::test_the_portable_watcher_ends_the_child_when_the_server_is_killed )
 
      The subshell keeps the shell at the repo root for the later steps.
 
-     At `v0.1.44.1`: `760 passed, 2 skipped, 5 deselected` and `774 passed,
-     11 skipped` (at `v0.1.43`, with the first three deselects only: 616/2/3
-     and 695/11). Why each exclusion exists:
+     At `v0.2.1.3`: `1027 passed, 13 skipped, 6 deselected` and `878 passed,
+     14 skipped, 1 deselected`. At `v0.1.44.1`: `760 passed, 2 skipped,
+     5 deselected` and `774 passed, 11 skipped` (at `v0.1.43`, with the first
+     three deselects only: 616/2/3 and 695/11). Why each exclusion exists:
      - `test_iq_pack.py`: needs llama.cpp's `gguf` module.
      - `test_setup_engine_hash.py`: needs GitHub.
      - the three `test_setup_choices.py` ids: upstream drift against its
@@ -103,6 +106,19 @@ For direct wine calls (not the test preset, which sets it) prefix
      - the two `test_setup_golden.py` ids: upstream `12be1059` re-recorded the
        golden configs on Windows; the `unsloth UD-Q4_K_XL` cases expect
        `strata-vision.exe`, which only matches on Windows.
+     - `test_setup_download.py::ParallelDownload::test_a_big_file_comes_over_several_connections`
+       (test new at `04221c3e`, retuned by `e2071c2f`, first runs at
+       `v0.2.1.x`): the new length probe issues a whole-file ranged GET that
+       the test's own `asked()` helper counts as a second piece-0 request
+       (`[0, 0, 1, …]` where `[0, 1, …]` is expected); deterministic alone and
+       under load. Upstream drift against its own test; quarantined Python.
+     - `serve/test_lifeline.py::Lifeline::test_the_portable_watcher_ends_the_child_when_the_server_is_killed`
+       (new at `48e6d64c`, first runs at `v0.2.1.3`): the watcher's liveness
+       token is `ps -o lstart=,stat=`, and `stat` flips `R`→`S` as the child
+       starts sleeping, so when the killed parent's pipe closes the token no
+       longer matches and the watcher declines to end the child. A
+       host-sensitive race in the new mechanism itself (the `pdeathsig` case —
+       the Linux production path — passes); quarantined Python.
 
      **When the new tag adds a failing upstream test:** it is a finding, not
      something to force green. If it is in quarantined Python (`setup.py`,
@@ -153,8 +169,14 @@ For direct wine calls (not the test preset, which sets it) prefix
    baseline version. Changing the version on a `docs/security/` page asserts
    its facts hold for the new tag: re-check each row against the new source
    first and add rows for new behavior.
+   `upstream.version` (repository root, one line: the tag itself, today
+   `v0.2.1.3`) is a pin site — bump it with the gitlink; configure fails
+   when a reachable submodule tag disagrees with it. It is the source of the
+   SP4 engine version `kEngineVersion` (`secure_frontend/CMakeLists.txt`); the
+   `SECURE_STRATA_ENGINE_VERSION` cache override is for local experiments
+   only and appears nowhere in `.github/workflows/secure-frontend.yml`.
 6. `git add upstream docs/PROVENANCE.md` plus every file touched in step 5
-   (at least `README.md`, `.github/workflows/secure-frontend.yml`,
+   (at least `upstream.version`, `README.md`, `.github/workflows/secure-frontend.yml`,
    `docs/AGENT_HANDOFF.md`, `docs/secure-frontend-ci.md`); one commit:
    `upstream: bump to <new tag>`, whose body lists each gate with its counts
    (old → new), any exclusion added, and the upstream changes that matter to
@@ -164,6 +186,37 @@ After a `git pull` that moves the gitlink, run `git submodule update --init`
 (or set `git config submodule.recurse true` once). A `+` in front of the line
 `git submodule status` prints means the checked-out `upstream/` commit differs
 from the recorded gitlink (behind, ahead or elsewhere).
+
+## Model catalog (SP4)
+
+The `strata` binary embeds `secure_frontend/catalog/<name>/<tag>.json`
+manifests, pinned by `secure_frontend/catalog/CATALOG.sha256`. **The v1
+production catalog is empty** (SP4 D5 (D)): the Qwen `--pack` files have no
+pinned digests until the owner's determinism check (D5 (A)) or a C++ pack
+builder (D5 (C)). A catalog entry lands in the same commit as its pins here
+(repository, revision, every file's size and SHA-256, re-verified by one
+download on the dev machine); `tools/secure/test_catalog_provenance.py`
+enforces that. The DFlash2 drafter (`Anbeeld/GLM-5.3-Flash-DFlash2-GGUF`,
+CC BY-NC-ND 4.0) is never a catalog entry.
+
+Developer-built bundles (D5 (B′), `tools/secure/make_bundle.py`) check the
+downloaded shards against `tools/secure/qwen_bundle_pins.json`, read from the
+Hugging Face tree API (`lfs.oid`, `lfs.size`) on 2026-10-14 at the revisions
+upstream pins in `setup.py` `HF_REVISIONS`:
+
+| Repository @ revision | File | Bytes | SHA-256 |
+| --- | --- | --- | --- |
+| `ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF` @ `ed59f92082b1e93c0e96d60a8b11aab089b52f09` | `IQ2_XS/…-IQ2_XS-00001-of-00002.gguf` | 39225954592 | `92cee27ae5bbadcd732416a0f7a7f0acc092399dbbe8f5a5efa707c2ec0a49d7` |
+| same | `IQ2_XS/…-IQ2_XS-00002-of-00002.gguf` | 28800138432 | `316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113` |
+| same | `IQ3_XXS/…-IQ3_XXS-00001-of-00002.gguf` | 47039860096 | `219ea929900dfa9ef091f3aa473fdba6874b65fcb36526d7d851ac9e95856d15` |
+| same | `IQ3_XXS/…-IQ3_XXS-00002-of-00002.gguf` | 28800138432 | `316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113` |
+| same | `IQ3_S/…-IQ3_S-00001-of-00002.gguf` | 54817524224 | `4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3` |
+| same | `IQ3_S/…-IQ3_S-00002-of-00002.gguf` | 28800138432 | `316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113` |
+| `ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF` @ `5348543e0147355ac9cbcb031184a3546350988e` | `IQ1_M/…-IQ1_M-00001-of-00002.gguf` | 29608446496 | `e11083ba855e7666b48ea3f2db6a9c3a20c18751a012cc24f948de91b7087fad` |
+| same | `IQ1_M/…-IQ1_M-00002-of-00002.gguf` | 28800138432 | `316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113` |
+
+`…` is `Qwen3.8-Flash-Next-GSQ-RCO`. These are Hub-reported digests, not yet
+re-verified by a download here — **owner to confirm before any release**; `make_bundle.py` re-hashes every shard it uses.
 
 ## Security reference
 
@@ -238,12 +291,12 @@ forms:
   `upstream/third_party/ggml/VERSION.txt` records commit
   `3cf03257f219afbe7334045ff7c6a06ac68c627d`.
 - The llama.cpp checkout fetched by `upstream/CMakeLists.txt`
-  (`FetchContent_Declare(strata_llamacpp ...)`, lines 1307–1310) when
+  (`FetchContent_Declare(strata_llamacpp ...)`, lines 1552–1555) when
   `STRATA_NATIVE_EXPERTS=ON` and `STRATA_GGML_DIR` is unset, pinned to
   `GIT_TAG 3cf03257f219afbe7334045ff7c6a06ac68c627d`.
 
 License: MIT, "Copyright (c) 2023-2026 The ggml authors"
-([`third_party/ggml/LICENSE` at `v0.1.44.1`](https://github.com/Niko1221/Strata/blob/v0.1.44.1/third_party/ggml/LICENSE);
+([`third_party/ggml/LICENSE` at `v0.2.1.3`](https://github.com/Niko1221/Strata/blob/v0.2.1.3/third_party/ggml/LICENSE);
 offline: `upstream/third_party/ggml/LICENSE`).
 Our root `CMakeLists.txt` seeds `STRATA_NATIVE_EXPERTS=OFF` and our CI
 (`.github/workflows/secure-frontend.yml`) configures with
@@ -266,7 +319,7 @@ licensed under the ISC license and that this covers only components provided
 by llvm-mingw directly (the bundled LLVM, mingw-w64 and other components keep
 their own licenses).
 
-[strata]: https://github.com/Niko1221/Strata/tree/v0.1.44.1
+[strata]: https://github.com/Niko1221/Strata/tree/v0.2.1.3
 [unbiased]: https://github.com/robertkarl/UnbiasedStrata/tree/46c46ecfc11d2315512f21f7549b0a7792ccd2ae
 [lighttransport]: https://github.com/lighttransport/Strata/tree/glm53f
 [maya]: https://github.com/mw00/project-maya/tree/5c970a863ce2fdd87b6e23ffb4822f6d76522b1c

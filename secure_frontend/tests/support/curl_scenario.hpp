@@ -44,6 +44,7 @@ struct Response final {
   int exit_code{0};
   std::string write_attempt;
   std::string read_attempt;
+  std::uint64_t delay_ms{0};  // the fake sleeps this long after the head, before the body
 };
 
 struct Scenario final {
@@ -131,6 +132,10 @@ inline std::optional<Scenario> parse_scenario(const std::string_view text) {
       current->write_attempt = std::string{rest};
     } else if (word == "read-attempt") {
       current->read_attempt = std::string{rest};
+    } else if (word == "delay-ms") {
+      const auto n = to_u64(rest);
+      if (!n) return std::nullopt;
+      current->delay_ms = *n;
     } else if (word == "end") {
       scenario.responses.push_back(std::move(*current));
       current.reset();

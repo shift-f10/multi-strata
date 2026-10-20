@@ -6,6 +6,7 @@
 #include "secure_frontend/model_index_model.hpp"
 #include "secure_frontend/models_store.hpp"
 
+#include <atomic>
 #include <functional>
 #include <optional>
 #include <string_view>
@@ -33,9 +34,10 @@ class NoServerDiscovery final : public LoadedVersions {
 // hard link, device or FIFO; (1) when hash_files, every file's size and SHA-256;
 // (3) qwen layout + SP1's load_local_tokenizer_pack on <pack>/tokenizer.
 // A tree that cannot be listed (or exceeds the portable path limits) is publish_failed.
+// `interrupted` (§8.3, final fix F1) stops the re-hash between chunks with AcquireError interrupted.
 [[nodiscard]] std::optional<AcquireError> verify_tree(const CanonicalRoot& root, const RelativePath& dir,
                                                       const TrustedManifest& manifest, std::string_view manifest_file_name,
-                                                      bool hash_files);
+                                                      bool hash_files, const std::atomic<bool>* interrupted = nullptr);
 
 enum class InstallDecisionKind { fresh, already_installed, update };
 struct InstallDecision final {
@@ -70,10 +72,12 @@ struct PublishResult final {
 // one of its name:tag (absent from the index, or retired — a downgrade), whose
 // manifest.json has this digest, is re-hashed and adopted. nullopt when there is none, or when
 // its files do not verify (not adoptable: publish then reports "target exists").
+// An interrupt (§8.3) during the re-hash is AcquireError interrupted, never "not adoptable".
 [[nodiscard]] std::optional<std::variant<PublishResult, AcquireError>> adopt_orphan(const CanonicalRoot& models,
                                                                                     const TrustedManifest& manifest,
                                                                                     LoadedVersions& loaded,
-                                                                                    const StoreEnvironment& env);
+                                                                                    const StoreEnvironment& env,
+                                                                                    const std::atomic<bool>* interrupted = nullptr);
 // §4.5 step 6 / rm --retired: deletes retired versions the server does not hold; rewrites the index.
 // A retired row naming a live directory is dropped without touching the directory.
 [[nodiscard]] std::optional<AcquireError> delete_unheld_retired(const CanonicalRoot& models, LoadedVersions& loaded,

@@ -30,7 +30,7 @@ std::optional<AcquireError> replace_small_file(const CanonicalRoot& root, const 
 }
 
 std::variant<std::uint64_t, AcquireError> hash_into(const CanonicalRoot& root, const RelativePath& path, Sha256& hasher,
-                                                    const std::uint64_t max_bytes) {
+                                                    const std::uint64_t max_bytes, const std::atomic<bool>* interrupted) {
   auto opened = open_beneath(root, path, OpenOptions{OpenKind::regular_file, FileTrust::any, true});
   if (std::holds_alternative<PathError>(opened)) {
     return AcquireError{AcquireReason::publish_failed, path.generic() + ": not a single-link regular file below the root"};
@@ -40,6 +40,7 @@ std::variant<std::uint64_t, AcquireError> hash_into(const CanonicalRoot& root, c
   std::string buffer(kSha256ReadChunkBytes, '\0');
   std::uint64_t total = 0;
   while (true) {
+    if (interrupted != nullptr && interrupted->load()) return AcquireError{AcquireReason::interrupted, path.generic()};
     auto read = file.read_some(buffer.data(), buffer.size());
     if (std::holds_alternative<PathError>(read)) return AcquireError{AcquireReason::publish_failed, path.generic() + ": read failed"};
     const auto n = std::get<std::size_t>(read);
