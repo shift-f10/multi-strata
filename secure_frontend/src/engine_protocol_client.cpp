@@ -259,6 +259,25 @@ std::optional<EngineProtocolError> EngineProtocolClient::read_generation(const s
       }
       continue;
     }
+    if ((response.line.rfind("RESUME ", 0) == 0 || response.line.rfind("REUSED ", 0) == 0) &&
+        flavor_ == EngineProtocolFlavor::strata_0143) {
+      // RESUME/REUSED are private prompt-progress records of the main engine
+      // family, printed for every accepted GEN and unconditionally: `RESUME <n>`
+      // before reading the prompt (v0.1.44.1 generate.cpp:11214, v0.2.1.3
+      // :12809) and `REUSED <n>` once it is read (:11849 / :13910). Upstream's
+      // own server consumes them (serve/server.py). Like PP they are never
+      // client output and must never fail a request; the qwen35moe engine
+      // prints neither, and YIELDED needs the --batch/--slots flags the
+      // frontend refuses. Bounded grammar, fail-closed otherwise; the GLM
+      // profile keeps its exact record and never reaches this branch.
+      const auto progress = fields(response.line);
+      std::uint32_t reused = 0;
+      if (progress.size() != 2U || !parse_decimal(progress[1], reused)) {
+        return fail(EngineProtocolErrorCode::unexpected_line,
+                    "engine emitted an invalid or unsupported prompt progress line");
+      }
+      continue;
+    }
     if (response.line.rfind("DONE ", 0) == 0 && response.line.size() > 5) {
       active_generation_.done_line = response.line;
       generation = active_generation_;

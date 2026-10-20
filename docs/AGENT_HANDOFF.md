@@ -329,6 +329,28 @@ answered by D1; `strata update` model part §6.1, program part exit 12 until
 SP7; `STRATA_CONFIG` untouched (open for the PX addendum, §3.9); SP4 row
 signatures move to SP7.
 
+### Protocol hotfix: `RESUME`/`REUSED` prompt-progress records are consumed (2026-10-20)
+
+Found while re-auditing the `--serve` protocol for the upstream v0.2.1.x bump:
+the main engine family's serve loop prints `RESUME <n>` before reading the
+prompt and `REUSED <n>` once it is read, for **every** accepted GEN and
+unconditionally (`generate.cpp:11214`/`:11849` at `v0.1.44.1`, `:12809`/`:13910`
+at `v0.2.1.3`; upstream's own server consumes both). The strict client failed
+such a response with `unexpected_line`, so **every real-engine chat would have
+failed at both pins** — the same latent-blocker class as the PP fix (`c9629e6e`),
+found by reading, never yet observed against a real engine. Fix mirrors PP: under
+the Strata profile a `RESUME`/`REUSED` line with exactly two fields and a
+32-bit decimal count is consumed silently; any other shape still fails closed;
+the GLM profile keeps its exact record and refuses them. `YIELDED <slot>
+<tokens>` is left strict — it needs the `--batch`/`--slots` paths, which the
+frontend refuses at argv level.
+
+Tests: `secure_frontend_engine_protocol_client_tests.resume_and_reused_progress_is_consumed_in_the_strata_profile`
+(RED on the unfixed client: "RESUME/REUSED records of the main engine family
+must be consumed silently" + "a held-state reuse count must be accepted as a
+decimal"; GREEN after). Limits doc: new `RESUME`/`REUSED` row in
+`docs/security/engine-protocol-limits.md`.
+
 ### Upstream bump to `v0.1.44.1` (2026-10-14, branch `upstream/bump-v0.1.44.1`)
 
 `7695859a` (`v0.1.43`) → `296b59d2` (`v0.1.44.1`), 315 commits. Gates old →

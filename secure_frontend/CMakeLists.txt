@@ -863,7 +863,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_engine_protocol_client_tests
         runs_the_solo_protocol stop_and_quit_are_explicit write_deadlines_reach_the_transport refuses_stop_when_not_advertised
         rejects_malformed_and_unexpected_engine_output bounds_and_engine_errors_fail_closed
-        prefill_progress_is_bounded_in_both_profiles generation_total_deadline_is_enforced
+        prefill_progress_is_bounded_in_both_profiles
+        resume_and_reused_progress_is_consumed_in_the_strata_profile
+        generation_total_deadline_is_enforced
         gen_line_fits_max_prompt_tokens derived_line_cap_is_clamped_to_protocol_max stop_cause_and_completed_generations)
 
     secure_frontend_add_test_executable(secure_frontend_model_inventory_tests tests/model_inventory_test.cpp

@@ -185,6 +185,53 @@ void prefill_progress_is_bounded_in_both_profiles() {
          "malformed GLM progress must fail closed");
 }
 
+// The main engine's serve loop prints `RESUME <n>` before reading the prompt and
+// `REUSED <n>` once it is read, for EVERY accepted GEN and unconditionally even
+// when nothing is reused (`RESUME 0`): upstream v0.1.44.1 src/program/generate.cpp
+// :11214/:11849, v0.2.1.3 :12809/:13910. They are private progress records like
+// PP and must never fail a request. The qwen35moe engine never prints them;
+// YIELDED is unreachable because the frontend refuses the --batch/--slots flags
+// that would produce it. The GLM profile keeps its exact record and refuses them.
+void resume_and_reused_progress_is_consumed_in_the_strata_profile() {
+  FakeTransport transport;
+  transport.reads = {line("READY 64"), line("RESUME 0"), line("PP 4096 8192 1234 3318.6"),
+                     line("REUSED 0"), line("T 9"), line("DONE 1 8192 1.0 2.0 length")};
+  EngineProtocolClient client(transport);
+  secure_frontend::EngineReady ready{};
+  (void)client.await_ready(std::chrono::seconds(1), ready);
+  (void)client.begin_generation(1, {1}, secure_frontend::deadline_after(std::chrono::seconds(5)));
+  secure_frontend::EngineGeneration generation;
+  expect(!client.read_generation(std::chrono::seconds(1), generation).has_value() &&
+             generation.token_ids == std::vector<std::uint32_t>({9U}) && !client.closed(),
+         "RESUME/REUSED records of the main engine family must be consumed silently");
+  FakeTransport reuse_transport;
+  reuse_transport.reads = {line("READY 64"), line("RESUME 2147483647"), line("REUSED 2147483647"),
+                           line("T 9"), line("DONE 1")};
+  EngineProtocolClient reuse_client(reuse_transport);
+  (void)reuse_client.await_ready(std::chrono::seconds(1), ready);
+  (void)reuse_client.begin_generation(1, {1}, secure_frontend::deadline_after(std::chrono::seconds(5)));
+  expect(!reuse_client.read_generation(std::chrono::seconds(1), generation).has_value(),
+         "a held-state reuse count must be accepted as a decimal");
+  for (const char* bad : {"RESUME", "RESUME x", "RESUME 1 2", "REUSED", "REUSED 1.5"}) {
+    FakeTransport bad_transport;
+    bad_transport.reads = {line("READY 64"), line(bad), line("DONE 0")};
+    EngineProtocolClient bad_client(bad_transport);
+    (void)bad_client.await_ready(std::chrono::seconds(1), ready);
+    (void)bad_client.begin_generation(1, {1}, secure_frontend::deadline_after(std::chrono::seconds(5)));
+    const auto error = bad_client.read_generation(std::chrono::seconds(1), generation);
+    expect(error.has_value() && error->code == EngineProtocolErrorCode::unexpected_line && bad_client.closed(),
+           std::string("RESUME/REUSED outside the bounded two-field decimal form must fail closed: ") + bad);
+  }
+  FakeTransport glm_transport;
+  glm_transport.reads = {line("READY 64"), line("RESUME 0"), line("DONE 0")};
+  EngineProtocolClient glm_client(glm_transport, {}, secure_frontend::EngineProtocolFlavor::lighttransport_glm53);
+  (void)glm_client.await_ready(std::chrono::seconds(1), ready);
+  (void)glm_client.begin_generation(1, {1}, secure_frontend::deadline_after(std::chrono::seconds(5)));
+  const auto glm_error = glm_client.read_generation(std::chrono::seconds(1), generation);
+  expect(glm_error.has_value() && glm_error->code == EngineProtocolErrorCode::unexpected_line && glm_client.closed(),
+         "the GLM profile keeps its exact record and must refuse RESUME/REUSED");
+}
+
 // E1: the timeout is a total budget, not a per-line allowance.
 void generation_total_deadline_is_enforced() {
   FakeTransport transport;
@@ -294,6 +341,8 @@ int main(int argc, char** argv) {
       {"rejects_malformed_and_unexpected_engine_output", rejects_malformed_and_unexpected_engine_output},
       {"bounds_and_engine_errors_fail_closed", bounds_and_engine_errors_fail_closed},
       {"prefill_progress_is_bounded_in_both_profiles", prefill_progress_is_bounded_in_both_profiles},
+      {"resume_and_reused_progress_is_consumed_in_the_strata_profile",
+       resume_and_reused_progress_is_consumed_in_the_strata_profile},
       {"generation_total_deadline_is_enforced", generation_total_deadline_is_enforced},
       {"gen_line_fits_max_prompt_tokens", gen_line_fits_max_prompt_tokens},
       {"derived_line_cap_is_clamped_to_protocol_max", derived_line_cap_is_clamped_to_protocol_max},
