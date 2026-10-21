@@ -4,19 +4,30 @@
 #include "secure_frontend/downloader.hpp"
 #include "secure_frontend/engine_gate.hpp"
 #include "secure_frontend/strata_cli.hpp"
+#include "doctor_checks.hpp"
+#include "service_ops.hpp"
 #include "strata_cli_internal.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <csignal>
+#include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <cwchar>
+#include <limits>
 #include <ostream>
 #include <system_error>
 
 #if defined(_WIN32)
 #include "secure_frontend/win32_prelude.hpp"
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/resource.h>
+#include <sys/socket.h>
+#include <unistd.h>
 #endif
 
 namespace secure_frontend {
@@ -327,6 +338,127 @@ bool variable_present(const char* name) {
 #endif
 }
 
+// --- SP7 M1 Task 3 (spec D-7): production wiring of the doctor ProbeBundle ---
+// Self path, stat, rlimit and bind probes only. Nothing installs and nothing
+// touches the network (PX §8); the only process run is the read-only
+// nvidia-smi query through service::run_argv.
+
+std::filesystem::path self_program_dir() {
+#if defined(_WIN32)
+  std::vector<wchar_t> buffer(32768);
+  const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+  if (length == 0 || length >= buffer.size()) return {};
+  return std::filesystem::path(std::wstring(buffer.data(), length)).parent_path();
+#else
+  char buffer[4096];
+  const ssize_t length = readlink("/proc/self/exe", buffer, sizeof buffer - 1U);
+  if (length <= 0) return {};
+  buffer[length] = '\0';
+  return std::filesystem::path(buffer).parent_path();
+#endif
+}
+
+std::optional<unsigned> regular_file_mode(const std::filesystem::path& path) {
+  std::error_code ec;
+  if (std::filesystem::symlink_status(path, ec).type() != std::filesystem::file_type::regular || ec) return std::nullopt;
+  const auto permissions = std::filesystem::status(path, ec).permissions();
+  if (ec) return std::nullopt;
+  return static_cast<unsigned>(permissions & std::filesystem::perms{0777});
+}
+
+std::optional<std::uint64_t> current_memlock() {
+#if defined(_WIN32)
+  return std::nullopt;  // Windows large pages ride the user right; the verb marks the check not applicable (R-T3-c)
+#else
+  struct rlimit limit {};
+  if (getrlimit(RLIMIT_MEMLOCK, &limit) != 0) return std::nullopt;
+  if (limit.rlim_cur == RLIM_INFINITY) return std::numeric_limits<std::uint64_t>::max();
+  return static_cast<std::uint64_t>(limit.rlim_cur);
+#endif
+}
+
+// One bind attempt on the configured listener address: EADDRINUSE and every
+// other failure read as "not free" (fail closed).
+bool listener_port_free(const FrontendConfig& config) {
+  const bool is_v4 = config.listener.host.family() == IpFamily::v4;
+#if defined(_WIN32)
+  WSADATA wsa{};
+  if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return false;
+  const SOCKET probe = WSASocketW(is_v4 ? AF_INET : AF_INET6, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, 0);
+  const auto close_probe = [](SOCKET s) { closesocket(s); WSACleanup(); };
+#else
+  const int probe = ::socket(is_v4 ? AF_INET : AF_INET6, SOCK_STREAM, 0);
+  const auto close_probe = [](int s) { ::close(s); };
+#endif
+#if defined(_WIN32)
+  if (probe == INVALID_SOCKET) return false;
+#else
+  if (probe < 0) return false;
+#endif
+  bool free = false;
+  if (is_v4) {
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(config.listener.port);
+    std::memcpy(&address.sin_addr, config.listener.host.bytes().data(), 4U);
+    free = ::bind(probe, reinterpret_cast<const sockaddr*>(&address), sizeof address) == 0;
+  } else {
+    sockaddr_in6 address{};
+    address.sin6_family = AF_INET6;
+    address.sin6_port = htons(config.listener.port);
+    std::memcpy(address.sin6_addr.s6_addr, config.listener.host.bytes().data(), 16U);
+    free = ::bind(probe, reinterpret_cast<const sockaddr*>(&address), sizeof address) == 0;
+  }
+  close_probe(probe);
+  return free;
+}
+
+std::optional<std::filesystem::path> token_file_below_secret(const FrontendConfig& config) {
+  if (config.token.kind() != SecretSourceKind::protected_file || !config.roots.secret) return std::nullopt;
+  const auto file = parse_relative_path(config.token.location());
+  if (const auto* relative = std::get_if<RelativePath>(&file)) return config.roots.secret->join(*relative);
+  return std::nullopt;
+}
+
+std::vector<doctor::RootProbe> root_probes(const FrontendConfig& config) {
+  std::vector<doctor::RootProbe> probes;
+  const auto add = [&probes](const std::string_view label, const std::filesystem::path& path, const RootPolicy policy) {
+    const auto opened = open_root(path, policy);
+    if (std::holds_alternative<CanonicalRoot>(opened)) probes.push_back({std::string{label}, ""});
+    else probes.push_back({std::string{label}, std::get<PathError>(opened).message});
+  };
+  add("roots.models", config.roots.models.path(), RootPolicy::existing);
+  if (config.roots.secret) add("roots.secret", config.roots.secret->path(), RootPolicy::existing);
+  // R-T3-d: roots.state is only checked when it exists (serve creates/uses it;
+  // a pull-only box may legitimately have no state root yet). logs/cache use
+  // SP1's own creatable-but-may-be-absent rule.
+  if (config.roots.state && std::filesystem::exists(*config.roots.state)) add("roots.state", *config.roots.state, RootPolicy::existing);
+  const auto add_creatable = [&probes](const std::string_view label, const std::filesystem::path& path) {
+    const auto checked = check_creatable_root(path);
+    if (std::holds_alternative<std::filesystem::path>(checked)) probes.push_back({std::string{label}, ""});
+    else probes.push_back({std::string{label}, std::get<PathError>(checked).message});
+  };
+  if (config.roots.logs) add_creatable("roots.logs", *config.roots.logs);
+  if (config.roots.cache) add_creatable("roots.cache", *config.roots.cache);
+  return probes;
+}
+
+std::vector<std::string> deep_digest_failures(const FrontendConfig& config) {
+  std::vector<std::string> failures;
+  const auto read = read_model_index(config.roots.models);
+  if (const auto* failure = std::get_if<AcquireError>(&read)) {
+    failures.push_back(std::string{"index: "} + std::string{reason_name(failure->reason)});
+    return failures;
+  }
+  for (const auto& entry : std::get<ModelIndex>(read).models) {
+    const auto model = load_installed(config.roots.models, entry);  // the verify path: manifest re-hash, fails closed
+    if (const auto* failure = std::get_if<AcquireError>(&model)) {
+      failures.push_back(model_ref_text(entry.name, entry.tag) + ": " + std::string{reason_name(failure->reason)});
+    }
+  }
+  return failures;
+}
+
 // SP5 M1 (spec §4): the process environment never carries engine knobs.
 // Presence of any STRATA_*/MAYA_* name is reported once by doctor; values are
 // never read, printed or stored.
@@ -360,8 +492,8 @@ bool engine_env_knob_present() {
 
 int verb_doctor(const FrontendConfig& config, const std::filesystem::path& config_file, const std::span<const std::string> rest,
                 CliStreams& io, CliServices& services) {
-  const auto args = parse_args(rest, {"--downloader"}, {});
-  if (!args || !args->positional.empty()) return usage(io, "doctor [--downloader]");
+  const auto args = parse_args(rest, {"--downloader", "--deep"}, {});
+  if (!args || !args->positional.empty()) return usage(io, "doctor [--downloader] [--deep]");
   if (engine_env_knob_present()) {
     io.out << "doctor: ignoring STRATA_*/MAYA_* environment; configure server.json instead\n";
   }
@@ -380,7 +512,40 @@ int verb_doctor(const FrontendConfig& config, const std::filesystem::path& confi
   auto read = read_model_index(config.roots.models);
   if (auto* failure = std::get_if<AcquireError>(&read)) return report(io, *failure);
   if (const int code = print_store_usage(config.roots.models, std::get<ModelIndex>(read), io); code != 0) return code;
-  if (!probe) return 0;  // plain doctor spawns nothing (§3.2)
+  // SP7 M1 Task 3 (D-7): the full offline check set. The §3.2 "plain doctor spawns
+  // nothing" rule is superseded for the read-only nvidia-smi query (D-7 names it);
+  // nothing installs and no network is touched (PX §8). Exit is 0 iff every check
+  // passed (R-T3-b; the fixed verdict line is what scripts and tests key on).
+  doctor::ProbeBundle bundle;
+  // The config outlives this verb; the bundle borrows it (aliasing shared_ptr,
+  // never owns).
+  bundle.config = std::shared_ptr<const FrontendConfig>(std::shared_ptr<void>{}, std::addressof(config));
+  bundle.nvidia_smi = []() -> std::optional<std::string> {
+    const auto result = service::run_argv({"nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"});
+    if (result.exit_code != 0) return std::nullopt;
+    return result.out;
+  };
+  bundle.file_mode = regular_file_mode;
+  bundle.program_dir = self_program_dir();
+  bundle.token_file = token_file_below_secret(config);
+  bundle.roots = root_probes(config);
+  bundle.port_free = [&config] { return listener_port_free(config); };
+  bundle.memlock_limit = current_memlock;
+#if defined(_WIN32)
+  bundle.memlock_applicable = false;  // Windows large pages: the user right, not RLIMIT_MEMLOCK (R-T3-c)
+#endif
+  bundle.deep = args->flags.contains("--deep");
+  bundle.deep_digest_failures = [&config] { return deep_digest_failures(config); };
+  bool all_checks_passed = true;
+  for (const auto& check : doctor::run_checks(bundle)) {
+    if (check.ok) io.out << "doctor " << check.name << ": ok\n";
+    else {
+      all_checks_passed = false;
+      io.out << "doctor " << check.name << ": " << check.human_fix << '\n';
+    }
+  }
+  io.out << (all_checks_passed ? "doctor: all checks passed\n" : "doctor: one or more checks failed\n");
+  if (!probe) return all_checks_passed ? 0 : 1;
   if (auto failure = kit.probe->probe()) return report(io, *failure);
   if (kit.downloader && kit.downloader->probe_result()) {
     const auto& result = *kit.downloader->probe_result();
@@ -389,7 +554,7 @@ int verb_doctor(const FrontendConfig& config, const std::filesystem::path& confi
   if (config.pull.downloader != default_downloader_path()) {
     io.out << "note: a custom pull.downloader that reads its CA bundle from SSL_CERT_FILE fails with tls_failed under the empty environment\n";
   }
-  return 0;
+  return all_checks_passed ? 0 : 1;
 }
 
 }  // namespace

@@ -646,11 +646,21 @@ target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_launch)
 # SP4 Task 27: pull, run, update --models and doctor drive the confined downloader.
 target_sources(secure_frontend_strata_cli PRIVATE src/strata_cli_network.cpp)
 target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_downloader)
+# SP7 M1 Tasks 1-3: service verbs and the full doctor live beside the network verbs.
+target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_service_ops secure_frontend_doctor)
+if(WIN32)
+    target_link_libraries(secure_frontend_strata_cli PUBLIC ws2_32)
+endif()
 secure_frontend_set_warnings(secure_frontend_strata_cli)
 
 # SP7 M1 Task 1 (spec D-5): the per-user service unit — rendering, and the
 # enable/disable/status verbs that use it (Task 2).
 secure_frontend_add_library(secure_frontend_service_ops SOURCES src/service_ops.cpp)
+
+# SP7 M1 Task 3 (spec D-7): the doctor check set — pure checks over an injected
+# ProbeBundle; the verb composes them (strata_cli_network).
+secure_frontend_add_library(secure_frontend_doctor SOURCES src/doctor_checks.cpp
+    LINKS secure_frontend_typed_config)
 
 # PX §2: the one user-facing binary. SP4 provides only its acquisition verbs (Controller note 1);
 # strata-secure-server never links secure_frontend_acquire or secure_frontend_strata_cli (§7.1).
@@ -1411,6 +1421,16 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     set(SECURE_FRONTEND_SERVICE_OPS_CASES render_systemd_unit_exact_golden render_systemd_unit_rejects_whitespace_paths
         render_systemd_unit_rejects_relative_or_empty)
     secure_frontend_add_cases(secure_frontend_service_ops_tests ${SECURE_FRONTEND_SERVICE_OPS_CASES})
+
+    # SP7 M1 Task 3: the D-7 doctor checks, all driven by fake ProbeBundles.
+    secure_frontend_add_test_executable(secure_frontend_doctor_tests tests/doctor_checks_test.cpp
+        secure_frontend_doctor secure_frontend_typed_config secure_frontend_test_support)
+    target_include_directories(secure_frontend_doctor_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    secure_frontend_add_cases(secure_frontend_doctor_tests
+        doctor_check_config_names_rejected_keys doctor_check_config_valid_passes doctor_check_token_modes
+        doctor_check_roots_report_named_failures doctor_check_port_busy_fails_with_fix
+        doctor_check_gpu_and_driver doctor_check_cuda_runtime doctor_check_memlock
+        doctor_deep_digests_and_run_order doctor_human_fix_never_carries_install_commands)
     if(NOT WIN32)
         # Symlink layouts are POSIX-only here; the Windows pointer form (current.txt)
         # arrives with the Task 6 windows-runtime cases. The enable/disable/status

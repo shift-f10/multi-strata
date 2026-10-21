@@ -344,7 +344,7 @@ void priv01_local_verbs_never_spawn_downloader() {
   const std::string trust = "sha256:" + entry.manifest_sha256;
   const std::vector<std::pair<std::vector<std::string>, int>> verbs{
       {{"list"}, 0}, {{"list", "--all"}, 0}, {{"show", "m:t"}, 0}, {{"show", "m:t", "--digests"}, 0},
-      {{"export", "m:t", bundle.string()}, 0}, {{"verify", bundle.string(), "--trust-manifest", trust}, 0}, {{"doctor"}, 0},
+      {{"export", "m:t", bundle.string()}, 0}, {{"verify", bundle.string(), "--trust-manifest", trust}, 0},
       {{"run", "m:t"}, 0}, {{"update"}, 12}, {{"update", "--models"}, 0}, {{"rm", "m:t"}, 0},
       {{"import", bundle.string(), "--trust-manifest", trust, "--yes"}, 0}};
   for (const auto& [verb, expected] : verbs) {
@@ -354,6 +354,12 @@ void priv01_local_verbs_never_spawn_downloader() {
     expect(result.exit_code == expected,
            "strata " + text + "exits " + std::to_string(expected) + ", saw " + std::to_string(result.exit_code) + ": " + result.err);
   }
+  // D-7 (SP7 M1 T3, R-T3-b): doctor's exit follows the check verdict instead of a
+  // fixed 0; its invariant here stays that it spawns no DOWNLOADER (the read-only
+  // nvidia-smi probe is not a downloader and is never recorded — the record file says so).
+  const auto doctor = s.strata(args.at(0), {"doctor"});
+  expect((doctor.exit_code == 0) == (doctor.out.find("doctor: all checks passed") != std::string::npos),
+         "doctor exits 0 iff every check passed");
   expect(!std::filesystem::exists(s.record), "list, show, export, verify, doctor, run (installed), update, rm, import: no spawn");
   // Ruling R9: update --models with an outdated catalog model (fixture-qwen:t1 at sequence 1; the hooks fixture
   // catalog has sequence 2). Its license changes (§6.1, F-21), so it needs an interactive y even with --yes:
@@ -381,7 +387,9 @@ void priv01_positive_control_doctor_downloader_probe_is_recorded() {
 #else
   const auto result = s.strata(args.at(0), {"doctor", "--downloader"});
 #endif
-  expect(result.exit_code == 0, "doctor --downloader: " + result.err);
+  // D-7 (R-T3-b): doctor's exit now follows the check verdict; the probe record below
+  // (exactly one downloader probe, never more) is the invariant this case guards.
+  expect((result.exit_code == 0) == contains(result.out, "doctor: all checks passed"), "doctor --downloader: " + result.err);
   const auto lines = secure_frontend_test::read_record_lines(s.record);
   expect(lines.size() == 1 && contains(lines[0], "\"kind\":\"probe\"") && contains(lines[0], "\"argv\":[\"-q\",\"--version\"]"),
          "exactly one probe record, argv -q --version");
@@ -510,7 +518,9 @@ void doctor_proxy_hint_is_presence_only() {
   secure_frontend_test::cli::CliHarness h;
   const auto result = secure_frontend_test::run_to_completion(secure_frontend_test::ProcessSpec{
       args.at(0), {"--config", h.config.string(), "doctor"}, {{"HTTPS_PROXY", "http://SENTINEL-PROXY-VALUE:1"}}});
-  expect(result.exit_code == 0 && contains(result.out, "hint: a proxy variable is set"), "the hint is printed: " + result.err);
+  // D-7 (R-T3-b): exit follows the verdict here; the hint and value-suppression hold.
+  expect(((result.exit_code == 0) == contains(result.out, "doctor: all checks passed")) && contains(result.out, "hint: a proxy variable is set"),
+         "the hint is printed: " + result.err);
   expect(!contains(result.out + result.err, "SENTINEL-PROXY-VALUE"), "the value is never printed");
 }
 
@@ -522,7 +532,9 @@ void doctor_warns_on_strata_env_knob() {
   const auto result = secure_frontend_test::run_to_completion(secure_frontend_test::ProcessSpec{
       args.at(0), {"--config", h.config.string(), "doctor"},
       {{"STRATA_HTTP_BACKLOG", "SENTINEL-BACKLOG-VALUE"}, {"MAYA_UPDATE_CHECK", "SENTINEL-MAYA-VALUE"}}});
-  expect(result.exit_code == 0, "doctor still succeeds: " + result.err);
+  // D-7 (R-T3-b): the env-knob warning is independent of the check verdict; exit follows
+  // the verdict, and the fixed line stays exactly once.
+  expect((result.exit_code == 0) == contains(result.out, "doctor: all checks passed"), "doctor runs to its verdict: " + result.err);
   const std::string line = "doctor: ignoring STRATA_*/MAYA_* environment; configure server.json instead";
   std::size_t count = 0;
   for (std::size_t at = 0; (at = result.out.find(line, at)) != std::string::npos; at += line.size()) ++count;
