@@ -1332,6 +1332,16 @@ void log_stream_outcomes_use_fixed_codes() {
   expect(log.find("fake-model") == std::string::npos && log.find("Hi") == std::string::npos, "no model field or prompt text in the log");
 }
 
+void stream_keepalive_comment_during_prefill() {
+  auto server = test_support::start_stream_server({"--prefill-delay-ms=2500"}, {{"limits.http.stream_keepalive_ms", "1000"}});
+  expect(server != nullptr, "server ready");
+  if (!server) return;
+  const auto streamed = test_support::chat(*server, test_support::chat_body(R"("stream":true)"), {.timeout = 15s});
+  expect(streamed.end == ChatExchangeEnd::complete, "the stream completes");
+  expect(test_support::comments_before_content(streamed) >= 2U,
+         "at least 2 ': keep-alive' comments during a 2.5 s prefill: " + std::to_string(test_support::comments_before_content(streamed)));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1393,6 +1403,7 @@ int main(int argc, char** argv) {
       {"stream_cut_has_no_terminal_chunk", stream_cut_has_no_terminal_chunk},
       {"stream_cancel_during_prefill_frees_engine", stream_cancel_during_prefill_frees_engine},
       {"log_stream_outcomes_use_fixed_codes", log_stream_outcomes_use_fixed_codes},
+      {"stream_keepalive_comment_during_prefill", stream_keepalive_comment_during_prefill},
       {"win_refusal_is_read_not_reset", win_refusal_is_read_not_reset},
       {"win_eviction_wakes_worker_within_one_slice", win_eviction_wakes_worker_within_one_slice},
       {"win_disconnect_detected_by_peek", win_disconnect_detected_by_peek},

@@ -32,6 +32,12 @@ class StreamObserver final : public GenerationObserver {
     if (sink_.client_gone()) return gone_reason();
     flush_ready();
     if (sink_.client_gone()) return gone_reason();
+    // Keepalive (spec §3.2): only while nothing is pending and the sink takes
+    // it now — a comment never queues behind or interleaves with content.
+    if (pending_.empty() && Clock::now() - last_activity_ >= settings_.keepalive && sink_.writable(std::chrono::milliseconds(0))) {
+      (void)sink_.send_event(kSseKeepAliveComment);
+      last_activity_ = Clock::now();
+    }
     return RunCancel::none;
   }
 
@@ -90,6 +96,7 @@ class StreamObserver final : public GenerationObserver {
     const std::size_t size = next_delta_size(pending_);
     (void)sink_.send_event(render_content_event(identity_, std::string_view(pending_).substr(0, size)));
     pending_.erase(0, size);
+    last_activity_ = Clock::now();
   }
 
   StreamSink& sink_;
@@ -98,6 +105,8 @@ class StreamObserver final : public GenerationObserver {
   std::string pending_;  // decoded text, bounded by limits.chat.max_generated_bytes
   Clock::time_point pending_since_{};
   std::optional<Clock::time_point> blocked_since_;
+  // Constructed after the role chunk is queued, so the keepalive timer starts there (Task 12).
+  Clock::time_point last_activity_{Clock::now()};
 };
 
 }  // namespace
@@ -107,9 +116,9 @@ ChatStreamOutcome run_chat_stream(StreamSink& sink, EngineProtocolClient& protoc
                                   const std::function<bool()>& shutting_down, const GenerationEnded& generation_ended) {
   ChatStreamOutcome outcome;
   (void)shutting_down;  // the shutdown arm lands in Task 14
-  StreamObserver observer(sink, identity, settings);
   (void)sink.send_headers(make_sse_head());
   (void)sink.send_event(render_role_event(identity));
+  StreamObserver observer(sink, identity, settings);  // after the role chunk: the keepalive timer starts here
   const GenerationRunResult run = drive_generation(protocol, decoder, settings.run, observer);
   generation_ended(run);  // the Lease is gone from here on: the next generation may start
   outcome.end = run.end;

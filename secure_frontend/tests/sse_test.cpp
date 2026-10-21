@@ -403,6 +403,46 @@ void stream_client_gone_sends_stop() {
   expect(!stream.sink.finished && stream.ended_calls == 1, "nothing more written; engine released");
 }
 
+void keepalive_never_splits_a_pending_event() {
+  {  // long prefill: comments, then content
+    StreamRun stream({});
+    std::thread engine([&stream] {
+      std::this_thread::sleep_for(std::chrono::milliseconds(300));
+      stream.transport.push(tok('a'));
+      stream.transport.push("DONE 1 3 1.0 1.0 stop");
+    });
+    secure_frontend::ChatStreamSettings settings;
+    settings.keepalive = std::chrono::milliseconds(100);
+    (void)stream.run(settings);
+    engine.join();
+    std::size_t comments = 0;
+    for (const auto& event : stream.sink.events) {
+      if (event == secure_frontend::kSseKeepAliveComment) ++comments;
+      if (event.find(R"("delta":{"content")") != std::string::npos) break;
+    }
+    expect(comments >= 2U, "comments while no content flows: " + std::to_string(comments));
+  }
+  {  // blocked reader with pending text: no comment is queued or interleaved
+    std::vector<std::string> records{tok('a')};
+    StreamRun stream(std::move(records));
+    stream.sink.blocked_polls = 1000000;
+    std::thread engine([&stream] {
+      std::this_thread::sleep_for(std::chrono::milliseconds(400));
+      stream.sink.blocked_polls = 0;
+      stream.transport.push("DONE 1 3 1.0 1.0 stop");
+    });
+    secure_frontend::ChatStreamSettings settings;
+    settings.keepalive = std::chrono::milliseconds(50);
+    (void)stream.run(settings);
+    engine.join();
+    expect(!stream.sink.violated, "nothing is sent while the sink is not writable");
+    const auto content = std::find_if(stream.sink.events.begin(), stream.sink.events.end(),
+                                      [](const std::string& e) { return e.find(R"("delta":{"content")") != std::string::npos; });
+    expect(content != stream.sink.events.end() && std::find(stream.sink.events.begin() + 1, content, std::string(secure_frontend::kSseKeepAliveComment)) == content,
+           "pending content goes out before any comment");
+  }
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -426,6 +466,7 @@ int main(int argc, char* argv[]) {
                                              {"stream_slow_reader_coalesces_deltas", stream_slow_reader_coalesces_deltas},
                                              {"stream_tail_deadline_cuts_without_terminal_chunk", stream_tail_deadline_cuts_without_terminal_chunk},
                                              {"stream_client_gone_sends_stop", stream_client_gone_sends_stop},
+                                             {"keepalive_never_splits_a_pending_event", keepalive_never_splits_a_pending_event},
                                          },
                                          failures);
 }
