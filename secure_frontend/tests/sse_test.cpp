@@ -459,6 +459,26 @@ void stream_error_events_follow_text_and_end_with_done() {
   check({tok('a'), "T 256", "DONE 2 3 1.0 1.0 cancel"}, secure_frontend::ApiError::internal_error, "control token in output");
 }
 
+void stream_shutdown_sends_error_event_and_done() {
+  std::vector<std::string> records{tok('a')};
+  StreamRun stream(std::move(records));
+  std::atomic<bool> stopping{false};
+  std::thread signal([&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    stopping = true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    stream.transport.push("DONE 1 3 1.0 1.0 cancel");
+  });
+  const auto outcome = stream.run({}, [&stopping] { return stopping.load(); });
+  signal.join();
+  const auto& events = stream.sink.events;
+  expect(events.size() >= 3U && events[events.size() - 2U] == secure_frontend::render_error_event(secure_frontend::ApiError::server_shutting_down),
+         "server_shutting_down event");
+  expect(events.back() == secure_frontend::kSseDoneEvent && outcome.terminal_chunk_sent, "[DONE] and the terminal chunk");
+  expect(stream.transport.stop_count() == 1U, "the generation was stopped");
+  expect(outcome.log_code == "server_shutting_down", "log code");
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -484,6 +504,7 @@ int main(int argc, char* argv[]) {
                                              {"stream_client_gone_sends_stop", stream_client_gone_sends_stop},
                                              {"keepalive_never_splits_a_pending_event", keepalive_never_splits_a_pending_event},
                                              {"stream_error_events_follow_text_and_end_with_done", stream_error_events_follow_text_and_end_with_done},
+                                             {"stream_shutdown_sends_error_event_and_done", stream_shutdown_sends_error_event_and_done},
                                          },
                                          failures);
 }

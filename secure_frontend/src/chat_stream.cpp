@@ -2,6 +2,7 @@
 
 #include "secure_frontend/api_constants.hpp"
 
+#include <algorithm>
 #include <optional>
 #include <string>
 
@@ -20,8 +21,8 @@ constexpr auto kPartialFlushHold = std::chrono::milliseconds(500);
 // -Wunused-private-field under -Werror).
 class StreamObserver final : public GenerationObserver {
  public:
-  StreamObserver(StreamSink& sink, const SseIdentity& identity, const ChatStreamSettings& settings)
-      : sink_(sink), identity_(identity), settings_(settings) {}
+  StreamObserver(StreamSink& sink, const SseIdentity& identity, const ChatStreamSettings& settings, const std::function<bool()>& shutting_down)
+      : sink_(sink), identity_(identity), settings_(settings), shutting_down_(shutting_down) {}
 
   void on_text(const std::string_view text) override {
     if (pending_.empty()) pending_since_ = Clock::now();
@@ -29,6 +30,10 @@ class StreamObserver final : public GenerationObserver {
   }
 
   RunCancel on_tick(bool /*progress*/) override {
+    if (shutting_down_()) {
+      if (!shutdown_seen_) shutdown_seen_ = Clock::now();
+      return RunCancel::shutting_down;
+    }
     if (sink_.client_gone()) return gone_reason();
     flush_ready();
     if (sink_.client_gone()) return gone_reason();
@@ -76,6 +81,10 @@ class StreamObserver final : public GenerationObserver {
   // Waits (in poll slices) until the sink can take an event; false on deadline or gone.
   bool wait_writable(const Clock::time_point until) {
     while (!sink_.writable(api_constants::kStreamPollSlice)) {
+      if (shutting_down_()) {
+        if (!shutdown_seen_) shutdown_seen_ = Clock::now();
+        if (Clock::now() >= *shutdown_seen_ + api_constants::kShutdownDrainBudget) return false;  // R-H: cut, no terminal chunk
+      }
       if (Clock::now() >= until || sink_.client_gone()) return false;
     }
     return true;
@@ -91,6 +100,9 @@ class StreamObserver final : public GenerationObserver {
 
   bool send(const std::string_view event, const Clock::time_point until) { return wait_writable(until) && sink_.send_event(event); }
 
+  // First moment the shutdown probe turned true (R-H bounds every later wait from here).
+  [[nodiscard]] std::optional<Clock::time_point> shutdown_seen() const { return shutdown_seen_; }
+
  private:
   void send_one() {
     const std::size_t size = next_delta_size(pending_);
@@ -102,9 +114,11 @@ class StreamObserver final : public GenerationObserver {
   StreamSink& sink_;
   const SseIdentity& identity_;
   const ChatStreamSettings& settings_;
+  const std::function<bool()>& shutting_down_;
   std::string pending_;  // decoded text, bounded by limits.chat.max_generated_bytes
   Clock::time_point pending_since_{};
   std::optional<Clock::time_point> blocked_since_;
+  std::optional<Clock::time_point> shutdown_seen_;
   // Constructed after the role chunk is queued, so the keepalive timer starts there (Task 12).
   Clock::time_point last_activity_{Clock::now()};
 };
@@ -115,14 +129,26 @@ ChatStreamOutcome run_chat_stream(StreamSink& sink, EngineProtocolClient& protoc
                                   const SseIdentity& identity, const ChatStreamSettings& settings,
                                   const std::function<bool()>& shutting_down, const GenerationEnded& generation_ended) {
   ChatStreamOutcome outcome;
-  (void)shutting_down;  // the shutdown arm lands in Task 14
   (void)sink.send_headers(make_sse_head());
   (void)sink.send_event(render_role_event(identity));
-  StreamObserver observer(sink, identity, settings);  // after the role chunk: the keepalive timer starts here
+  StreamObserver observer(sink, identity, settings, shutting_down);  // after the role chunk: the keepalive timer starts here
   const GenerationRunResult run = drive_generation(protocol, decoder, settings.run, observer);
   generation_ended(run);  // the Lease is gone from here on: the next generation may start
   outcome.end = run.end;
   if (run.timed_out) outcome.log_code = "generation_timeout";
+  if (run.cancel == RunCancel::shutting_down || shutting_down()) {
+    outcome.log_code = "server_shutting_down";
+    // R-H: bounded by what is left of kShutdownDrainBudget since shutdown was first seen, never by the 60 s tail deadline.
+    const auto seen = observer.shutdown_seen().value_or(Clock::now());
+    const auto until = std::min(seen + api_constants::kShutdownDrainBudget, Clock::now() + settings.tail_deadline);
+    if (!observer.flush_all(until) || !observer.send(render_error_event(ApiError::server_shutting_down), until) ||
+        !observer.send(kSseDoneEvent, until) || !observer.wait_writable(until)) {
+      return outcome;
+    }
+    sink.finish();
+    outcome.terminal_chunk_sent = sink.writable(std::chrono::milliseconds(0));
+    return outcome;
+  }
   if (run.end == RunEnd::cancelled && (run.cancel == RunCancel::client_gone || run.cancel == RunCancel::write_stall)) {
     outcome.log_code = run.cancel == RunCancel::write_stall ? "write_stall" : "client_gone";
     return outcome;  // nothing more is written to a gone client (spec §2.6)

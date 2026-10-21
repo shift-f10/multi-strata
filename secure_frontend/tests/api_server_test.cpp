@@ -1390,6 +1390,28 @@ void engine_error_carries_should_retry_false() {
   expect(result.head.header("x-should-retry") == "false", "x-should-retry: false (risk R5)");
 }
 
+void dos02_shutdown_during_stream_ends_with_error_event() {
+  auto server = test_support::start_stream_server({"--tokens=100000", "--token-interval-ms=10"});
+  expect(server != nullptr, "server ready");
+  if (!server) return;
+  int contents = 0;
+  bool stopped = false;
+  secure_frontend::ChatRequestOptions options;
+  options.timeout = 10s;
+  options.on_item = [&](const secure_frontend::SseItem& item) {
+    contents += item.text.find(R"("delta":{"content")") != std::string::npos;
+    if (contents == 2 && !stopped) {
+      stopped = true;
+      server->stop(test_support::ServerProcess::Stop::term);
+    }
+    return true;
+  };
+  const auto streamed = test_support::chat(*server, test_support::chat_body(R"("stream":true)"), options);
+  expect(test_support::stream_error_code(streamed) == "server_shutting_down", "in-stream server_shutting_down");
+  expect(streamed.done_seen && streamed.terminal_chunk_seen && streamed.end == ChatExchangeEnd::complete, "[DONE] and the terminal chunk");
+  expect(server->wait_exit(5s) == 0, "exit 0 within SP2's 5 s bound");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1456,6 +1478,7 @@ int main(int argc, char** argv) {
       {"crash_mid_stream_is_engine_unavailable_event", crash_mid_stream_is_engine_unavailable_event},
       {"nonfinite_is_engine_error_and_engine_stays_ready", nonfinite_is_engine_error_and_engine_stays_ready},
       {"engine_error_carries_should_retry_false", engine_error_carries_should_retry_false},
+      {"dos02_shutdown_during_stream_ends_with_error_event", dos02_shutdown_during_stream_ends_with_error_event},
       {"win_refusal_is_read_not_reset", win_refusal_is_read_not_reset},
       {"win_eviction_wakes_worker_within_one_slice", win_eviction_wakes_worker_within_one_slice},
       {"win_disconnect_detected_by_peek", win_disconnect_detected_by_peek},
