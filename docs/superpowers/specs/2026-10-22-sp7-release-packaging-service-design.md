@@ -57,20 +57,30 @@ background anything, paid services. `upstream/` and `engines/maya-ref/` stay rea
   `~/.config/systemd/user/strata.service`, then `systemctl --user enable --now`; no
   user-namespace systemd → non-zero exit explaining what to fix, never a fallback to
   system scope, never `loginctl enable-linger` (explained only). Windows: Task Scheduler
-  task at logon for the current user, not elevated, with upstream's two settings;
-  runtime proof waits for the owner's box, logic compile-proven by the cross gate.
-  `status` reads unit/task state read-only. `ExecStart` always points at the resolved
-  `current` target.
-- **D-6 Uninstall safety.** Finds a running `serve` via the state-dir lockfile (SP2
-  supervision already writes one — reuse, do not add a pidfile); stops it politely
-  (same stop path the server already honors). Removes: service unit/task, token file,
-  config file, state dir. Keeps by default: models, logs (printed where they are).
-  `--purge` removes models only after a typed second confirmation. Never touches any
-  path outside the three allowed roots; refuses if `current`/program dir is not where
-  install metadata says it is.
+  task at logon for the current user, not elevated, with upstream's two settings —
+  *(split in M1 T6 per PX §6: we take "Priority level: Normal" (`<Priority>6</Priority>`)
+  and refuse "run with highest privileges" (`RunLevel LeastPrivilege`) — upstream's
+  privilege half conflicts with never-elevating, and PX §6 is the owner's text and
+  wins.)* Task XML is the golden text; runtime proof waits for the owner's box, logic
+  compile-proven by the cross gate. `status` reads unit/task state read-only.
+  `ExecStart` always points at the resolved `current` target.
+- **D-6 Uninstall safety.** *(amended in M1 T4 — verified fact: no serve lockfile
+  exists on this base, and we do not add a pidfile.)* Finds a running `serve` via the
+  loopback health probe: `GET /health` on the configured listener; any HTTP status
+  line — a 401 included — means the server answers. Server answers and our service
+  unit/task is installed → stop it first through the service manager; answers with no
+  unit → refuse (stop the foreground `serve` with Ctrl+C first); silent → proceed.
+  Removes: service unit/task, token file, config file, state dir. Keeps by default:
+  models, logs (printed where they are). `--purge` removes models only after a typed
+  second confirmation (`--yes` cannot satisfy it). Never touches any path outside the
+  allowed roots; refuses if `current`/program dir is not where install metadata says it
+  is (the metadata itself is M2's; the gate is in place and passes honestly in M1).
 - **D-7 `doctor` full check set (offline only).** GPU/driver/CUDA runtime: probe
   `nvidia-smi` presence + driver version parse vs minimum (values from the engine
-  profile), CUDA runtime libs presence next to the program; config validity (reuses the
+  profile — *(M1 T3 note: the shipped manifest/profile carries no such fields, so M1
+  compiles the expectations in per profile: driver minimum "580" per upstream
+  `INSTALL.md`, unlimited memlock, CUDA runtime `libcudart.so.12/13`)*), CUDA runtime
+  libs presence next to the program; config validity (reuses the
   SP1 typed loader, reporting every rejected key by name); token file permissions;
   data/state/runtime dir permissions and canonicality (CFG rules); listen port free;
   model digests on `--deep` only (reuses `verify`); `LimitMEMLOCK` current value vs the

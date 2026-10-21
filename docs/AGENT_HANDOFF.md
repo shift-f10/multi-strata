@@ -207,6 +207,45 @@ Follow [`PROVENANCE.md`](PROVENANCE.md), "Updating the baseline" (the only copy 
 
 ## What has changed
 
+### SP7 M1 (branch `sp7-m1-service-doctor`, base `9b467e08`; the branch waits for the controller's merge gate)
+
+Plan `docs/superpowers/plans/2026-10-22-sp7-m1-service-uninstall-doctor.md`
+(Tasks 1–7), spec D-1/D-5/D-6/D-7. Lane ledger with every ruling
+(R-T1-a…R-T6-d) and RED evidence:
+`.superpowers/sdd/2026-10-22-sp7-m1-service-doctor/progress.md` (git-ignored
+work record — R-T1-d: the brief's "commit the ledger" conflicts with
+`.gitignore` ignoring `/.superpowers/`; resolved untracked, flagged for the
+controller). Commits authored `shift-f10`, `Co-Authored-By` trailer, no
+`Claude-Session:`.
+
+| Task | Commit | Landed | Proof (named in the ledger) |
+| --- | --- | --- | --- |
+| 1 | `5ad06ab4` | lib `secure_frontend_service_ops`: exact hardened systemd user-unit text (D-5 directives verbatim, `ReadWritePaths` = state+logs+cache — the serve write-targets, R-T1-a); whitespace/relative path rejection; `resolve_current_target` (D-4 seam M2's update writes through) | golden text, negative matrix, symlink/plain-install cases |
+| 2 | `2e314fed` | `run_argv` (fork/execvp + pipe pump; CreateProcessW on Windows) and `plan_enable/plan_disable/plan_status`: atomic 0644 unit write, `systemctl --user enable --now`, foreign-unit refusal, two read-only status probes | 8 cases on a recording fake runner + a PATH-shim `systemctl` e2e (real systemctl unreachable by construction) |
+| 3 | `51fa1065` | lib `secure_frontend_doctor`: every D-7 check pure over an injected `ProbeBundle` (gpu/driver/CUDA/config/token/roots/port/memlock, `--deep` digests); verdict contract; `doctor` exit 1 on any failure | 10 fake-driven cases; three legacy fixed-exit-0 doctor tests amended to verdict equivalence (R-T3-b), no probe assertion weakened |
+| 4 | `569186b0` | lib `secure_frontend_uninstall`: ordered removals (unit, token, config, state; models only under `--purge`) confined to allowed roots; stop decision table from the loopback `GET /health` probe (any HTTP answer incl. 401 = answering); typed-word gate `--yes` cannot satisfy | 9 cases incl. canned-401-listener e2e (server up/down per plan) |
+| 5 | `1fa0c4af` | CLI wiring: grammar `service {enable,disable,status}`, `uninstall [--purge]`, usage text, exit codes; `ProcessSpec` gains optional `stdin_file` (both platform branches) | 7 e2e cases spawning real `strata` children vs temp HOME/XDG roots |
+| 6 | `84a99b00` | `render_schtasks_create` golden (LogonTrigger, `RunLevel LeastPrivilege`, `<Priority>6</Priority>`, PT5M×3 restart) and the Windows plan branches wired — compile-proven only; windows-runtime-labelled plan cases + `schtasks.cmd`-shim CLI e2e registered for the owner's box | host-runnable goldens; cross build compiles all Windows branches and bodies 0 warnings — **no Windows runtime claims** |
+| 7 | (this commit) | truth pass: spec amendments folded in (D-6 health-probe rewrite, D-5 two-settings split, D-7 compiled-in expectations note), this section | — |
+
+Gates at the branch tip (this host, 2026-10-22): `cmake --preset linux-gcc` +
+`ctest --preset linux-gcc` 100% (867 run / 870 registered / 4 env skips —
+cfg03, proc03, proc05, bundle-mount); release preset 0 warnings + full release
+`ctest` 833/833 100% incl. the release-only proofs; `windows-llvm-mingw-cross`
+builds 0 warnings — Windows **not run** (owner-hardware rule); pytest 33.
+Gate-method note: the presets keep build trees in
+`secure_frontend/out/build/<presetName>` and the debug CTest preset excludes
+the 3 `release-only` label cases; a bare `ctest --test-dir <debug-dir>` runs
+those self-guarding proofs and shows two false failures.
+
+Declared gaps, not hidden: Windows runtime paths (task XML acceptance,
+schtasks flows, the e2e shim) wait for the owner's box; the uninstall
+install-metadata gate passes honestly because M1 has no install metadata yet
+(M2 feeds it); doctor GPU/driver/memlock expectations are compiled-in per
+profile (the shipped manifest carries none — R-T3-a); the schtasks
+Priority/elevation split follows PX §6 over upstream's hint and is recorded
+in spec D-5 (R-T6-a); `loginctl enable-linger` is explained, never run.
+
 ### SP5 M2 (branch `sp5-maya-parity`, base `749e5395`; the branch waits for the owner's merge word)
 
 Plan `docs/superpowers/plans/2026-10-21-sp5-m2-maya-parity-dialect-kit.md`
