@@ -22,19 +22,20 @@ every claim below waits for the owner's own hardware (owner rulings 2026-10-20/2
    (modes `stream`, `nonstream`, `cancel-after=<n>`, `cancel-during-prefill`,
    `concurrent=<k>`, `utf8`, `seed`). Status: defined, **not yet run**.
 2. **SP5 parity acceptance kit** — `docs/validation/sp5-parity-kit.md` + probe corpus
-   mode (delivered by SP5 M2 Task 9). Runs the same corpus against plain upstream
+   mode (delivered by SP5 M2, merged `073af122`). Runs the same corpus against plain upstream
    `serve` (v0.2.1.3 engine) and `strata serve`, plus the Maya `v1.1.8` side vs our
    `glm53` profile; results file is hashed into `docs/PROVENANCE.md` as the SP5
-   acceptance entry. Status: pending SP5 M2 merge; **run is owner-side**.
+   acceptance entry (row exists as a placeholder — **no GLM parity claim until you run it**).
+   Status: ready; **run is owner-side**.
 3. **SP6 GLM eval kit** — `tools/glm-eval/*` per the SP6 design; blocked on the
    owner's decision sheet (`docs/superpowers/handoff/2026-10-16-controller-resume.md` §5.1).
 
 ## Parked for the owner (decisions, not runs)
 
 - `secure_frontend_api_server_tests.log_line_format_and_rate_limit` — pre-existing M1
-  token-bucket timing flake: fails only under heavy suite/TSan load; 10/10 in isolation
-  every time measured (lane baseline, M1 merge battery, M2 battery, and again 10/10 on
-  2026-10-22 during SP5 M2). Fix or accept.
+  token-bucket timing flake: **deterministic under TSan slowdown**, intermittent under
+  heavy non-TSan load; 5/5–10/10 in isolation across six batteries through 2026-10-22.
+  Fix or accept.
 - SP6 decision sheet (S1–S7, M1–M7), presented 2026-10-14, unanswered.
 
 ## How to record results
