@@ -1,11 +1,13 @@
 #include "secure_frontend/api_errors.hpp"
 #include "secure_frontend/request_router.hpp"
 #include "secure_frontend/socket_io.hpp"
+#include "support/chat_json.hpp"
 #include "support/connection_scan.hpp"
 #include "support/raw_http.hpp"
 #include "support/server_harness.hpp"
 #include "support/test_paths.hpp"
 #include "support/test_support.hpp"
+#include "support/test_tokenizer.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -1069,6 +1071,32 @@ void win_disconnect_detected_by_peek() {
   }
   expect(stopped, "recv(MSG_PEEK) saw the close on Winsock and STOP was sent within 1 s");
 }
+
+// SP3 M2 (Task 5): §3.3 mid-character cut and decision 4 (timeout is 200 length).
+void utf8_non_stream_max_tokens_cut_mid_character_returns_length() {
+  auto server = test_support::start_stream_server({"--token-ids=" + test_support::token_ids_for("A\xE2\x82\xAC")});
+  expect(server != nullptr, "the server becomes ready");
+  if (!server) return;
+  const auto result = server->post_chat(test_support::chat_body(R"("max_tokens":3)"), 10s);
+  expect(result && result->status == 200, "a max_tokens cut mid-character is a 200, not a decode failure");
+  if (result) {
+    expect(test_support::complete_text(result->body) == "A", "the held lead bytes are dropped: " + result->body);
+    expect(test_support::complete_finish(result->body) == "length", "finish_reason length");
+  }
+}
+
+void generation_timeout_returns_text_with_length() {
+  auto server = test_support::start_stream_server({"--tokens=100", "--token-interval-ms=300"}, {{"limits.engine.generation_timeout_s", "1"}});
+  expect(server != nullptr, "the server becomes ready");
+  if (!server) return;
+  const auto result = server->post_chat(test_support::chat_body(R"("max_tokens":100)"), 10s);
+  expect(result && result->status == 200, "a timed-out generation is a 200 (decision 4)");
+  if (result) {
+    const auto text = test_support::complete_text(result->body);
+    expect(!text.empty() && text.size() <= 5U && text.find_first_not_of('H') == std::string::npos, "the text so far: " + text);
+    expect(test_support::complete_finish(result->body) == "length", "finish_reason length");
+  }
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1117,6 +1145,8 @@ int main(int argc, char** argv) {
       {"ext02_http_headers_cannot_enable_extensions", ext02_http_headers_cannot_enable_extensions},
       {"log_line_format_and_rate_limit", log_line_format_and_rate_limit},
       {"err_no_token_prompt_or_path_in_any_body_or_log", err_no_token_prompt_or_path_in_any_body_or_log},
+      {"utf8_non_stream_max_tokens_cut_mid_character_returns_length", utf8_non_stream_max_tokens_cut_mid_character_returns_length},
+      {"generation_timeout_returns_text_with_length", generation_timeout_returns_text_with_length},
       {"win_refusal_is_read_not_reset", win_refusal_is_read_not_reset},
       {"win_eviction_wakes_worker_within_one_slice", win_eviction_wakes_worker_within_one_slice},
       {"win_disconnect_detected_by_peek", win_disconnect_detected_by_peek},

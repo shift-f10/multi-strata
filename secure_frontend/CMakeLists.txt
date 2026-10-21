@@ -385,6 +385,10 @@ target_include_directories(secure_frontend_chat_execution
 )
 target_link_libraries(secure_frontend_chat_execution
     PUBLIC secure_frontend_chat_generation_plan secure_frontend_engine_protocol_client secure_frontend_tokenizer_pack)
+# SP3 M2 Task 5: the one generation loop shared by the complete and stream paths.
+secure_frontend_add_library(secure_frontend_generation_run SOURCES src/generation_run.cpp
+    LINKS secure_frontend_engine_protocol_client secure_frontend_tokenizer_pack secure_frontend_utf8_stream secure_frontend_api_core)
+target_link_libraries(secure_frontend_chat_execution PUBLIC secure_frontend_generation_run)
 target_compile_features(secure_frontend_engine_supervisor PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_engine_supervisor
     PUBLIC
@@ -863,6 +867,12 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     if(WIN32)
         target_link_libraries(secure_frontend_api_server_tests PRIVATE iphlpapi)
     endif()
+    # SP3 M2 end-to-end cases (real sockets, ServerProcess): windows-runtime on Windows (R-J).
+    target_link_libraries(secure_frontend_api_server_tests PRIVATE secure_frontend_json)
+    set(SECURE_FRONTEND_API_SERVER_M2_CASES
+        utf8_non_stream_max_tokens_cut_mid_character_returns_length generation_timeout_returns_text_with_length)
+    secure_frontend_add_cases(secure_frontend_api_server_tests ${SECURE_FRONTEND_API_SERVER_M2_CASES}
+        TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     secure_frontend_add_test_executable(secure_frontend_deadline_tests tests/deadline_test.cpp secure_frontend_engine_stdio_process)
     secure_frontend_test_paths(secure_frontend_deadline_tests)
@@ -1204,7 +1214,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         resolve_max_tokens_follows_decisions_1_and_2
         run_generation_reports_finish_usage_and_context run_generation_cancel_sends_stop_and_drains
         run_generation_timeout_stops_and_reports_timed_out run_generation_drain_failure_abandons
-        run_generation_shutdown_uses_short_drain run_generation_maps_engine_errors)
+        run_generation_shutdown_uses_short_drain run_generation_maps_engine_errors
+        drive_generation_bytes_cap_cuts_on_code_point drive_generation_drops_tail_on_length_and_replaces_on_stop
+        drive_generation_cancel_sends_stop_and_drains chat_max_tokens_cut_mid_character_returns_length)
 
     secure_frontend_add_test_executable(secure_frontend_subsystem_limits_tests tests/subsystem_limits_test.cpp
         secure_frontend_subsystem_limits)

@@ -27,6 +27,7 @@ ChatExecutionLimits chat_execution_limits(const FrontendConfig& c) {
   limits.maximum_prompt_tokens = c.limits.chat.max_prompt_tokens;
   limits.maximum_output_tokens = c.limits.chat.max_completion_tokens;
   limits.default_max_tokens = c.limits.chat.default_max_tokens;
+  limits.max_generated_bytes = c.limits.chat.max_generated_bytes;
   limits.ready_timeout = c.limits.engine.ready_timeout;
   limits.generation_timeout = c.limits.engine.generation_timeout;
   limits.stop_drain_timeout = c.limits.engine.stop_drain_timeout;

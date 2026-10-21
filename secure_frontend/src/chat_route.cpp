@@ -100,11 +100,6 @@ HttpResponse ChatRoute::handle(const std::string_view body, const RequestContext
   if (const auto* failure = std::get_if<GenerationFailure>(&outcome)) {
     switch (*failure) {
       case GenerationFailure::cancelled: return HttpResponse{.status = kNoResponseStatus, .headers = {}, .body = {}, .log_code = "client_gone"};
-      case GenerationFailure::timed_out: {
-        HttpResponse response = make_error_response(ApiError::engine_error);   // M1; decision B4 lands in M2
-        response.log_code = "generation_timeout";
-        return response;
-      }
       case GenerationFailure::engine_error: return make_error_response(ApiError::engine_error);
       case GenerationFailure::engine_unavailable: return engine_unavailable();
       case GenerationFailure::decode_failed: return make_error_response(ApiError::internal_error);
@@ -120,7 +115,9 @@ HttpResponse ChatRoute::handle(const std::string_view body, const RequestContext
                                                 .prompt_tokens = result.prompt_tokens, .completion_tokens = result.completion_tokens},
                                                config_.schema);
   if (!rendered) return make_error_response(ApiError::internal_error);
-  return HttpResponse{.status = 200, .headers = {{"Content-Type", "application/json; charset=utf-8"}}, .body = *rendered};
+  HttpResponse response{.status = 200, .headers = {{"Content-Type", "application/json; charset=utf-8"}}, .body = *rendered};
+  if (result.timed_out) response.log_code = "generation_timeout";   // §8 log-only code; the client sees 200 length (B4)
+  return response;
 }
 
 }  // namespace secure_frontend
