@@ -2041,6 +2041,50 @@ void sp6_env_derived_value_reaches_child() {
   (*process)->release_resources(1000ms);
 }
 
+// SP5 M2 Task 6: the fake engine's --dialect=maya mode emits the vendored
+// NOTE/STAT/5-field-PP framing, and it rides Task 7's composed GLM launch argv.
+// The proof is adversarial: under the strict strata dialect those records are
+// unknown lines and the generation dies (protocol_failed kill); under maya_118
+// the same fake completes. A --dialect=maya that emitted nothing fails the
+// first half — the fake's records are what is proven, not the client's.
+void fake_maya_dialect_round_trips_only_under_the_maya_dialect() {
+  const auto tokenizer = test_support::byte_tokenizer();
+  const secure_frontend::ChatCompletionRequest request{"fake-model", {{"user", "Hi"}}, 2U};
+  const std::vector<std::string> argv{"--dialect=maya", "--glm-pack", "/models/glm", "--max-context", "32768",
+                                      "--prefill", "auto", "--kv-streaming", "on", "--tokens=4"};
+  {  // strata dialect: the maya records are unknown lines.
+    secure_frontend::SupervisorConfig strict;  // flavor stays strata_0143
+    strict.policy.backoff_initial = 20ms;
+    test_support::LogCapture log;
+    secure_frontend::EngineSupervisor supervisor(strict, secure_frontend::make_stdio_process_factory(fake_plan(argv)),
+                                                 std::make_shared<secure_frontend::SteadySupervisorClock>(), log.sink());
+    expect(supervisor.start(), "the strict supervisor starts");
+    expect(test_support::wait_generation_ready(supervisor, 1U, 10s), "the fake reaches READY");
+    const auto outcome = secure_frontend::execute_with_lease(supervisor, request, tokenizer);
+    expect(outcome && std::holds_alternative<secure_frontend::ChatExecutionError>(*outcome),
+           "the maya records fail closed against the strata dialect");
+    expect(test_support::wait_generation_ready(supervisor, 2U, 10s), "the killed generation is replaced");
+    expect(log.contains("engine generation 1 ended: killed_by_supervisor(protocol_failed)"),
+           "the unknown record kills the generation");
+    supervisor.shutdown(5s);
+  }
+  {  // maya dialect: the same records complete the generation.
+    secure_frontend::SupervisorConfig maya;
+    maya.flavor = secure_frontend::EngineProtocolFlavor::maya_118;
+    test_support::LogCapture log;
+    secure_frontend::EngineSupervisor supervisor(maya, secure_frontend::make_stdio_process_factory(fake_plan(argv)),
+                                                 std::make_shared<secure_frontend::SteadySupervisorClock>(), log.sink());
+    expect(supervisor.start(), "the maya supervisor starts");
+    expect(test_support::wait_generation_ready(supervisor, 1U, 10s), "the maya fake reaches READY");
+    const auto outcome = secure_frontend::execute_with_lease(supervisor, request, tokenizer);
+    const auto* completion = outcome ? std::get_if<secure_frontend::ChatExecutionResult>(&*outcome) : nullptr;
+    expect(completion != nullptr && completion->generated_tokens == 2U, "the maya dialect serves the generation");
+    expect(!log.contains("engine generation 1 ended: killed_by_supervisor(protocol_failed)"),
+           "nothing is unknown under maya_118");
+    supervisor.shutdown(5s);
+  }
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -2092,6 +2136,8 @@ int main(int argc, char* argv[]) {
                                                 {"idle_unload_never_fires_during_a_generation", idle_unload_never_fires_during_a_generation},
                                                 {"lazy_load_defers_the_first_spawn", lazy_load_defers_the_first_spawn},
                                                 {"sp6_env_derived_value_reaches_child", sp6_env_derived_value_reaches_child},
+                                                {"fake_maya_dialect_round_trips_only_under_the_maya_dialect",
+                                                 fake_maya_dialect_round_trips_only_under_the_maya_dialect},
                                                 {"proc02_child_env_is_exact_allowlist", proc02_child_env_is_exact_allowlist},
 #if !defined(_WIN32)
                                                 {"shutdown_signal_preserves_errno", shutdown_signal_preserves_errno},
