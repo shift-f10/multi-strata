@@ -94,3 +94,27 @@ Since the SP1 final fix wave the configuration ranges match the enforced caps
 pair cannot diverge. The defaults (128 messages, 65536 message bytes, 32768
 prompt tokens) are inside these ranges. `cfg01_chat_ranges_match_enforced_caps`
 pins each cap (the cap is accepted, one above it is `out_of_range`).
+
+## SP3 M1 (frontend, branch `sp3-api-streaming`)
+
+- One generation at a time is now a FIFO queue: `limits.concurrency.max_queued_generations`
+  (derived default 4) with `queue_timeout_ms` (default 300 000). An arrival past
+  the queue gets the fixed 503 `server_busy` + `Retry-After: 1` at once, before
+  any engine byte; a waiter that leaves (disconnect or deadline) leaves the queue.
+- `GEN <max_new> [temperature=F] [top_p=F] [seed=N] <ids>` — the sampling keys
+  carry only schema-bounded values (temperature 0–2, top_p (0,1], seed
+  0–2^63−1; decision 6/B6), rendered by the frontend from parsed numbers
+  (shortest round-trip form), never from request bytes. An empty rendering is
+  greedy, exactly as before SP3.
+- The context rule `n + max_tokens + 8 ≤ ctx` is applied in the frontend
+  **before** a queue place (against the last READY context) and **again**
+  against the lease's READY context; both answers are fixed 400
+  `context_length_exceeded` / `invalid_request` bodies with no `GEN` sent.
+- `max_tokens` is clamped to `limits.chat.max_completion_tokens` (decision B2,
+  never rejected for being above the limit) and defaults to auto —
+  `min(max_completion, ctx − n − 8)` — when omitted (decision B1).
+- `STOP` now carries the engine stop cause (`client_cancelled` for a client
+  disconnect, `generation_timeout`/shutdown otherwise — SP2 D-2 ruling) and
+  the drain follows the existing 1 s / `stop_drain_timeout_s` rules above.
+- Streaming (SSE chunks, per-token backpressure) lands in M2; M1 `GEN`/`DONE`
+  framing is unchanged.

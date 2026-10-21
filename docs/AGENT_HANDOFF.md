@@ -794,6 +794,16 @@ Baseline before Task 1: linux-gcc N₀ = 520 (+2 allowed skips) tests, wine W₀
 | 21 | §8 (request logging without telemetry), PRIV-02 (frontend), §7 fixed reasons | `secure_frontend_request_log` library: `format_request_line` = "req <seq> <route> <status> <code\|-\\> <ms> <bytes_out> <peer>" (route ∈ health/models/model/chat/other; peer loopback\|remote; codes §7.2 + log-only `generation_timeout`/`client_gone`/`write_stall`/`evicted` via `log_record_for` mapping pool outcomes); `RequestLogger` token bucket — burst `kLogBurst` 100, refill `kLogRatePerSecond` 20/s, drops counted and reported `log: <n> request lines suppressed` at most once per second when the bucket next has a token; off ⇒ nothing written; `stderr_sink` fixed 256 B buffer, one fwrite per line, failures dropped. Wiring: pool observer (Task 12 hook) feeds the logger; startup summary `strata: listening <authority>, workers <n>, queued generations <q>` once to stderr after bind, before supervisor.start() — the operator's own settings only | concurrency_tests.request_log_format_and_token_bucket (exact lines incl. "log: 200 request lines suppressed" and the 100+1+20 refill count); api_server_tests.log_line_format_and_rate_limit (300 health hits: burst 100, ≤ 100+20·(s+1.2)+1 lines, suppression line, startup summary present); api_server_tests.err_no_token_prompt_or_path_in_any_body_or_log (marker through content/tools/field-name/model/path/bad-token/header/Host/Origin: never reflected in any response; stderr has no marker, token or root path) — RED (compile, as plan Step 2 predicts): "fatal error: secure_frontend/request_log.hpp: No such file or directory"; all three green on FIRST build; repeats 9/9 clean | 100% tests passed out of 690 (+4 allowed skips) | wine/MSYS2 not run (owner ruling 2026-10-20); `windows-llvm-mingw-cross` 0 warnings |
 | 22 | §10 Windows parity, R2 (TSan) | Three Winsock-parity cases compiled everywhere, ctest-registered on Windows only (windows-runtime label, MSYS2 authoritative), manual on Linux: `win_refusal_is_read_not_reset` (30 refused clients all READ the full 503 — lingering close, no RST), `win_eviction_wakes_worker_within_one_slice` (workers=1, 30 s half-header holder; the new client served <250 ms — oldest-P1 eviction wakes the worker within one 20 ms slice), `win_disconnect_detected_by_peek` (mid-generation vanish → STOP in the record within 1 s). CI: `linux-clang-tsan` job added after `linux` (continue-on-error, ubuntu-24.04 pinned, mmap_rnd_bits=28, `-fsanitize=thread` on the linux-clang preset, `-E egress_interposer` — interposer+TSan don't mix) + header Non-blocking line updated. Ruling T22-tsan: owner disabled Actions (2026-10-20) — definition only, agents never push; TSan absent on this host, so the job is the future vehicle | api_server_tests.win_refusal_is_read_not_reset, …win_eviction_wakes_worker_within_one_slice, …win_disconnect_detected_by_peek — all three exit=0 on Linux FIRST run (same code paths), repeats 9/9 clean; `ctest --test-dir … -N -L windows-runtime` lists 3 win_ entries (grep count 4 counting SP2's pre-existing win_send_chunks_respect_write_stall) — wine run NOT RUN (owner ruling), pending MSYS2 | 100% tests passed out of 690 (+4 allowed skips; no Linux registration change) | `windows-llvm-mingw-cross` 0 warnings; Windows execution of the three cases waits for the owner's hardware (pending MSYS2) |
 
+#### M1 status (recorded by Task 23, 2026-10-21)
+
+SP3 M1 done on branch `sp3-api-streaming` (local, not pushed): accept thread + worker pool (default 8), FIFO generation gate (default queue 4, 300 s), header-first authentication, §4.2 parser, Host/Origin/CORS, §7.2 JSON errors, decisions B1/B2/B6/B10/B11/B12 implemented; B3/B4/B5 are M2.
+
+- linux-gcc (Task 23 battery, this host): `100% tests passed out of 690` — 686 passed, 4 allowed env skips (`cfg03_rejects_mount_crossing`, `proc03_other_uid_cannot_open_engine_fd`, `proc05_cgroup_kill_when_delegated`, `bundle_at_mount_root_is_read_but_never_written`); `ctest -N | grep -cE '\.(net0[123]|web0[1-6]|dos0[12]|ext0[12]|egress_|err_|cfg01_|win_)'` = 98 §9.3 M1 cases listed individually; `Total Tests: 690`. pytest 25 passed.
+- wine: NOT RUN (owner ruling 2026-10-20: GitHub Actions disabled, no wine on this host; agents prove only the local `windows-llvm-mingw-cross` cross-build — clean, 0 warnings, compile-only).
+- `windows-runtime` cases pending windows-msys2-clang (owner hardware): 308 registered in the cross preset — acquire 68, api_server 50, bundle 26, fetch 27, server_tests 16, server_cli 13, engine_supervisor 13, engine_arguments 12, privacy 9, token_reader 8, engine_child 8, typed_config 19, paths 6, token_store 3, fake_engine 3, subsystem_limits 3, model_inventory 4, server_e2e 9, model_index 2, egress 2, engine_process 1, http_socket_server 1, tokenizer_pack 5, plus the 2 `strata_secure_server_*` CLI smokes.
+- TSan: not installed on this host — "not run on this host (controller follow-up)"; the non-blocking `linux-clang-tsan` job (Task 22, ruling T22-tsan) is the future vehicle.
+- Final-grep honesty (ruling T23-grep): `grep -rn "kMinimumSendBudget\|chatcmpl-local\|text/plain; charset" src include` prints ONE line — `chat_schema.cpp:277`, the legacy `render_chat_completion_response` kept per the plan's own Task 16 rule ("stays only if a test still uses it" — `chat_schema_test.cpp` pins it; no product path calls it; the M1 response is the §3.5 `render_chat_completion`, pinned since Task 15/16). `grep -rnE "std::chrono::(milli)?seconds\([0-9]{3,}\)" src` prints 8 lines, ALL in untouched SP1/SP2-era supervision files (`engine_stdio_process.cpp`, `engine_process.cpp`, `engine_supervisor.cpp`, `models_store_windows.cpp` — verified unchanged on this branch; §5.3 governs the HTTP/API constants files, which carry every SP3 timing value). No SP3 task added a literal either grep flags.
+
 #### SP1 addendum (recorded by SP3, spec §5.1, §5.3)
 
 | # | Change | Task |
@@ -801,6 +811,16 @@ Baseline before Task 1: linux-gcc N₀ = 520 (+2 allowed skips) tests, wine W₀
 | A1 | Rows listener.cors_origins, listener.host_aliases, limits.http.{header_deadline_ms, write_stall_ms, response_write_deadline_ms, stream_keepalive_ms}, logging.requests; string-array entry bound and per-entry grammar (ConfigKeyExtension side table); cross-field header ≤ request, response ≥ stall, wildcard ⇒ aliases. Compatibility: an SP1 file that sets request_deadline_ms below 10000 must now also set header_deadline_ms (≤ it); an SP1 wildcard-bind config must now name listener.host_aliases (spec §4.3) | 4 |
 | A2 | max_concurrent_requests 1-256 default 8; max_queued_generations, queue_timeout_ms, max_connections_per_remote_address (derived defaults, `--check` marks "(derived)", init omits them); default_max_tokens 0-16384 default 0 = auto. Compatibility: an SP1 file that sets max_concurrent_requests to 1 still validates (queue 0, per-remote cap 1 derived); one that omits it now gets 8 workers | 5 |
 | A3 | secure_frontend_json: opt-in `JsonLimits::allow_fractions` + `JsonKind::decimal` / `make_decimal` / `if_decimal` (RFC 8259 frac/exp via `from_chars`, finite only; config stays integer-only by default); chat schema depth 4, max_tokens clamped instead of rejected | 7 |
+| A4 | SP1 spec §4 internal-constants list: the 1000 ms minimum send budget is deleted (replaced by `limits.http.write_stall_ms` and `limits.http.response_write_deadline_ms`); the 100 ms / 256 KiB half-close drain moved to `api_constants.hpp`. | 8a |
+
+#### SP2 second-run follow-ups SP3 still depends on (Task 23)
+
+- **D-1** (lease-release notification; documented thread-safety of `acquire`/`snapshot`/`report_fatal`): SP3 serializes its own calls through `SupervisorPort` (Task 13); `~Lease` and `EngineSupervisor::shutdown()` still bypass the port and rely on SP2's own mutex — unchanged SP2 behavior, documented there.
+- **D-2** (a drain failure after a client-requested `STOP` must not count toward the circuit; risk R4): SP3 sends `STOP(EngineStopCause::client_cancelled)` from the P6 cancel path (ruling T15-stopcause) and derives the kill reason through `kill_reason_for(protocol)`; SP2's bound (≤3 uncounted client-STOP restarts in a row) still applies. Residual: R4 in the threat model.
+
+#### Deferred to M2 (controller note 7, recorded by Task 23)
+
+SSE/chunked streaming, `next_event`, `Utf8StreamDecoder` (and the non-streaming decode via it), decision B4 (timeout → partial text with `length`; M1 answers `503 engine_error` + log_code `generation_timeout`), B3 (U+FFFD), B5 (chunked framing), keepalive, `stream_options` acceptance, `secure_frontend_api_client`, `strata-api-probe`, `docs/validation/sp3-api-kit.md`, the streaming DOS-02/WEB-04/EXT-01 cases, fake-engine modes `--progress-records`, `--crash-mid-gen`, `--err-mid-gen` and the UTF-8 tokenizer ids.
 | A6b | export `is_valid_utf8` from json.hpp (noexcept wrapper over the existing valid_utf8; behaviour unchanged) for §3.9 model-field validation | Task 6b |
 
 ## Current security behavior implemented in `secure_frontend`
@@ -878,20 +898,46 @@ The implemented primitives and their current runtime connections are:
   shard 1 comes from the inventory (`--native`), owned or unsupported flags
   are rejected, and `--pack` plus the other weight flags are operator-supplied
   pass-through; the GLM-5.3 profile passes arguments through.
-- `HttpRequestHandler` is bounded in-memory HTTP/1.1 parsing with Host/Origin
-  policy, bearer validation, strict CORS/preflight behavior, and a synchronous,
-  bounded request-body dispatcher seam.
+- `RequestRouter`/`ApiRouter` (SP3 §3.6/§4.1/§4.2) route the **complete header**
+  before any body byte (`kRouteTable`: `GET /health`, `GET /v1/models`,
+  `GET /v1/models/<id>`, `POST /v1/chat/completions`; everything else 404/405
+  after authentication). The §4.2 head scan rejects malformed, ambiguous or
+  over-limit request lines and header blocks (414/431/411/413/505/417/400);
+  Host/Origin policy and CORS as before; authentication is part of the header
+  phase (constant-time token compare in the 256-byte window), and every error
+  is the §7.2 fixed JSON body with a fixed `code` and `param`.
 - `HttpSocketServer` binds only a revalidated numeric configured address
-  (`::` as IPv6-only), reads one request under the configured total deadline
-  and size cap (`limits.http.*`; defaults 30 s and 64 KiB), sends with a timeout, and survives clients that
-  close or reset early, and half-closes plus briefly drains before closing.
-  `secure_frontend_http_socket_server_tests` (10 cases) runs on this Linux host
-  and under wine; it is portable, so the MSYS2 job runs it on Windows.
-- `ApiRouter` implements authenticated `GET /health` and `GET /v1/models` over
+  (`::` as IPv6-only) and accepts in 100 ms slices; since SP3 it is the
+  listener only — `ConnectionPool` (§2.1–2.4) runs it on one accept thread
+  with `limits.concurrency.max_concurrent_requests` fixed workers (default 8):
+  per-address admission cap `max_connections_per_remote_address` (derived
+  min(4, workers); loopback exempt — decision B12), oldest-P1 (header-phase)
+  eviction when no worker is idle, and a fixed 503 `server_busy` +
+  `Retry-After: 1` read through a lingering close for refusals. Each worker
+  serves P1–P8 polled in 20 ms slices under `header_deadline_ms` (default
+  10 s) and `request_deadline_ms` (default 30 s) with body caps
+  (`limits.http.max_request_bytes` 64 KiB; chat body 49152), §2.7 complete-
+  response writes bounded by the stall rule (`write_stall_ms` 10 s measured on
+  progress, `response_write_deadline_ms` 60 s); every wait sees `abort` and
+  shutdown within one slice. Chat generations are serialized by
+  `GenerationGate` (FIFO; `max_queued_generations` derived default 4;
+  `queue_timeout_ms` default 300 s; a full queue gets the fixed refusal at
+  once; a client that vanishes mid-generation gets `STOP(client_cancelled)`
+  within one slice). `secure_frontend_http_socket_server_tests` +
+  `secure_frontend_concurrency_tests` + `secure_frontend_api_server_tests`
+  cover these on this Linux host; the server-starting api/server/egress cases
+  are `windows-runtime` (MSYS2 pending).
+- `RequestLogger` (§8): with `logging.requests=true`, one fixed-field stderr
+  line per finished request (`req <seq> <route> <status> <code> <ms>
+  <bytes_out> <peer>`) under a token bucket (burst 100, refill 20/s, counted
+  suppression line at most once per second); off by default; never a token,
+  prompt, configured path or payload value.
+- `ApiRouter` implements authenticated `GET /health` and `GET /v1/models[/id]` over
   immutable injected providers; in `strata-secure-server` `/health` returns
   `{"status":"ok"|"unavailable","engine":"starting|ready|generating|failed"}`
   (`starting` → `200` with `engine=starting` — READY is consumed on the first
-  request; eager READY is SP2 — `ready`/`generating` → `200`, `failed` → `503`). The smoke
+  request; eager READY is SP2 — `ready`/`generating` → `200`, `failed` → `503`). Since
+  SP3 /health also answers while the generation queue is full. The smoke
   executables pass no engine-state provider and keep `{"status":"ok"}`. `ModelInventory` discovers local
   `.gguf` artifacts only; it has no download, subprocess, or network behavior.
 - `secure-frontend-smoke` wires the local components into a process users can
@@ -900,7 +946,9 @@ The implemented primitives and their current runtime connections are:
 - `strata-secure-server` starts exactly one local engine child and implements
   authenticated, non-streaming, text-only `POST /v1/chat/completions` for the
   fixed offline GPT-2-byte-BPE/Qwen-ChatML profile or, only when selected at
-  startup, the fixed GLM-5.3 prompt profile. GLM mode requires an independently
+  startup, the fixed GLM-5.3 prompt profile (since SP3 the endpoint runs
+  through the concurrent pool + FIFO generation gate — many connections, one
+  generation at a time; SSE streaming is M2). GLM mode requires an independently
   built and audited LightTransport-compatible `strata-glm-decode` engine and
   accepts only its exact bounded `PP` prefill progress record in addition to
   the normal private protocol. It requires explicit local engine/model/tokenizer
@@ -1337,11 +1385,11 @@ sub-project named.
   on Windows; it passed in the MSYS2 job (run `38458255140`). SP3 if it flakes.
 - `windows-msvc` (non-blocking) fails at configure on the current
   `windows-latest` image (Visual Studio 2026; preset asks for 2022). SP1 tooling.
-- `send_all` returns `false` on `EINTR` instead of retrying. SP3.
-- The S6 skip condition is broad, and its port range 20000–20099 could collide
-  with an unrelated IPv4 listener. SP3.
-- A small general backoff on any transient accept failure (not only resource
-  exhaustion) is worth considering. SP3.
+- The `send_all`-on-`EINTR`, S6 port-range and transient-accept-backoff SP0
+  bullets in this list were fixed in SP3 (`send_retries_on_eintr`, the S6 test
+  binding port 0, `accept_backs_off_on_transient_failure` — Task 8a; §9.4).
+- Since SP3 the per-request log and every error are fixed literals; `--check`
+  still prints the operator's own configured values, as SP1 designed.
 - Submodule layout: closed in the final fix wave. `top-level-integration`
   now first configures our root with no `-D` flags (`out/root-defaults`) and
   asserts `STRATA_NATIVE_EXPERTS`, `STRATA_ENABLE_CUDA`, `STRATA_ENABLE_HIP`

@@ -89,6 +89,19 @@ Trust boundaries:
 - Parse HTTP and JSON with bounded headers, body size, nesting, request time,
   and streaming buffer limits. Return generic client errors; details belong in
   protected server logs.
+- (SP3) Authentication happens when the header is complete, before any body
+  byte: an unauthenticated client never has a body read and can hold a worker
+  only in the header phase (`limits.http.header_deadline_ms`, oldest-first
+  eviction of the connection longest in that phase). Bodies are read only from
+  token holders.
+- (SP3) One accept thread plus a fixed worker pool (`max_concurrent_requests`,
+  default 8) with a per-address cap for non-loopback peers; over-admission and
+  an over-full generation queue (`max_queued_generations`, default 4) get one
+  fixed 503 `server_busy` + `Retry-After: 1` read through a lingering close
+  (never an RST the client's stack could cache as an attack signature).
+- (SP3) Every error body and the optional per-request log line are fixed
+  literals — never a token, prompt, configured path or client payload
+  (`err_no_token_prompt_or_path_in_any_body_or_log`).
 
 ### Configuration and filesystem
 
@@ -226,6 +239,25 @@ Trust boundaries:
 - GPU drivers, inference libraries, and upstream engine vulnerabilities remain
   supply-chain and patch-management risks. Releases must document versions and
   security updates.
+- **Decision 12 residual (accepted, SP3 B12):** loopback peers are exempt from
+  the per-address cap; another local user's connection flood can cause
+  eviction churn that delays a local client's header by up to its own send
+  time, and an authenticated local client can occupy every worker. A token
+  holder is trusted with the API's capacity.
+- **R4 (SP3):** a client that disconnects during a long real prefill may make
+  `STOP` miss `limits.engine.stop_drain_timeout_s`; SP2 then kills the engine
+  and counts a failure, so three such disconnects within 300 s can open the
+  circuit. Mitigation: SP2 follow-up D-2 (a client-requested `STOP` drain
+  failure does not count; bounded at 3 uncounted restarts in a row); GPU-box
+  measurement (M2 kit); the operator may raise the drain timeout.
+- **R5 (SP3):** SDK retries amplify engine errors; `engine_error` carries
+  `x-should-retry: false`, clients that ignore it remain a residual risk.
+- **R8 (SP3) — egress checks are tripwires, not proofs:** the import check
+  misses `dlopen`/`GetProcAddress` and raw syscalls; the `LD_PRELOAD`
+  interposer misses raw `syscall(2)` and static binaries (which the import
+  check then fails on); the 50 ms connection-table scan misses sockets that
+  live less than 50 ms, and on Windows it is the only runtime check.
+  Whole-machine monitoring is the SP7 validation-kit part of `PRIV-01`.
 
 ## Release decision
 
