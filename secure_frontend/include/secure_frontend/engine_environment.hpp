@@ -44,6 +44,11 @@ struct EngineEnvironment final {
   // (SP6 §4.9 A8: GPU selection is environment for this family only).
   std::vector<unsigned> glm_gpus{};
   std::vector<ForcedEnvironmentValue> glm_knobs{};
+  // SP5 M2 Task 8 (D-8): a GLM vision turn (vision.enabled, encoder not resident —
+  // maya-ref serve/server.py:3385). The VLEND-family row (STRATA_GLM_VISION_LEND_MB,
+  // :3396) reaches the engine only with a turn configured; without one the render
+  // suppresses it even if the knob channel carries it (fail closed).
+  bool glm_vision_turn{false};
 };
 
 // Windows values from GetSystemWindowsDirectoryW / GetSystemInfo, never from the environment.
@@ -110,8 +115,8 @@ inline constexpr std::array<std::string_view, 100> kFamilyForcibleEnvironment{
 // The never-list names a family may still render (RF9): GPU selection by environment.
 inline constexpr std::array<std::string_view, 2> kFamilyGpuSelectors{"CUDA_DEVICE_ORDER", "CUDA_VISIBLE_DEVICES"};
 // The generic optional rows a family may suppress (controller ruling); no other.
-inline constexpr std::array<std::string_view, 3> kFamilySuppressibleEnvironment{"STRATA_WATCHDOG_IO_S", "STRATA_HIPBLASLT_TUNING",
-                                                                                "STRATA_WATCHDOG_S"};
+inline constexpr std::array<std::string_view, 4> kFamilySuppressibleEnvironment{"STRATA_WATCHDOG_IO_S", "STRATA_HIPBLASLT_TUNING",
+                                                                                "STRATA_WATCHDOG_S", "STRATA_GLM_VISION_LEND_MB"};
 
 // The production hook: the rows of `environment.family`. strata: none.
 // glm currently renders strata rows; not reachable from config; SP6 fills its table.

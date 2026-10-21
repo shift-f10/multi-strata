@@ -127,6 +127,15 @@ FamilyEnvironmentRows family_environment_rows(const EngineEnvironment& environme
     std::erase_if(rows.forced, [&knob](const ForcedEnvironmentValue& forced) { return forced.name == knob.name; });
     rows.forced.push_back({knob.name, knob.value});
   }
+  // SP5 M2 Task 8 (D-8): the VLEND-family row exists only for a vision turn (the
+  // on-demand encoder the engine lends expert-pool memory to, maya-ref serve/
+  // server.py:3385/:3396). Without a turn the row is suppressed even when the
+  // knob channel carries it — the table bounds what can reach the child.
+  if (!environment.glm_vision_turn) {
+    std::erase_if(rows.forced,
+                  [](const ForcedEnvironmentValue& forced) { return forced.name == "STRATA_GLM_VISION_LEND_MB"; });
+    rows.suppressed.emplace_back("STRATA_GLM_VISION_LEND_MB");
+  }
   std::string devices;
   for (const unsigned gpu : environment.glm_gpus) devices += (devices.empty() ? "" : ",") + std::to_string(gpu);
   if (devices.empty()) devices = "0";  // SP6 §4.9: an absent list renders device 0.

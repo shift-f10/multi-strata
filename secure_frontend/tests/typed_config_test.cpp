@@ -5,6 +5,7 @@
 #include "secure_frontend/secret_bytes.hpp"
 #include "secure_frontend/secret_source.hpp"
 #include "secure_frontend/token_reader.hpp"
+#include "secure_frontend/vision_supervisor.hpp"
 #include "support/cli_harness.hpp"
 #include "support/config_json.hpp"
 #include "support/process_runner.hpp"
@@ -1093,7 +1094,8 @@ void glm_max_context_typed_and_glm53_args_refused() {
 // SP5 M2 Task 4 (D-7): the config-to-env projection — glm.layer_split moves
 // the STRATA_GLM_SPLIT forced default in the glm child environment
 // (maya-ref docs/SETTINGS.md:31), and glm.gpu renders the family's CUDA
-// selector (serve/server.py:1216-1224); nothing else is projected today.
+// selector (serve/server.py:1216-1224); the fixture carries no vision, and
+// Task 8's case pins what a vision turn adds.
 void glm_environment_projection_moves_the_split_default() {
   ConfigFixture f;
   const auto result = with_literals(f, {{"engine.profile", "\"glm53\""},
@@ -1117,6 +1119,73 @@ void glm_environment_projection_moves_the_split_default() {
   expect(block != std::nullopt && block->at("STRATA_GLM_SPLIT") == "7,12" && block->at("CUDA_VISIBLE_DEVICES") == "1" &&
              block->at("CUDA_DEVICE_ORDER") == "PCI_BUS_ID" && block->at("STRATA_GLM_SLOTS") == "0",
          "the rendered glm child environment carries the moved split and the selector");
+}
+
+// SP5 M2 Task 8 (D-8): the GLM vision rows reach BOTH children. On the engine side
+// the VLEND-family row (STRATA_GLM_VISION_LEND_MB, the typed engine_env row at
+// serve/server.py:3396) projects and renders only when a vision turn is configured
+// — vision.enabled and the encoder not resident (the on-demand flow, server.py:3385,
+// where the engine lends the expert-cache tail; resident vision holds its own VRAM
+// and never lends). Without a turn the row never reaches the child, even if the
+// internal knob channel carries one (fail closed). On the encoder side the argv
+// carries Maya's flag form (--no-flash-attn, server.py:991/:1158).
+void glm_vision_flags_reach_both_children() {
+  ConfigFixture f;
+  const auto on_demand = with_literals(f, {{"engine.profile", "\"glm53\""}, {"glm.gpu", "\"1\""},
+                                           {"vision", "{\"enabled\": true, \"resident\": false, \"need_mib\": 12288}"}});
+  const auto* config = config_of(on_demand);
+  expect(config != nullptr, "glm53 with on-demand vision validates: " + issues_of(on_demand));
+  if (config == nullptr) return;
+  const auto has_lend = [](const std::vector<secure_frontend::ForcedEnvironmentValue>& rows) {
+    return std::any_of(rows.begin(), rows.end(),
+                       [](const auto& row) { return row.name == "STRATA_GLM_VISION_LEND_MB"; });
+  };
+  const auto knobs = secure_frontend::glm_environment_knobs(*config);
+  const auto lend = std::find_if(knobs.begin(), knobs.end(), [](const auto& row) {
+    return row.name == "STRATA_GLM_VISION_LEND_MB";
+  });
+  expect(lend != knobs.end() && lend->value == "12288",
+         "the vision turn projects the LEND row from vision.need_mib (server.py:3396, images.py:156)");
+  secure_frontend::EngineEnvironment environment{
+      .lib_dirs = {},
+      .temp_dir = "/state/engine-tmp/1",
+      .cuda_cache_dir = "/state/cache/cuda",
+      .family = secure_frontend::EngineFamily::glm,
+      .glm_gpus = config->glm.gpus,
+      .glm_knobs = knobs,
+      .glm_vision_turn = true,
+  };
+  const auto block = secure_frontend::render_family_environment(environment);
+  const auto in_block = block && block->find("STRATA_GLM_VISION_LEND_MB") != block->end();
+  expect(in_block && block->at("STRATA_GLM_VISION_LEND_MB") == "12288",
+         "the engine child carries the LEND row when a vision turn is configured");
+  // No vision at all: nothing projects, and a smuggled knob row is suppressed.
+  const auto no_vision = with_literals(f, {{"engine.profile", "\"glm53\""}});
+  const auto* plain = config_of(no_vision);
+  expect(plain != nullptr, "the bare glm53 config validates: " + issues_of(no_vision));
+  if (plain != nullptr) expect(!has_lend(secure_frontend::glm_environment_knobs(*plain)), "nothing projects without vision");
+  secure_frontend::EngineEnvironment off = environment;
+  off.glm_knobs.push_back({"STRATA_GLM_VISION_LEND_MB", "12288"});  // the internal channel, smuggled
+  off.glm_vision_turn = false;
+  const auto rendered_off = secure_frontend::render_family_environment(off);
+  expect(rendered_off != std::nullopt && rendered_off->find("STRATA_GLM_VISION_LEND_MB") == rendered_off->end(),
+         "without a vision turn the child never carries the LEND row (fail closed)");
+  // Resident vision holds the encoder's VRAM beside the model (server.py:977's resident
+  // flow): no lending, no row.
+  const auto resident = with_literals(f, {{"engine.profile", "\"glm53\""},
+                                          {"vision", "{\"enabled\": true, \"need_mib\": 12288}"}});
+  const auto* resident_config = config_of(resident);
+  expect(resident_config != nullptr, "glm53 with resident vision validates: " + issues_of(resident));
+  if (resident_config != nullptr)  // vision.resident defaults true (the SP6 shared key, M1 Task 12)
+    expect(!has_lend(secure_frontend::glm_environment_knobs(*resident_config)), "resident vision does not lend (:3385)");
+  // The encoder child: Maya's form (server.py:983-991) — --mmproj/--model first,
+  // the threads/max-tokens pair in the same shape, --no-flash-attn when configured (:991).
+  const secure_frontend::VisionChildSpec spec{
+      .mmproj = "/p/mmproj.gguf", .model = "/p/model.gguf", .threads = 4, .max_tokens = std::nullopt, .min_tokens = std::nullopt, .no_flash_attn = true};
+  expect(secure_frontend::compose_vision_arguments(spec) ==
+             std::vector<std::string>{"--mmproj", "/p/mmproj.gguf", "--model", "/p/model.gguf", "--threads", "4",
+                                      "--no-flash-attn"},
+         "the encoder argv carries Maya's form (--no-flash-attn: server.py:991, :1158)");
 }
 
 void reasoning_rows_match_the_pinned_validator() {
@@ -1647,6 +1716,7 @@ int main(int argc, char** argv) {
       {"thinking_budget_default_is_mayas_32768", thinking_budget_default_is_mayas_32768},
       {"glm_environment_projection_moves_the_split_default", glm_environment_projection_moves_the_split_default},
       {"glm_max_context_typed_and_glm53_args_refused", glm_max_context_typed_and_glm53_args_refused},
+      {"glm_vision_flags_reach_both_children", glm_vision_flags_reach_both_children},
       {"lifecycle_rows_match_the_pin", lifecycle_rows_match_the_pin},
       {"vram_family_rows_match_the_pin", vram_family_rows_match_the_pin},
       {"timeout_shape_rows_match_the_pin", timeout_shape_rows_match_the_pin},

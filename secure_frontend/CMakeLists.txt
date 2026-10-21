@@ -1264,6 +1264,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         thinking_budget_default_is_mayas_32768
         glm_environment_projection_moves_the_split_default
         glm_max_context_typed_and_glm53_args_refused
+        glm_vision_flags_reach_both_children
         lifecycle_rows_match_the_pin
         vram_family_rows_match_the_pin
         timeout_shape_rows_match_the_pin

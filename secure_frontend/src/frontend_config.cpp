@@ -1386,6 +1386,14 @@ std::vector<ForcedEnvironmentValue> glm_environment_knobs(const FrontendConfig& 
   // §4.9 forced single-device default in place — Task 7 renders the split argv
   // and checks the count against the cards.
   if (config.glm.layer_split != "auto") knobs.push_back({std::string{"STRATA_GLM_SPLIT"}, config.glm.layer_split});
+  // SP5 M2 Task 8 (D-8): the vision turn — an on-demand encoder (vision.enabled,
+  // not resident; maya-ref serve/server.py:3385) runs in memory the engine lends
+  // from its expert pool, sized by STRATA_GLM_VISION_LEND_MB (server.py:3396).
+  // The typed source is vision.need_mib (the encoder's VRAM need, images.py:156
+  // pattern); unset means the owner-box measurement the kit records, so nothing
+  // projects and the render gate (engine_environment) keeps the row out.
+  if (config.vision.enabled && !config.vision.resident && config.vision.need_mib)
+    knobs.push_back({std::string{"STRATA_GLM_VISION_LEND_MB"}, std::to_string(*config.vision.need_mib)});
   return knobs;
 }
 

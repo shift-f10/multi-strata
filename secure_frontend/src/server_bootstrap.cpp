@@ -216,6 +216,16 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
   // Spec §3.9: the engine's whole environment, rendered per generation; nothing
   // is inherited from this server's environment.
   auto environment = secure_frontend::engine_environment_for(state_dir, config.roots.cache, std::move(lib_dirs));
+  // SP5 M2 Tasks 4/8 (D-7, D-8): a composed glm53 launch is a GLM-family child —
+  // the closed typed environment (the §4.9 safety defaults, the projected typed
+  // rows, the CUDA selectors) replaces the strata rendering, and the vision-turn
+  // gate decides whether the VLEND-family row may reach the child at all.
+  if (glm) {
+    environment.family = secure_frontend::EngineFamily::glm;
+    environment.glm_gpus = config.glm.gpus;
+    environment.glm_knobs = secure_frontend::glm_environment_knobs(config);
+    environment.glm_vision_turn = config.vision.enabled && !config.vision.resident;
+  }
   if (!prepare_state_dir(state_dir, environment)) {
     std::cerr << "Unable to prepare the state or cache directory.\n";
     return EXIT_FAILURE;
