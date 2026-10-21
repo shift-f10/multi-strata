@@ -12,7 +12,7 @@ HIP-Windows `rocm\bin`, batch telemetry, the version split.
 | Fact | Engine behavior | Frontend consequence |
 | --- | --- | --- |
 | stdin line length | Unbounded `std::string`; no truncation, no error | Frontend caps its own GEN line at min(32 + 11 × ctx, 16 MiB `kProtocolMaxLineBytes`) bytes and never relies on the engine to reject |
-| Prompt form | One line: `GEN <max_new> [k=v ...] <id,id,...>`; no multi-line form | Non-streaming prompt only; one request in flight |
+| Prompt form | One line: `GEN <max_new> [k=v ...] <id,id,...>`; no multi-line form | One prompt line for complete and streaming responses alike; one generation in flight |
 | Context rule | `n + max_new + 8 <= --max-context` else `ERR ...` and the engine stays alive | Frontend rejects with 400 before GEN using the same rule |
 | READY | `READY <max_context> stop` | ctx parsed from READY sizes the outbound GEN cap (min(32 + 11 × ctx, 16 MiB)); the inbound record cap is a fixed 8192 bytes (`kMaxReadLineBytes`); a fixed 32768 context is never advertised |
 | STOP | Honored only after the GEN has been picked up; always followed by `DONE ... cancel` | Frontend sends STOP only after a generation has started; drains to DONE |
@@ -116,5 +116,24 @@ pins each cap (the cap is accepted, one above it is `out_of_range`).
 - `STOP` now carries the engine stop cause (`client_cancelled` for a client
   disconnect, `generation_timeout`/shutdown otherwise — SP2 D-2 ruling) and
   the drain follows the existing 1 s / `stop_drain_timeout_s` rules above.
-- Streaming (SSE chunks, per-token backpressure) lands in M2; M1 `GEN`/`DONE`
-  framing is unchanged.
+
+### SP3 M2 (streaming, branch `sp3-api-streaming`)
+
+- Streaming exists: `POST /v1/chat/completions` with `"stream": true` is served
+  as SSE under HTTP/1.1 chunked framing (spec §3.2). The `GEN`/`DONE` protocol
+  framing above is unchanged by it.
+- The frontend reads `T` records one at a time (`next_event`, 20 ms slices —
+  `kStreamPollSlice`) at engine speed whatever the client does (§2.7): a slow
+  reader never slows the engine. Decoded text held for one streaming worker is
+  bounded by `limits.chat.max_generated_bytes`; content deltas coalesce to at
+  most `kMaxDeltaTextBytes` (16 KiB) of text each and no SSE event exceeds
+  `kMaxSseEventBytes` (128 KiB).
+- A client that disconnects, stalls for `limits.http.write_stall_ms` without
+  progress, or a server shutdown sends `STOP` and drains to `DONE … cancel`
+  within `limits.engine.stop_drain_timeout_s`, else SP2's `drain_failed` path
+  (kill, count, restart) applies. Shutdown bounds its drain and tail by
+  `kShutdownDrainBudget` (2 s) from the first shutdown sight instead of the
+  60 s tail deadline (R-H).
+- A generation timeout returns the text so far with `finish_reason: length`
+  (decision 4; §8 log-only code `generation_timeout`) instead of the M1 503.
+- One generation at a time, now queued (the M1 FIFO rules above unchanged).

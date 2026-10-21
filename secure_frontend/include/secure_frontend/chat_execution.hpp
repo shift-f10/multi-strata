@@ -3,6 +3,7 @@
 #include "secure_frontend/chat_generation_plan.hpp"
 #include "secure_frontend/config_defaults.hpp"
 #include "secure_frontend/engine_protocol_client.hpp"
+#include "secure_frontend/generation_run.hpp"
 #include "secure_frontend/sampling_params.hpp"
 
 #include <atomic>
@@ -35,6 +36,8 @@ struct ChatExecutionLimits final {
   std::chrono::milliseconds generation_timeout{std::chrono::seconds(config_defaults::kEngineGenerationTimeoutS)};
   // Total budget for draining to DONE after STOP once generation_timeout expires.
   std::chrono::milliseconds stop_drain_timeout{std::chrono::seconds(config_defaults::kEngineStopDrainTimeoutS)};
+  // SP3 §3.4: the generated text is capped on a code-point boundary at this many bytes.
+  std::size_t max_generated_bytes{static_cast<std::size_t>(config_defaults::kChatMaxGeneratedBytes)};
 };
 
 enum class ChatExecutionErrorCode {
@@ -94,9 +97,10 @@ struct GenerationResult final {
   std::size_t prompt_tokens;
   std::size_t completion_tokens;
   FinishReason finish;
+  bool timed_out{false};  // B4: a timeout is a result with FinishReason::length, flagged for the log
 };
 
-enum class GenerationFailure { cancelled, timed_out, engine_error, engine_unavailable, decode_failed, shutting_down };
+enum class GenerationFailure { cancelled, engine_error, engine_unavailable, decode_failed, shutting_down };
 
 using GenerationOutcome = std::variant<GenerationResult, GenerationFailure>;
 
@@ -127,6 +131,14 @@ class ChatExecutionService final {
 
   [[nodiscard]] GenerationOutcome run_generation(const std::vector<std::uint32_t>& prompt_ids, const GenerationSettings& settings,
                                                  const ExecutionControl& control, const TokenizerPack& tokenizer);
+
+  // SP3 M2 Task 5: the two halves of run_generation, so the stream path (Task 10)
+  // can own the driving loop. begin adopts/awaits READY and writes GEN with
+  // M1's sampling keys (B6); drive_limits maps settings.max_tokens plus this
+  // service's limits onto the shared loop; protocol() is the leased client.
+  [[nodiscard]] std::optional<GenerationFailure> begin(const std::vector<std::uint32_t>& prompt_ids, const GenerationSettings& settings);
+  [[nodiscard]] GenerationRunLimits drive_limits(std::size_t max_tokens) const noexcept;
+  [[nodiscard]] EngineProtocolClient& protocol() noexcept;
 
  private:
   EngineProtocolClient& protocol_;

@@ -2,12 +2,15 @@
 
 #include "secure_frontend/api_errors.hpp"
 #include "secure_frontend/chat_generation_plan.hpp"
+#include "secure_frontend/chat_stream.hpp"
+#include "secure_frontend/lease_hold.hpp"
 #include "secure_frontend/shutdown_signal.hpp"
 #include "secure_frontend/token_generator.hpp"
 
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <variant>
 #include <vector>
 
@@ -44,7 +47,7 @@ HttpResponse ChatRoute::refusal(const GateRefusal refusal) {
   return make_error_response(ApiError::internal_error);
 }
 
-HttpResponse ChatRoute::handle(const std::string_view body, const RequestContext& context) {
+RouteResult ChatRoute::handle(const std::string_view body, const RequestContext& context) {
   // P4: schema, tokenization, budget (spec §5.4) - before any queue place is taken.
   const ChatRequestResult parsed = parse_chat_request(body, config_.schema);
   if (const auto* error = std::get_if<ChatRequestError>(&parsed)) return make_error_response(error->error, {.param = error->param});
@@ -82,6 +85,7 @@ HttpResponse ChatRoute::handle(const std::string_view body, const RequestContext
   last_context_ = context_tokens;
   const auto budget = resolve_max_tokens(request.max_tokens, prompt_ids.size(), context_tokens, config_.max_completion_tokens,
                                          config_.default_max_tokens);
+  if (budget && request.stream) return stream_response(lease, prompt_ids, *budget, request, context);
   if (!budget) {
     context_refused = true;
   } else {
@@ -100,11 +104,6 @@ HttpResponse ChatRoute::handle(const std::string_view body, const RequestContext
   if (const auto* failure = std::get_if<GenerationFailure>(&outcome)) {
     switch (*failure) {
       case GenerationFailure::cancelled: return HttpResponse{.status = kNoResponseStatus, .headers = {}, .body = {}, .log_code = "client_gone"};
-      case GenerationFailure::timed_out: {
-        HttpResponse response = make_error_response(ApiError::engine_error);   // M1; decision B4 lands in M2
-        response.log_code = "generation_timeout";
-        return response;
-      }
       case GenerationFailure::engine_error: return make_error_response(ApiError::engine_error);
       case GenerationFailure::engine_unavailable: return engine_unavailable();
       case GenerationFailure::decode_failed: return make_error_response(ApiError::internal_error);
@@ -120,7 +119,42 @@ HttpResponse ChatRoute::handle(const std::string_view body, const RequestContext
                                                 .prompt_tokens = result.prompt_tokens, .completion_tokens = result.completion_tokens},
                                                config_.schema);
   if (!rendered) return make_error_response(ApiError::internal_error);
-  return HttpResponse{.status = 200, .headers = {{"Content-Type", "application/json; charset=utf-8"}}, .body = *rendered};
+  HttpResponse response{.status = 200, .headers = {{"Content-Type", "application/json; charset=utf-8"}}, .body = *rendered};
+  if (result.timed_out) response.log_code = "generation_timeout";   // §8 log-only code; the client sees 200 length (B4)
+  return response;
+}
+
+RouteResult ChatRoute::stream_response(std::optional<Lease>& lease, const std::vector<std::uint32_t>& prompt_ids, const std::size_t max_tokens,
+                                       const ChatCompletionRequest& request, const RequestContext& context) {
+  const std::atomic<bool>* flag = context.shutting_down;
+  std::function<bool()> shutting_down = [flag] { return (flag != nullptr && flag->load()) || shutdown_signalled(); };  // R-H
+  auto hold = std::make_shared<LeaseHold>(std::move(*lease), gate_, port_, shutting_down);
+  lease.reset();
+  auto id = make_completion_id();
+  if (!id) {
+    hold->end_generation();
+    return make_error_response(ApiError::internal_error);
+  }
+  if (const auto failure = hold->lease().chat().begin(prompt_ids, {.max_tokens = max_tokens, .sampling = request.sampling})) {
+    hold->end_generation();  // reports a closed protocol through the port
+    return *failure == GenerationFailure::engine_error ? make_error_response(ApiError::engine_error) : engine_unavailable();
+  }
+  const auto created = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+  SseIdentity identity{std::move(*id), static_cast<std::int64_t>(created), config_.model_id};
+  ChatStreamSettings settings;
+  settings.run = hold->lease().chat().drive_limits(max_tokens);
+  settings.write_stall = config_.write_stall;
+  settings.tail_deadline = config_.response_write_deadline;
+  settings.keepalive = config_.stream_keepalive;
+  settings.include_usage = request.include_usage;
+  settings.prompt_tokens = prompt_ids.size();
+  const TokenizerPack* tokenizer = &tokenizer_;
+  return StreamHandler{[hold, identity = std::move(identity), settings, tokenizer, shutting_down](StreamSink& sink) {
+    const TokenByteDecoder decoder(*tokenizer);
+    const ChatStreamOutcome outcome = run_chat_stream(sink, hold->lease().protocol(), decoder, identity, settings, shutting_down,
+                                                      [&hold](const GenerationRunResult&) { hold->end_generation(); });
+    sink.set_log_code(outcome.log_code);
+  }};
 }
 
 }  // namespace secure_frontend

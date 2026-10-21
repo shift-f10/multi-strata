@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -66,6 +67,21 @@ using TokenizerEncodeResult = std::variant<std::vector<std::size_t>, TokenizerPa
 // token types fail closed rather than being silently rendered as plain output.
 [[nodiscard]] TokenizerDecodeResult decode_token_ids(const TokenizerPack& pack,
                                                       const std::vector<std::size_t>& ids);
+
+// Raw bytes of ONE ordinary generated token (SP3 streaming). Unlike
+// decode_token_ids, the result is not UTF-8 validated: a byte-level token may
+// end in the middle of a character, which Utf8StreamDecoder resolves.
+// CONTROL (3) and USER_DEFINED (4) types fail closed as in decode_token_ids.
+// The pack must outlive the decoder.
+class TokenByteDecoder final {
+ public:
+  explicit TokenByteDecoder(const TokenizerPack& pack);
+  [[nodiscard]] TokenizerDecodeResult bytes_for(std::size_t id) const;
+
+ private:
+  const TokenizerPack& pack_;
+  std::map<std::string, unsigned char> reverse_;
+};
 
 // Encodes ordinary UTF-8 text using the GPT-2 byte alphabet and merge ranks in
 // this pack. The intentionally small pre-tokenizer preserves runs of ASCII

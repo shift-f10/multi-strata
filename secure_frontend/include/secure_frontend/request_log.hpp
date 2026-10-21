@@ -22,6 +22,7 @@ struct RequestLogRecord final {
   std::chrono::milliseconds elapsed;
   std::size_t bytes_out;
   AddressScope peer;
+  bool streamed{false};       // an SSE stream: the route prints as chat_stream (M2)
 };
 
 [[nodiscard]] std::string format_request_line(std::uint64_t sequence, const RequestLogRecord& record);

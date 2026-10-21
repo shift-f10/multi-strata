@@ -7,6 +7,7 @@
 #include "secure_frontend/process_defaults.hpp"
 #include "secure_frontend/secret_bytes.hpp"
 #include "secure_frontend/socket_io.hpp"
+#include "secure_frontend/stream_socket.hpp"
 #include "secure_frontend/token_verifier.hpp"
 #include "support/raw_http.hpp"
 #include "support/test_paths.hpp"
@@ -817,6 +818,64 @@ void set_no_inherit_marks_the_socket() {
   expect((fcntl(s.get(), F_GETFD) & FD_CLOEXEC) != 0, "the descriptor is close-on-exec");
 #endif
 }
+
+// SP3 M2: AcceptedSocketStream over a real loopback connection (Winsock semantics are authoritative in MSYS2).
+void stream_socket_peek_and_nonblocking_send() {
+  using Native = secure_frontend::NativeSocket;
+  const auto close_native = [](Native s) { secure_frontend::close_native_socket(s); };
+  // listener on 127.0.0.1:0, one client, one accepted socket.
+  Native listener = socket(AF_INET, SOCK_STREAM, 0);
+  sockaddr_in address{};
+  address.sin_family = AF_INET;
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  address.sin_port = 0;
+  expect(bind(listener, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0 && listen(listener, 4) == 0, "listen");
+  socklen_t length = sizeof(address);
+  (void)getsockname(listener, reinterpret_cast<sockaddr*>(&address), &length);
+  const auto connected_pair = [&] {
+    Native client = socket(AF_INET, SOCK_STREAM, 0);
+    int small = 4096;
+    (void)setsockopt(client, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&small), sizeof(small));
+    expect(connect(client, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0, "connect");
+    Native server = accept(listener, nullptr, nullptr);
+    return std::pair<Native, Native>{client, server};
+  };
+  {
+    auto [client, server] = connected_pair();
+    secure_frontend::AcceptedSocketStream stream(server);
+    expect(!stream.peer_gone(), "a quiet client is alive");
+    expect(send(client, "x", 1, 0) == 1, "client sends a stray byte");
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    expect(stream.peer_gone(), "a byte after the request is treated as gone (spec §2.6)");
+    close_native(client);
+    close_native(server);
+  }
+  {
+    auto [client, server] = connected_pair();
+    secure_frontend::AcceptedSocketStream stream(server);
+    close_native(client);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    expect(stream.peer_gone(), "peer EOF or reset is gone");
+    close_native(server);
+  }
+  {
+    auto [client, server] = connected_pair();
+    secure_frontend::AcceptedSocketStream stream(server);
+    const std::string block(64U * 1024U, 'z');
+    bool blocked = false;
+    for (int round = 0; round < 4096 && !blocked; ++round) {
+      const auto step = stream.send_some(block);
+      expect(step.status != secure_frontend::SendStatus::failed, "send never fails on a live, non-reading peer");
+      expect(step.sent <= block.size(), "at most api_constants::kMaxSendChunk per call");
+      blocked = step.status == secure_frontend::SendStatus::would_block;
+    }
+    expect(blocked, "a non-reading peer makes a non-blocking send report would_block, never block");
+    expect(!stream.wait_writable(std::chrono::milliseconds(50)), "not writable while the peer reads nothing");
+    close_native(client);
+    close_native(server);
+  }
+  close_native(listener);
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -855,5 +914,6 @@ int main(int argc, char** argv) {
        send_all_bounded_stop_flag_cuts_an_inflight_write_within_the_drain_budget},
       {"socket_io_poll_probe_and_recv", socket_io_poll_probe_and_recv},
       {"set_no_inherit_marks_the_socket", set_no_inherit_marks_the_socket},
+      {"stream_socket_peek_and_nonblocking_send", stream_socket_peek_and_nonblocking_send},
   }, failures);
 }

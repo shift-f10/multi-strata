@@ -273,7 +273,7 @@ target_include_directories(secure_frontend_http_socket_server
         $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(secure_frontend_http_socket_server PUBLIC secure_frontend_socket_io secure_frontend_http_request_handler
-    secure_frontend_config secure_frontend_api_core)
+    secure_frontend_config secure_frontend_api_core secure_frontend_sse)
 # SP3 Task 11: admission state (§2.3) and the lingering-close list (§2.4).
 # Task 12: the pool itself (§2.1, §2.8) — accept thread + fixed workers.
 secure_frontend_add_library(secure_frontend_connection_pool
@@ -288,6 +288,7 @@ secure_frontend_add_library(secure_frontend_chat_route
     SOURCES src/chat_route.cpp
     LINKS secure_frontend_generation_gate secure_frontend_chat_execution secure_frontend_chat_schema
           secure_frontend_chat_generation_plan secure_frontend_secrets secure_frontend_api_core)
+target_link_libraries(secure_frontend_chat_route PUBLIC secure_frontend_chat_stream)
 
 secure_frontend_add_library(secure_frontend_request_log
     SOURCES src/request_log.cpp
@@ -385,6 +386,10 @@ target_include_directories(secure_frontend_chat_execution
 )
 target_link_libraries(secure_frontend_chat_execution
     PUBLIC secure_frontend_chat_generation_plan secure_frontend_engine_protocol_client secure_frontend_tokenizer_pack)
+# SP3 M2 Task 5: the one generation loop shared by the complete and stream paths.
+secure_frontend_add_library(secure_frontend_generation_run SOURCES src/generation_run.cpp
+    LINKS secure_frontend_engine_protocol_client secure_frontend_tokenizer_pack secure_frontend_utf8_stream secure_frontend_api_core)
+target_link_libraries(secure_frontend_chat_execution PUBLIC secure_frontend_generation_run)
 target_compile_features(secure_frontend_engine_supervisor PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_engine_supervisor
     PUBLIC
@@ -619,8 +624,32 @@ target_link_libraries(strata PRIVATE secure_frontend_strata_cli secure_frontend_
 target_compile_features(strata PRIVATE cxx_std_20)
 secure_frontend_set_warnings(strata)
 
+# SP3 M2 — streaming.
+secure_frontend_add_library(secure_frontend_utf8_stream SOURCES src/utf8_stream_decoder.cpp)
+secure_frontend_add_library(secure_frontend_sse SOURCES src/sse_encoder.cpp src/stream_socket.cpp src/chunked_stream_sink.cpp
+    LINKS secure_frontend_json secure_frontend_api_core secure_frontend_utf8_stream secure_frontend_socket_io)
+secure_frontend_add_library(secure_frontend_chat_stream SOURCES src/chat_stream.cpp src/lease_hold.cpp
+    LINKS secure_frontend_sse secure_frontend_generation_run secure_frontend_engine_supervisor secure_frontend_generation_gate secure_frontend_chat_execution)
+# SP3 M2 (R-B): loopback-only client for strata run, the tests and strata-api-probe. Never linked into the serve path.
+secure_frontend_add_library(secure_frontend_api_client SOURCES src/loopback_address.cpp src/api_client.cpp src/run_target.cpp
+    LINKS secure_frontend_config secure_frontend_socket_io secure_frontend_api_core secure_frontend_json)
+
 if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     enable_testing()
+
+    # SP3 M2: SSE encoder, UTF-8 stream decoder, sink and stream pump units. Pure: unlabeled, also run under wine.
+    secure_frontend_add_test_executable(secure_frontend_sse_tests tests/sse_test.cpp secure_frontend_utf8_stream secure_frontend_sse secure_frontend_chat_stream)
+    set(SECURE_FRONTEND_SSE_CASES
+        utf8_split_across_tokens_is_held_then_released utf8_invalid_sequence_becomes_replacement_character
+        utf8_incomplete_tail_dropped_on_length_and_cancel utf8_incomplete_tail_on_stop_becomes_one_replacement
+        sse_events_never_contain_raw_newline sse_coalesced_control_heavy_text_respects_event_cap sse_chunk_framing_units
+        sse_chunked_framing_and_terminal_chunk sink_buffers_on_would_block_and_flushes_later
+        sink_write_stall_marks_client_gone sink_send_failure_and_peer_probe_are_gone
+        sse_role_content_final_done_sequence sse_include_usage_adds_usage_chunk sse_ids_and_created_constant_per_stream
+        stream_with_no_tokens_has_role_final_done stream_slow_reader_coalesces_deltas stream_tail_deadline_cuts_without_terminal_chunk
+        stream_client_gone_sends_stop keepalive_never_splits_a_pending_event stream_error_events_follow_text_and_end_with_done
+        stream_shutdown_sends_error_event_and_done)
+    secure_frontend_add_cases(secure_frontend_sse_tests ${SECURE_FRONTEND_SSE_CASES} TIMEOUT 120)
 
     secure_frontend_add_test_executable(secure_frontend_paths_tests tests/paths_test.cpp secure_frontend_paths)
     secure_frontend_add_cases(secure_frontend_paths_tests
@@ -815,8 +844,28 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         target_link_libraries(secure_frontend_server_tests PRIVATE iphlpapi)  # SP3 Task 20: SocketScan reads the iphlpapi tables
     endif()
 
+    # SP3 §9.5: test-only probe for the offline GPU kit. Never installed.
+    add_executable(strata-api-probe tests/api_probe_main.cpp)
+    target_link_libraries(strata-api-probe PRIVATE secure_frontend_api_client secure_frontend_json secure_frontend_utf8_stream)
+    target_compile_features(strata-api-probe PRIVATE cxx_std_20)
+    secure_frontend_set_warnings(strata-api-probe)
+
+    secure_frontend_add_test_executable(secure_frontend_api_client_tests tests/api_client_test.cpp
+        secure_frontend_api_client secure_frontend_test_support secure_frontend_engine_process)
+    secure_frontend_test_paths(secure_frontend_api_client_tests)
+    target_compile_definitions(secure_frontend_api_client_tests PRIVATE
+        STRATA_API_PROBE_PATH="$<TARGET_FILE:strata-api-probe>")
+    add_dependencies(secure_frontend_api_client_tests strata-api-probe)
+    if(WIN32)
+        target_link_libraries(secure_frontend_api_client_tests PRIVATE ws2_32)
+    endif()
+    # Real loopback sockets: windows-runtime on Windows.
+    set(SECURE_FRONTEND_API_CLIENT_CASES client_reads_chunked_stream_and_requires_done_and_terminal_chunk client_rejects_event_over_cap
+        client_accepts_only_loopback_address run_refuses_non_loopback_server_json probe_modes_pass_against_fake_engine)
+    secure_frontend_add_cases(secure_frontend_api_client_tests ${SECURE_FRONTEND_API_CLIENT_CASES} TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+
     secure_frontend_add_test_executable(secure_frontend_api_server_tests tests/api_server_test.cpp
-        secure_frontend_test_support secure_frontend_api_core secure_frontend_socket_io)
+        secure_frontend_test_support secure_frontend_api_core secure_frontend_socket_io secure_frontend_api_client)
     secure_frontend_test_paths(secure_frontend_api_server_tests)
     set(SECURE_FRONTEND_API_SERVER_CASES
         dos01_body_over_limit_is_413_before_reading dos01_content_length_over_request_limit_is_413_before_auth
@@ -853,6 +902,18 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     if(WIN32)
         target_link_libraries(secure_frontend_api_server_tests PRIVATE iphlpapi)
     endif()
+    # SP3 M2 end-to-end cases (real sockets, ServerProcess): windows-runtime on Windows (R-J).
+    target_link_libraries(secure_frontend_api_server_tests PRIVATE secure_frontend_json)
+    set(SECURE_FRONTEND_API_SERVER_M2_CASES
+        utf8_non_stream_max_tokens_cut_mid_character_returns_length generation_timeout_returns_text_with_length
+        stream_matches_non_stream_text dos02_queue_full_with_streams_is_503_before_headers ext01_extension_fields_rejected_on_stream_path
+        dos02_slow_reader_never_backpressures_engine finish_stop_length_and_generated_bytes_cap utf8_timeout_cut_mid_character_returns_length
+        dos02_stream_disconnect_sends_stop_and_frees_engine dos02_slow_stream_reader_hits_write_stall stream_cut_has_no_terminal_chunk
+        stream_cancel_during_prefill_frees_engine log_stream_outcomes_use_fixed_codes stream_keepalive_comment_during_prefill
+        err_mid_stream_is_error_event_then_done crash_mid_stream_is_engine_unavailable_event nonfinite_is_engine_error_and_engine_stays_ready
+        engine_error_carries_should_retry_false dos02_shutdown_during_stream_ends_with_error_event)
+    secure_frontend_add_cases(secure_frontend_api_server_tests ${SECURE_FRONTEND_API_SERVER_M2_CASES}
+        TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     secure_frontend_add_test_executable(secure_frontend_deadline_tests tests/deadline_test.cpp secure_frontend_engine_stdio_process)
     secure_frontend_test_paths(secure_frontend_deadline_tests)
@@ -947,7 +1008,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         dos01_transfer_encoding_variants_are_411 dos01_content_length_variants head_request_line_and_header_syntax
         wire_head_has_no_content_length route_result_seam_returns_complete_response
         dos01_status_matrix_415_417_505 content_type_variants_accepted auth_and_route_order_follows_spec
-        dos01_json_depth_5_is_400 dos01_json_limits dos01_content_array_is_unsupported_parameter
+        dos01_json_depth_5_is_400 dos01_json_limits dos01_content_array_is_unsupported_parameter stream_flag_type_and_options_rules
         sampling_neutral_values_are_no_ops sampling_bounds_rejected sampling_integer_forms_accepted)
     target_link_libraries(secure_frontend_http_parser_tests PRIVATE
         secure_frontend_api_router secure_frontend_secrets secure_frontend_http_policy secure_frontend_chat_schema)
@@ -982,8 +1043,10 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         send_all_bounded_stall_restarts_on_progress send_all_bounded_stop_flag_cuts_an_inflight_write_within_the_drain_budget
         socket_io_poll_probe_and_recv set_no_inherit_marks_the_socket
         TIMEOUT 300)
+    secure_frontend_add_cases(secure_frontend_http_socket_server_tests stream_socket_peek_and_nonblocking_send
+        TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     target_link_libraries(secure_frontend_http_socket_server_tests PRIVATE secure_frontend_socket_io
-        secure_frontend_api_router secure_frontend_secrets secure_frontend_http_policy)
+        secure_frontend_api_router secure_frontend_secrets secure_frontend_http_policy secure_frontend_sse)
     secure_frontend_test_paths(secure_frontend_http_socket_server_tests)
     set_tests_properties(secure_frontend_http_socket_server_tests.socket_server_ipv6_bind_is_v6only PROPERTIES SKIP_RETURN_CODE 77)
     if(WIN32)
@@ -998,7 +1061,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     set(SECURE_FRONTEND_CONCURRENCY_CASES dos01_oldest_header_phase_connection_is_evicted dos01_remote_address_cap
         dos01_linger_list_overflow_closes_oldest dos01_linger_closes_on_peer_eof refusal_response_is_fixed_and_small
         gate_first_request_gets_the_slot gate_queue_full_is_busy gate_zero_queue_admits_one_at_a_time gate_fifo_order gate_timeout_returns_timeout
-        request_log_format_and_token_bucket
+        request_log_format_and_token_bucket request_log_names_streamed_chats
         gate_cancelled_waiter_leaves_queue gate_fast_fails_when_engine_not_ready gate_shutdown_refuses_waiters)
     secure_frontend_add_cases(secure_frontend_concurrency_tests ${SECURE_FRONTEND_CONCURRENCY_CASES} TIMEOUT 120)
 
@@ -1030,7 +1093,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         resume_and_reused_progress_is_consumed_in_the_strata_profile
         gen_carries_bounded_sampling_keys
         generation_total_deadline_is_enforced
-        gen_line_fits_max_prompt_tokens derived_line_cap_is_clamped_to_protocol_max stop_cause_and_completed_generations)
+        gen_line_fits_max_prompt_tokens derived_line_cap_is_clamped_to_protocol_max stop_cause_and_completed_generations
+        next_event_yields_tokens_progress_and_done next_event_timeout_keeps_generation_active
+        next_event_finish_forms_and_nonfinite_stays_idle)
 
     secure_frontend_add_test_executable(secure_frontend_model_inventory_tests tests/model_inventory_test.cpp
         secure_frontend_model_inventory)
@@ -1154,7 +1219,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_test_executable(secure_frontend_tokenizer_pack_tests tests/tokenizer_pack_test.cpp
         secure_frontend_tokenizer_pack)
     set(_tokenizer_cases loads_validates_and_decodes_offline_pack rejects_ambiguous_or_incompatible_pack_assets
-        rejects_malformed_json_and_special_literals_for_decode encoding_fails_closed_for_special_invalid_and_missing_tokens)
+        rejects_malformed_json_and_special_literals_for_decode encoding_fails_closed_for_special_invalid_and_missing_tokens
+        token_byte_decoder_returns_raw_token_bytes)
     if(WIN32)
         list(APPEND _tokenizer_cases cfg03_tokenizer_file_swapped_to_junction_rejected)
     else()
@@ -1191,7 +1257,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         resolve_max_tokens_follows_decisions_1_and_2
         run_generation_reports_finish_usage_and_context run_generation_cancel_sends_stop_and_drains
         run_generation_timeout_stops_and_reports_timed_out run_generation_drain_failure_abandons
-        run_generation_shutdown_uses_short_drain run_generation_maps_engine_errors)
+        run_generation_shutdown_uses_short_drain run_generation_maps_engine_errors
+        drive_generation_bytes_cap_cuts_on_code_point drive_generation_drops_tail_on_length_and_replaces_on_stop
+        drive_generation_cancel_sends_stop_and_drains chat_max_tokens_cut_mid_character_returns_length)
 
     secure_frontend_add_test_executable(secure_frontend_subsystem_limits_tests tests/subsystem_limits_test.cpp
         secure_frontend_subsystem_limits)

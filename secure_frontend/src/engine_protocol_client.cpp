@@ -57,6 +57,25 @@ std::vector<std::string_view> fields(const std::string_view line) {
   return result;
 }
 
+// DONE <generated> <prompt> <prompt_ms> <decode_ms> <finish> ... (generate.cpp);
+// the two-field "DONE <finish>" form and older short forms ("DONE 1") are an ordinary stop.
+// A full record (6+ fields) whose finish is not one of the four literals is malformed:
+// fail closed, like every other unknown protocol shape.
+std::optional<std::string_view> finish_literal(const std::vector<std::string_view>& done) {
+  static constexpr std::array<std::string_view, 4> kFinishes{"stop", "length", "cancel", "nonfinite"};
+  const auto match = [](const std::string_view word) -> std::optional<std::string_view> {
+    for (const std::string_view literal : kFinishes) {
+      if (literal == word) return literal;
+    }
+    return std::nullopt;
+  };
+  if (done.size() >= 6U) return match(done[5]);
+  if (done.size() == 2U) {
+    if (const auto literal = match(done[1])) return literal;
+  }
+  return std::string_view{"stop"};
+}
+
 }  // namespace
 
 bool is_engine_fatal_line(const std::string_view line) noexcept {
@@ -204,118 +223,129 @@ std::optional<EngineProtocolError> EngineProtocolClient::begin_generation(
   return std::nullopt;
 }
 
+GenerationEvent EngineProtocolClient::next_event(const std::chrono::milliseconds timeout) {
+  if (state_ != State::generating) return EngineProtocolError{EngineProtocolErrorCode::invalid_state, "no generation is active"};
+  const auto response = transport_.read_line(timeout);
+  if (response.kind == EngineReadKind::timeout) {
+    return EngineProtocolError{EngineProtocolErrorCode::timeout, "engine generation read timed out"};
+  }
+  if (response.kind == EngineReadKind::closed) return *fail(EngineProtocolErrorCode::closed, "engine closed during generation");
+  if (response.kind == EngineReadKind::failure) {
+    return *fail(EngineProtocolErrorCode::transport_read_failed,
+                 response.message.empty() ? "engine generation read failed" : response.message);
+  }
+  if (const auto validation = validate_incoming(response.line); validation.has_value()) {
+    return *fail(validation->code, validation->message);
+  }
+  if (is_engine_fatal_line(response.line)) {
+    return *fail(EngineProtocolErrorCode::fatal_engine_line, "engine reported a fatal verification failure");
+  }
+  if (response.line.rfind("T ", 0) == 0) {
+    std::uint32_t token = 0;
+    if (!parse_decimal(std::string_view(response.line).substr(2), token)) {
+      return *fail(EngineProtocolErrorCode::malformed_line, "engine token line is invalid");
+    }
+    if (active_generation_.token_ids.size() >= limits_.max_generated_tokens) {
+      return *fail(EngineProtocolErrorCode::response_limit, "engine exceeded generated-token limit");
+    }
+    active_generation_.token_ids.push_back(token);
+    return TokenEvent{token};
+  }
+  if (response.line.rfind("PP ", 0) == 0) {
+    // PP is a private prefill-progress heartbeat, never client-visible
+    // output. Both engine profiles emit it, with different semantics:
+    //
+    // Strata (unchanged from v0.1.44.1 through v0.2.1.3): `generate.cpp`
+    // prints
+    // `PP <position reached> <prompt tokens> <ms> <fresh tokens/s>` after
+    // every batched prompt chunk (`%lld %lld %.0f %.1f`, :9673/:12937/
+    // :12998/:13852 at v0.2.1.3), and the
+    // `qwen35moe` engine (`q36_engine.cu`) prints `PP <done> <fresh> <ms>
+    // <tokens/s>` where the second field counts only the tokens not reused
+    // from the held state. Upstream's own server accepts any `PP` with two
+    // decimal fields (`serve/server.py`). The frontend accepts the same
+    // family of shapes, bounded: 3 to 5 fields, two decimal counters,
+    // optional non-negative metrics. No ordering between the two counters
+    // is assumed, because `fresh` is not a total.
+    //
+    // GLM (startup-selected LightTransport profile): exactly
+    // `PP <read> <total>` or `PP <read> <total> <ms> <tokens/s>` with
+    // `0 < total` and `read <= total` (SP6 research §4; strict on purpose,
+    // the engine is built and audited independently).
+    const auto progress = fields(response.line);
+    std::uint32_t first = 0;
+    std::uint32_t second = 0;
+    const bool metrics_ok = (progress.size() < 4U || nonnegative_decimal_metric(progress[3])) &&
+                            (progress.size() < 5U || nonnegative_decimal_metric(progress[4]));
+    const bool counters_ok = progress.size() >= 3U && progress.size() <= 5U &&
+                             parse_decimal(progress[1], first) && parse_decimal(progress[2], second);
+    bool accepted = counters_ok && metrics_ok;
+    if (flavor_ == EngineProtocolFlavor::lighttransport_glm53) {
+      accepted = accepted && progress.size() != 4U && second != 0U && first <= second;
+    }
+    if (!accepted) {
+      return *fail(EngineProtocolErrorCode::unexpected_line,
+                   "engine emitted an invalid or unsupported prefill progress line");
+    }
+    return ProgressEvent{};
+  }
+  if ((response.line.rfind("RESUME ", 0) == 0 || response.line.rfind("REUSED ", 0) == 0) &&
+      flavor_ == EngineProtocolFlavor::strata_0143) {
+    // RESUME/REUSED are private prompt-progress records of the main engine
+    // family, printed for every accepted GEN and unconditionally: `RESUME <n>`
+    // before reading the prompt (v0.1.44.1 generate.cpp:11214, v0.2.1.3
+    // :12809) and `REUSED <n>` once it is read (:11849 / :13910). Upstream's
+    // own server consumes them (serve/server.py). Like PP they are never
+    // client output and must never fail a request; the qwen35moe engine
+    // prints neither, and YIELDED needs the --batch/--slots flags the
+    // frontend refuses. Bounded grammar, fail-closed otherwise; the GLM
+    // profile keeps its exact record and never reaches this branch.
+    // Surfaced as a ProgressEvent: invisible to every caller's output path.
+    const auto progress = fields(response.line);
+    std::uint32_t reused = 0;
+    if (progress.size() != 2U || !parse_decimal(progress[1], reused)) {
+      return *fail(EngineProtocolErrorCode::unexpected_line, "engine emitted an invalid or unsupported prompt progress line");
+    }
+    return ProgressEvent{};
+  }
+  if (response.line.rfind("DONE ", 0) == 0 && response.line.size() > 5) {
+    const auto finish = finish_literal(fields(response.line));
+    if (!finish) return *fail(EngineProtocolErrorCode::malformed_line, "engine DONE line is invalid");
+    active_generation_.done_line = response.line;
+    state_ = State::idle;
+    // A nonfinite finish means the engine's NaN guard tripped: no usable
+    // output, but the engine is alive and resets on the next GEN, so it is
+    // not counted as a successful generation (SP0 E3).
+    if (*finish != "nonfinite") completed_generations_.fetch_add(1U);
+    return DoneEvent{*finish, active_generation_.token_ids.size()};
+  }
+  if (response.line.rfind("ERR", 0) == 0 && (response.line.size() == 3 || response.line[3] == ' ')) {
+    return *fail(EngineProtocolErrorCode::engine_error, response.line);
+  }
+  return *fail(EngineProtocolErrorCode::unexpected_line, "engine emitted an unexpected generation line");
+}
+
 std::optional<EngineProtocolError> EngineProtocolClient::read_generation(const std::chrono::milliseconds timeout,
                                                                           EngineGeneration& generation) {
   if (state_ != State::generating) return EngineProtocolError{EngineProtocolErrorCode::invalid_state, "no generation is active"};
-  generation = active_generation_;
   const auto deadline = deadline_after(timeout);
-  while (true) {
+  for (;;) {
     const auto remaining = remaining_until(deadline);
     if (remaining.count() == 0) {
+      generation = active_generation_;
       return EngineProtocolError{EngineProtocolErrorCode::timeout, "engine generation read timed out"};
     }
-    const auto response = transport_.read_line(remaining);
-    if (response.kind == EngineReadKind::timeout) {
-      return EngineProtocolError{EngineProtocolErrorCode::timeout, "engine generation read timed out"};
-    }
-    if (response.kind == EngineReadKind::closed) return fail(EngineProtocolErrorCode::closed, "engine closed during generation");
-    if (response.kind == EngineReadKind::failure) {
-      return fail(EngineProtocolErrorCode::transport_read_failed,
-                  response.message.empty() ? "engine generation read failed" : response.message);
-    }
-    if (const auto validation = validate_incoming(response.line); validation.has_value()) {
-      return fail(validation->code, validation->message);
-    }
-    if (is_engine_fatal_line(response.line)) {
-      return fail(EngineProtocolErrorCode::fatal_engine_line, "engine reported a fatal verification failure");
-    }
-    if (response.line.rfind("T ", 0) == 0) {
-      const auto token_text = std::string_view(response.line).substr(2);
-      std::uint32_t token = 0;
-      if (!parse_decimal(token_text, token)) return fail(EngineProtocolErrorCode::malformed_line, "engine token line is invalid");
-      if (active_generation_.token_ids.size() >= limits_.max_generated_tokens) {
-        return fail(EngineProtocolErrorCode::response_limit, "engine exceeded generated-token limit");
-      }
-      active_generation_.token_ids.push_back(token);
+    auto event = next_event(remaining);
+    if (auto* error = std::get_if<EngineProtocolError>(&event)) {
       generation = active_generation_;
-      continue;
+      return std::move(*error);
     }
-    if (response.line.rfind("PP ", 0) == 0) {
-      // PP is a private prefill-progress heartbeat, never client-visible
-      // output. Both engine profiles emit it, with different semantics:
-      //
-      // Strata (unchanged from v0.1.44.1 through v0.2.1.3): `generate.cpp`
-      // prints
-      // `PP <position reached> <prompt tokens> <ms> <fresh tokens/s>` after
-      // every batched prompt chunk (`%lld %lld %.0f %.1f`, :9673/:12937/
-      // :12998/:13852 at v0.2.1.3), and the
-      // `qwen35moe` engine (`q36_engine.cu`) prints `PP <done> <fresh> <ms>
-      // <tokens/s>` where the second field counts only the tokens not reused
-      // from the held state. Upstream's own server accepts any `PP` with two
-      // decimal fields (`serve/server.py`). The frontend accepts the same
-      // family of shapes, bounded: 3 to 5 fields, two decimal counters,
-      // optional non-negative metrics. No ordering between the two counters
-      // is assumed, because `fresh` is not a total.
-      //
-      // GLM (startup-selected LightTransport profile): exactly
-      // `PP <read> <total>` or `PP <read> <total> <ms> <tokens/s>` with
-      // `0 < total` and `read <= total` (SP6 research §4; strict on purpose,
-      // the engine is built and audited independently).
-      const auto progress = fields(response.line);
-      std::uint32_t first = 0;
-      std::uint32_t second = 0;
-      const bool metrics_ok = (progress.size() < 4U || nonnegative_decimal_metric(progress[3])) &&
-                              (progress.size() < 5U || nonnegative_decimal_metric(progress[4]));
-      const bool counters_ok = progress.size() >= 3U && progress.size() <= 5U &&
-                               parse_decimal(progress[1], first) && parse_decimal(progress[2], second);
-      bool accepted = counters_ok && metrics_ok;
-      if (flavor_ == EngineProtocolFlavor::lighttransport_glm53) {
-        accepted = accepted && progress.size() != 4U && second != 0U && first <= second;
-      }
-      if (!accepted) {
-        return fail(EngineProtocolErrorCode::unexpected_line,
-                    "engine emitted an invalid or unsupported prefill progress line");
-      }
-      continue;
-    }
-    if ((response.line.rfind("RESUME ", 0) == 0 || response.line.rfind("REUSED ", 0) == 0) &&
-        flavor_ == EngineProtocolFlavor::strata_0143) {
-      // RESUME/REUSED are private prompt-progress records of the main engine
-      // family, printed for every accepted GEN and unconditionally: `RESUME <n>`
-      // before reading the prompt (v0.1.44.1 generate.cpp:11214, v0.2.1.3
-      // :12809) and `REUSED <n>` once it is read (:11849 / :13910). Upstream's
-      // own server consumes them (serve/server.py). Like PP they are never
-      // client output and must never fail a request; the qwen35moe engine
-      // prints neither, and YIELDED needs the --batch/--slots flags the
-      // frontend refuses. Bounded grammar, fail-closed otherwise; the GLM
-      // profile keeps its exact record and never reaches this branch.
-      const auto progress = fields(response.line);
-      std::uint32_t reused = 0;
-      if (progress.size() != 2U || !parse_decimal(progress[1], reused)) {
-        return fail(EngineProtocolErrorCode::unexpected_line,
-                    "engine emitted an invalid or unsupported prompt progress line");
-      }
-      continue;
-    }
-    if (response.line.rfind("DONE ", 0) == 0 && response.line.size() > 5) {
-      active_generation_.done_line = response.line;
+    if (const auto* done = std::get_if<DoneEvent>(&event)) {
       generation = active_generation_;
-      state_ = State::idle;
-      // Full record: DONE <generated> <prompt> <prompt_ms> <decode_ms> <finish> ...
-      // A nonfinite finish means the engine's NaN guard tripped: no usable
-      // output, but the engine is alive and resets on the next GEN, so this
-      // fails the request without failing the protocol.
-      const auto done_fields = fields(response.line);
-      if (done_fields.size() >= 6U && done_fields[5] == "nonfinite") {
-        return EngineProtocolError{EngineProtocolErrorCode::engine_error, "engine reported a non-finite result"};
-      }
-      completed_generations_.fetch_add(1U);
+      // A nonfinite finish fails the request but not the protocol (SP0 E3).
+      if (done->finish == "nonfinite") return EngineProtocolError{EngineProtocolErrorCode::engine_error, "engine reported a non-finite result"};
       return std::nullopt;
     }
-    if (response.line.rfind("ERR", 0) == 0 && (response.line.size() == 3 || response.line[3] == ' ')) {
-      return fail(EngineProtocolErrorCode::engine_error, response.line);
-    }
-    return fail(EngineProtocolErrorCode::unexpected_line, "engine emitted an unexpected generation line");
   }
 }
 

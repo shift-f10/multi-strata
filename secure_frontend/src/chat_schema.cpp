@@ -203,9 +203,15 @@ ChatRequestResult parse_chat_request(const std::string_view json, const ChatSche
     } else if (key == "stream") {
       const auto* flag = value.if_boolean();
       if (flag == nullptr) return refuse(ApiError::invalid_request);
-      if (*flag) return refuse(ApiError::unsupported_parameter, "stream");   // M1; M2 implements streaming
-      request.stream = false;
+      request.stream = *flag;
     } else if (key == "stream_options") {
+      const auto* options = value.if_object();
+      if (options == nullptr) return refuse(ApiError::invalid_request);
+      for (const auto& option : *options) {
+        const bool* include_usage = option.value.if_boolean();
+        if (option.key != "include_usage" || include_usage == nullptr) return refuse(ApiError::invalid_request);
+        request.include_usage = *include_usage;
+      }
       stream_options_seen = true;
     } else if (key == "n") {
       const auto* integer = value.if_integer();
@@ -254,7 +260,7 @@ ChatRequestResult parse_chat_request(const std::string_view json, const ChatSche
       return refuse(ApiError::invalid_request);
     }
   }
-  // stream_options is only valid with stream:true, which M1 already refused.
+  // stream_options is only valid with stream:true (accepted since M2).
   if (stream_options_seen && !request.stream) return refuse(ApiError::invalid_request);
   if (!model_seen || !messages_seen) return refuse(ApiError::invalid_request);
   return request;

@@ -15,6 +15,21 @@ ChatExecutionOutcome error(const ChatExecutionErrorCode code, const char* const 
   return ChatExecutionError{code, message};
 }
 
+// SP3 M2: non-streaming observer; cancels on a gone client or on shutdown (R-H).
+struct ControlObserver final : GenerationObserver {
+  explicit ControlObserver(const ExecutionControl& control) : control_(control) {}
+  void on_text(const std::string_view piece) override { text += piece; }
+  RunCancel on_tick(bool) override {
+    if ((control_.shutting_down != nullptr && control_.shutting_down->load()) || (control_.shutdown_requested && control_.shutdown_requested())) {
+      return RunCancel::shutting_down;
+    }
+    if (control_.cancelled && control_.cancelled()) return RunCancel::client_gone;
+    return RunCancel::none;
+  }
+  std::string text;
+  const ExecutionControl& control_;
+};
+
 }  // namespace
 
 std::optional<std::size_t> resolve_max_tokens(const std::optional<std::size_t> requested, const std::size_t prompt_tokens,
@@ -159,9 +174,11 @@ void ChatExecutionService::adopt_ready(const EngineReady& ready) noexcept {
 
 std::size_t ChatExecutionService::context_tokens() const noexcept { return received_ready_ ? engine_context_tokens_ : 0U; }
 
-GenerationOutcome ChatExecutionService::run_generation(const std::vector<std::uint32_t>& prompt_ids, const GenerationSettings& settings,
-                                                       const ExecutionControl& control, const TokenizerPack& tokenizer) {
-  using Clock = std::chrono::steady_clock;
+// SP3 M2 Task 5: begin + the shared drive_generation loop (spec §3.3/§3.4).
+// Ruling t5-begin-deadline: begin_generation keeps M1's GEN write deadline
+// (ruling T15-signature), re-anchored at limits_.generation_timeout — the
+// brief's three-argument call is M1-incompatible.
+std::optional<GenerationFailure> ChatExecutionService::begin(const std::vector<std::uint32_t>& prompt_ids, const GenerationSettings& settings) {
   if (!received_ready_) {
     EngineReady ready{};
     if (protocol_.await_ready(limits_.ready_timeout, ready).has_value()) return GenerationFailure::engine_unavailable;
@@ -170,53 +187,43 @@ GenerationOutcome ChatExecutionService::run_generation(const std::vector<std::ui
   if (!protocol_.idle() || settings.max_tokens == 0U || settings.max_tokens > std::numeric_limits<std::uint32_t>::max()) {
     return GenerationFailure::engine_unavailable;
   }
-  // Re-anchored begin_generation also bounds the GEN write (ruling T15-signature).
   if (protocol_.begin_generation(static_cast<std::uint32_t>(settings.max_tokens), prompt_ids,
                                  deadline_after(limits_.generation_timeout), settings.sampling).has_value()) {
     return protocol_.closed() ? GenerationFailure::engine_unavailable : GenerationFailure::engine_error;
   }
-  const auto deadline = Clock::now() + limits_.generation_timeout;
-  EngineGeneration generation{};
-  for (;;) {
-    const auto error = protocol_.read_generation(api_constants::kStreamPollSlice, generation);
-    if (!error.has_value()) break;
-    if (error->code != EngineProtocolErrorCode::timeout) {
-      return error->code == EngineProtocolErrorCode::engine_error || error->code == EngineProtocolErrorCode::fatal_engine_line
-                 ? GenerationFailure::engine_error
-                 : GenerationFailure::engine_unavailable;
-    }
-    // Ruling R-H: the pool's flag or SP2's signal flag, whichever is seen first.
-    const bool shutting = (control.shutting_down != nullptr && control.shutting_down->load()) ||
-                          (control.shutdown_requested && control.shutdown_requested());
-    const bool cancelled = !shutting && control.cancelled && control.cancelled();
-    const bool timed_out = Clock::now() >= deadline;
-    if (!shutting && !cancelled && !timed_out) continue;
-    const GenerationFailure failed = shutting ? GenerationFailure::shutting_down : GenerationFailure::engine_unavailable;
-    if (protocol_.stop(cancelled ? EngineStopCause::client_cancelled : EngineStopCause::generation_timeout).has_value()) {
-      protocol_.abandon();
-      return failed;
-    }
-    const auto drain = shutting ? std::min(limits_.stop_drain_timeout, api_constants::kShutdownDrainBudget) : limits_.stop_drain_timeout;
-    if (const auto drain_error = protocol_.read_generation(drain, generation); drain_error.has_value()) {
-      if (drain_error->code == EngineProtocolErrorCode::timeout) protocol_.abandon();
-      return failed;
-    }
-    return shutting ? GenerationFailure::shutting_down : cancelled ? GenerationFailure::cancelled : GenerationFailure::timed_out;
+  return std::nullopt;
+}
+
+GenerationRunLimits ChatExecutionService::drive_limits(const std::size_t max_tokens) const noexcept {
+  GenerationRunLimits limits;
+  limits.generation_timeout = limits_.generation_timeout;
+  limits.stop_drain_timeout = limits_.stop_drain_timeout;
+  limits.max_generated_bytes = limits_.max_generated_bytes;
+  limits.max_tokens = max_tokens;
+  return limits;
+}
+
+EngineProtocolClient& ChatExecutionService::protocol() noexcept { return protocol_; }
+
+GenerationOutcome ChatExecutionService::run_generation(const std::vector<std::uint32_t>& prompt_ids, const GenerationSettings& settings,
+                                                       const ExecutionControl& control, const TokenizerPack& tokenizer) {
+  if (const auto failure = begin(prompt_ids, settings)) return *failure;
+  ControlObserver observer(control);
+  const TokenByteDecoder decoder(tokenizer);
+  const GenerationRunResult run = drive_generation(protocol_, decoder, drive_limits(settings.max_tokens), observer);
+  const bool shutting = (control.shutting_down != nullptr && control.shutting_down->load()) ||
+                        (control.shutdown_requested && control.shutdown_requested());
+  switch (run.end) {
+    case RunEnd::stop:
+    case RunEnd::length:
+      return GenerationResult{std::move(observer.text), prompt_ids.size(), run.completion_tokens,
+                              run.end == RunEnd::stop ? FinishReason::stop : FinishReason::length, run.timed_out};
+    case RunEnd::cancelled: return run.cancel == RunCancel::shutting_down ? GenerationFailure::shutting_down : GenerationFailure::cancelled;
+    case RunEnd::engine_error: return GenerationFailure::engine_error;
+    case RunEnd::undecodable: return GenerationFailure::decode_failed;
+    case RunEnd::engine_unavailable: break;
   }
-  if (generation.token_ids.size() > settings.max_tokens) { protocol_.abandon(); return GenerationFailure::engine_error; }
-  std::vector<std::size_t> ids(generation.token_ids.begin(), generation.token_ids.end());
-  const auto decoded = decode_token_ids(tokenizer, ids);
-  const auto* text = std::get_if<std::string>(&decoded);
-  if (text == nullptr) return GenerationFailure::decode_failed;
-  std::size_t field = 0;
-  std::string_view finish_field;
-  for (std::size_t start = 0; start <= generation.done_line.size();) {
-    const std::size_t end = std::min(generation.done_line.find(' ', start), generation.done_line.size());
-    if (field++ == 5U) { finish_field = std::string_view{generation.done_line}.substr(start, end - start); break; }
-    start = end + 1U;
-  }
-  return GenerationResult{*text, prompt_ids.size(), generation.token_ids.size(),
-                          finish_field == "length" ? FinishReason::length : FinishReason::stop};
+  return shutting ? GenerationFailure::shutting_down : GenerationFailure::engine_unavailable;
 }
 
 }  // namespace secure_frontend

@@ -1,5 +1,7 @@
 #include "secure_frontend/chat_execution.hpp"
+#include "secure_frontend/generation_run.hpp"
 #include "support/test_support.hpp"
+#include "support/test_tokenizer.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -7,6 +9,7 @@
 #include <cstdlib>
 #include <deque>
 #include <iostream>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
@@ -435,8 +438,9 @@ void run_generation_timeout_stops_and_reports_timed_out() {
   ReadyService f({.generation_timeout = std::chrono::milliseconds(100), .stop_drain_timeout = std::chrono::milliseconds(500)});
   const auto started = std::chrono::steady_clock::now();
   const auto outcome = f.service.run_generation({1U}, {.max_tokens = 100U}, {}, tokenizer);
-  expect(std::holds_alternative<secure_frontend::GenerationFailure>(outcome) &&
-         std::get<secure_frontend::GenerationFailure>(outcome) == secure_frontend::GenerationFailure::timed_out, "timeout");
+  const auto* result = std::get_if<secure_frontend::GenerationResult>(&outcome);
+  expect(result != nullptr && result->timed_out && result->finish == secure_frontend::FinishReason::length,
+         "a timeout returns the text so far with length (B4), flagged timed_out for the log");
   expect(std::chrono::steady_clock::now() - started < std::chrono::seconds(1), "bounded by generation_timeout + drain");
   expect(f.protocol.idle(), "STOP drained");
 }
@@ -486,6 +490,122 @@ void run_generation_maps_engine_errors() {
   }
 }
 
+// SP3 M2 Task 5: drive_generation and the rebuilt run_generation.
+// Ruling t5-test (as in Task 4): M1's write_line carries the absolute write
+// deadline and begin_generation the GEN write deadline; the brief's shorter
+// helper signatures are adapted to them, assertions unchanged.
+std::string byte_id(const unsigned char byte) { return std::to_string(test_support::id_for_byte(byte)); }
+
+// Thread-safe scripted transport (mandatory: a test thread appends while the loop reads).
+class LockedTransport final : public secure_frontend::EngineLineTransport {
+ public:
+  void push(std::string line) { std::lock_guard lock(mutex_); reads_.push_back(std::move(line)); }
+  [[nodiscard]] std::size_t stops() const { std::lock_guard lock(mutex_); return static_cast<std::size_t>(std::count(writes_.begin(), writes_.end(), "STOP")); }
+  bool write_line(const std::string_view line, const secure_frontend::MonotonicClock::time_point, std::string&) override {
+    std::lock_guard lock(mutex_);
+    writes_.emplace_back(line);
+    return true;
+  }
+  secure_frontend::EngineReadResult read_line(const std::chrono::milliseconds timeout) override {
+    {
+      std::lock_guard lock(mutex_);
+      if (!reads_.empty()) {
+        std::string next = std::move(reads_.front());
+        reads_.pop_front();
+        return {secure_frontend::EngineReadKind::line, std::move(next), {}};
+      }
+    }
+    std::this_thread::sleep_for(std::min(timeout, std::chrono::milliseconds(2)));
+    return {secure_frontend::EngineReadKind::timeout, {}, {}};
+  }
+
+ private:
+  mutable std::mutex mutex_;
+  std::deque<std::string> reads_;
+  std::vector<std::string> writes_;
+};
+
+struct Collector final : secure_frontend::GenerationObserver {
+  std::string text;
+  int cancel_after_ticks{-1};
+  int ticks{0};
+  void on_text(const std::string_view piece) override { text += piece; }
+  secure_frontend::RunCancel on_tick(bool) override {
+    ++ticks;
+    return cancel_after_ticks >= 0 && ticks > cancel_after_ticks ? secure_frontend::RunCancel::client_gone : secure_frontend::RunCancel::none;
+  }
+};
+
+// A protocol already past READY and GEN, reading `records`.
+struct Running final {
+  LockedTransport transport;
+  secure_frontend::EngineProtocolClient protocol{transport};
+  explicit Running(const std::vector<std::string>& records) {
+    transport.push("READY 512 stop");
+    secure_frontend::EngineReady ready{};
+    (void)protocol.await_ready(std::chrono::seconds(1), ready);
+    (void)protocol.begin_generation(16, {1}, secure_frontend::deadline_after(std::chrono::seconds(5)));
+    for (const auto& record : records) transport.push(record);
+  }
+};
+
+void drive_generation_bytes_cap_cuts_on_code_point() {
+  const auto pack = test_support::byte_tokenizer();
+  const secure_frontend::TokenByteDecoder decoder(pack);
+  Running run({"T " + byte_id('A'), "T " + byte_id(0xE2), "T " + byte_id(0x82), "T " + byte_id(0xAC), "T " + byte_id('B'),
+               "DONE 5 1 0 0 cancel"});
+  Collector collector;
+  const auto result = secure_frontend::drive_generation(run.protocol, decoder, {.max_generated_bytes = 2U, .max_tokens = 16U}, collector);
+  expect(collector.text == "A", "the euro sign does not fit in the 1 byte left and is not split: [" + collector.text + "]");
+  expect(result.end == secure_frontend::RunEnd::length && result.bytes_capped, "the cap ends with length");
+  expect(run.transport.stops() == 1U, "the cap sends STOP once");
+  expect(run.protocol.idle(), "drained to idle");
+}
+
+void drive_generation_drops_tail_on_length_and_replaces_on_stop() {
+  const auto pack = test_support::byte_tokenizer();
+  const secure_frontend::TokenByteDecoder decoder(pack);
+  Running cut({"T " + byte_id('A'), "T " + byte_id(0xE2), "DONE 2 1 0 0 length"});
+  Collector at_length;
+  expect(secure_frontend::drive_generation(cut.protocol, decoder, {}, at_length).end == secure_frontend::RunEnd::length && at_length.text == "A",
+         "length: the held lead byte is dropped");
+  Running eos({"T " + byte_id('A'), "T " + byte_id(0xE2), "DONE 2 1 0 0 stop"});
+  Collector at_stop;
+  expect(secure_frontend::drive_generation(eos.protocol, decoder, {}, at_stop).end == secure_frontend::RunEnd::stop &&
+             at_stop.text == "A\xEF\xBF\xBD", "stop: the held tail becomes one U+FFFD");
+}
+
+void drive_generation_cancel_sends_stop_and_drains() {
+  const auto pack = test_support::byte_tokenizer();
+  const secure_frontend::TokenByteDecoder decoder(pack);
+  Running run({"T " + byte_id('A')});
+  Collector collector;
+  collector.cancel_after_ticks = 1;
+  std::thread late([&run] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    run.transport.push("DONE 1 1 0 0 cancel");
+  });
+  const auto result = secure_frontend::drive_generation(run.protocol, decoder, {}, collector);
+  late.join();
+  expect(result.end == secure_frontend::RunEnd::cancelled && result.cancel == secure_frontend::RunCancel::client_gone, "cancel drains to cancelled");
+  expect(run.transport.stops() == 1U, "one STOP");
+}
+
+void chat_max_tokens_cut_mid_character_returns_length() {
+  const auto pack = test_support::byte_tokenizer();
+  LockedTransport transport;
+  transport.push("READY 512 stop");
+  secure_frontend::EngineProtocolClient protocol(transport);
+  secure_frontend::ChatExecutionService service(protocol);
+  for (const auto& record : {"T " + byte_id('A'), "T " + byte_id(0xE2), "T " + byte_id(0x82), std::string("DONE 3 1 0 0 length")}) transport.push(record);
+  const auto outcome = service.run_generation({1U, 2U}, {.max_tokens = 3U}, {}, pack);
+  const auto* result = std::get_if<secure_frontend::GenerationResult>(&outcome);
+  expect(result != nullptr, "a response cut mid-character is not decode_failed (spec §3.3 latent bug)");
+  if (result != nullptr) {
+    expect(result->text == "A" && result->finish == secure_frontend::FinishReason::length && result->completion_tokens == 3U, "text so far, length");
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -509,6 +629,10 @@ int main(int argc, char** argv) {
       {"run_generation_timeout_stops_and_reports_timed_out", run_generation_timeout_stops_and_reports_timed_out},
       {"run_generation_drain_failure_abandons", run_generation_drain_failure_abandons},
       {"run_generation_shutdown_uses_short_drain", run_generation_shutdown_uses_short_drain},
+      {"drive_generation_bytes_cap_cuts_on_code_point", drive_generation_bytes_cap_cuts_on_code_point},
+      {"drive_generation_drops_tail_on_length_and_replaces_on_stop", drive_generation_drops_tail_on_length_and_replaces_on_stop},
+      {"drive_generation_cancel_sends_stop_and_drains", drive_generation_cancel_sends_stop_and_drains},
+      {"chat_max_tokens_cut_mid_character_returns_length", chat_max_tokens_cut_mid_character_returns_length},
       {"run_generation_maps_engine_errors", run_generation_maps_engine_errors},
   }, failures);
 }

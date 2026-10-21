@@ -9,9 +9,11 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace secure_frontend {
 
@@ -23,6 +25,9 @@ struct ChatRouteConfig final {
   std::size_t max_completion_tokens;
   std::size_t default_max_tokens;   // 0 = auto (B1)
   std::chrono::milliseconds queue_timeout;
+  std::chrono::milliseconds write_stall;
+  std::chrono::milliseconds response_write_deadline;
+  std::chrono::milliseconds stream_keepalive;
 };
 
 [[nodiscard]] std::optional<std::string> make_completion_id();
@@ -31,11 +36,13 @@ struct ChatRouteConfig final {
 class ChatRoute final {
  public:
   ChatRoute(ChatRouteConfig config, SupervisorPort& port, GenerationGate& gate, const TokenizerPack& tokenizer);
-  [[nodiscard]] HttpResponse handle(std::string_view body, const RequestContext& context);
+  [[nodiscard]] RouteResult handle(std::string_view body, const RequestContext& context);
 
  private:
   [[nodiscard]] HttpResponse refusal(GateRefusal refusal);
   [[nodiscard]] HttpResponse engine_unavailable();
+  [[nodiscard]] RouteResult stream_response(std::optional<Lease>& lease, const std::vector<std::uint32_t>& prompt_ids,
+                                            std::size_t max_tokens, const ChatCompletionRequest& request, const RequestContext& context);
   ChatRouteConfig config_;
   SupervisorPort& port_;
   GenerationGate& gate_;

@@ -1,4 +1,5 @@
 #include "secure_frontend/connection_handler.hpp"
+#include "secure_frontend/chunked_stream_sink.hpp"
 
 #include "secure_frontend/api_constants.hpp"
 #include "secure_frontend/api_errors.hpp"
@@ -49,68 +50,6 @@ ConnectionResult respond_complete(const NativeSocket socket, const HttpResponse&
   return result;
 }
 
-// M1 placeholder: minimal blocking implementation used only by
-// stream_handler_dispatch_writes_head_chunks_and_terminal_chunk. M2 Task 10 replaces it with the
-// non-blocking ChunkedStreamSink (spec §2.7: a slow reader must never stall the engine-reading loop)
-// and adds `virtual void set_log_code(std::string_view)` to StreamSink plus `bool streamed{false}` on
-// ConnectionResult/RequestLogRecord. Do not add buffering or stall accounting here.
-class SocketStreamSink final : public StreamSink {
- public:
-  SocketStreamSink(const NativeSocket socket, const ConnectionLimits& limits, const WorkerSignals& signals,
-                   std::optional<std::string> allow_origin)
-      : socket_(socket), limits_(limits), signals_(signals), allow_origin_(std::move(allow_origin)) {}
-  bool send_headers(const HttpHead& head) override {
-    if (headers_sent_ || failed_) return false;
-    HttpHead with_cors = head;
-    if (allow_origin_.has_value()) {
-      with_cors.headers.emplace_back("Access-Control-Allow-Origin", *allow_origin_);
-      with_cors.headers.emplace_back("Vary", "Origin");
-    }
-    status_ = head.status;
-    headers_sent_ = true;
-    return write(serialize_head(with_cors, std::chrono::system_clock::now()));
-  }
-  bool send_event(const std::string_view bytes) override {
-    if (!headers_sent_ || failed_ || finished_) return false;
-    if (bytes.empty()) return true;   // a zero-size chunk would end the body
-    char size[24];
-    const int n = std::snprintf(size, sizeof(size), "%zx\r\n", bytes.size());
-    std::string chunk(size, static_cast<std::size_t>(n));
-    chunk.append(bytes);
-    chunk.append("\r\n");
-    return write(chunk);
-  }
-  bool writable(const std::chrono::milliseconds timeout) override {
-    PollEntry entry{socket_, false, true};
-    return !failed_ && poll_sockets(std::span<PollEntry>{&entry, 1U}, timeout) > 0 && entry.writable && !entry.failed;
-  }
-  bool client_gone() override { return failed_ || probe_peer(socket_) == PeerState::gone; }
-  void finish() override {
-    if (headers_sent_ && !failed_ && !finished_) finished_ = write("0\r\n\r\n");
-  }
-  [[nodiscard]] int status() const noexcept { return status_; }
-  [[nodiscard]] std::size_t bytes() const noexcept { return bytes_; }
-  [[nodiscard]] bool failed() const noexcept { return failed_; }
-  [[nodiscard]] bool finished() const noexcept { return finished_; }
-
- private:
-  bool write(const std::string_view bytes) {
-    const WriteOutcome outcome = send_all_bounded(socket_, bytes, limits_.write_stall, write_deadline(limits_, signals_), signals_.shutting_down);
-    if (outcome != WriteOutcome::complete) { failed_ = true; return false; }
-    bytes_ += bytes.size();
-    return true;
-  }
-  NativeSocket socket_;
-  const ConnectionLimits& limits_;
-  const WorkerSignals& signals_;
-  std::optional<std::string> allow_origin_;
-  int status_{0};
-  std::size_t bytes_{0};
-  bool headers_sent_{false};
-  bool failed_{false};
-  bool finished_{false};
-};
-
 }  // namespace
 
 ConnectionResult deliver_route_result(const NativeSocket socket, RouteResult result, const RouteDecision& decision,
@@ -128,7 +67,10 @@ ConnectionResult deliver_route_result(const NativeSocket socket, RouteResult res
     }
     return respond_complete(socket, *complete, limits, signals, ConnectionOutcome::responded, connection);
   }
-  SocketStreamSink sink(socket, limits, signals, decision.allow_origin);
+  AcceptedSocketStream channel(socket);
+  ChunkedStreamSink sink(channel,
+                         StreamSinkTimeouts{limits.write_stall, [&signals] { return signals.shutting_down != nullptr && signals.shutting_down->load(); }},
+                         decision.allow_origin);  // spec §2.7: never blocks the engine loop
   try {
     std::get<StreamHandler>(result)(sink);
   } catch (...) {
@@ -142,6 +84,8 @@ ConnectionResult deliver_route_result(const NativeSocket socket, RouteResult res
   }
   connection.status = sink.status();
   connection.bytes_out = sink.bytes();
+  connection.streamed = true;
+  connection.code = sink.log_code() == "-" ? std::string_view{} : sink.log_code();  // fixed literals only; empty prints "-"
   if (sink.finished()) {
     half_close_and_drain(socket);
     connection.outcome = ConnectionOutcome::responded;

@@ -240,25 +240,39 @@ TokenizerPackLoadResult load_local_tokenizer_pack(const CanonicalRoot& root) {
   return pack;
 }
 
+TokenByteDecoder::TokenByteDecoder(const TokenizerPack& pack) : pack_(pack) {
+  const auto symbols = byte_symbols();
+  for (unsigned int byte = 0U; byte < 256U; ++byte) reverse_.emplace(symbols[byte], static_cast<unsigned char>(byte));
+}
+
+TokenizerDecodeResult TokenByteDecoder::bytes_for(const std::size_t id) const {
+  if (id >= pack_.tokens_by_id.size()) return error(TokenizerPackErrorCode::token_id_out_of_range, "token ID is outside the loaded vocabulary");
+  if (id >= pack_.token_types.size() || pack_.token_types[id] == 3 || pack_.token_types[id] == 4) {
+    return error(TokenizerPackErrorCode::undecodable_token, "control and user-defined token types are not ordinary decoded output");
+  }
+  const std::string_view token = pack_.tokens_by_id[id];
+  std::string bytes;
+  for (std::size_t offset = 0U; offset < token.size();) {
+    const auto lead = static_cast<unsigned char>(token[offset]);
+    const std::size_t width = lead <= 0x7fU ? 1U : lead <= 0xdfU ? 2U : lead <= 0xefU ? 3U : 4U;
+    if (offset + width > token.size()) return error(TokenizerPackErrorCode::undecodable_token, "token is not composed of byte alphabet symbols");
+    const auto it = reverse_.find(std::string{token.substr(offset, width)});
+    if (it == reverse_.end()) return error(TokenizerPackErrorCode::undecodable_token, "token is not composed of byte alphabet symbols");
+    bytes.push_back(static_cast<char>(it->second));
+    offset += width;
+  }
+  return bytes;
+}
+
 TokenizerDecodeResult decode_token_ids(const TokenizerPack& pack, const std::vector<std::size_t>& ids) {
-  const auto symbols = byte_symbols(); std::map<std::string, unsigned int> reverse;
-  for (unsigned int byte = 0U; byte < 256U; ++byte) reverse.emplace(symbols[byte], byte);
+  const TokenByteDecoder decoder(pack);
   std::string bytes;
   for (const std::size_t id : ids) {
-    if (id >= pack.tokens_by_id.size()) return error(TokenizerPackErrorCode::token_id_out_of_range, "token ID is outside the loaded vocabulary");
-    if (id >= pack.token_types.size() || pack.token_types[id] == 3 || pack.token_types[id] == 4) {
-      return error(TokenizerPackErrorCode::undecodable_token,
-                   "control and user-defined token types are not ordinary decoded output");
-    }
-    const std::string_view token = pack.tokens_by_id[id];
-    for (std::size_t offset = 0U; offset < token.size();) {
-      const auto lead = static_cast<unsigned char>(token[offset]); std::size_t width = lead <= 0x7fU ? 1U : lead <= 0xdfU ? 2U : lead <= 0xefU ? 3U : 4U;
-      if (offset + width > token.size()) return error(TokenizerPackErrorCode::undecodable_token, "token is not composed of byte alphabet symbols");
-      const auto symbol = token.substr(offset, width); const auto it = reverse.find(std::string{symbol});
-      if (it == reverse.end()) return error(TokenizerPackErrorCode::undecodable_token, "token is not composed of byte alphabet symbols");
-      if (bytes.size() >= kMaximumDecodedBytes) return error(TokenizerPackErrorCode::decoded_text_not_utf8, "decoded token data exceeds fixed limit");
-      bytes.push_back(static_cast<char>(it->second)); offset += width;
-    }
+    auto piece = decoder.bytes_for(id);
+    if (auto* failure = std::get_if<TokenizerPackError>(&piece)) return std::move(*failure);
+    const auto& text = std::get<std::string>(piece);
+    if (bytes.size() + text.size() > kMaximumDecodedBytes) return error(TokenizerPackErrorCode::decoded_text_not_utf8, "decoded token data exceeds fixed limit");
+    bytes += text;
   }
   if (!valid_utf8(bytes)) return error(TokenizerPackErrorCode::decoded_text_not_utf8, "decoded token data is not valid UTF-8");
   return bytes;

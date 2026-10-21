@@ -1,11 +1,14 @@
 #include "secure_frontend/api_errors.hpp"
 #include "secure_frontend/request_router.hpp"
 #include "secure_frontend/socket_io.hpp"
+#include "support/chat_json.hpp"
+#include "support/stream_client.hpp"
 #include "support/connection_scan.hpp"
 #include "support/raw_http.hpp"
 #include "support/server_harness.hpp"
 #include "support/test_paths.hpp"
 #include "support/test_support.hpp"
+#include "support/test_tokenizer.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -33,6 +36,7 @@
 namespace {
 using namespace std::chrono_literals;
 using secure_frontend::ApiError;
+using secure_frontend::ChatExchangeEnd;
 int failures = 0;
 void expect(bool condition, const std::string& message) {
   if (!condition) { ++failures; std::cerr << "FAILED: " << message << '\n'; }
@@ -347,6 +351,9 @@ void web04_default_emits_no_cors_header_anywhere() {
   for (const int s : {200, 400, 401, 403, 404, 405, 411, 413, 414, 415, 417, 431, 505}) {
     expect(statuses.count(s) == 1U, "status " + std::to_string(s) + " was exercised");
   }
+  const auto sse = test_support::chat(*server, test_support::chat_body(R"("stream":true)"),
+                                      {.extra_headers = {{"Origin", "http://127.0.0.1:" + std::to_string(server->port())}}});
+  expect(sse.streamed && !sse.head.header("Access-Control-Allow-Origin") && !sse.head.header("Vary"), "no CORS header on an SSE response");
 }
 
 void web05_only_exact_configured_origin_allowed() {
@@ -419,6 +426,11 @@ void auth01_every_route_rejects_missing_malformed_wrong_token() {
       expect(r && r->status == status && r->body.find("fake-model") == std::string::npos,
              std::string{entry.method} + " " + target + " -> " + std::to_string(status) + " for [" + line.substr(0, 30) + "]");
     }
+  }
+  for (const std::string_view bad_token : {std::string_view(""), std::string_view("wrong-token-wrong-token-wrong-token-xx")}) {
+    const auto result = secure_frontend::post_chat_completion(test_support::loopback_v4(), server->port(), bad_token,
+                                                              test_support::chat_body(R"("stream":true)"));
+    expect(result.head.status == 401 && !result.streamed, "stream:true without a valid token is 401, never a stream");
   }
 }
 
@@ -849,6 +861,11 @@ void dos02_resources_return_to_idle() {
     if (c) (void)c->send(chat_request(*r.server, chat_body("")));
     std::this_thread::sleep_for(30ms);
   }
+  for (int index = 0; index < 20; ++index) {
+    secure_frontend::ChatRequestOptions cancel_early;
+    cancel_early.on_item = [](const secure_frontend::SseItem&) { return false; };
+    (void)test_support::chat(*r.server, test_support::chat_body(R"("stream":true)"), cancel_early);
+  }
   bool idle = false;
   for (int i = 0; i < 100 && !idle; ++i) {
     std::this_thread::sleep_for(50ms);
@@ -1069,6 +1086,332 @@ void win_disconnect_detected_by_peek() {
   }
   expect(stopped, "recv(MSG_PEEK) saw the close on Winsock and STOP was sent within 1 s");
 }
+
+// SP3 M2 (Task 5): §3.3 mid-character cut and decision 4 (timeout is 200 length).
+void utf8_non_stream_max_tokens_cut_mid_character_returns_length() {
+  auto server = test_support::start_stream_server({"--token-ids=" + test_support::token_ids_for("A\xE2\x82\xAC")});
+  expect(server != nullptr, "the server becomes ready");
+  if (!server) return;
+  const auto result = server->post_chat(test_support::chat_body(R"("max_tokens":3)"), 10s);
+  expect(result && result->status == 200, "a max_tokens cut mid-character is a 200, not a decode failure");
+  if (result) {
+    expect(test_support::complete_text(result->body) == "A", "the held lead bytes are dropped: " + result->body);
+    expect(test_support::complete_finish(result->body) == "length", "finish_reason length");
+  }
+}
+
+void generation_timeout_returns_text_with_length() {
+  auto server = test_support::start_stream_server({"--tokens=100", "--token-interval-ms=300"}, {{"limits.engine.generation_timeout_s", "1"}});
+  expect(server != nullptr, "the server becomes ready");
+  if (!server) return;
+  const auto result = server->post_chat(test_support::chat_body(R"("max_tokens":100)"), 10s);
+  expect(result && result->status == 200, "a timed-out generation is a 200 (decision 4)");
+  if (result) {
+    const auto text = test_support::complete_text(result->body);
+    expect(!text.empty() && text.size() <= 5U && text.find_first_not_of('H') == std::string::npos, "the text so far: " + text);
+    expect(test_support::complete_finish(result->body) == "length", "finish_reason length");
+  }
+  const auto streamed = test_support::chat(*server, test_support::chat_body(R"("max_tokens":100,"stream":true)"), {.timeout = 10s});
+  expect(streamed.end == ChatExchangeEnd::complete && test_support::stream_finish(streamed) == "length" &&
+             !test_support::stream_text(streamed).empty(), "stream: text so far, final chunk length");
+}
+
+std::string long_token_ids() { return "--token-ids=" + std::to_string(test_support::kLongTokenId); }
+
+void stream_matches_non_stream_text() {
+  const std::string text = "Hi \xE2\x82\xAC \xF0\x9F\x98\x80!";
+  auto server = test_support::start_stream_server({"--token-ids=" + test_support::token_ids_for(text)});
+  expect(server != nullptr, "server ready");
+  if (!server) return;
+  const auto complete = test_support::chat(*server, test_support::chat_body(R"("max_tokens":64)"));
+  const auto streamed = test_support::chat(*server, test_support::chat_body(R"("max_tokens":64,"stream":true)"));
+  expect(complete.end == ChatExchangeEnd::complete && complete.head.status == 200 && !complete.streamed, "complete response");
+  expect(streamed.end == ChatExchangeEnd::complete && streamed.streamed && streamed.done_seen && streamed.terminal_chunk_seen,
+         "stream with [DONE] and the terminal chunk");
+  expect(test_support::complete_text(complete.body) == text, "non-stream text");
+  expect(test_support::stream_text(streamed) == text, "stream text equals non-stream text: " + test_support::stream_text(streamed));
+  expect(test_support::stream_finish(streamed) == "stop" && test_support::complete_finish(complete.body) == "stop", "both stop");
+  const auto head = streamed.head;
+  expect(head.header("Cache-Control") == "no-store" && head.header("Connection") == "close" && !head.header("Content-Length"),
+         "stream headers (§3.2, §4.6)");
+}
+
+void dos02_queue_full_with_streams_is_503_before_headers() {
+  auto server = test_support::start_stream_server({"--tokens=100000", "--token-interval-ms=20"});
+  expect(server != nullptr, "server ready");
+  if (!server) return;
+  std::vector<secure_frontend::LoopbackStreamConnection> held;
+  for (int index = 0; index < 5; ++index) {  // 1 running + max_queued_generations (4, derived at 8 workers)
+    auto connection = test_support::open_raw(*server, test_support::chat_body(R"("stream":true)"));
+    expect(connection.has_value(), "held stream " + std::to_string(index));
+    if (connection) held.push_back(std::move(*connection));
+  }
+  std::this_thread::sleep_for(500ms);
+  const auto refused = test_support::chat(*server, test_support::chat_body(R"("stream":true)"));
+  expect(refused.end == ChatExchangeEnd::complete && refused.head.status == 503 && !refused.streamed, "a plain 503, never a stream");
+  expect(test_support::error_code_of(refused.body) == "server_busy" && refused.head.header("Retry-After") == "1", "server_busy + Retry-After: 1");
+  const auto type = refused.head.header("Content-Type");
+  expect(type && type->rfind("application/json", 0) == 0, "no text/event-stream header before admission");
+  held.clear();  // every held client goes away: the running stream is cancelled, the queue empties
+  bool served = false;
+  for (int attempt = 0; attempt < 50 && !served; ++attempt) {
+    served = test_support::chat(*server, test_support::chat_body(R"("max_tokens":1)")).head.status == 200;
+    if (!served) std::this_thread::sleep_for(100ms);
+  }
+  expect(served, "the server serves again once the held clients left");
+}
+
+void ext01_extension_fields_rejected_on_stream_path() {
+  const auto dir = test_support::make_temp_dir("ext01s");
+  const auto record = dir / "record.txt";
+  auto server = test_support::start_stream_server({"--record-file=" + test_support::utf8_path(record)});
+  expect(server != nullptr, "server ready");
+  if (!server) return;
+  const std::vector<std::string> bodies{
+      test_support::chat_body(R"("stream":true,"tools":[])"), test_support::chat_body(R"("stream":true,"tool_choice":"auto")"),
+      test_support::chat_body(R"("stream":true,"functions":[])"), test_support::chat_body(R"("stream":true,"function_call":"auto")"),
+      test_support::chat_body(R"("stream":true,"parallel_tool_calls":false)"), test_support::chat_body(R"("stream":true,"mcp_servers":[])"),
+      R"({"model":"fake-model","stream":true,"messages":[{"role":"tool","content":"x"}]})",
+      R"({"model":"fake-model","stream":true,"messages":[{"role":"function","content":"x"}]})"};
+  for (const auto& body : bodies) {
+    const auto result = test_support::chat(*server, body);
+    expect(result.head.status == 400 && !result.streamed && test_support::error_code_of(result.body) == "extension_disabled",
+           "400 extension_disabled before any stream header: " + body);
+  }
+  const std::string recorded = "\n" + secure_frontend_test::read_file(record);
+  expect(recorded.find("\nGEN ") == std::string::npos, "no GEN reached the engine");
+}
+
+void dos02_slow_reader_never_backpressures_engine() {
+  auto server = test_support::start_stream_server({long_token_ids(), "--tokens=1024", "--ready-context=65536"},
+                                           {{"limits.chat.max_completion_tokens", "8192"}});
+  expect(server != nullptr, "server ready");
+  if (!server) return;
+  auto slow = test_support::open_raw(*server, test_support::chat_body(R"("stream":true,"max_tokens":1024)"), 4096);
+  expect(slow.has_value(), "slow client connected; it reads nothing for now");
+  if (!slow) return;
+  const auto start = std::chrono::steady_clock::now();
+  const auto second = test_support::chat(*server, test_support::chat_body(R"("max_tokens":1)"), {.timeout = 5s});
+  const auto waited = std::chrono::steady_clock::now() - start;
+  expect(second.end == ChatExchangeEnd::complete && second.head.status == 200, "a second chat is served while the first client reads nothing");
+  expect(waited < 2s, "1 MiB reached DONE at engine speed (< 2 s): " +
+                          std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(waited).count()) + " ms");
+  const auto first = secure_frontend::read_chat_exchange(*slow, {.timeout = 20s});
+  expect(first.end == ChatExchangeEnd::complete && test_support::stream_text(first).size() == 1048576U, "the slow reader then gets all 1 MiB");
+  expect(test_support::content_event_count(first) <= 80U, "coalesced into 16 KiB deltas, not 1024 small events");
+}
+
+void finish_stop_length_and_generated_bytes_cap() {
+  {
+    auto server = test_support::start_stream_server({"--tokens=3"});
+    expect(server != nullptr, "server A ready");
+    if (!server) return;
+    for (const bool stream : {false, true}) {
+      const std::string mode = stream ? R"(,"stream":true)" : "";
+      const auto stop = test_support::chat(*server, test_support::chat_body(R"("max_tokens":3)" + mode));
+      const auto length = test_support::chat(*server, test_support::chat_body(R"("max_tokens":2)" + mode));
+      const auto finish = [stream](const secure_frontend::ChatExchangeResult& r) {
+        return stream ? test_support::stream_finish(r) : test_support::complete_finish(r.body);
+      };
+      const auto text = [stream](const secure_frontend::ChatExchangeResult& r) {
+        return stream ? test_support::stream_text(r) : test_support::complete_text(r.body);
+      };
+      expect(finish(stop) == "stop" && text(stop) == "HHH", "EOS: stop" + mode);
+      expect(finish(length) == "length" && text(length) == "HH", "max_tokens: length" + mode);
+    }
+  }
+  auto server = test_support::start_stream_server({long_token_ids(), "--tokens=4", "--ready-context=65536"},
+                                           {{"limits.chat.max_generated_bytes", "2048"}});
+  expect(server != nullptr, "server B ready");
+  if (!server) return;
+  const auto complete = test_support::chat(*server, test_support::chat_body(R"("max_tokens":4)"));
+  const auto streamed = test_support::chat(*server, test_support::chat_body(R"("max_tokens":4,"stream":true)"));
+  expect(test_support::complete_text(complete.body) == std::string(2048U, 'a') && test_support::complete_finish(complete.body) == "length",
+         "generated-bytes cap: 2048 bytes, length");
+  expect(test_support::stream_text(streamed) == std::string(2048U, 'a') && test_support::stream_finish(streamed) == "length" &&
+             streamed.end == ChatExchangeEnd::complete, "the same on the stream");
+}
+
+void utf8_timeout_cut_mid_character_returns_length() {
+  // 'A' at once, then E2, 82 at 400 ms steps; the 1 s timeout falls before the final AC (1200 ms).
+  auto server = test_support::start_stream_server({"--token-ids=" + test_support::token_ids_for("A\xE2\x82\xAC"), "--token-interval-ms=400"},
+                                           {{"limits.engine.generation_timeout_s", "1"}});
+  expect(server != nullptr, "server ready");
+  if (!server) return;
+  const auto streamed = test_support::chat(*server, test_support::chat_body(R"("max_tokens":4,"stream":true)"), {.timeout = 10s});
+  expect(streamed.end == ChatExchangeEnd::complete && test_support::stream_text(streamed) == "A", "the cut lead bytes are dropped");
+  expect(test_support::stream_finish(streamed) == "length", "timeout is length (decision 4)");
+}
+
+void dos02_stream_disconnect_sends_stop_and_frees_engine() {
+  const auto dir = test_support::make_temp_dir("dos02d");
+  const auto record = dir / "record.txt";
+  auto server = test_support::start_stream_server({"--tokens=10000", "--token-interval-ms=5", "--ready-context=65536",
+                                            "--record-file=" + test_support::utf8_path(record)});
+  expect(server != nullptr, "server ready");
+  if (!server) return;
+  int contents = 0;
+  secure_frontend::ChatRequestOptions options;
+  options.on_item = [&contents](const secure_frontend::SseItem& item) {
+    contents += item.text.find(R"("delta":{"content")") != std::string::npos;
+    return contents < 3;
+  };
+  const auto cancelled = test_support::chat(*server, test_support::chat_body(R"("stream":true,"max_tokens":4096)"), options);
+  expect(cancelled.end == ChatExchangeEnd::cancelled, "the client closed after 3 content chunks");
+  expect(test_support::file_has_line(record, "STOP", 2s), "the frontend sent STOP to the engine");
+  const auto start = std::chrono::steady_clock::now();
+  const auto next = test_support::chat(*server, test_support::chat_body(R"("max_tokens":1)"), {.timeout = 3s});
+  expect(next.head.status == 200 && std::chrono::steady_clock::now() - start < 1s, "the next request is served within 1 s");
+}
+
+// A client that never reads (4 KiB receive buffer) while the engine streams 16 MiB.
+struct StalledStream final {
+  std::filesystem::path record;
+  std::unique_ptr<test_support::ServerProcess> server;
+  std::optional<secure_frontend::LoopbackStreamConnection> slow;
+  StalledStream() {
+    const auto dir = test_support::make_temp_dir("stall");
+    record = dir / "record.txt";
+    // Volume, not time (Windows Sleep(1) is ~15.6 ms; SP0 S2 saw Winsock accept one 32 MiB *blocking* send whole): 15 MiB at once, then
+    // 1024 more tokens at 50 ms keep the generation running for ~50 s while the unread socket fills.
+    server = test_support::start_stream_server({long_token_ids(), "--tokens=16384", "--burst-tokens=15360", "--token-interval-ms=50", "--ready-context=65536",
+                                         "--record-file=" + test_support::utf8_path(record)},
+                                        {{"limits.http.write_stall_ms", "500"}, {"limits.chat.max_completion_tokens", "16384"},
+                                         {"limits.chat.max_generated_bytes", "16777216"}});
+    if (server) slow = test_support::open_raw(*server, test_support::chat_body(R"("stream":true,"max_tokens":16384)"), 4096);
+  }
+};
+
+void dos02_slow_stream_reader_hits_write_stall() {
+  StalledStream stalled;
+  expect(stalled.server && stalled.slow, "server ready, slow client connected");
+  if (!stalled.server || !stalled.slow) return;
+  expect(test_support::file_has_line(stalled.record, "STOP", 45s), "no progress for write_stall_ms (500) cancels with STOP");
+  const auto next = test_support::chat(*stalled.server, test_support::chat_body(R"("max_tokens":1)"), {.timeout = 5s});
+  expect(next.head.status == 200, "the worker and the engine are free again");
+}
+
+void stream_cut_has_no_terminal_chunk() {
+  StalledStream stalled;
+  expect(stalled.server && stalled.slow, "server ready, slow client connected");
+  if (!stalled.server || !stalled.slow) return;
+  expect(test_support::file_has_line(stalled.record, "STOP", 45s), "the stall cut the stream");
+  const auto read = secure_frontend::read_chat_exchange(*stalled.slow, {.timeout = 30s});
+  expect(read.streamed && read.end == ChatExchangeEnd::cut && !read.terminal_chunk_seen && !read.done_seen,
+         "a cut stream ends without [DONE] and without the terminal chunk, so SDKs raise instead of accepting it");
+}
+
+void stream_cancel_during_prefill_frees_engine() {
+  const auto dir = test_support::make_temp_dir("prefill");
+  const auto record = dir / "record.txt";
+  auto server = test_support::start_stream_server({"--prefill-delay-ms=5000", "--record-file=" + test_support::utf8_path(record)});
+  expect(server != nullptr, "server ready");
+  if (!server) return;
+  secure_frontend::ChatRequestOptions options;
+  options.on_item = [](const secure_frontend::SseItem&) { return false; };  // close right after the role chunk
+  const auto start = std::chrono::steady_clock::now();
+  (void)test_support::chat(*server, test_support::chat_body(R"("stream":true)"), options);
+  expect(test_support::file_has_line(record, "STOP", 1s), "STOP during prefill");
+  expect(std::chrono::steady_clock::now() - start < 2s, "seen within a poll slice, not after the 5 s prefill");
+  const auto next = test_support::chat(*server, test_support::chat_body(R"("max_tokens":1)"), {.timeout = 10s});
+  expect(next.head.status == 200, "the engine serves the next request");
+}
+
+void log_stream_outcomes_use_fixed_codes() {
+  auto server = test_support::start_stream_server({"--tokens=200", "--token-interval-ms=5"}, {{"logging.requests", "true"}});
+  expect(server != nullptr, "server ready");
+  if (!server) return;
+  (void)test_support::chat(*server, test_support::chat_body(R"("stream":true,"max_tokens":2)"));
+  secure_frontend::ChatRequestOptions options;
+  options.on_item = [](const secure_frontend::SseItem& item) { return item.text.find(R"("delta":{"content")") == std::string::npos; };
+  (void)test_support::chat(*server, test_support::chat_body(R"("stream":true,"max_tokens":200)"), options);
+  std::this_thread::sleep_for(500ms);
+  const auto log = server->stderr_text();
+  expect(log.find(" chat_stream 200 - ") != std::string::npos, "a normal stream logs '-': " + log);
+  expect(log.find(" chat_stream 200 client_gone ") != std::string::npos, "a cancelled stream logs client_gone");
+  expect(log.find("fake-model") == std::string::npos && log.find("Hi") == std::string::npos, "no model field or prompt text in the log");
+}
+
+void stream_keepalive_comment_during_prefill() {
+  auto server = test_support::start_stream_server({"--prefill-delay-ms=2500"}, {{"limits.http.stream_keepalive_ms", "1000"}});
+  expect(server != nullptr, "server ready");
+  if (!server) return;
+  const auto streamed = test_support::chat(*server, test_support::chat_body(R"("stream":true)"), {.timeout = 15s});
+  expect(streamed.end == ChatExchangeEnd::complete, "the stream completes");
+  expect(test_support::comments_before_content(streamed) >= 2U,
+         "at least 2 ': keep-alive' comments during a 2.5 s prefill: " + std::to_string(test_support::comments_before_content(streamed)));
+}
+
+void err_mid_stream_is_error_event_then_done() {
+  auto server = test_support::start_stream_server({"--tokens=5", "--err-mid-gen=2"});
+  expect(server != nullptr, "server ready");
+  if (!server) return;
+  const auto streamed = test_support::chat(*server, test_support::chat_body(R"("stream":true)"));
+  expect(test_support::stream_text(streamed) == "HH" && test_support::stream_error_code(streamed) == "engine_error", "text, then engine_error");
+  expect(streamed.done_seen && streamed.terminal_chunk_seen && streamed.end == ChatExchangeEnd::complete, "[DONE] and the terminal chunk follow");
+  expect(test_support::stream_finish(streamed) == "<none>", "no finish_reason after an error");
+}
+
+void crash_mid_stream_is_engine_unavailable_event() {
+  auto server = test_support::start_stream_server({"--tokens=10", "--crash-mid-gen=3", "--token-interval-ms=10"});
+  expect(server != nullptr, "server ready");
+  if (!server) return;
+  const auto streamed = test_support::chat(*server, test_support::chat_body(R"("stream":true)"));
+  expect(test_support::stream_error_code(streamed) == "engine_unavailable" && streamed.terminal_chunk_seen, "engine_unavailable event, ended normally");
+  bool restarting = false;
+  for (int poll = 0; poll < 100 && !restarting; ++poll) {
+    const auto health = server->get("/health");
+    restarting = health && health->body.find(R"("recovery":"restarting")") != std::string::npos;
+    if (!restarting) std::this_thread::sleep_for(20ms);
+  }
+  expect(restarting, "/health follows SP2: recovery=restarting");
+}
+
+void nonfinite_is_engine_error_and_engine_stays_ready() {
+  auto server = test_support::start_stream_server({"--finish=nonfinite"});
+  expect(server != nullptr, "server ready");
+  if (!server) return;
+  const auto engines_before = server->descendants();
+  const auto complete = test_support::chat(*server, test_support::chat_body(""));
+  expect(complete.head.status == 503 && test_support::error_code_of(complete.body) == "engine_error", "non-stream: 503 engine_error");
+  expect(complete.head.header("x-should-retry") == "false", "SDK retries suppressed");
+  const auto streamed = test_support::chat(*server, test_support::chat_body(R"("stream":true)"));
+  expect(test_support::stream_error_code(streamed) == "engine_error" && streamed.done_seen && streamed.terminal_chunk_seen, "stream: error event");
+  expect(server->wait_for_health(test_support::kHealthReady, 2s), "the engine stays ready (SP0 E3)");
+  expect(server->descendants() == engines_before, "no restart");
+}
+
+void engine_error_carries_should_retry_false() {
+  auto server = test_support::start_stream_server({"--tokens=3", "--err-mid-gen=0"});
+  expect(server != nullptr, "server ready");
+  if (!server) return;
+  const auto result = test_support::chat(*server, test_support::chat_body(""));
+  expect(result.head.status == 503 && test_support::error_code_of(result.body) == "engine_error", "ERR is 503 engine_error");
+  expect(result.head.header("x-should-retry") == "false", "x-should-retry: false (risk R5)");
+}
+
+void dos02_shutdown_during_stream_ends_with_error_event() {
+  auto server = test_support::start_stream_server({"--tokens=100000", "--token-interval-ms=10"});
+  expect(server != nullptr, "server ready");
+  if (!server) return;
+  int contents = 0;
+  bool stopped = false;
+  secure_frontend::ChatRequestOptions options;
+  options.timeout = 10s;
+  options.on_item = [&](const secure_frontend::SseItem& item) {
+    contents += item.text.find(R"("delta":{"content")") != std::string::npos;
+    if (contents == 2 && !stopped) {
+      stopped = true;
+      server->stop(test_support::ServerProcess::Stop::term);
+    }
+    return true;
+  };
+  const auto streamed = test_support::chat(*server, test_support::chat_body(R"("stream":true)"), options);
+  expect(test_support::stream_error_code(streamed) == "server_shutting_down", "in-stream server_shutting_down");
+  expect(streamed.done_seen && streamed.terminal_chunk_seen && streamed.end == ChatExchangeEnd::complete, "[DONE] and the terminal chunk");
+  expect(server->wait_exit(5s) == 0, "exit 0 within SP2's 5 s bound");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1117,6 +1460,25 @@ int main(int argc, char** argv) {
       {"ext02_http_headers_cannot_enable_extensions", ext02_http_headers_cannot_enable_extensions},
       {"log_line_format_and_rate_limit", log_line_format_and_rate_limit},
       {"err_no_token_prompt_or_path_in_any_body_or_log", err_no_token_prompt_or_path_in_any_body_or_log},
+      {"utf8_non_stream_max_tokens_cut_mid_character_returns_length", utf8_non_stream_max_tokens_cut_mid_character_returns_length},
+      {"generation_timeout_returns_text_with_length", generation_timeout_returns_text_with_length},
+      {"stream_matches_non_stream_text", stream_matches_non_stream_text},
+      {"dos02_queue_full_with_streams_is_503_before_headers", dos02_queue_full_with_streams_is_503_before_headers},
+      {"ext01_extension_fields_rejected_on_stream_path", ext01_extension_fields_rejected_on_stream_path},
+      {"dos02_slow_reader_never_backpressures_engine", dos02_slow_reader_never_backpressures_engine},
+      {"finish_stop_length_and_generated_bytes_cap", finish_stop_length_and_generated_bytes_cap},
+      {"utf8_timeout_cut_mid_character_returns_length", utf8_timeout_cut_mid_character_returns_length},
+      {"dos02_stream_disconnect_sends_stop_and_frees_engine", dos02_stream_disconnect_sends_stop_and_frees_engine},
+      {"dos02_slow_stream_reader_hits_write_stall", dos02_slow_stream_reader_hits_write_stall},
+      {"stream_cut_has_no_terminal_chunk", stream_cut_has_no_terminal_chunk},
+      {"stream_cancel_during_prefill_frees_engine", stream_cancel_during_prefill_frees_engine},
+      {"log_stream_outcomes_use_fixed_codes", log_stream_outcomes_use_fixed_codes},
+      {"stream_keepalive_comment_during_prefill", stream_keepalive_comment_during_prefill},
+      {"err_mid_stream_is_error_event_then_done", err_mid_stream_is_error_event_then_done},
+      {"crash_mid_stream_is_engine_unavailable_event", crash_mid_stream_is_engine_unavailable_event},
+      {"nonfinite_is_engine_error_and_engine_stays_ready", nonfinite_is_engine_error_and_engine_stays_ready},
+      {"engine_error_carries_should_retry_false", engine_error_carries_should_retry_false},
+      {"dos02_shutdown_during_stream_ends_with_error_event", dos02_shutdown_during_stream_ends_with_error_event},
       {"win_refusal_is_read_not_reset", win_refusal_is_read_not_reset},
       {"win_eviction_wakes_worker_within_one_slice", win_eviction_wakes_worker_within_one_slice},
       {"win_disconnect_detected_by_peek", win_disconnect_detected_by_peek},

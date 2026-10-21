@@ -12,6 +12,7 @@
 #include <iterator>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -257,6 +258,55 @@ void fake_engine_stream_modes_selftest() {
     (void)child.line();
     child.send("GEN 5 1");
     expect(child.line() == "T 7" && child.line() == "DONE stop", "without new modes the SP2 short form is unchanged");
+  }
+  {  // M2: STOP during prefill is acted on at once
+    Child child({"--prefill-delay-ms=3000", "--tokens=5"});
+    (void)child.line();
+    child.send("GEN 5 1");
+    std::this_thread::sleep_for(50ms);
+    const auto sent = std::chrono::steady_clock::now();
+    child.send("STOP");
+    expect(child.line() == "DONE 0 1 0 0 cancel", "STOP during prefill: no token, cancel");
+    expect(std::chrono::steady_clock::now() - sent < 1s, "not after the 3 s prefill");
+  }
+  {  // M2: STOP during a long per-token pause is acted on at once
+    Child child({"--tokens=10", "--token-interval-ms=3000"});
+    (void)child.line();
+    child.send("GEN 10 1");
+    expect(child.line() == "T 7", "first token");
+    const auto sent = std::chrono::steady_clock::now();
+    child.send("STOP");
+    expect(child.line() == "DONE 1 1 0 0 cancel", "the emitted token counts");
+    expect(std::chrono::steady_clock::now() - sent < 1s, "not after the 3 s pause");
+  }
+  {  // M2: --burst-tokens skips the pause for the first n tokens
+    Child child({"--tokens=6", "--burst-tokens=4", "--token-interval-ms=400"});
+    (void)child.line();
+    child.send("GEN 6 1");
+    const auto start = std::chrono::steady_clock::now();
+    for (int index = 0; index < 4; ++index) expect(child.line() == "T 7", "burst token");
+    expect(std::chrono::steady_clock::now() - start < 300ms, "four tokens without a pause");
+    expect(child.line() == "T 7" && std::chrono::steady_clock::now() - start >= 350ms, "then the pause applies");
+  }
+  {  // M2: --progress-records during prefill
+    Child child({"--prefill-delay-ms=300", "--progress-records", "--tokens=1"});
+    (void)child.line();
+    child.send("GEN 1 1");
+    expect(child.line() == "PP 1 3" && child.line() == "PP 2 3" && child.line() == "PP 3 3" && child.line() == "T 7", "PP then the token");
+  }
+  {  // M2: --err-mid-gen
+    Child child({"--tokens=5", "--err-mid-gen=2"});
+    (void)child.line();
+    child.send("GEN 5 1");
+    const std::string a = child.line(), b = child.line(), err = child.line();
+    expect(a == "T 7" && b == "T 7" && err == "ERR test", "ERR after two tokens: " + err);
+  }
+  {  // M2: --crash-mid-gen
+    Child child({"--tokens=5", "--crash-mid-gen=1"});
+    (void)child.line();
+    child.send("GEN 5 1");
+    expect(child.line() == "T 7", "one token before the crash");
+    expect(child.kind(5s) == secure_frontend::EngineReadKind::closed, "--crash-mid-gen exits");
   }
 }
 

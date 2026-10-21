@@ -24,7 +24,8 @@ void parses_minimal_text_request() {
 
 void rejects_unsupported_and_unsafe_features() {
   for (const std::string json : {
-           R"({"model":"local","messages":[{"role":"user","content":"hi"}],"stream":true})",
+           R"({"model":"local","messages":[{"role":"user","content":"hi"}],"stream":"true"})",
+           R"({"model":"local","messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":"yes"}}"),
            R"({"model":"local","messages":[{"role":"user","content":"hi"}],"tools":[]})",
            R"({"model":"local","messages":[{"role":"user","content":[{"type":"image_url"}]]})",
            R"({"model":"local","messages":[{"role":"user","content":"https://example.test/a"}]})",
