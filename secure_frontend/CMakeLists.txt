@@ -662,6 +662,14 @@ secure_frontend_add_library(secure_frontend_service_ops SOURCES src/service_ops.
 secure_frontend_add_library(secure_frontend_doctor SOURCES src/doctor_checks.cpp
     LINKS secure_frontend_typed_config)
 
+# SP7 M1 Task 4 (spec D-6): the uninstall planner — ordered removals under allowed
+# roots, the health-probe stop decision, the --purge typed gate.
+secure_frontend_add_library(secure_frontend_uninstall SOURCES src/uninstall_plan.cpp
+    LINKS secure_frontend_typed_config)
+if(WIN32)
+    target_link_libraries(secure_frontend_uninstall PUBLIC ws2_32)
+endif()
+
 # PX §2: the one user-facing binary. SP4 provides only its acquisition verbs (Controller note 1);
 # strata-secure-server never links secure_frontend_acquire or secure_frontend_strata_cli (§7.1).
 add_executable(strata src/strata_main.cpp)
@@ -1431,6 +1439,18 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         doctor_check_roots_report_named_failures doctor_check_port_busy_fails_with_fix
         doctor_check_gpu_and_driver doctor_check_cuda_runtime doctor_check_memlock
         doctor_deep_digests_and_run_order doctor_human_fix_never_carries_install_commands)
+
+    # SP7 M1 Task 4: the D-6 uninstall plan; the probe case runs a canned HTTP
+    # listener on loopback (no real server, no engine).
+    secure_frontend_add_test_executable(secure_frontend_uninstall_tests tests/uninstall_test.cpp
+        secure_frontend_uninstall secure_frontend_typed_config secure_frontend_test_support)
+    target_include_directories(secure_frontend_uninstall_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    secure_frontend_add_cases(secure_frontend_uninstall_tests
+        uninstall_plan_no_listener_orders_removals uninstall_plan_listener_with_unit_stops_via_manager
+        uninstall_plan_listener_without_unit_refuses_with_ctrlc_hint uninstall_plan_listener_with_unit_but_no_manager_refuses
+        uninstall_plan_purge_needs_the_typed_word uninstall_plan_refuses_paths_outside_allowed_roots
+        uninstall_plan_missing_optional_paths_are_skipped uninstall_plan_refuses_when_install_metadata_mismatches
+        uninstall_health_probe_answers_on_a_listener_and_not_without_one)
     if(NOT WIN32)
         # Symlink layouts are POSIX-only here; the Windows pointer form (current.txt)
         # arrives with the Task 6 windows-runtime cases. The enable/disable/status
