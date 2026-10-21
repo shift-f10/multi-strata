@@ -1413,9 +1413,14 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_service_ops_tests ${SECURE_FRONTEND_SERVICE_OPS_CASES})
     if(NOT WIN32)
         # Symlink layouts are POSIX-only here; the Windows pointer form (current.txt)
-        # arrives with the Task 6 windows-runtime cases.
+        # arrives with the Task 6 windows-runtime cases. The enable/disable/status
+        # cases ride the same gate until the Windows task branch exists (Task 6).
         secure_frontend_add_cases(secure_frontend_service_ops_tests
-            resolve_current_target_follows_current_pointer resolve_current_target_plain_install_uses_self)
+            resolve_current_target_follows_current_pointer resolve_current_target_plain_install_uses_self
+            service_enable_writes_unit_then_enables service_enable_missing_user_manager_writes_nothing
+            service_enable_reports_failed_enable service_disable_removes_only_our_unit
+            service_disable_refuses_foreign_unit service_status_one_line_each service_status_without_user_manager
+            service_enable_e2e_path_shim)
     endif()
     secure_frontend_add_cases(secure_frontend_server_cli_tests
         init_writes_config_and_token_then_server_starts init_refuses_to_overwrite_without_force
