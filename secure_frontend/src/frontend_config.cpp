@@ -35,7 +35,7 @@ std::string decimal_text(const double value) {
   return ec == std::errc{} ? std::string{buffer, end} : std::string{"?"};
 }
 
-constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 8> kSchema{{
+constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9> kSchema{{
     {"schema_version", T::integer, false, 1, 1, d::kSchemaVersion, false, "", "",
      "Config format version; must be 1. Required in a config file."},
     {"listener.host", T::string, false, 0, 0, 0, false, "127.0.0.1", "--host",
@@ -326,6 +326,12 @@ constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 8>
      "Absolute tokenizer-pack path for the GLM engine (default: the pack named by the model)."},
     {"glm.model_name", T::string, false, 0, 0, 0, false, "", "",
      "Served model id for the GLM engine (1-256 characters; a managed model takes its identity from the manifest)."},
+    // SP5 M2 Task 7 (D-8): the launcher-managed --max-context becomes typed. The
+    // default is Maya's DEFAULT_CONTEXT (maya.py:2524); the 1-1048576 bound is
+    // added (C-1). Composition lands in engine_arguments (the Task-2 mapped-away
+    // --max-context row's destination).
+    {"glm.max_context", T::integer, false, 1, 1048576, 32768, false, "", "",
+     "GLM context length in tokens the engine is started with (Maya's default 32768)."},
 }};
 
 void add(ConfigErrors& errors, std::string key, const ConfigIssueCode code, std::string reason) {
@@ -875,9 +881,9 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   if (const auto rejected = validate_engine_user_arguments(arguments_profile, args)) {
     add(errors, "engine.args", ConfigIssueCode::invalid_value, rejected->message);
   }
-  if (profile == EngineProfile::glm53 && args.empty()) {
-    add(errors, "engine.args", ConfigIssueCode::missing_required, "--profile glm53 requires at least one --engine-arg");
-  }
+  // SP5 M2 Task 7 (D-8, C-5): the SP1 rule "glm53 requires at least one --engine-arg" is
+  // retired with the pass-through — the GLM launch is composed, and validate_engine_user_arguments
+  // above refuses ANY engine.args row under the glm53 profile.
   // Each entry is one directory: the platform's list separator would split
   // LD_LIBRARY_PATH (':') or PATH (';') into extra, unvalidated entries.
 #if defined(_WIN32)
@@ -1031,6 +1037,8 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
     if (path.rfind("glm.", 0) == 0) any_glm_row = true;
   }
   glm.thinking_budget = read.integer("glm.thinking_budget");
+  glm.max_context = read.integer("glm.max_context");
+  glm.rows_present = any_glm_row;  // R-T3-a: refused at launch when the manifest names the qwen profile
   if (const auto text = read.string("glm.reasoning_effort")) {
     if (*text == "none") glm.reasoning_effort = GlmReasoningEffort::none;
     else if (*text == "low") glm.reasoning_effort = GlmReasoningEffort::low;
@@ -1322,6 +1330,7 @@ std::string describe(const FrontendConfig& c) {
   line("vision.ready_timeout_s", std::to_string(c.vision.ready_timeout_s));
   // SP5 M2 Task 3: the glm.* family (spec §D-2).
   line("glm.thinking_budget", std::to_string(c.glm.thinking_budget));
+  line("glm.max_context", std::to_string(c.glm.max_context));
   line("glm.reasoning_effort",
        !c.glm.reasoning_effort.has_value()
            ? std::string{"(unset)"}

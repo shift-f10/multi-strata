@@ -1170,7 +1170,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         engine_receives_model_path_from_inventory engine_native_path_is_utf8_for_non_ascii_root
         engine_args_reject_owned_and_network_flags
         strata_profile_passes_pack_and_weight_flags_through rejects_invalid_relative_artifact_path
-        glm_profile_passes_arguments_through_without_native engine_args_render_typed_gpu_and_deny_gpu_passthrough
+        engine_args_render_typed_gpu_and_deny_gpu_passthrough
+        glm_launch_argv_matches_mayas_launcher_form glm_context_and_parallel_bounds_enforced
+        glm_rejects_every_engine_argument
         reasoning_config_reaches_engine_launch_and_env
         mtp_false_drops_the_mtp_arg
         vram_reserve_mib_becomes_the_pinned_flag
@@ -1184,7 +1186,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     target_link_libraries(secure_frontend_engine_arguments_tests PRIVATE secure_frontend_launch secure_frontend_strata_cli)
     secure_frontend_add_cases(secure_frontend_engine_arguments_tests launch_composed_from_manifest_qwen vision_compose_rules
         managed_launch_argv_is_utf8_for_non_ascii_models_root launch_refuses_model_not_installed
-        engine_args_reject_weight_flags_for_managed_model managed_launch_renders_typed_gpu_list LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+        engine_args_reject_weight_flags_for_managed_model managed_launch_renders_typed_gpu_list
+        managed_glm_rows_refused_for_qwen_manifest LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     # Pure in-memory (F-63): wine runs it too.
     secure_frontend_add_cases(secure_frontend_engine_arguments_tests launch_refuses_engine_too_old)
 
@@ -1260,6 +1263,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         glm_keys_rejected_on_strata_profile_by_name
         thinking_budget_default_is_mayas_32768
         glm_environment_projection_moves_the_split_default
+        glm_max_context_typed_and_glm53_args_refused
         lifecycle_rows_match_the_pin
         vram_family_rows_match_the_pin
         timeout_shape_rows_match_the_pin
@@ -1362,6 +1366,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         secure_frontend_subsystem_limits)
     secure_frontend_add_cases(secure_frontend_subsystem_limits_tests
         ready_timeout_defaults_to_900_seconds subsystem_limits_follow_config supervisor_policy_follows_config
+        supervisor_flavor_is_the_maya_dialect_for_glm53
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     add_executable(secure_frontend_fake_engine tests/fake_engine_main.cpp)
@@ -1793,12 +1798,14 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         add_dependencies(secure_frontend_non_elevated_run strata-secure-server)
         set(SECURE_FRONTEND_SERVER_CLI_LAUNCH secure_frontend_non_elevated_run $<TARGET_FILE:strata-secure-server>)
     endif()
-    # The GLM runner takes positional arguments: glm53 without any --engine-arg is a usage error.
-    add_test(NAME strata_secure_server_glm_requires_engine_arg
+    # SP5 M2 Task 7 (D-8, C-5): the GLM launch is composed from the model directory and the
+    # typed table — engine.args with glm53 is refused by name (SP1 pass-through retired).
+    add_test(NAME strata_secure_server_glm_rejects_engine_args
         COMMAND ${SECURE_FRONTEND_SERVER_CLI_LAUNCH} --expert --profile glm53 --models-root models --tokenizer-pack tok
-                --engine engine --model-id glm-local --token-env STRATA_UNUSED_TOKEN)
-    set_tests_properties(strata_secure_server_glm_requires_engine_arg PROPERTIES
-        PASS_REGULAR_EXPRESSION "glm53 requires at least one --engine-arg")
+                --engine engine --model-id glm-local --engine-arg --max-context --engine-arg 32768 --token-env STRATA_UNUSED_TOKEN)
+    set_tests_properties(strata_secure_server_glm_rejects_engine_args PROPERTIES
+        PASS_REGULAR_EXPRESSION "engine.args: engine.profile glm53 takes no engine arguments"
+        FAIL_REGULAR_EXPRESSION "32768")
     # Review Focus 4: a malformed --gpu is a startup error with a fixed message (never the value).
     add_test(NAME strata_secure_server_rejects_malformed_gpu
         COMMAND ${SECURE_FRONTEND_SERVER_CLI_LAUNCH} --models-root models --tokenizer-pack tok --engine engine
@@ -1807,7 +1814,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         PASS_REGULAR_EXPRESSION "engine.gpu: must be a comma-separated list of distinct device indices"
         FAIL_REGULAR_EXPRESSION "0,0")
     if(WIN32)
-        set_tests_properties(strata_secure_server_glm_requires_engine_arg strata_secure_server_rejects_malformed_gpu
+        set_tests_properties(strata_secure_server_glm_rejects_engine_args strata_secure_server_rejects_malformed_gpu
             PROPERTIES LABELS windows-runtime)
     endif()
 endif()

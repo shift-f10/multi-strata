@@ -290,8 +290,11 @@ void typed_config_cross_field_rules() {
                    ConfigIssueCode::conflicting_values), "body > request - header");
   expect(has_issue(with({{"limits.chat.default_max_tokens", "5000"}}), "limits.chat.default_max_tokens",
                    ConfigIssueCode::conflicting_values), "default_max_tokens > max_completion_tokens");
-  expect(has_issue(with({{"engine.profile", "\"glm53\""}}), "engine.args", ConfigIssueCode::missing_required),
-         "glm53 needs at least one engine argument");
+  expect(has_issue(with({{"engine.profile", "\"glm53\""}, {"engine.args", "[\"--native\",\"x\"]"}}), "engine.args",
+                   ConfigIssueCode::invalid_value),
+         "glm53 refuses engine.args outright (SP5 M2 Task 7 D-8: the launch is composed; the SP1 "
+         "\"at least one argument\" rule is retired — a bare glm53 config is covered by "
+         "glm_max_context_typed_and_glm53_args_refused)");
   expect(has_issue(with({{"engine.args", "[\"--native\",\"x\"]"}}), "engine.args", ConfigIssueCode::invalid_value),
          "the SP0 deny-list applies to engine.args");
   expect(has_issue(with({{"listener.host", "\"192.0.2.10\""}}), "listener.host", ConfigIssueCode::remote_not_enabled),
@@ -981,11 +984,10 @@ void sampling_defaults_cover_the_pinned_validator() {
 // cfg01_sp3_rows pattern) so the RED lands as failing cases, not a compile error.
 void glm_keys_parse_with_mayas_kinds_and_defaults() {
   ConfigFixture f;
-  // The SP1-era pass-through rule still stands (Task 7 retires it): a glm53
-  // profile config needs at least one engine arg, so the fixtures carry one.
+  // SP5 M2 Task 7 (D-8): the glm53 launch is composed, so no engine.args row is needed
+  // (and none is accepted — see glm_max_context_typed_and_glm53_args_refused).
   const auto glm53 = [](std::map<std::string, std::string> extra) {
-    std::map<std::string, std::string> literals{{"engine.args", "[\"--max-context\", \"32768\"]"},
-                                                {"engine.profile", "\"glm53\""}};
+    std::map<std::string, std::string> literals{{"engine.profile", "\"glm53\""}};
     for (auto& [key, value] : extra) literals[key] = value;
     return literals;
   };
@@ -1053,8 +1055,7 @@ void glm_keys_rejected_on_strata_profile_by_name() {
 
 void thinking_budget_default_is_mayas_32768() {
   ConfigFixture f;
-  const auto result = with_literals(f, {{"engine.args", "[\"--max-context\", \"32768\"]"},
-                                        {"engine.profile", "\"glm53\""}});
+  const auto result = with_literals(f, {{"engine.profile", "\"glm53\""}});
   expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result),
          "the bare glm53 config validates: " + issues_of(result));
   const std::string described = describe_of(result);
@@ -1066,14 +1067,36 @@ void thinking_budget_default_is_mayas_32768() {
          "speed projection defaults false (serve/server.py:3255)");
 }
 
+// SP5 M2 Task 7 (D-8, C-5): the GLM launch surface is typed, not passed through.
+// glm.max_context carries Maya's DEFAULT_CONTEXT (maya.py:2524; bound added, C-1)
+// and any engine.args row under glm53 is refused by name at config load.
+void glm_max_context_typed_and_glm53_args_refused() {
+  ConfigFixture f;
+  expect(secure_frontend::find_config_key("glm.max_context") != nullptr, "the schema row glm.max_context exists");
+  const auto accepted = with_literals(f, {{"engine.profile", "\"glm53\""}});
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(accepted),
+         "a glm53 config needs no engine argument any more: " + issues_of(accepted));
+  if (std::holds_alternative<secure_frontend::ValidatedConfig>(accepted)) {
+    const std::string described = describe_of(accepted);
+    expect(described.find("glm.max_context = 32768") != std::string::npos, "Maya's --max-context default is 32768 (maya.py:2524)");
+  }
+  for (const char* args : {"[\"--max-context\", \"32768\"]", "[\"--model\"]", "[\"--gpu\", \"0\"]", "[\"--serve\"]"}) {
+    const auto result = with_literals(f, {{"engine.profile", "\"glm53\""}, {"engine.args", args}});
+    expect(has_issue(result, "engine.args", ConfigIssueCode::invalid_value), "glm53 refuses engine.args: " + std::string{args});
+  }
+  const auto high = with_literals(f, {{"engine.profile", "\"glm53\""}, {"glm.max_context", "1048577"}});
+  expect(has_issue(high, "glm.max_context", ConfigIssueCode::out_of_range), "the added upper bound refuses (C-1)");
+  const auto zero = with_literals(f, {{"engine.profile", "\"glm53\""}, {"glm.max_context", "0"}});
+  expect(has_issue(zero, "glm.max_context", ConfigIssueCode::out_of_range), "a context of 0 tokens is refused");
+}
+
 // SP5 M2 Task 4 (D-7): the config-to-env projection — glm.layer_split moves
 // the STRATA_GLM_SPLIT forced default in the glm child environment
 // (maya-ref docs/SETTINGS.md:31), and glm.gpu renders the family's CUDA
 // selector (serve/server.py:1216-1224); nothing else is projected today.
 void glm_environment_projection_moves_the_split_default() {
   ConfigFixture f;
-  const auto result = with_literals(f, {{"engine.args", "[\"--max-context\", \"32768\"]"},
-                                        {"engine.profile", "\"glm53\""},
+  const auto result = with_literals(f, {{"engine.profile", "\"glm53\""},
                                         {"glm.layer_split", "\"7,12\""},
                                         {"glm.gpu", "\"1\""}});
   const auto* config = config_of(result);
@@ -1623,6 +1646,7 @@ int main(int argc, char** argv) {
       {"glm_keys_rejected_on_strata_profile_by_name", glm_keys_rejected_on_strata_profile_by_name},
       {"thinking_budget_default_is_mayas_32768", thinking_budget_default_is_mayas_32768},
       {"glm_environment_projection_moves_the_split_default", glm_environment_projection_moves_the_split_default},
+      {"glm_max_context_typed_and_glm53_args_refused", glm_max_context_typed_and_glm53_args_refused},
       {"lifecycle_rows_match_the_pin", lifecycle_rows_match_the_pin},
       {"vram_family_rows_match_the_pin", vram_family_rows_match_the_pin},
       {"timeout_shape_rows_match_the_pin", timeout_shape_rows_match_the_pin},

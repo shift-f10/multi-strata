@@ -17,7 +17,7 @@ namespace secure_frontend {
 // Which engine CLI the argv tail is built for.
 enum class EngineArgumentsProfile { strata_0143, lighttransport_glm53 };
 
-enum class EngineArgumentsErrorCode { owned_flag, unsupported_mode, invalid_value, model_not_found };
+enum class EngineArgumentsErrorCode { owned_flag, unsupported_mode, invalid_value, model_not_found, not_accepted, out_of_range };
 
 // `message` is a fixed string; it never contains user-supplied argument text or paths.
 struct EngineArgumentsError final {
@@ -42,6 +42,18 @@ struct EffortEndArguments final {
 [[nodiscard]] EffortEndArguments compose_effort_end_arguments(const std::filesystem::path& engine_binary,
                                                               const TokenizerPack& tokenizer);
 
+// SP5 M2 Task 7 (D-8): the typed values Maya's launcher composes into the GLM
+// engine's argv. max_context is Maya's --max-context (its DEFAULT_CONTEXT is 32768,
+// maya.py:2524; the 1-1048576 bound is added, C-1). parallel is replicas.parallel
+// rendered --parallel N; Maya's launcher only sets the flag when a value is given
+// (maya.py:1875) and its CLI admits 1-8 (choices=range(1,9), maya.py:2742).
+// --expert-profile stays with a manifest role that schema 1 does not carry (ruling:
+// the composition omits it until a glm53 manifest names one).
+struct Glm53LaunchArgs final {
+  std::int64_t max_context{32768};  // glm.max_context (Maya's DEFAULT_CONTEXT, maya.py:2524)
+  std::int64_t parallel{1};         // replicas.parallel (1: the flag is not rendered)
+};
+
 // Builds the engine argv tail (everything after `--serve`).
 //
 // strata_0143: the user's pass-through arguments, validated, followed by
@@ -60,10 +72,14 @@ struct EffortEndArguments final {
 // generate.cpp:2334-2352, usage :797, at v0.2.1.3), so the strata
 // family's environment carries no GPU variable.
 //
-// lighttransport_glm53: the GLM runner's CLI is not characterized, so the
-// user's arguments pass through unchanged and no model path is supplied; only
-// `--serve` (inserted by the launcher) and `--gpu` (frontend-owned) are
-// rejected, and a non-empty `gpus` list is refused (unsupported_mode).
+// lighttransport_glm53 (SP5 M2 Task 7, D-8): the pass-through is retired — any
+// user argument is refused (the parity table's mapped-away launcher-flag rows
+// land here instead). The argv is composed from the selected model's directory
+// (its pack) and the typed Glm53LaunchArgs, in Maya's launcher form:
+// `--glm-pack <pack> --max-context <N> --prefill auto --kv-streaming on`
+// (maya.py:1816-1818), with `--parallel <N>` last only for 2..8 (:1875, :2742).
+// A non-empty `gpus` list stays refused (unsupported_mode): the GLM runner takes
+// no --gpu; the typed glm.gpu list reaches the child's environment (Task 4).
 //
 // In both profiles, values containing NUL are rejected.
 [[nodiscard]] EngineArgumentsResult build_engine_arguments(EngineArgumentsProfile profile,
@@ -71,7 +87,8 @@ struct EffortEndArguments final {
                                                            const CanonicalRoot& models_root,
                                                            const std::vector<std::string>& user_arguments,
                                                            const std::vector<unsigned>& gpus = {},
-                                                           bool mtp_on = true);
+                                                           bool mtp_on = true,
+                                                           const Glm53LaunchArgs& glm = {});
 
 // SP5 M1 Task 6 (parity row mtp; strata_control/draft_layer.py): MTP_FLAGS verbatim —
 // {"--mtp": value, "--spec-min-p": value, "--batch-mtp": no value} — and the pin's

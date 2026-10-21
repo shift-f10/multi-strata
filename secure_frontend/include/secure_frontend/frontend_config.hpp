@@ -257,6 +257,7 @@ struct VisionConfig final {
 // refused by name when engine.profile is explicitly "qwen".
 struct GlmSettings final {
   std::int64_t thinking_budget{32768};              // glm.thinking_budget (server.py:3440 default 32768; cap added, C-1)
+  std::int64_t max_context{32768};                  // glm.max_context (Maya's DEFAULT_CONTEXT, maya.py:2524; bound added, C-1)
   std::optional<GlmReasoningEffort> reasoning_effort;  // glm.reasoning_effort (unset: the request's; validator server.py:3234)
   bool fit_max_tokens{false};                       // glm.fit_max_tokens (Maya reads `is True` — server.py:3427; unlike engine's true)
   bool experimental_speed_projection{false};        // glm.experimental_speed_projection (server.py:3255/3441: truthy or)
@@ -264,6 +265,8 @@ struct GlmSettings final {
   std::string layer_split{"auto"};                  // glm.layer_split (Maya default "auto"; :1210-1213; closed grammar added, C-1)
   std::optional<std::string> tokenizer;             // glm.tokenizer (absolute store path, added rule C-1; :3359)
   std::optional<std::string> model_name;            // glm.model_name (served model id, added bound C-1; :3425)
+  bool rows_present{false};                         // any glm.* row was present in the config (R-T3-a: the launch
+                                                    // refuses the rows when a manifest names the qwen profile)
 };
 
 struct EngineLaunch final {

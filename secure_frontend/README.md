@@ -359,6 +359,7 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `glm.layer_split` | string | `auto` | - | - | First layer of each later GPU's share (rising numbers, e.g. 18 or 16,32), or auto; the GLM engine's --layer-split. |
 | `glm.tokenizer` | string | unset | - | - | Absolute tokenizer-pack path for the GLM engine (default: the pack named by the model). |
 | `glm.model_name` | string | unset | - | - | Served model id for the GLM engine (1-256 characters; a managed model takes its identity from the manifest). |
+| `glm.max_context` | integer | `32768` | 1-1048576 | - | GLM context length in tokens the engine is started with (Maya's default 32768). |
 <!-- config-keys:end -->
 
 `roots.secret` defaults to the config file's directory only for a `file:` token

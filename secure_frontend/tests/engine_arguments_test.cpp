@@ -117,23 +117,9 @@ void rejects_invalid_relative_artifact_path() {
   }
 }
 
-void glm_profile_passes_arguments_through_without_native() {
-  const auto root = models_root();
-  const std::vector<std::string> user{"--model", "/x/glm.gguf", "--tokens", "/x/tok"};
-  const auto result = secure_frontend::build_engine_arguments(kGlm, manifest(), root, user);
-  const auto* args = std::get_if<std::vector<std::string>>(&result);
-  expect(args != nullptr, "GLM pass-through must build");
-  if (args) expect(*args == user, "GLM arguments must pass through unchanged with no --native");
-  for (const std::string bad : {"--serve", "--serve=1"}) {
-    const auto r = secure_frontend::build_engine_arguments(kGlm, manifest(), root, {bad});
-    const auto* e = std::get_if<secure_frontend::EngineArgumentsError>(&r);
-    expect(e != nullptr && e->code == secure_frontend::EngineArgumentsErrorCode::owned_flag, "GLM must reject " + bad);
-  }
-  const auto nul = secure_frontend::build_engine_arguments(kGlm, manifest(), root, {std::string("--gpu\0 0", 8)});
-  expect(std::holds_alternative<secure_frontend::EngineArgumentsError>(nul), "GLM: NUL in an argument must be rejected");
-  const auto batch = secure_frontend::build_engine_arguments(kGlm, manifest(), root, {"--batch", "2"});
-  expect(std::holds_alternative<std::vector<std::string>>(batch), "GLM: the Strata deny-list does not apply");
-}
+// SP5 M2 Task 7 (D-8): the old "glm_profile_passes_arguments_through_without_native"
+// case retired with the pass-through; glm_rejects_every_engine_argument replaces it
+// (every former pass-through form is now a named error).
 
 // Spec §3.9: GPUs are selected only by the typed list, rendered as the engine's own --gpu before --native.
 void engine_args_render_typed_gpu_and_deny_gpu_passthrough() {
@@ -152,15 +138,17 @@ void engine_args_render_typed_gpu_and_deny_gpu_passthrough() {
     expect(secure_frontend::validate_engine_user_arguments(kStrata, {bad, "1"}).has_value(),
            "engine.args with --gpu fails validation, before anything is spawned: " + bad);
   }
-  const auto glm = secure_frontend::build_engine_arguments(kGlm, manifest(), root, {"--model", "/x"}, {0U});
+  const auto glm = secure_frontend::build_engine_arguments(kGlm, manifest(), root, {}, {0U});
   const auto* glm_error = std::get_if<secure_frontend::EngineArgumentsError>(&glm);
   expect(glm_error != nullptr && glm_error->code == secure_frontend::EngineArgumentsErrorCode::unsupported_mode,
-         "GPU selection is refused for the uncharacterized GLM CLI");
-  // The GLM branch passes unknown arguments through, but --gpu is frontend-owned for every profile.
+         "GPU selection is refused for the GLM profile (the typed glm.gpu list rides the child environment, Task 4)");
+  // SP5 M2 Task 7 (D-8, C-5): engine.args is refused outright under glm53 — including the
+  // frontend-owned --gpu forms the retired pass-through used to reject by name.
   for (const std::string bad : {"--gpu", "--gpu=0"}) {
-    const auto r = secure_frontend::build_engine_arguments(kGlm, manifest(), root, {"--model", "/x", bad, "1"});
+    const auto r = secure_frontend::build_engine_arguments(kGlm, manifest(), root, {bad, "1"});
     const auto* e = std::get_if<secure_frontend::EngineArgumentsError>(&r);
-    expect(e != nullptr && e->code == secure_frontend::EngineArgumentsErrorCode::owned_flag, "GLM: --gpu via --engine-arg is refused: " + bad);
+    expect(e != nullptr && e->code == secure_frontend::EngineArgumentsErrorCode::not_accepted,
+           "GLM: engine.args is refused outright, --gpu included: " + bad);
   }
 }
 
@@ -353,6 +341,98 @@ void managed_launch_renders_typed_gpu_list() {
   expected.insert(expected.end(), {"--gpu", "0,2", "--layer-split", "auto"});  // two GPUs compose the split (:2938)
   expect(launch->engine_args == expected, "the typed engine.gpu list becomes the engine's own --gpu");
 }
+
+// SP5 M2 Task 7 (D-8): the GLM launch is composed, not passed through — Maya's launcher
+// base (maya.py:1816-1818) plus --parallel last (set_arg :1875; choices 1..8 :2742).
+// The manifest's model directory is the pack (--glm-pack is the pack root; Maya puts the
+// tokenizer at <pack>/tokenizer, maya.py:1817).
+void glm_launch_argv_matches_mayas_launcher_form() {
+  const auto root = models_root();
+  const std::vector<std::string> base{"--glm-pack", secure_frontend::path_to_utf8((root.path() / "qwen").make_preferred()),
+                                      "--max-context", "32768", "--prefill", "auto", "--kv-streaming", "on"};
+  const secure_frontend::Glm53LaunchArgs defaults;  // Maya's DEFAULT_CONTEXT and parallel 1
+  const auto result = secure_frontend::build_engine_arguments(kGlm, manifest(), root, {}, {}, true, defaults);
+  const auto* args = std::get_if<std::vector<std::string>>(&result);
+  expect(args != nullptr, "the composed GLM launch builds");
+  if (args != nullptr) {
+    expect(*args == base, "the argv equals Maya's launcher form (maya.py:1816-1818), --parallel absent at 1");
+    expect(std::find(args->begin(), args->end(), "--serve") == args->end(), "no --serve in the argv tail (:4 inserts it)");
+    for (const std::string owned : {"--native", "--pack", "--gpu", "--dflash", "--expert-profile", "--batch", "--slots"})
+      expect(std::find(args->begin(), args->end(), owned) == args->end(), "no owned or §4 flag appears: " + owned);
+  }
+  auto parallel = defaults;
+  parallel.parallel = 2;
+  const auto with_parallel = secure_frontend::build_engine_arguments(kGlm, manifest(), root, {}, {}, true, parallel);
+  auto expected = base;
+  expected.insert(expected.end(), {"--parallel", "2"});
+  expect(std::holds_alternative<std::vector<std::string>>(with_parallel) &&
+             std::get<std::vector<std::string>>(with_parallel) == expected,
+         "replicas.parallel 2 renders --parallel last (maya.py:1875)");
+}
+
+// The bounds Maya's launcher enforces: --context is a positive token count and
+// --parallel only ever reaches its config through choices 1-8 (maya.py:2742).
+void glm_context_and_parallel_bounds_enforced() {
+  const auto root = models_root();
+  for (const std::int64_t count : {0, 9, 100}) {
+    secure_frontend::Glm53LaunchArgs args;
+    args.parallel = count;
+    const auto r = secure_frontend::build_engine_arguments(kGlm, manifest(), root, {}, {}, true, args);
+    expect(std::holds_alternative<secure_frontend::EngineArgumentsError>(r), "parallel out of Maya's 1-8 is refused: " + std::to_string(count));
+  }
+  for (const std::int64_t ctx : {0, 1048577}) {
+    secure_frontend::Glm53LaunchArgs args;
+    args.max_context = ctx;
+    const auto r = secure_frontend::build_engine_arguments(kGlm, manifest(), root, {}, {}, true, args);
+    expect(std::holds_alternative<secure_frontend::EngineArgumentsError>(r), "max_context out of bounds is refused: " + std::to_string(ctx));
+  }
+  for (const std::int64_t count : {1, 2, 8}) {
+    secure_frontend::Glm53LaunchArgs args;
+    args.parallel = count;
+    expect(std::holds_alternative<std::vector<std::string>>(
+               secure_frontend::build_engine_arguments(kGlm, manifest(), root, {}, {}, true, args)),
+           "parallel within 1-8 builds: " + std::to_string(count));
+  }
+  secure_frontend::Glm53LaunchArgs edge;
+  edge.max_context = 1048576;
+  expect(std::holds_alternative<std::vector<std::string>>(
+             secure_frontend::build_engine_arguments(kGlm, manifest(), root, {}, {}, true, edge)),
+         "the schema's top context builds");
+}
+
+// D-8 (C-5): the SP1 pass-through is retired — every engine.args entry under the glm53
+// profile fails by name, so no free --flag can reach the Maya engine's CLI.
+void glm_rejects_every_engine_argument() {
+  const auto root = models_root();
+  const std::vector<std::string> retired{"--model", "/x/glm.gguf", "--tokens", "/x/tok", "--batch", "2", "--max-context", "32768",
+                                         "--serve", "--serve=1", "--gpu", "--gpu=0", std::string("--gpu\0 0", 8)};
+  for (const auto& argument : retired) {
+    const auto r = secure_frontend::build_engine_arguments(kGlm, manifest(), root, {argument});
+    const auto* e = std::get_if<secure_frontend::EngineArgumentsError>(&r);
+    expect(e != nullptr, "glm53 refuses every engine argument: " + argument);
+  }
+  expect(secure_frontend::validate_engine_user_arguments(kGlm, {"--max-context", "32768"}).has_value(),
+         "engine.args with glm53 fails validation before startup (config load)");
+  expect(!secure_frontend::validate_engine_user_arguments(kGlm, {}).has_value(),
+         "no engine.args with glm53 validates (the composition needs none)");
+}
+
+// Ruling R-T3-a: the config accepts glm.* rows while engine.profile is absent because a
+// managed model's manifest decides the profile; the launch refuses the rows for a qwen
+// manifest by name (Task 7).
+void managed_glm_rows_refused_for_qwen_manifest() {
+  secure_frontend_test::cli::CliHarness h;
+  (void)secure_frontend_test::cli::install(h);
+  h.make_managed("m:t");
+  std::string text = secure_frontend_test::read_file(h.config);
+  text.insert(text.find("\"pull\""), "\"glm\": {\"thinking_budget\": 4096, \"model_name\": \"glm\"}, ");
+  secure_frontend_test::write_file(h.config, text);
+  const auto composed = secure_frontend::compose_engine_launch(h.validated_config().get(), false);
+  const auto* failure = std::get_if<secure_frontend::LaunchFailure>(&composed);
+  expect(failure != nullptr && !failure->messages.empty() && failure->messages.front().find("glm.") != std::string::npos,
+         "glm.* rows with a qwen-managed model fail closed by name");
+}
+
 // SP5 M1 Task 5 (parity rows reasoning_* / fit_max_tokens). Only ONE of the pin's reasoning values
 // reaches the engine launch: effort_position "end" composes --tail-role-token with the tokenizer's
 // single "system" token id (effort_end_args serve/server.py:2836-2856, appended to the engine argv at
@@ -582,7 +662,6 @@ int main(int argc, char** argv) {
       {"engine_args_reject_owned_and_network_flags", engine_args_reject_owned_and_network_flags},
       {"strata_profile_passes_pack_and_weight_flags_through", strata_profile_passes_pack_and_weight_flags_through},
       {"rejects_invalid_relative_artifact_path", rejects_invalid_relative_artifact_path},
-      {"glm_profile_passes_arguments_through_without_native", glm_profile_passes_arguments_through_without_native},
       {"engine_args_render_typed_gpu_and_deny_gpu_passthrough", engine_args_render_typed_gpu_and_deny_gpu_passthrough},
       {"gpu_list_rejects_malformed_values", gpu_list_rejects_malformed_values},
       {"launch_composed_from_manifest_qwen", launch_composed_from_manifest_qwen},
@@ -592,6 +671,10 @@ int main(int argc, char** argv) {
       {"engine_args_reject_weight_flags_for_managed_model", engine_args_reject_weight_flags_for_managed_model},
       {"launch_refuses_engine_too_old", launch_refuses_engine_too_old},
       {"managed_launch_renders_typed_gpu_list", managed_launch_renders_typed_gpu_list},
+      {"glm_launch_argv_matches_mayas_launcher_form", glm_launch_argv_matches_mayas_launcher_form},
+      {"glm_context_and_parallel_bounds_enforced", glm_context_and_parallel_bounds_enforced},
+      {"glm_rejects_every_engine_argument", glm_rejects_every_engine_argument},
+      {"managed_glm_rows_refused_for_qwen_manifest", managed_glm_rows_refused_for_qwen_manifest},
       {"reasoning_config_reaches_engine_launch_and_env", reasoning_config_reaches_engine_launch_and_env},
       {"mtp_false_drops_the_mtp_arg", mtp_false_drops_the_mtp_arg},
       {"vram_reserve_mib_becomes_the_pinned_flag", vram_reserve_mib_becomes_the_pinned_flag},

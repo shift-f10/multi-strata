@@ -72,6 +72,19 @@ void supervisor_policy_follows_config() {
              supervisor.policy.backoff_initial == secure_frontend::config_defaults::kBackoffInitial,
          "the other policy values come from config_defaults.hpp");
 }
+
+// SP5 M2 Task 7 (Ruling R-T5-b): the glm53 profile speaks Project Maya v1.1.8's wire
+// dialect (Task 5), not the uncharacterized lighttransport one; the qwen profile is
+// unchanged. The same selection stands at the bootstrap site (server_bootstrap.cpp).
+void supervisor_flavor_is_the_maya_dialect_for_glm53() {
+  const auto glm = config_with({{"engine.profile", "\"glm53\""}});
+  const secure_frontend::SupervisorConfig supervisor = secure_frontend::supervisor_config(*glm);
+  expect(supervisor.profile == secure_frontend::NativeChatProfile::glm53, "the chat profile stays glm53");
+  expect(supervisor.flavor == secure_frontend::EngineProtocolFlavor::maya_118,
+         "glm53 selects the maya_118 dialect at the selection site");
+  const secure_frontend::SupervisorConfig plain = secure_frontend::supervisor_config(*config_with({}));
+  expect(plain.flavor == secure_frontend::EngineProtocolFlavor::strata_0143, "the qwen profile keeps the strata dialect");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -79,5 +92,6 @@ int main(int argc, char** argv) {
       {"ready_timeout_defaults_to_900_seconds", ready_timeout_defaults_to_900_seconds},
       {"subsystem_limits_follow_config", subsystem_limits_follow_config},
       {"supervisor_policy_follows_config", supervisor_policy_follows_config},
+      {"supervisor_flavor_is_the_maya_dialect_for_glm53", supervisor_flavor_is_the_maya_dialect_for_glm53},
   }, failures);
 }
