@@ -648,6 +648,10 @@ target_sources(secure_frontend_strata_cli PRIVATE src/strata_cli_network.cpp)
 target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_downloader)
 secure_frontend_set_warnings(secure_frontend_strata_cli)
 
+# SP7 M1 Task 1 (spec D-5): the per-user service unit — rendering, and the
+# enable/disable/status verbs that use it (Task 2).
+secure_frontend_add_library(secure_frontend_service_ops SOURCES src/service_ops.cpp)
+
 # PX §2: the one user-facing binary. SP4 provides only its acquisition verbs (Controller note 1);
 # strata-secure-server never links secure_frontend_acquire or secure_frontend_strata_cli (§7.1).
 add_executable(strata src/strata_main.cpp)
@@ -1398,6 +1402,21 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_server_cli_tests cli_sp2_flags_map_to_schema_keys TIMEOUT 120)
     # SP4 §4.9 d: pure argv parsing, so wine runs it too.
     secure_frontend_add_cases(secure_frontend_server_cli_tests cli_expert_flag_parsing)
+
+    # SP7 M1 Task 1: the hardened service unit (exact text) and the `current`
+    # seam. The internal header lives in src/, like the SP2 launch seams.
+    secure_frontend_add_test_executable(secure_frontend_service_ops_tests tests/service_ops_test.cpp
+        secure_frontend_service_ops secure_frontend_test_support)
+    target_include_directories(secure_frontend_service_ops_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    set(SECURE_FRONTEND_SERVICE_OPS_CASES render_systemd_unit_exact_golden render_systemd_unit_rejects_whitespace_paths
+        render_systemd_unit_rejects_relative_or_empty)
+    secure_frontend_add_cases(secure_frontend_service_ops_tests ${SECURE_FRONTEND_SERVICE_OPS_CASES})
+    if(NOT WIN32)
+        # Symlink layouts are POSIX-only here; the Windows pointer form (current.txt)
+        # arrives with the Task 6 windows-runtime cases.
+        secure_frontend_add_cases(secure_frontend_service_ops_tests
+            resolve_current_target_follows_current_pointer resolve_current_target_plain_install_uses_self)
+    endif()
     secure_frontend_add_cases(secure_frontend_server_cli_tests
         init_writes_config_and_token_then_server_starts init_refuses_to_overwrite_without_force
         init_force_refuses_a_non_regular_config_target init_failure_creates_nothing
