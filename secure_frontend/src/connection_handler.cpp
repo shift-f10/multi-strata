@@ -84,6 +84,8 @@ ConnectionResult deliver_route_result(const NativeSocket socket, RouteResult res
   }
   connection.status = sink.status();
   connection.bytes_out = sink.bytes();
+  connection.streamed = true;
+  connection.code = sink.log_code() == "-" ? std::string_view{} : sink.log_code();  // fixed literals only; empty prints "-"
   if (sink.finished()) {
     half_close_and_drain(socket);
     connection.outcome = ConnectionOutcome::responded;

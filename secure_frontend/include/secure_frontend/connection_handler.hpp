@@ -42,6 +42,7 @@ struct ConnectionResult final {
   std::string_view code;   // a static literal (HttpResponse::log_code); empty when none
   std::size_t bytes_out{0};
   RouteId route{RouteId::other};
+  bool streamed{false};    // the response was an SSE stream (M2)
 };
 
 // Serves one accepted, non-blocking socket through P1-P8 (spec §2.2): header

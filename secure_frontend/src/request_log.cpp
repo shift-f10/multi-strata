@@ -21,7 +21,7 @@ std::string_view route_name(const RouteId route) {
 
 std::string format_request_line(const std::uint64_t sequence, const RequestLogRecord& r) {
   std::string line = "req " + std::to_string(sequence) + " ";
-  line += route_name(r.route);
+  line += r.streamed && r.route == RouteId::chat ? std::string_view{"chat_stream"} : route_name(r.route);
   line += " " + std::to_string(r.status) + " ";
   line += r.code.empty() ? std::string_view{"-"} : r.code;
   line += " " + std::to_string(r.elapsed.count()) + " " + std::to_string(r.bytes_out) + " ";
@@ -32,9 +32,9 @@ std::string format_request_line(const std::uint64_t sequence, const RequestLogRe
 RequestLogRecord log_record_for(const FinishedConnection& f) {
   std::string_view code = f.result.code;
   if (f.result.outcome == ConnectionOutcome::evicted) code = "evicted";
-  else if (f.result.outcome == ConnectionOutcome::client_gone && f.result.status != 0) code = "write_stall";
+  else if (f.result.outcome == ConnectionOutcome::client_gone && f.result.status != 0 && code.empty()) code = "write_stall";
   else if (f.result.outcome == ConnectionOutcome::client_gone && code.empty()) code = "client_gone";
-  return {f.result.route, f.result.status, code, f.elapsed, f.result.bytes_out, f.peer};
+  return {f.result.route, f.result.status, code, f.elapsed, f.result.bytes_out, f.peer, f.result.streamed};
 }
 
 RequestLogger::RequestLogger(const bool enabled, Sink sink, std::function<Clock::time_point()> now)

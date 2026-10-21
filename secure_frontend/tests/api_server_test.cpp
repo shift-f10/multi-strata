@@ -861,6 +861,11 @@ void dos02_resources_return_to_idle() {
     if (c) (void)c->send(chat_request(*r.server, chat_body("")));
     std::this_thread::sleep_for(30ms);
   }
+  for (int index = 0; index < 20; ++index) {
+    secure_frontend::ChatRequestOptions cancel_early;
+    cancel_early.on_item = [](const secure_frontend::SseItem&) { return false; };
+    (void)test_support::chat(*r.server, test_support::chat_body(R"("stream":true)"), cancel_early);
+  }
   bool idle = false;
   for (int i = 0; i < 100 && !idle; ++i) {
     std::this_thread::sleep_for(50ms);
@@ -1238,6 +1243,95 @@ void utf8_timeout_cut_mid_character_returns_length() {
   expect(test_support::stream_finish(streamed) == "length", "timeout is length (decision 4)");
 }
 
+void dos02_stream_disconnect_sends_stop_and_frees_engine() {
+  const auto dir = test_support::make_temp_dir("dos02d");
+  const auto record = dir / "record.txt";
+  auto server = test_support::start_stream_server({"--tokens=10000", "--token-interval-ms=5", "--ready-context=65536",
+                                            "--record-file=" + test_support::utf8_path(record)});
+  expect(server != nullptr, "server ready");
+  if (!server) return;
+  int contents = 0;
+  secure_frontend::ChatRequestOptions options;
+  options.on_item = [&contents](const secure_frontend::SseItem& item) {
+    contents += item.text.find(R"("delta":{"content")") != std::string::npos;
+    return contents < 3;
+  };
+  const auto cancelled = test_support::chat(*server, test_support::chat_body(R"("stream":true,"max_tokens":4096)"), options);
+  expect(cancelled.end == ChatExchangeEnd::cancelled, "the client closed after 3 content chunks");
+  expect(test_support::file_has_line(record, "STOP", 2s), "the frontend sent STOP to the engine");
+  const auto start = std::chrono::steady_clock::now();
+  const auto next = test_support::chat(*server, test_support::chat_body(R"("max_tokens":1)"), {.timeout = 3s});
+  expect(next.head.status == 200 && std::chrono::steady_clock::now() - start < 1s, "the next request is served within 1 s");
+}
+
+// A client that never reads (4 KiB receive buffer) while the engine streams 16 MiB.
+struct StalledStream final {
+  std::filesystem::path record;
+  std::unique_ptr<test_support::ServerProcess> server;
+  std::optional<secure_frontend::LoopbackStreamConnection> slow;
+  StalledStream() {
+    const auto dir = test_support::make_temp_dir("stall");
+    record = dir / "record.txt";
+    // Volume, not time (Windows Sleep(1) is ~15.6 ms; SP0 S2 saw Winsock accept one 32 MiB *blocking* send whole): 15 MiB at once, then
+    // 1024 more tokens at 50 ms keep the generation running for ~50 s while the unread socket fills.
+    server = test_support::start_stream_server({long_token_ids(), "--tokens=16384", "--burst-tokens=15360", "--token-interval-ms=50", "--ready-context=65536",
+                                         "--record-file=" + test_support::utf8_path(record)},
+                                        {{"limits.http.write_stall_ms", "500"}, {"limits.chat.max_completion_tokens", "16384"},
+                                         {"limits.chat.max_generated_bytes", "16777216"}});
+    if (server) slow = test_support::open_raw(*server, test_support::chat_body(R"("stream":true,"max_tokens":16384)"), 4096);
+  }
+};
+
+void dos02_slow_stream_reader_hits_write_stall() {
+  StalledStream stalled;
+  expect(stalled.server && stalled.slow, "server ready, slow client connected");
+  if (!stalled.server || !stalled.slow) return;
+  expect(test_support::file_has_line(stalled.record, "STOP", 45s), "no progress for write_stall_ms (500) cancels with STOP");
+  const auto next = test_support::chat(*stalled.server, test_support::chat_body(R"("max_tokens":1)"), {.timeout = 5s});
+  expect(next.head.status == 200, "the worker and the engine are free again");
+}
+
+void stream_cut_has_no_terminal_chunk() {
+  StalledStream stalled;
+  expect(stalled.server && stalled.slow, "server ready, slow client connected");
+  if (!stalled.server || !stalled.slow) return;
+  expect(test_support::file_has_line(stalled.record, "STOP", 45s), "the stall cut the stream");
+  const auto read = secure_frontend::read_chat_exchange(*stalled.slow, {.timeout = 30s});
+  expect(read.streamed && read.end == ChatExchangeEnd::cut && !read.terminal_chunk_seen && !read.done_seen,
+         "a cut stream ends without [DONE] and without the terminal chunk, so SDKs raise instead of accepting it");
+}
+
+void stream_cancel_during_prefill_frees_engine() {
+  const auto dir = test_support::make_temp_dir("prefill");
+  const auto record = dir / "record.txt";
+  auto server = test_support::start_stream_server({"--prefill-delay-ms=5000", "--record-file=" + test_support::utf8_path(record)});
+  expect(server != nullptr, "server ready");
+  if (!server) return;
+  secure_frontend::ChatRequestOptions options;
+  options.on_item = [](const secure_frontend::SseItem&) { return false; };  // close right after the role chunk
+  const auto start = std::chrono::steady_clock::now();
+  (void)test_support::chat(*server, test_support::chat_body(R"("stream":true)"), options);
+  expect(test_support::file_has_line(record, "STOP", 1s), "STOP during prefill");
+  expect(std::chrono::steady_clock::now() - start < 2s, "seen within a poll slice, not after the 5 s prefill");
+  const auto next = test_support::chat(*server, test_support::chat_body(R"("max_tokens":1)"), {.timeout = 10s});
+  expect(next.head.status == 200, "the engine serves the next request");
+}
+
+void log_stream_outcomes_use_fixed_codes() {
+  auto server = test_support::start_stream_server({"--tokens=200", "--token-interval-ms=5"}, {{"logging.requests", "true"}});
+  expect(server != nullptr, "server ready");
+  if (!server) return;
+  (void)test_support::chat(*server, test_support::chat_body(R"("stream":true,"max_tokens":2)"));
+  secure_frontend::ChatRequestOptions options;
+  options.on_item = [](const secure_frontend::SseItem& item) { return item.text.find(R"("delta":{"content")") == std::string::npos; };
+  (void)test_support::chat(*server, test_support::chat_body(R"("stream":true,"max_tokens":200)"), options);
+  std::this_thread::sleep_for(500ms);
+  const auto log = server->stderr_text();
+  expect(log.find(" chat_stream 200 - ") != std::string::npos, "a normal stream logs '-': " + log);
+  expect(log.find(" chat_stream 200 client_gone ") != std::string::npos, "a cancelled stream logs client_gone");
+  expect(log.find("fake-model") == std::string::npos && log.find("Hi") == std::string::npos, "no model field or prompt text in the log");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1294,6 +1388,11 @@ int main(int argc, char** argv) {
       {"dos02_slow_reader_never_backpressures_engine", dos02_slow_reader_never_backpressures_engine},
       {"finish_stop_length_and_generated_bytes_cap", finish_stop_length_and_generated_bytes_cap},
       {"utf8_timeout_cut_mid_character_returns_length", utf8_timeout_cut_mid_character_returns_length},
+      {"dos02_stream_disconnect_sends_stop_and_frees_engine", dos02_stream_disconnect_sends_stop_and_frees_engine},
+      {"dos02_slow_stream_reader_hits_write_stall", dos02_slow_stream_reader_hits_write_stall},
+      {"stream_cut_has_no_terminal_chunk", stream_cut_has_no_terminal_chunk},
+      {"stream_cancel_during_prefill_frees_engine", stream_cancel_during_prefill_frees_engine},
+      {"log_stream_outcomes_use_fixed_codes", log_stream_outcomes_use_fixed_codes},
       {"win_refusal_is_read_not_reset", win_refusal_is_read_not_reset},
       {"win_eviction_wakes_worker_within_one_slice", win_eviction_wakes_worker_within_one_slice},
       {"win_disconnect_detected_by_peek", win_disconnect_detected_by_peek},

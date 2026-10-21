@@ -646,7 +646,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         sse_chunked_framing_and_terminal_chunk sink_buffers_on_would_block_and_flushes_later
         sink_write_stall_marks_client_gone sink_send_failure_and_peer_probe_are_gone
         sse_role_content_final_done_sequence sse_include_usage_adds_usage_chunk sse_ids_and_created_constant_per_stream
-        stream_with_no_tokens_has_role_final_done stream_slow_reader_coalesces_deltas stream_tail_deadline_cuts_without_terminal_chunk)
+        stream_with_no_tokens_has_role_final_done stream_slow_reader_coalesces_deltas stream_tail_deadline_cuts_without_terminal_chunk
+        stream_client_gone_sends_stop)
     secure_frontend_add_cases(secure_frontend_sse_tests ${SECURE_FRONTEND_SSE_CASES} TIMEOUT 120)
 
     secure_frontend_add_test_executable(secure_frontend_api_client_tests tests/api_client_test.cpp secure_frontend_api_client)
@@ -894,7 +895,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     set(SECURE_FRONTEND_API_SERVER_M2_CASES
         utf8_non_stream_max_tokens_cut_mid_character_returns_length generation_timeout_returns_text_with_length
         stream_matches_non_stream_text dos02_queue_full_with_streams_is_503_before_headers ext01_extension_fields_rejected_on_stream_path
-        dos02_slow_reader_never_backpressures_engine finish_stop_length_and_generated_bytes_cap utf8_timeout_cut_mid_character_returns_length)
+        dos02_slow_reader_never_backpressures_engine finish_stop_length_and_generated_bytes_cap utf8_timeout_cut_mid_character_returns_length
+        dos02_stream_disconnect_sends_stop_and_frees_engine dos02_slow_stream_reader_hits_write_stall stream_cut_has_no_terminal_chunk
+        stream_cancel_during_prefill_frees_engine log_stream_outcomes_use_fixed_codes)
     secure_frontend_add_cases(secure_frontend_api_server_tests ${SECURE_FRONTEND_API_SERVER_M2_CASES}
         TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
@@ -1044,7 +1047,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     set(SECURE_FRONTEND_CONCURRENCY_CASES dos01_oldest_header_phase_connection_is_evicted dos01_remote_address_cap
         dos01_linger_list_overflow_closes_oldest dos01_linger_closes_on_peer_eof refusal_response_is_fixed_and_small
         gate_first_request_gets_the_slot gate_queue_full_is_busy gate_zero_queue_admits_one_at_a_time gate_fifo_order gate_timeout_returns_timeout
-        request_log_format_and_token_bucket
+        request_log_format_and_token_bucket request_log_names_streamed_chats
         gate_cancelled_waiter_leaves_queue gate_fast_fails_when_engine_not_ready gate_shutdown_refuses_waiters)
     secure_frontend_add_cases(secure_frontend_concurrency_tests ${SECURE_FRONTEND_CONCURRENCY_CASES} TIMEOUT 120)
 

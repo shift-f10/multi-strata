@@ -10,30 +10,61 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
+// How long a sub-16 KiB delta may be held mid-stream before it goes out anyway
+// (ruling t11-age). Well under the 2 s STOP bounds of the DOS-02 cancel tests.
+constexpr auto kPartialFlushHold = std::chrono::milliseconds(500);
+
 // Holds decoded text and renders events only when the sink can take one
 // without blocking: the engine is read at engine speed (spec §2.7).
-// Ruling t8-unused: this task's observer reads only the sink and identity;
-// carrying settings/shutting_down members it would not read trips
-// -Wunused-private-field under clang (-Werror) — Tasks 11/12 add them back
-// where they are read.
+// Ruling t8-unused: members are carried only where they are read (clang
+// -Wunused-private-field under -Werror).
 class StreamObserver final : public GenerationObserver {
  public:
-  StreamObserver(StreamSink& sink, const SseIdentity& identity) : sink_(sink), identity_(identity) {}
+  StreamObserver(StreamSink& sink, const SseIdentity& identity, const ChatStreamSettings& settings)
+      : sink_(sink), identity_(identity), settings_(settings) {}
 
-  void on_text(const std::string_view text) override { pending_ += text; }
+  void on_text(const std::string_view text) override {
+    if (pending_.empty()) pending_since_ = Clock::now();
+    pending_ += text;
+  }
 
   RunCancel on_tick(bool /*progress*/) override {
+    if (sink_.client_gone()) return gone_reason();
     flush_ready();
+    if (sink_.client_gone()) return gone_reason();
     return RunCancel::none;
   }
 
-  // Sends content events while the sink can take one without blocking. Ruling
-  // t10-coalesce: mid-stream ticks emit only FULL 16 KiB deltas — the spec's
-  // "held until the sink can take it, coalesced into ≤ 16 KiB deltas" (§2.7);
-  // the plan's per-tick partial flush sent ~27 small events and landed on the
-  // DOS-02 test's 80-event bound (flaky). Partial tails flush in flush_all.
+  // Ruling t11-age (reconciles t10-coalesce with Task 11's cancellation tests):
+  // a tick sends a FULL 16 KiB delta whenever one is available, and a PARTIAL
+  // delta only after it has waited kPartialFlushHold — so a reading client gets
+  // timely deltas (DOS-02 disconnect tests: 3 content chunks on a 4 KiB stream)
+  // while a never-reading client sees full deltas only (the ≤ 80-event DOS-02
+  // bound holds deterministically: pending crosses 16 KiB long before the hold
+  // expires). Partial tails always flush in flush_all. blocked_since_ tracks
+  // how long output was refused (write_stall vs client_gone).
   void flush_ready() {
-    while (pending_.size() >= api_constants::kMaxDeltaTextBytes && sink_.writable(std::chrono::milliseconds(0))) send_one();
+    for (;;) {
+      if (!sink_.writable(std::chrono::milliseconds(0))) {
+        if (!blocked_since_) blocked_since_ = Clock::now();
+        return;
+      }
+      blocked_since_.reset();
+      if (pending_.size() >= api_constants::kMaxDeltaTextBytes) {
+        send_one();
+        continue;
+      }
+      if (!pending_.empty() && Clock::now() - pending_since_ >= kPartialFlushHold) {
+        send_one();
+        continue;
+      }
+      return;
+    }
+  }
+
+  // write_stall when output was refused for the whole stall window, else client_gone (§8 log codes).
+  [[nodiscard]] RunCancel gone_reason() const {
+    return blocked_since_ && Clock::now() - *blocked_since_ >= settings_.write_stall ? RunCancel::write_stall : RunCancel::client_gone;
   }
 
   // Waits (in poll slices) until the sink can take an event; false on deadline or gone.
@@ -63,7 +94,10 @@ class StreamObserver final : public GenerationObserver {
 
   StreamSink& sink_;
   const SseIdentity& identity_;
+  const ChatStreamSettings& settings_;
   std::string pending_;  // decoded text, bounded by limits.chat.max_generated_bytes
+  Clock::time_point pending_since_{};
+  std::optional<Clock::time_point> blocked_since_;
 };
 
 }  // namespace
@@ -72,15 +106,19 @@ ChatStreamOutcome run_chat_stream(StreamSink& sink, EngineProtocolClient& protoc
                                   const SseIdentity& identity, const ChatStreamSettings& settings,
                                   const std::function<bool()>& shutting_down, const GenerationEnded& generation_ended) {
   ChatStreamOutcome outcome;
-  (void)shutting_down;  // the cancel/shutdown arms land in Tasks 11 and 14
-  StreamObserver observer(sink, identity);
+  (void)shutting_down;  // the shutdown arm lands in Task 14
+  StreamObserver observer(sink, identity, settings);
   (void)sink.send_headers(make_sse_head());
   (void)sink.send_event(render_role_event(identity));
   const GenerationRunResult run = drive_generation(protocol, decoder, settings.run, observer);
   generation_ended(run);  // the Lease is gone from here on: the next generation may start
   outcome.end = run.end;
   if (run.timed_out) outcome.log_code = "generation_timeout";
-  if (run.end != RunEnd::stop && run.end != RunEnd::length) return outcome;  // other ends: Tasks 11, 13, 14
+  if (run.end == RunEnd::cancelled && (run.cancel == RunCancel::client_gone || run.cancel == RunCancel::write_stall)) {
+    outcome.log_code = run.cancel == RunCancel::write_stall ? "write_stall" : "client_gone";
+    return outcome;  // nothing more is written to a gone client (spec §2.6)
+  }
+  if (run.end != RunEnd::stop && run.end != RunEnd::length) return outcome;  // other ends: Task 13, Task 14
   const auto until = Clock::now() + settings.tail_deadline;
   if (!observer.flush_all(until)) return outcome;
   if (!observer.send(render_final_event(identity, run.end == RunEnd::stop ? "stop" : "length"), until)) return outcome;

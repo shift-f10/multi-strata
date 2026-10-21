@@ -349,6 +349,14 @@ void request_log_format_and_token_bucket() {
   off.record(rec);
   expect(lines.size() == before, "logging.requests=false writes nothing per request");
 }
+
+void request_log_names_streamed_chats() {
+  secure_frontend::RequestLogRecord stream{secure_frontend::RouteId::chat, 200, "client_gone", std::chrono::milliseconds(7), 99U,
+                                           secure_frontend::AddressScope::loopback, true};
+  expect(secure_frontend::format_request_line(3, stream) == "req 3 chat_stream 200 client_gone 7 99 loopback", "streamed chat line");
+  stream.streamed = false;
+  expect(secure_frontend::format_request_line(4, stream).find(" chat 200 ") != std::string::npos, "complete chat line unchanged");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -363,6 +371,7 @@ int main(int argc, char** argv) {
       {"gate_queue_full_is_busy", gate_queue_full_is_busy},
       {"gate_zero_queue_admits_one_at_a_time", gate_zero_queue_admits_one_at_a_time},
       {"request_log_format_and_token_bucket", request_log_format_and_token_bucket},
+      {"request_log_names_streamed_chats", request_log_names_streamed_chats},
       {"gate_fifo_order", gate_fifo_order},
       {"gate_timeout_returns_timeout", gate_timeout_returns_timeout},
       {"gate_cancelled_waiter_leaves_queue", gate_cancelled_waiter_leaves_queue},
