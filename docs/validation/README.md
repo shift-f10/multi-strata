@@ -29,6 +29,14 @@ every claim below waits for the owner's own hardware (owner rulings 2026-10-20/2
    Status: ready; **run is owner-side**.
 3. **SP6 GLM eval kit** — `tools/glm-eval/*` per the SP6 design; blocked on the
    owner's decision sheet (`docs/superpowers/handoff/2026-10-16-controller-resume.md` §5.1).
+4. **SP7 offline release validation kit** — `docs/validation/sp7-offline-kit.md`:
+   build the signed artifact (`scripts/release/build_release.sh`, pinned key at
+   build time), air-gap carry, `unshare -rn` unpack, `SHA256SUMS` re-verify,
+   `doctor`/`doctor --deep`, `serve` + local chat, `strata update` accept and
+   `update --rollback` both directions, refusal proofs for unpinned-key and
+   tampered-component. Results hash into the `docs/PROVENANCE.md` release-entry
+   placeholder row. Status: ready (SP7 M2 delivered the tooling); **run is
+   owner-side**; no offline-release/GPU/update-chain claim until the row exists.
 
 ## Parked for the owner (decisions, not runs)
 

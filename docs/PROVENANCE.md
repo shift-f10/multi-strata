@@ -351,6 +351,33 @@ licensed under the ISC license and that this covers only components provided
 by llvm-mingw directly (the bundled LLVM, mingw-w64 and other components keep
 their own licenses).
 
+## Release evidence (SP7 M2 — placeholder)
+
+The SP7 offline release validation kit is `docs/validation/sp7-offline-kit.md`
+(build → air-gap carry → offline validate → record). When a release kit run
+happens on the owner's box, fill this entry — **blank means no claim**:
+
+| field | value |
+|---|---|
+| date | _blank_ |
+| host (GPU box) | _blank_ |
+| source commit tested | _blank_ |
+| release version | _blank_ |
+| pinned release public key (64-hex) | _blank_ |
+| signing key fingerprint used at build | _blank_ |
+| tarball SHA-256 (`strata-<V>-linux-x86_64.tar.gz`) | _blank_ |
+| `.deb` SHA-256 (`strata-secure_<V>_amd64.deb`) | _blank_ |
+| `sha256sum -c SHA256SUMS` verdict | _blank_ |
+| `doctor` / `doctor --deep` verdicts | _blank_ |
+| `serve` + local chat verdict | _blank_ |
+| `update` accept / `update --rollback` verdicts | _blank_ |
+| unpinned-key and tampered-component refusal verdicts | _blank_ |
+| results file SHA-256 | _blank_ |
+
+**No offline-release, GPU, or update-chain claim is made until this entry
+exists.** Windows installer runtime waits for the owner's own hardware on the
+same terms (`NSIS_STATUS.txt` records the toolchain state on agent boxes).
+
 [strata]: https://github.com/Niko1221/Strata/tree/v0.2.1.3
 [unbiased]: https://github.com/robertkarl/UnbiasedStrata/tree/46c46ecfc11d2315512f21f7549b0a7792ccd2ae
 [lighttransport]: https://github.com/lighttransport/Strata/tree/glm53f
