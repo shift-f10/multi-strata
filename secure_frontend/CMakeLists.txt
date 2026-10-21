@@ -629,6 +629,9 @@ secure_frontend_add_library(secure_frontend_sse SOURCES src/sse_encoder.cpp src/
     LINKS secure_frontend_json secure_frontend_api_core secure_frontend_utf8_stream secure_frontend_socket_io)
 secure_frontend_add_library(secure_frontend_chat_stream SOURCES src/chat_stream.cpp
     LINKS secure_frontend_sse secure_frontend_generation_run)
+# SP3 M2 (R-B): loopback-only client for strata run, the tests and strata-api-probe. Never linked into the serve path.
+secure_frontend_add_library(secure_frontend_api_client SOURCES src/loopback_address.cpp src/api_client.cpp
+    LINKS secure_frontend_config secure_frontend_socket_io secure_frontend_api_core)
 
 if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     enable_testing()
@@ -644,6 +647,15 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         sse_role_content_final_done_sequence sse_include_usage_adds_usage_chunk sse_ids_and_created_constant_per_stream
         stream_with_no_tokens_has_role_final_done stream_slow_reader_coalesces_deltas stream_tail_deadline_cuts_without_terminal_chunk)
     secure_frontend_add_cases(secure_frontend_sse_tests ${SECURE_FRONTEND_SSE_CASES} TIMEOUT 120)
+
+    secure_frontend_add_test_executable(secure_frontend_api_client_tests tests/api_client_test.cpp secure_frontend_api_client)
+    if(WIN32)
+        target_link_libraries(secure_frontend_api_client_tests PRIVATE ws2_32)
+    endif()
+    # Real loopback sockets: windows-runtime on Windows.
+    set(SECURE_FRONTEND_API_CLIENT_CASES client_reads_chunked_stream_and_requires_done_and_terminal_chunk client_rejects_event_over_cap
+        client_accepts_only_loopback_address)
+    secure_frontend_add_cases(secure_frontend_api_client_tests ${SECURE_FRONTEND_API_CLIENT_CASES} TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     secure_frontend_add_test_executable(secure_frontend_paths_tests tests/paths_test.cpp secure_frontend_paths)
     secure_frontend_add_cases(secure_frontend_paths_tests
