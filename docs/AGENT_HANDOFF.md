@@ -133,6 +133,15 @@ Approved by rflores during the upstream update; binding.
   for the `v0.2.1.3` pin.
 - New commits drop the `Claude-Session:` trailer (keep `Co-Authored-By`
   literal; existing trailers never rewritten). wine stays uninstalled locally.
+- **Host toolchain 2026-10-21 (controller):** clang 18 + compiler-rt (TSan) +
+  `llvm-symbolizer` live under `.toolchains/clang18/` with `clang`/`clang++`
+  wrapper scripts in `.venv-dev/bin` (they pass `-resource-dir` because the
+  Ubuntu driver hardcodes `/usr/lib/llvm-18`). The `linux-clang` preset with
+  `-fsanitize=thread` builds and runs here; set
+  `TSAN_OPTIONS=external_symbolizer_path=<repo>/.venv-dev/bin/llvm-symbolizer`.
+  SP3 M1's merge gate ran the filtered concurrency suites under TSan: 90/90,
+  zero ThreadSanitizer reports. The `linux-clang-tsan` CI job stays a
+  definition only — the controller runs this gate locally.
 
 ## Current baseline
 
