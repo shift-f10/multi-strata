@@ -8,6 +8,8 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace test_support {
 
@@ -68,10 +70,21 @@ inline secure_frontend::TokenizerPack byte_tokenizer() {
   return pack;
 }
 
+// SP5 M1 Task 12 (Ruling T12-f): the byte pack with the three Qwen vision markers
+// APPENDED (ids 259-261; every existing id stays put). The managed vision e2e's model
+// tokenizer is this pack, so the plan's marker runs resolve as single CONTROL ids.
+inline secure_frontend::TokenizerPack vision_byte_tokenizer() {
+  auto pack = byte_tokenizer();
+  for (const char* marker : {"<|vision_start|>", "<|image_pad|>", "<|vision_end|>"}) {
+    pack.tokens_by_id.emplace_back(marker);
+    pack.token_types.push_back(3);
+  }
+  return pack;
+}
+
 // The same pack as the three files load_local_tokenizer_pack() reads, each
 // written 0600 (SP1's fixture rule) into an existing 0700 directory.
-inline void write_tokenizer_pack(const std::filesystem::path& directory) {
-  const auto pack = byte_tokenizer();
+inline std::vector<std::pair<std::string, std::string>> tokenizer_pack_files(const secure_frontend::TokenizerPack& pack) {
   std::string vocab = "{";
   for (std::size_t id = 0; id < pack.tokens_by_id.size(); ++id) {
     if (id != 0U) vocab += ',';
@@ -89,9 +102,13 @@ inline void write_tokenizer_pack(const std::filesystem::path& directory) {
     types += std::to_string(pack.token_types[index]);
   }
   types += ']';
-  secure_frontend_test::write_file(directory / "vocab.json", vocab, 0600);
-  secure_frontend_test::write_file(directory / "merges.txt", "", 0600);
-  secure_frontend_test::write_file(directory / "token_type.json", types, 0600);
+  return {{"vocab.json", vocab}, {"merges.txt", std::string{}}, {"token_type.json", types}};
+}
+
+inline void write_tokenizer_pack(const std::filesystem::path& directory) {
+  for (const auto& [name, bytes] : tokenizer_pack_files(byte_tokenizer())) {
+    secure_frontend_test::write_file(directory / name, bytes, 0600);
+  }
 }
 
 }  // namespace test_support

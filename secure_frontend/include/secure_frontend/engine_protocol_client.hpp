@@ -147,9 +147,12 @@ class EngineProtocolClient final {
   // transport_write_failed, which the supervisor kills as write_timeout.
   // SP3 (B6, ruling T15-signature): `sampling` carries the schema-bounded
   // temperature/top_p/seed keys between max_new and the ids; empty = greedy.
+  // SP5 M1 Task 12 (Ruling T12-i): `embeddings` non-empty renders the pin's GENI
+  // variant — the same head and ids, with the combined image-embeddings file at the
+  // END of the line (serve/server.py:1778). Empty renders today's GEN byte-for-byte.
   [[nodiscard]] std::optional<EngineProtocolError> begin_generation(
       std::uint32_t max_new_tokens, const std::vector<std::uint32_t>& prompt_token_ids,
-      MonotonicClock::time_point write_deadline, const SamplingParams& sampling = {});
+      MonotonicClock::time_point write_deadline, const SamplingParams& sampling = {}, std::string_view embeddings = {});
   // Reads until DONE. `timeout` is the TOTAL budget for this call, not a
   // per-line allowance. A timeout leaves a generation active so the caller may
   // issue STOP and continue draining; all malformed/terminal failures close it.

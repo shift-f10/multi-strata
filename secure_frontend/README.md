@@ -350,6 +350,7 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `vision.resident` | boolean | `true` | - | - | Keep the encoder running from boot (the pin's eager resident encoder; false: the first image starts it). |
 | `vision.threads` | integer | `0` | 0-256 | - | Encoder CPU threads (0: the tool's own default; cap added, C-1). |
 | `vision.ready_timeout_s` | integer | `300` | 0-86400 | - | Seconds the encoder gets to print READY (0: wait for ever, as at the pin). |
+| `vision.encode_timeout_s` | integer | `300` | 0-86400 | - | Seconds one image encoding may take (0: wait for ever, as at the pin). |
 <!-- config-keys:end -->
 
 `roots.secret` defaults to the config file's directory only for a `file:` token
@@ -375,8 +376,13 @@ executable (the pin's config-named vision exe stays rejected, spec §4); it
 must print READY within `vision.ready_timeout_s` (300 s, the pin's
 VISION_READY_S; 0 waits for ever), and a resident encoder that cannot start
 fails the boot — `vision.enabled` promises images. `vision.resident` false
-waits for the first picture (the request path is Task 12); `vision.max_side`
-and `vision.max_n` cap images on that path; `engine.max_tokens`/
+waits for the first picture (the pin's laziness, :2646). On the request path
+images arrive as `data:` URLs only — an http(s) image URL is refused 400 by
+name, never fetched — `vision.max_side` and `vision.max_n` cap them before
+any decode, `vision.encode_timeout_s` (the pin's VISION_ENCODE_S, :328)
+bounds one ENC round trip, and every staged or encoded scratch file lives
+under `<state>/vision` (owner-private) and is deleted when the request ends.
+`engine.max_tokens`/
 `engine.min_tokens` also reach the child as `--max-tokens`/`--min-tokens`
 exactly as at the pin (:2564-2567), and `vision.no_flash_attn` is the added
 spec §5.1 family flag. Real encode behaviour on real images is proven only by

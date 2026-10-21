@@ -1,5 +1,7 @@
 #include "secure_frontend/subsystem_limits.hpp"
 
+#include "secure_frontend/image_payload.hpp"  // kVisionImageUrlMaxBytes (the pin's IMAGE_URL_MAX)
+
 #include <chrono>
 
 namespace secure_frontend {
@@ -19,6 +21,11 @@ ChatSchemaLimits chat_schema_limits(const FrontendConfig& c) {
   limits.max_message_bytes = c.limits.chat.max_message_bytes;
   limits.max_completion_tokens = c.limits.chat.max_completion_tokens;
   limits.max_generated_bytes = c.limits.chat.max_generated_bytes;
+  // SP5 M1 Task 12 (C-9): the image caps come from the typed family; vision_capable
+  // stays false HERE — only the composed launch (vision.enabled AND launch.mmproj)
+  // can open the content-array gate (Ruling T12-b), and secure_server_main sets it.
+  limits.max_images = static_cast<std::size_t>(c.vision.max_n);
+  limits.max_image_b64_chars = (kVisionImageUrlMaxBytes + 2U) / 3U * 4U;
   return limits;
 }
 

@@ -801,6 +801,131 @@ void dos01_context_rule_is_400_without_gen() {
          "no GEN; the engine never saw a request it would refuse and stays ready");
 }
 
+// --- SP5 M1 Task 12 e2e: the managed model that reads images (C-9 carve-out) ----------
+// Tiny helpers: a base64 encoder and a PNG header with an 8x6 IHDR (the payload gate
+// reads IHDR; nothing decodes pixels on this path).
+std::string b64e(const std::string& raw_bytes) {
+  static constexpr char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string out;
+  for (std::size_t i = 0; i < raw_bytes.size(); i += 3U) {
+    const unsigned b0 = static_cast<unsigned char>(raw_bytes[i]);
+    const unsigned b1 = i + 1U < raw_bytes.size() ? static_cast<unsigned char>(raw_bytes[i + 1U]) : 0U;
+    const unsigned b2 = i + 2U < raw_bytes.size() ? static_cast<unsigned char>(raw_bytes[i + 2U]) : 0U;
+    out += table[b0 >> 2U];
+    out += table[((b0 & 3U) << 4U) | (b1 >> 4U)];
+    out += i + 1U < raw_bytes.size() ? table[((b1 & 15U) << 2U) | (b2 >> 6U)] : '=';
+    out += i + 2U < raw_bytes.size() ? table[b2 & 63U] : '=';
+  }
+  return out;
+}
+std::string png8x6() {
+  const auto be32 = [](const unsigned v) {
+    return std::string{static_cast<char>(v >> 24), static_cast<char>(v >> 16), static_cast<char>(v >> 8),
+                       static_cast<char>(v)};
+  };
+  return std::string("\x89PNG\r\n\x1a\n", 8) + be32(13) + "IHDR" + be32(8) + be32(6) + std::string(9U, '\0');
+}
+std::string image_part(const std::string& url) {
+  return R"({"type":"image_url","image_url":{"url":")" + url + R"("}})";
+}
+std::string vision_body(const std::string& parts, const std::string& model_id = "m:t") {
+  return R"({"model":")" + model_id + R"(","messages":[{"role":"user","content":[)" + parts +
+         R"(]}],"max_tokens":2})";
+}
+
+// Boots the managed vision server: fx m:t (mmproj + byte tokenizer pack) installed in
+// the harness, strata-vision (the fake child) beside the engine, and the fake engine
+// recording its stdin to `record`. Returns nullopt-style on boot failure (expect fires).
+std::unique_ptr<test_support::ServerProcess> start_vision_server(const std::filesystem::path& state,
+                                                                 const std::filesystem::path& record,
+                                                                 std::map<std::string, std::string> literals = {}) {
+  test_support::ServerOptions options;
+  options.managed_vision = true;
+  options.state_dir = state;
+  options.engine_args = {"--record-file=" + test_support::utf8_path(record)};
+  literals["vision.enabled"] = "true";
+  options.config_literals = std::move(literals);
+  auto server = test_support::ServerProcess::start(options);
+  const bool ready = server != nullptr && server->wait_until_listening(10s) &&
+                     server->wait_for_health(test_support::kHealthReady, 15s);
+  expect(ready, "managed+vision server ready" + (server ? ": " + server->stderr_text() : std::string{}));
+  return ready ? std::move(server) : nullptr;
+}
+
+// The C-9 200 path, end to end (plan RED enc_round_trip_reaches_the_prompt): an
+// image_url part on the managed vision model reaches the fake encoder over ENC, the
+// fake engine receives the pin's GENI line (:1778: head, ids, then the combined .sve
+// path at the END), and the request's scratch files are gone afterwards (no LRU in
+// M1, Ruling T12-d). A text request on the same server still writes a plain GEN.
+void enc_round_trip_reaches_the_prompt() {
+  const auto dir = test_support::make_temp_dir("api-vision");
+  const auto state = dir / "state";
+  secure_frontend_test::make_owner_private_directory(state);
+  const auto record = dir / "engine-record.txt";
+  auto server = start_vision_server(state, record);
+  if (server == nullptr) return;
+  const auto body = vision_body(R"({"type":"text","text":"look"},)" + image_part("data:image/png;base64," + b64e(png8x6())));
+  const auto response = raw(*server, chat_request(*server, body));
+  const std::string what = [&response] {
+    if (!response.has_value()) return std::string{"<no response>"};
+    return "status=" + std::to_string(response->status) + " body=" + response->body.substr(0, 400);
+  }();
+  expect(response.has_value() && response->status == 200,
+         "the image request answers like text on the vision model (C-9 200 path): " + what + " server: " + server->stderr_text());
+  const auto text = record_of(record);
+  expect(count_of(text, "GENI ") == 1U, "exactly one GENI line reached the engine");
+  const auto at = text.find("GENI ");
+  std::string line;
+  if (at != std::string::npos) {
+    const auto eol = text.find('\n', at);
+    line = text.substr(at, eol == std::string::npos ? std::string::npos : eol - at);
+  }
+  expect(!line.empty() && line.find(".sve") != std::string::npos,
+         "the GENI tail names the combined embeddings file (pin :1778, :4547-4556): " + line);
+  std::error_code ec;
+  bool leftover = false;
+  for (const auto& entry : std::filesystem::directory_iterator(state / "vision", ec)) {
+    (void)entry;
+    leftover = true;
+  }
+  expect(!leftover, "the staged image and every .sve are deleted when the request ends (T12-d)");
+  const auto text_response = raw(*server, chat_request(*server, R"({"model":"m:t","messages":[{"role":"user","content":"Hi"}],"max_tokens":2})"));
+  expect(text_response.has_value() && text_response->status == 200, "text still answers on the vision server");
+  const auto after = record_of(record);
+  expect(count_of(after, "GENI ") == 1U, "the text request wrote a plain GEN, not a GENI (T12-i)");
+}
+
+// Refusals fire before any write (plan RED oversized_or_bad_base64_rejected_before_decode,
+// server half): bad base64, an unfetched https URL, and one image past vision.max_n all
+// take the fixed 400 naming image_url; the scratch dir stays empty; text serving continues.
+void image_rejections_name_image_url_before_any_write() {
+  const auto dir = test_support::make_temp_dir("api-vision-refuse");
+  const auto state = dir / "state";
+  secure_frontend_test::make_owner_private_directory(state);
+  const auto record = dir / "engine-record.txt";
+  auto server = start_vision_server(state, record, {{"vision.max_n", "1"}});
+  if (server == nullptr) return;
+  for (const auto& url : {std::string{"data:image/png;base64,@@"}, std::string{"https://example.test/a.png"}}) {
+    const auto response = raw(*server, chat_request(*server, vision_body(image_part(url))));
+    expect(response.has_value() && response->status == 400 && response->body.find("\"param\":\"image_url\"") != std::string::npos,
+           "the 400 names image_url before any decode or write: " + url);
+  }
+  const auto two = vision_body(image_part("data:image/png;base64," + b64e(png8x6())) + "," +
+                               image_part("data:image/png;base64," + b64e(png8x6())));
+  const auto over = raw(*server, chat_request(*server, two));
+  expect(over.has_value() && over->status == 400 && over->body.find("\"param\":\"image_url\"") != std::string::npos,
+         "a second image past vision.max_n names image_url (:103 family, re-scoped)");
+  std::error_code ec;
+  bool leftover = false;
+  for (const auto& entry : std::filesystem::directory_iterator(state / "vision", ec)) {
+    (void)entry;
+    leftover = true;
+  }
+  expect(!leftover, "no refusal left a scratch file behind");
+  const auto ok = raw(*server, chat_request(*server, R"({"model":"m:t","messages":[{"role":"user","content":"Hi"}],"max_tokens":2})"));
+  expect(ok.has_value() && ok->status == 200, "refusals do not poison the serving loop");
+}
+
 void chat_response_has_openai_shape() {
   auto r = start_recorded("shape");
   if (!r.server) return;
@@ -1550,6 +1675,8 @@ int main(int argc, char** argv) {
       {"sampling_passthrough_reaches_gen", sampling_passthrough_reaches_gen},
       {"dos01_context_rule_is_400_without_gen", dos01_context_rule_is_400_without_gen},
       {"chat_response_has_openai_shape", chat_response_has_openai_shape},
+      {"enc_round_trip_reaches_the_prompt", enc_round_trip_reaches_the_prompt},
+      {"image_rejections_name_image_url_before_any_write", image_rejections_name_image_url_before_any_write},
       {"dos02_excess_connections_get_503_retry_after", dos02_excess_connections_get_503_retry_after},
       {"dos02_queue_full_is_503", dos02_queue_full_is_503},
       {"dos02_queue_timeout_is_503", dos02_queue_timeout_is_503},

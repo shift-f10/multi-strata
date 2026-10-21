@@ -1,3 +1,4 @@
+#include "secure_frontend/api_errors.hpp"
 #include "secure_frontend/chat_schema.hpp"
 #include "support/test_support.hpp"
 
@@ -20,6 +21,93 @@ void parses_minimal_text_request() {
   expect(request->messages.size() == 2U, "messages should be retained");
   expect(request->messages[1].content == "Hello", "content should be retained");
   expect(request->max_tokens == 42U, "max_tokens should be retained");
+}
+
+// SP5 M1 Task 12 (C-9 carve-out; Ruling T12-b): the content ARRAY opens only for a model
+// the composition proved can read images (vision_capable = vision.enabled AND the manifest's
+// launch.mmproj). Without the flag today's 400 unsupported_parameter "content" stands
+// verbatim; with it, text/image_url parts parse into ChatMessage.parts, the image keeps its
+// data URL, and the caps fire BEFORE any decode: max_n on the count (vision.max_n) and the
+// base64 LENGTH bound on each URL (32 MiB decoded = the pin's IMAGE_URL_MAX, :2474).
+void image_url_parts_accepted_only_for_vision_models() {
+  const std::string body =
+      R"({"model":"m","messages":[{"role":"user","content":[)"
+      R"({"type":"text","text":"look"},)"
+      R"({"type":"image_url","image_url":{"url":"data:image/png;base64,YWJj"}}]}]})";
+  const auto plain = secure_frontend::parse_chat_request(body);  // default limits: no capability
+  const auto* plain_error = std::get_if<secure_frontend::ChatRequestError>(&plain);
+  expect(plain_error != nullptr && plain_error->error == secure_frontend::ApiError::unsupported_parameter &&
+             plain_error->param == "content",
+         "without mmproj the today-400 on content arrays stands (C-9: the carve-out is capability-gated)");
+  expect(!secure_frontend::parse_chat_completion_request(body), "the optional-form gate keeps rejecting arrays");
+
+  secure_frontend::ChatSchemaLimits vision;
+  vision.vision_capable = true;
+  const auto parsed = secure_frontend::parse_chat_request(body, vision);
+  const auto* request = std::get_if<secure_frontend::ChatCompletionRequest>(&parsed);
+  if (request == nullptr) {
+    const auto* error = std::get_if<secure_frontend::ChatRequestError>(&parsed);
+    expect(false, "a vision model accepts the parts array (got " +
+                      std::string{error == nullptr ? "nothing" : secure_frontend::api_error_row(error->error).code} + ")");
+    return;
+  }
+  expect(request->messages.size() == 1U && request->messages[0].parts.size() == 2U, "both parts are retained");
+  expect(request->messages[0].content == "look", "the text parts still drive the content string");
+  expect(request->messages[0].parts[1].image_data_url == "data:image/png;base64,YWJj", "the data URL survives verbatim");
+}
+
+void image_part_caps_and_shape_are_checked_before_decode() {
+  secure_frontend::ChatSchemaLimits vision;
+  vision.vision_capable = true;
+  const auto image = [](const std::string& url) { return "{\"type\":\"image_url\",\"image_url\":{\"url\":\"" + url + "\"}}"; };
+  const auto body = [&](const std::string& parts) {
+    return std::string(R"({"model":"m","messages":[{"role":"user","content":[)") + parts + R"(]}]})";
+  };
+  const auto named_image = [&](const char* expect_why, const std::string& url) {
+    const auto result = secure_frontend::parse_chat_request(body(image(url)), vision);
+    const auto* error = std::get_if<secure_frontend::ChatRequestError>(&result);
+    expect(error != nullptr && error->error == secure_frontend::ApiError::unsupported_parameter &&
+               error->param == "image_url",
+           expect_why);
+  };
+  vision.max_images = 1U;
+  {
+    // Two data-URL images where one is allowed: refused by name, before any decode.
+    const auto second = secure_frontend::parse_chat_request(
+        body(image("data:image/png;base64,YWJj") + "," + image("data:image/png;base64,YWJk")), vision);
+    const auto* second_error = std::get_if<secure_frontend::ChatRequestError>(&second);
+    expect(second_error != nullptr && second_error->error == secure_frontend::ApiError::unsupported_parameter &&
+               second_error->param == "image_url",
+           "max_n: a second image in one request is refused by name");
+  }
+  const auto two = secure_frontend::parse_chat_request(
+      body(image("data:image/png;base64,YWJj") + "," + image("data:image/png;base64,YWJk")), vision);
+  const auto* two_error = std::get_if<secure_frontend::ChatRequestError>(&two);
+  expect(two_error != nullptr && two_error->error == secure_frontend::ApiError::unsupported_parameter &&
+             two_error->param == "image_url",
+         "over max_n names image_url");
+  vision.max_images = 8U;
+  secure_frontend::ChatSchemaLimits tiny_b64 = vision;
+  tiny_b64.max_image_b64_chars = 8U;
+  const auto long_url = "data:image/png;base64," + std::string(64U, 'A');
+  const auto length_result = secure_frontend::parse_chat_request(body(image(long_url)), tiny_b64);
+  const auto* length_error = std::get_if<secure_frontend::ChatRequestError>(&length_result);
+  expect(length_error != nullptr && length_error->error == secure_frontend::ApiError::unsupported_parameter &&
+             length_error->param == "image_url",
+         "the base64 LENGTH cap fires first (never decoded, nothing staged)");
+  // Shape strictness: unknown part keys, a missing/odd image_url member, and an empty array
+  // are plain invalid_request — the plan's parts vocabulary is closed.
+  for (const auto& bad : {body(R"({"type":"text","text":"a","extra":1})"),
+                                body(R"({"type":"image_url","image_url":{}})"),
+                                body(R"({"type":"image_url","image_url":"data:image/png;base64,YWJj"})"),
+                                body(R"({"type":"file"})"),
+                                std::string{"[]"},
+                                body(R"({"type":"text"})")}) {
+    expect(!std::holds_alternative<secure_frontend::ChatCompletionRequest>(secure_frontend::parse_chat_request(bad, vision)),
+           "closed part vocabulary: " + bad);
+  }
+  // An http(s) URL is out for M1 (Ruling T12-a): the same fixed 400 naming image_url.
+  named_image("http(s) image URLs are not fetched in M1", "https://example.test/a.png");
 }
 
 void rejects_unsupported_and_unsafe_features() {
@@ -81,6 +169,8 @@ void renders_openai_completion_shape() {
 int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
       {"parses_minimal_text_request", parses_minimal_text_request},
+      {"image_url_parts_accepted_only_for_vision_models", image_url_parts_accepted_only_for_vision_models},
+      {"image_part_caps_and_shape_are_checked_before_decode", image_part_caps_and_shape_are_checked_before_decode},
       {"rejects_unsupported_and_unsafe_features", rejects_unsupported_and_unsafe_features},
       {"rejects_duplicate_and_malformed_json", rejects_duplicate_and_malformed_json},
       {"renders_escaped_minimal_response", renders_escaped_minimal_response},

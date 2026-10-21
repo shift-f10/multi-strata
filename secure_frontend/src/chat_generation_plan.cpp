@@ -39,19 +39,37 @@ SamplingParams merge_sampling(const SamplingParams& request, const SamplingDefau
   return out;
 }
 
+// SP5 M1 Task 12: the request's image parts, counted in render order (messages
+// outer, parts inner) — the same order the renderer consumes the counts in.
+std::size_t count_image_parts(const ChatCompletionRequest& request) {
+  std::size_t images = 0U;
+  for (const auto& message : request.messages) {
+    for (const auto& part : message.parts) {
+      if (!part.image_data_url.empty()) ++images;
+    }
+  }
+  return images;
+}
+
 }  // namespace
 
 ChatGenerationPlanResult make_qwen_chat_generation_plan(
     const ChatCompletionRequest& request, const TokenizerPack& tokenizer,
     const std::size_t maximum_prompt_tokens, const std::size_t default_max_tokens,
-    const SamplingDefaults& defaults) {
+    const SamplingDefaults& defaults, const std::span<const std::size_t> image_token_counts) {
   if (request.model.empty() || request.messages.empty() || maximum_prompt_tokens == 0U ||
       (request.max_tokens.has_value() && *request.max_tokens == 0U)) {
     return error(ChatGenerationPlanErrorCode::invalid_request,
                  "chat generation request is outside native serving limits");
   }
+  // Ruling T12-f: every image part needs exactly one encoder answer, and no answer may
+  // lack an image part — a mismatch is a route wiring bug, closed here fail-closed.
+  if (count_image_parts(request) != image_token_counts.size()) {
+    return error(ChatGenerationPlanErrorCode::invalid_request,
+                 "image answers do not match the request's image parts");
+  }
 
-  const auto prompt = render_qwen_text_prompt(request.messages);
+  const auto prompt = render_qwen_text_prompt(request.messages, image_token_counts);
   if (!prompt) {
     return error(ChatGenerationPlanErrorCode::prompt_render_failed,
                  "chat messages cannot be represented by the fixed prompt format");
@@ -77,11 +95,18 @@ ChatGenerationPlanResult make_qwen_chat_generation_plan(
 ChatGenerationPlanResult make_glm53_chat_generation_plan(
     const ChatCompletionRequest& request, const TokenizerPack& tokenizer,
     const std::size_t maximum_prompt_tokens, const std::size_t default_max_tokens,
-    const SamplingDefaults& defaults) {
+    const SamplingDefaults& defaults, const std::span<const std::size_t> image_token_counts) {
   if (request.model.empty() || request.messages.empty() || maximum_prompt_tokens == 0U ||
       (request.max_tokens.has_value() && *request.max_tokens == 0U)) {
     return error(ChatGenerationPlanErrorCode::invalid_request,
                  "chat generation request is outside native serving limits");
+  }
+  // The glm53 profile never sees images (Task 11's manifest rules refuse launch.mmproj,
+  // and the schema gate follows the composed capability): any image part or answer
+  // closes the plan.
+  if (count_image_parts(request) != 0U || !image_token_counts.empty()) {
+    return error(ChatGenerationPlanErrorCode::invalid_request,
+                 "the GLM profile cannot serve image parts");
   }
   const auto prompt = render_glm53_text_prompt(request.messages);
   if (!prompt) return error(ChatGenerationPlanErrorCode::prompt_render_failed,

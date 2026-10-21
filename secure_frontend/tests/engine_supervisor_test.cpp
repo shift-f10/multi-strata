@@ -1087,16 +1087,19 @@ std::string read_whole_file(const std::filesystem::path& path) {
   return std::string{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
 }
 
-secure_frontend::ProcessFactory vision_factory(const std::filesystem::path& record, const std::vector<std::string>& args) {
+secure_frontend::ProcessFactory vision_factory(const std::filesystem::path& record, const std::vector<std::string>& args,
+                                               const std::filesystem::path& cwd = {}) {
   // Value captures: the caller's temporaries (the argument list) die at the end of the
   // full expression that stores this factory; the factory runs later, on start().
-  return [record, args](std::uint64_t) -> secure_frontend::SpawnResult {
+  return [record, args, cwd](std::uint64_t) -> secure_frontend::SpawnResult {
     auto child = std::make_unique<secure_frontend::EngineStdioProcess>();
-    const std::vector<std::string> all{"--record-file=" + test_support::utf8_path(record)};
-    std::vector<std::string> argv{all};
+    std::vector<std::string> argv{"--record-file=" + test_support::utf8_path(record)};
     argv.insert(argv.end(), args.begin(), args.end());
-    if (const auto error = child->start({.executable = test_support::fake_vision_child_path(), .arguments = std::move(argv),
-                                         .environment = {}})) {
+    secure_frontend::EngineCommand command{.executable = test_support::fake_vision_child_path(),
+                                           .arguments = std::move(argv),
+                                           .environment = {},
+                                           .working_directory = cwd};
+    if (const auto error = child->start(command)) {
       return secure_frontend::SpawnFailure{error->message};
     }
     return child;
@@ -1158,6 +1161,90 @@ void vision_child_respects_resource_limits() {
          "the oversize line kills; one restart; then the circuit (SP2 policy, PROC/DOS rows)");
   expect(spawns_in(read_whole_file(record)) == 2, "restart once then circuit (spawn count)");
   supervisor.stop();
+}
+
+// SP5 M1 Task 12 (C-9, Ruling T12-e): the pin's ENC round trip (serve/server.py:2752-2780).
+// "ENC <img> <out>" is answered "OK <n>" — n is the image-token count that sizes the
+// prompt's pad run — the .sve lands in the child's cwd, and the child stays up for the
+// next image. After an explicit stop() the role does NOT wake (that stop is shutdown;
+// only a never-started lazy role wakes, the pin's _vision_up at :2646).
+void vision_encode_round_trip_at_the_pin() {
+  const auto dir = test_support::make_temp_dir("vision-enc");
+  const auto record = dir / "record.txt";
+  secure_frontend_test::write_file(dir / "a.img", "imgbytes");
+  secure_frontend::VisionLimits limits;
+  limits.policy.backoff_initial = std::chrono::milliseconds{10};
+  secure_frontend::VisionSupervisor supervisor(vision_factory(record, {"--mmproj", "m", "--model", "n"}, dir), limits);
+  supervisor.start();
+  expect(supervisor.up(), "the role is up");
+  const auto first = supervisor.encode("a.img", "a.sve");
+  const auto* encoded = std::get_if<secure_frontend::VisionEncoded>(&first);
+  expect(encoded != nullptr && encoded->image_tokens == 5U, "the OK line's count is the image-token count (:2778)");
+  expect(secure_frontend_test::read_file(dir / "a.sve") == std::string("\x00sve0", 5U),
+         "the embedding file lands in the child's cwd under the requested name (#480)");
+  const auto second = supervisor.encode("a.img", "b.sve");
+  expect(std::holds_alternative<secure_frontend::VisionEncoded>(second), "the child stays up for the next ENC");
+  expect(spawns_in(read_whole_file(record)) == 1, "one generation serves every ENC");
+  supervisor.stop();
+  const auto after = supervisor.encode("a.img", "c.sve");
+  const auto* error = std::get_if<secure_frontend::VisionEncodeError>(&after);
+  expect(error != nullptr && error->kind == secure_frontend::VisionEncodeError::Kind::not_running &&
+             spawns_in(read_whole_file(record)) == 1,
+         "an explicit stop() is shutdown: encode refuses, it does not wake the role");
+}
+
+// The failure paths at the pin: ERR -> the request fails, the child lives (the pin raises
+// and returns the encoder to the pool); a silent child is killed within the encode timeout
+// (VISION_ENCODE_S, :328) and the role goes stopped so the NEXT request wakes it (:2646);
+// a child that dies after answering is detected on the next attempt and woken.
+void vision_encode_failures_take_the_pinned_paths() {
+  {
+    const auto dir = test_support::make_temp_dir("vision-badenc");
+    const auto record = dir / "record.txt";
+    secure_frontend::VisionSupervisor supervisor(vision_factory(record, {"--mode=badenc"}, dir), secure_frontend::VisionLimits{});
+    supervisor.start();
+    const auto result = supervisor.encode("x.img", "x.sve");
+    const auto* error = std::get_if<secure_frontend::VisionEncodeError>(&result);
+    expect(error != nullptr && error->kind == secure_frontend::VisionEncodeError::Kind::encoder_rejected,
+           "ERR answers close the image, not the role (:2774)");
+    expect(supervisor.up(), "the child stays up after an ERR line");
+    supervisor.stop();
+  }
+  {
+    const auto dir = test_support::make_temp_dir("vision-silent");
+    const auto record = dir / "record.txt";
+    secure_frontend::VisionLimits limits;
+    limits.encode_timeout = std::chrono::milliseconds{200};
+    secure_frontend::VisionSupervisor supervisor(vision_factory(record, {"--mode=silentenc"}, dir), limits);
+    supervisor.start();
+    const auto started = std::chrono::steady_clock::now();
+    const auto first = supervisor.encode("x.img", "x.sve");
+    const auto* error = std::get_if<secure_frontend::VisionEncodeError>(&first);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+    expect(error != nullptr && error->kind == secure_frontend::VisionEncodeError::Kind::no_reply,
+           "a silent encoder is a failed image (:1317 family)");
+    expect(elapsed < std::chrono::seconds{2}, "the encode timeout bounds the wait (200 ms + slack)");
+    expect(!supervisor.up(), "the silent child was killed and reaped: the role is stopped for the next request");
+    const auto second = supervisor.encode("x.img", "x.sve");  // wakes, times out again
+    expect(std::holds_alternative<secure_frontend::VisionEncodeError>(second) && spawns_in(read_whole_file(record)) == 2,
+           "the next request starts the encoder again (pin _vision_up :2646)");
+    supervisor.stop();
+  }
+  {
+    const auto dir = test_support::make_temp_dir("vision-dieenc");
+    const auto record = dir / "record.txt";
+    secure_frontend::VisionSupervisor supervisor(vision_factory(record, {"--mode=dieenc"}, dir), secure_frontend::VisionLimits{});
+    supervisor.start();
+    expect(std::holds_alternative<secure_frontend::VisionEncoded>(supervisor.encode("x.img", "x.sve")),
+           "the first ENC is answered");
+    const auto second = supervisor.encode("x.img", "y.sve");  // the child exited after answering
+    expect(std::holds_alternative<secure_frontend::VisionEncodeError>(second), "a closed child fails the image");
+    expect(!supervisor.up(), "the dead role is stopped, not silently kept 'up'");
+    const auto third = supervisor.encode("x.img", "z.sve");  // wake
+    expect(std::holds_alternative<secure_frontend::VisionEncoded>(third) && spawns_in(read_whole_file(record)) == 2,
+           "the next request wakes a fresh encoder");
+    supervisor.stop();
+  }
 }
 
 // RF4: an exception that escapes the supervisor thread (the factory, the log
@@ -1876,5 +1963,7 @@ int main(int argc, char* argv[]) {
                                                 {"proc04_slow_stdin_write_bounded_by_request_deadline", proc04_slow_stdin_write_bounded_by_request_deadline},
                                                 {"vision_child_launches_with_pinned_args_when_enabled", vision_child_launches_with_pinned_args_when_enabled},
                                                 {"vision_child_respects_resource_limits", vision_child_respects_resource_limits},
+                                                {"vision_encode_round_trip_at_the_pin", vision_encode_round_trip_at_the_pin},
+                                                {"vision_encode_failures_take_the_pinned_paths", vision_encode_failures_take_the_pinned_paths},
                                                }, failures);
 }

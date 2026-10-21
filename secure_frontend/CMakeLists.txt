@@ -228,6 +228,14 @@ add_library(secure_frontend_token_store src/token_store.cpp)
 target_compile_features(secure_frontend_token_store PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_token_store PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+
+# SP5 M1 Task 12: the image_url payload gate (data URL -> strict base64 -> caps -> 0600 staging).
+add_library(secure_frontend_image_payload src/image_payload.cpp)
+target_compile_features(secure_frontend_image_payload PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_image_payload PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_link_libraries(secure_frontend_image_payload PUBLIC secure_frontend_sha256 secure_frontend_secrets
+    secure_frontend_engine_supervisor)
 target_link_libraries(secure_frontend_token_store PUBLIC secure_frontend_paths secure_frontend_secrets)
 target_link_libraries(secure_frontend_token_store PUBLIC secure_frontend_token_reader)
 
@@ -237,7 +245,7 @@ target_include_directories(secure_frontend_subsystem_limits PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
 target_link_libraries(secure_frontend_subsystem_limits PUBLIC secure_frontend_typed_config
     secure_frontend_http_socket_server secure_frontend_chat_execution secure_frontend_chat_schema
-    secure_frontend_engine_supervisor)
+    secure_frontend_engine_supervisor secure_frontend_image_payload)
 
 add_executable(secure-frontend-smoke src/smoke_main.cpp)
 
@@ -291,7 +299,8 @@ secure_frontend_add_library(secure_frontend_generation_gate
 secure_frontend_add_library(secure_frontend_chat_route
     SOURCES src/chat_route.cpp
     LINKS secure_frontend_generation_gate secure_frontend_chat_execution secure_frontend_chat_schema
-          secure_frontend_chat_generation_plan secure_frontend_secrets secure_frontend_api_core)
+          secure_frontend_chat_generation_plan secure_frontend_secrets secure_frontend_api_core
+          secure_frontend_image_payload)
 target_link_libraries(secure_frontend_chat_route PUBLIC secure_frontend_chat_stream)
 
 secure_frontend_add_library(secure_frontend_request_log
@@ -831,6 +840,10 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     target_link_libraries(secure_frontend_test_support PUBLIC secure_frontend_tokenizer_pack)
     # SP3 Task 9 (pre-flight P36): §7.2 bodies (api_errors) and the --config file renderer (config_json.hpp).
     target_link_libraries(secure_frontend_test_support PUBLIC secure_frontend_api_core secure_frontend_typed_config)
+    # SP5 M1 Task 12: the managed-vision harness branch installs an fx model in-process
+    # (publish_staged), so the store/manifest libraries join the support closure.
+    target_link_libraries(secure_frontend_test_support PUBLIC secure_frontend_acquire secure_frontend_model_store
+        secure_frontend_manifest_core)
     if(WIN32)
         target_link_libraries(secure_frontend_test_support PUBLIC ws2_32 advapi32)
     endif()
@@ -893,6 +906,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         net01_workers_add_no_listener net01_ipv6_loopback_listener_only
         max_tokens_above_limit_is_clamped max_tokens_clamped_to_context_room prompt_alone_over_context_is_400
         fit_max_tokens_false_returns_400_like_the_pin
+        enc_round_trip_reaches_the_prompt image_rejections_name_image_url_before_any_write
         idle_unload_respawns_before_the_next_request
         queue_and_answer_room_limits_are_enforced
         aliases_answer_like_the_primary_model
@@ -990,7 +1004,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # fake-engine children. LINUX / WINDOWS: platform-only process cases. Later
     # tasks append case names to these four set() lines only.
     set(SECURE_FRONTEND_SUPERVISOR_UNIT_CASES supervisor_health_literals_per_state proc04_restart_backoff_then_circuit_open proc04_healthy_window_resets_failure_count proc04_missing_engine_opens_circuit_without_spinning proc04_client_err_lines_open_circuit_until_restart supervisor_retires_ended_generation_on_its_own_thread proc04_monitor_fallback_without_pidfd proc04_backoff_survives_stale_wake proc04_fatal_line_before_ready_kills_as_fatal_line proc04_unreaped_child_opens_circuit supervisor_unreaped_at_shutdown_reports_engine_left proc06_nnp_hint_when_exit_status_lags supervisor_exception_opens_circuit supervisor_shutdown_sends_eof_first_then_kills supervisor_lease_outliving_shutdown_is_safe supervisor_wait_wakes_on_lease_release supervisor_wait_wakes_on_shutdown proc06_refuses_privileged_start engine_environment_uses_cache_root_when_set sp3_d2_kill_reason_follows_stop_cause sp3_d2_client_stop_drain_failure_restarts_uncounted sp3_d2_timeout_stop_drain_failure_still_counts sp3_d2_client_stop_counts_when_engine_ended_itself sp3_d2_uncounted_end_resets_count_after_healthy_window sp3_d2_uncounted_streak_is_bounded sp3_d2_done_resets_uncounted_streak sp6_env_strata_family_renders_unchanged sp6_env_forced_values_override_and_add sp6_env_forced_values_reject_never_list sp6_env_forcible_names_are_the_ruled_set sp6_env_hook_derives_values_from_environment sp6_env_hook_suppresses_only_optional_rows sp6_env_refused_family_is_spawn_failure idle_unload_tears_down_then_respawns_on_next_request idle_unload_never_fires_during_a_generation lazy_load_defers_the_first_spawn)
-    set(SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES proc04_recovers_after_transient_crash proc04_monitor_detects_idle_crash proc04_fatal_prefix_kills_engine proc04_ready_timeout_kills_and_counts proc04_drain_failure_kills_and_restarts proc04_no_leak_across_restarts proc02_child_env_is_exact_allowlist supervisor_serving_api_is_thread_safe proc04_slow_stdin_write_bounded_by_request_deadline sp6_env_derived_value_reaches_child vision_child_launches_with_pinned_args_when_enabled vision_child_respects_resource_limits)
+    set(SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES proc04_recovers_after_transient_crash proc04_monitor_detects_idle_crash proc04_fatal_prefix_kills_engine proc04_ready_timeout_kills_and_counts proc04_drain_failure_kills_and_restarts proc04_no_leak_across_restarts proc02_child_env_is_exact_allowlist supervisor_serving_api_is_thread_safe proc04_slow_stdin_write_bounded_by_request_deadline sp6_env_derived_value_reaches_child vision_child_launches_with_pinned_args_when_enabled vision_child_respects_resource_limits vision_encode_round_trip_at_the_pin vision_encode_failures_take_the_pinned_paths)
     set(SECURE_FRONTEND_SUPERVISOR_LINUX_CASES proc05_setsid_grandchild_is_reaped proc05_setsid_grandchild_is_reaped_at_shutdown supervisor_start_refuses_without_wake shutdown_signal_preserves_errno proc05_cgroup_kill_when_delegated)
     set(SECURE_FRONTEND_SUPERVISOR_WINDOWS_CASES proc04_windows_abort_does_not_stall proc04_windows_crash_does_not_stall proc04_windows_write_timeout_kills_engine)
     if(WIN32)
@@ -1104,7 +1118,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_test_executable(secure_frontend_engine_protocol_client_tests tests/engine_protocol_client_test.cpp
         secure_frontend_engine_protocol_client)
     secure_frontend_add_cases(secure_frontend_engine_protocol_client_tests
-        runs_the_solo_protocol stop_and_quit_are_explicit write_deadlines_reach_the_transport refuses_stop_when_not_advertised
+        runs_the_solo_protocol gen_line_unchanged_without_embeddings_geni_with_them stop_and_quit_are_explicit write_deadlines_reach_the_transport refuses_stop_when_not_advertised
         rejects_malformed_and_unexpected_engine_output bounds_and_engine_errors_fail_closed
         prefill_progress_is_bounded_in_both_profiles
         resume_and_reused_progress_is_consumed_in_the_strata_profile
@@ -1159,9 +1173,20 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
 
     secure_frontend_add_test_executable(secure_frontend_chat_schema_tests tests/chat_schema_test.cpp secure_frontend_chat_schema)
     secure_frontend_add_cases(secure_frontend_chat_schema_tests
-        parses_minimal_text_request rejects_unsupported_and_unsafe_features rejects_duplicate_and_malformed_json
+        parses_minimal_text_request image_url_parts_accepted_only_for_vision_models
+        image_part_caps_and_shape_are_checked_before_decode
+        rejects_unsupported_and_unsafe_features rejects_duplicate_and_malformed_json
         renders_escaped_minimal_response
         renders_openai_completion_shape)
+
+    # SP5 M1 Task 12: the image_url payload gate — data URL, strict base64, byte caps and
+    # the four pass-through formats' dimensions, checked before ANY write (0600 staging).
+    secure_frontend_add_test_executable(secure_frontend_image_payload_tests tests/image_payload_test.cpp
+        secure_frontend_image_payload)
+    secure_frontend_add_cases(secure_frontend_image_payload_tests
+        image_payload_stages_valid_images_with_the_pin_key
+        image_payload_rejects_bad_shape_before_any_write
+        image_payload_caps_bytes_and_sides)
 
     # SP3 Task 18: static egress tripwire (spec §6.2) over the server binary itself.
     secure_frontend_add_test_executable(secure_frontend_egress_tests tests/egress_test.cpp secure_frontend_test_support)
@@ -1287,7 +1312,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_test_executable(secure_frontend_chat_generation_plan_tests tests/chat_generation_plan_test.cpp
         secure_frontend_chat_generation_plan)
     secure_frontend_add_cases(secure_frontend_chat_generation_plan_tests
-        composes_schema_prompt_and_tokenizer defaults_output_limit_and_rejects_unsafe_inputs
+        composes_schema_prompt_and_tokenizer vision_marker_runs_join_the_prompt_ids defaults_output_limit_and_rejects_unsafe_inputs
         rejects_missing_or_non_control_framing_tokens does_not_parse_arbitrary_special_literals
         sampling_defaults_merge_under_request_overrides)
 

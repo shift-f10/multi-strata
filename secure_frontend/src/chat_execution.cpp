@@ -198,7 +198,7 @@ std::optional<GenerationFailure> ChatExecutionService::begin(const std::vector<s
     return GenerationFailure::engine_unavailable;
   }
   if (protocol_.begin_generation(static_cast<std::uint32_t>(settings.max_tokens), prompt_ids,
-                                 deadline_after(limits_.generation_timeout), settings.sampling).has_value()) {
+                                 deadline_after(limits_.generation_timeout), settings.sampling, settings.embeddings).has_value()) {
     return protocol_.closed() ? GenerationFailure::engine_unavailable : GenerationFailure::engine_error;
   }
   return std::nullopt;

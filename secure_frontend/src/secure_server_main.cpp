@@ -14,6 +14,7 @@
 #include "secure_frontend/generation_gate.hpp"
 #include "secure_frontend/http_policy.hpp"
 #include "secure_frontend/http_socket_server.hpp"
+#include "secure_frontend/image_payload.hpp"
 #include "secure_frontend/launch_composition.hpp"
 #include "secure_frontend/privilege_check.hpp"
 #include "secure_frontend/process_defaults.hpp"
@@ -138,7 +139,9 @@ int run(const FrontendConfig& config, const bool expert) {
 
   const secure_frontend::Config listener = secure_frontend::listener_config(config);
   // Derived once, before bind/spawn; each subsystem keeps its own const copy.
-  const auto schema_limits = secure_frontend::chat_schema_limits(config);
+  // (SP5 M1 Task 12: vision_capable is filled after compose — see below — so this
+  // stays mutable until the ChatRoute copies it.)
+  auto schema_limits = secure_frontend::chat_schema_limits(config);
   // SP4 §2.3/§4.9 (Task 24b): managed models launch from the installed manifest;
   // --expert keeps SP1's operator path (inventory, roots.tokenizer_pack).
   auto composed = secure_frontend::compose_engine_launch(config, expert);
@@ -157,6 +160,11 @@ int run(const FrontendConfig& config, const bool expert) {
     }
     std::cerr << "[strata] \"mtp\": false - starting without the draft layer (" << flags << " left out)\n";
   }
+  // SP5 M1 Task 12 (C-9, Ruling T12-b): the content-array gate is a MODEL capability —
+  // it opens only when vision.enabled AND the installed manifest declares launch.mmproj
+  // (compose refuses that pairing for glm53, so the gate implies the qwen renderer).
+  // The request itself can never open it.
+  if (config.vision.enabled && launch.vision_mmproj.has_value()) schema_limits.vision_capable = true;
   const auto tokenizer_result = secure_frontend::load_local_tokenizer_pack(*launch.tokenizer_root);
   const auto* tokenizer = std::get_if<secure_frontend::TokenizerPack>(&tokenizer_result);
   if (tokenizer == nullptr) {
@@ -234,6 +242,77 @@ int run(const FrontendConfig& config, const bool expert) {
   secure_frontend::SupervisorPort port(supervisor);
   secure_frontend::GenerationGate gate({.max_queued = config.limits.concurrency.max_queued_generations,
                                         .queue_timeout = config.limits.concurrency.queue_timeout});
+  // SP5 M1 Task 11 (D-9 vision split; Rulings T11-y/T11-ee/T11-z) and Task 12 (C-9):
+  // the supervised strata-vision child and the route's encoder service. Construction
+  // spawns nothing — the resident start below runs only after bind, so a listener that
+  // cannot bind still never leaves an encoder child behind (CFG-01 family). The exe is
+  // OUR distribution's — strata-vision beside the engine executable (the pin's
+  // vision-exe-from-config stays kRejected, spec §4); the mmproj artifact and the
+  // weights come from compose (the manifest's launch.mmproj).
+  std::optional<secure_frontend::VisionSupervisor> vision;
+  std::optional<secure_frontend::VisionService> vision_service;
+  if (config.vision.enabled) {
+    if (!launch.vision_mmproj.has_value() || !launch.vision_model.has_value()) {  // compose guards; fail closed twice
+      std::cerr << "vision: this model declares no mmproj artifact.\n";
+      return EXIT_FAILURE;
+    }
+    // Ruling T12-j: ENC/QUIT names ride protocol lines space-separated, and the GENI
+    // line names the combined file by absolute path — the pin's own #480 shows names
+    // with spaces corrupt that split. A state path holding whitespace can never host
+    // the scratch dir: boot fails closed instead of corrupting the protocol.
+    if (state_dir.string().find_first_of(" \t") != std::string::npos) {
+      std::cerr << "vision: the state directory path must not contain spaces.\n";
+      return EXIT_FAILURE;
+    }
+    // Ruling T12-c: image scratch is <state>/vision, owner-only, and IS the child's
+    // cwd — every ENC/QUIT name is relative to it, as at the pin (#480 again).
+    const std::filesystem::path vision_scratch = state_dir / "vision";
+    if (!secure_frontend::create_owner_only_directory(vision_scratch)) {
+      std::cerr << "vision: unable to prepare the image scratch directory.\n";
+      return EXIT_FAILURE;
+    }
+    std::filesystem::path vision_exe = config.engine.executable.path().parent_path() / "strata-vision";
+#if defined(_WIN32)
+    vision_exe += L".exe";
+#endif
+    if (std::error_code ec; !std::filesystem::exists(vision_exe, ec) || ec) {
+      std::cerr << "vision: no strata-vision beside the engine executable.\n";
+      return EXIT_FAILURE;
+    }
+    const auto argv = secure_frontend::compose_vision_arguments(secure_frontend::VisionChildSpec{
+        .mmproj = *launch.vision_mmproj, .model = *launch.vision_model, .threads = config.vision.threads,
+        .max_tokens = config.engine.max_tokens, .min_tokens = config.engine.min_tokens,
+        .no_flash_attn = config.vision.no_flash_attn});
+    // The engine's confinement family minus the per-generation cgroup delegation
+    // (recorded M1 gap, AGENT_HANDOFF); the environment stays an empty allowlist and
+    // the cwd is the scratch dir (T11-ee, image half landed with Task 12).
+    const std::filesystem::path exe = std::move(vision_exe);
+    const std::filesystem::path vision_cwd = vision_scratch;
+    const bool nnp = secure_frontend::config_defaults::kNoNewPrivilegesDefault && !config.engine.allow_new_privileges;
+    secure_frontend::ProcessFactory vision_factory = [exe, argv, vision_cwd, nnp](std::uint64_t) -> secure_frontend::SpawnResult {
+      auto child = std::make_unique<secure_frontend::EngineStdioProcess>();
+      secure_frontend::EngineCommand command{.executable = exe,
+                                             .arguments = argv,
+                                             .environment = {},
+                                             .working_directory = vision_cwd,
+                                             .no_new_privileges = nnp,
+                                             .kill_exit_code = secure_frontend::kVisionKillExitCode,
+                                             .insert_serve = false};  // the pin's reader_args carry no --serve (T11-ff)
+      if (const auto error = child->start(command)) return secure_frontend::SpawnFailure{error->message};
+      return child;
+    };
+    secure_frontend::VisionLimits vision_limits;
+    // The STRATA_VISION_READY_S counterpart, typed (vision.ready_timeout_s; 0 = wait
+    // for ever, the pin's :291 rule) — and the STRATA_VISION_ENCODE_S row
+    // (vision.encode_timeout_s, :328; 0 = for ever) for one ENC round trip.
+    vision_limits.policy.ready_timeout = std::chrono::milliseconds{std::chrono::seconds{config.vision.ready_timeout_s}};
+    vision_limits.encode_timeout = std::chrono::milliseconds{std::chrono::seconds{config.vision.encode_timeout_s}};
+    vision.emplace(std::move(vision_factory), std::move(vision_limits));
+    secure_frontend::VisionService::Limits service_limits;
+    service_limits.payload.max_side = config.vision.max_side;  // vision.max_side, the pre-decode probe (T12-c)
+    service_limits.scratch_dir = vision_scratch;
+    vision_service.emplace(*vision, std::move(service_limits));
+  }
   secure_frontend::ChatRoute chat_route(
       secure_frontend::ChatRouteConfig{.schema = schema_limits, .model_id = model_id, .profile = supervisor_config.profile,
                                        .max_prompt_tokens = config.limits.chat.max_prompt_tokens,
@@ -247,7 +326,8 @@ int run(const FrontendConfig& config, const bool expert) {
                                        .queue_timeout = config.limits.concurrency.queue_timeout,
                                        .write_stall = config.limits.http.write_stall,
                                        .response_write_deadline = config.limits.http.response_write_deadline,
-                                       .stream_keepalive = config.limits.http.stream_keepalive},
+                                       .stream_keepalive = config.limits.http.stream_keepalive,
+                                       .vision = vision_service.has_value() ? &*vision_service : nullptr},
       port, gate, *tokenizer);
   // Spec §4.1: every request goes through the header-first router (Host,
   // Origin, preflight, bearer token, route table, Content-Type, body limit)
@@ -291,64 +371,19 @@ int run(const FrontendConfig& config, const bool expert) {
     secure_frontend::EngineSupervisor& supervisor;
     ~StopSupervisor() { supervisor.shutdown(secure_frontend::config_defaults::kShutdownBound); }
   } stop_supervisor{supervisor};
-  // SP5 M1 Task 11 (D-9 vision split; Rulings T11-y/T11-ee/T11-z): the supervised
-  // strata-vision child. Its exe is OUR distribution's — strata-vision beside the
-  // engine executable (the pin's vision-exe-from-config stays kRejected, spec §4);
-  // the mmproj artifact and the weights come from compose (the manifest's
-  // launch.mmproj). resident (the pin's eager default, serve/server.py:2511) starts
-  // the child now: no READY within the policy, and boot fails — vision.enabled is a
-  // promise of images. resident=false stays stopped until the first image wakes it
-  // (the request path is Task 12). Declared after stop_supervisor, so its child is
-  // gone (dtor stops it) before the engine supervisor's shutdown.
-  std::unique_ptr<secure_frontend::VisionSupervisor> vision;
-  if (config.vision.enabled) {
-    if (!launch.vision_mmproj.has_value() || !launch.vision_model.has_value()) {  // compose guards; fail closed twice
-      std::cerr << "vision: this model declares no mmproj artifact.\n";
+  // SP5 M1 Task 11 (Ruling T11-z): resident (the pin's eager default, serve/server.py:
+  // 2511) starts the encoder now — no READY within the policy, and boot fails, because
+  // vision.enabled is a promise of images. resident=false stays stopped until the FIRST
+  // image wakes it: the pin's _vision_up laziness (:2646) lives in VisionSupervisor::
+  // encode. The objects were built before the ChatRoute; the spawn happens here, after
+  // bind, so a listener that cannot bind still never leaves an encoder child behind.
+  if (config.vision.enabled && config.vision.resident) {
+    vision->start();
+    if (!vision->up()) {
+      std::cerr << "vision: the encoder did not reach READY; refusing to serve without it.\n";
       return EXIT_FAILURE;
     }
-    std::filesystem::path vision_exe = config.engine.executable.path().parent_path() / "strata-vision";
-#if defined(_WIN32)
-    vision_exe += L".exe";
-#endif
-    if (std::error_code ec; !std::filesystem::exists(vision_exe, ec) || ec) {
-      std::cerr << "vision: no strata-vision beside the engine executable.\n";
-      return EXIT_FAILURE;
-    }
-    const auto argv = secure_frontend::compose_vision_arguments(secure_frontend::VisionChildSpec{
-        .mmproj = *launch.vision_mmproj, .model = *launch.vision_model, .threads = config.vision.threads,
-        .max_tokens = config.engine.max_tokens, .min_tokens = config.engine.min_tokens,
-        .no_flash_attn = config.vision.no_flash_attn});
-    // The engine's confinement family minus the per-generation cgroup delegation
-    // (recorded M1 gap, AGENT_HANDOFF); environment stays an empty allowlist and
-    // cwd the prepared state dir (T11-ee; image scratch arrives with Task 12).
-    const std::filesystem::path exe = std::move(vision_exe);
-    const std::filesystem::path vision_cwd = state_dir;
-    const bool nnp = secure_frontend::config_defaults::kNoNewPrivilegesDefault && !config.engine.allow_new_privileges;
-    secure_frontend::ProcessFactory vision_factory = [exe, argv, vision_cwd, nnp](std::uint64_t) -> secure_frontend::SpawnResult {
-      auto child = std::make_unique<secure_frontend::EngineStdioProcess>();
-      secure_frontend::EngineCommand command{.executable = exe,
-                                             .arguments = argv,
-                                             .environment = {},
-                                             .working_directory = vision_cwd,
-                                             .no_new_privileges = nnp,
-                                             .kill_exit_code = secure_frontend::kVisionKillExitCode,
-                                             .insert_serve = false};  // the pin's reader_args carry no --serve (T11-ff)
-      if (const auto error = child->start(command)) return secure_frontend::SpawnFailure{error->message};
-      return child;
-    };
-    secure_frontend::VisionLimits vision_limits;
-    // The STRATA_VISION_READY_S counterpart, typed (vision.ready_timeout_s; 0 = wait
-    // for ever, the pin's :291 rule).
-    vision_limits.policy.ready_timeout = std::chrono::milliseconds{std::chrono::seconds{config.vision.ready_timeout_s}};
-    vision = std::make_unique<secure_frontend::VisionSupervisor>(std::move(vision_factory), std::move(vision_limits));
-    if (config.vision.resident) {
-      vision->start();
-      if (!vision->up()) {
-        std::cerr << "vision: the encoder did not reach READY; refusing to serve without it.\n";
-        return EXIT_FAILURE;
-      }
-      std::cerr << "[strata] vision: the encoder is resident\n";
-    }
+    std::cerr << "[strata] vision: the encoder is resident\n";
   }
   std::cout << "Secure server listening on http://" << authority << " (authenticated; Ctrl-C to stop)\n";
   std::cout.flush();
@@ -375,9 +410,11 @@ int run(const FrontendConfig& config, const bool expert) {
   const auto pool_exit = pool.run_until([&supervisor] { return supervisor.stop_requested(); }, [&gate] { gate.shutdown(); });
   if (pool_exit == secure_frontend::PoolExit::listener_failed) {
     std::cerr << "listener stopped\n";
+  if (vision) vision->stop();  // the encoder role first: spawned last, stopped first
     supervisor.shutdown(secure_frontend::config_defaults::kShutdownBound);
     return EXIT_FAILURE;
   }
+  if (vision) vision->stop();  // the encoder role first: spawned last, stopped first
   supervisor.shutdown(secure_frontend::config_defaults::kShutdownBound);
   // Spec C4: exit 0 means no engine is left; an unreaped one was logged.
   return supervisor.engine_left_unreaped() ? EXIT_FAILURE : EXIT_SUCCESS;

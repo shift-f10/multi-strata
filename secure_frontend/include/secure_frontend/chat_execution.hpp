@@ -97,6 +97,9 @@ enum class FinishReason { stop, length };
 struct GenerationSettings final {
   std::size_t max_tokens;
   SamplingParams sampling{};
+  // SP5 M1 Task 12 (T12-i): the combined vision embeddings file for a GENI line;
+  // empty renders a plain GEN (text requests unchanged).
+  std::string embeddings{};
 };
 
 struct ExecutionControl final {

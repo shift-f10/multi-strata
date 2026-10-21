@@ -14,11 +14,20 @@
 namespace secure_frontend {
 
 // Deliberately small, offline-only subset of the OpenAI chat request schema.
-// This is a schema boundary, not an engine API: it accepts only textual
-// messages and has no representation for tools, images, URLs, or MCP.
+// This is a schema boundary, not an engine API: text messages are the rule;
+// the ONE carve-out is SP5 M1 Task 12 (C-9): a content ARRAY of text/image_url
+// parts, accepted only when the composition proved the active model can read
+// images (vision_capable). It still has no representation for tools, URLs of
+// any other kind, or MCP.
+struct ChatMessagePart final {
+  std::string text;            // set for a {"type":"text"} part
+  std::string image_data_url;  // set for a {"type":"image_url"} part — the data URL, verbatim
+};
+
 struct ChatMessage final {
   std::string role;
-  std::string content;
+  std::string content;           // the text of a string content, or of all text parts (parts form)
+  std::vector<ChatMessagePart> parts{};  // empty: the string-content form; else the parts array
 };
 
 struct ChatCompletionRequest final {
@@ -37,6 +46,14 @@ struct ChatSchemaLimits final {
   std::size_t max_message_bytes{static_cast<std::size_t>(config_defaults::kChatMaxMessageBytes)};
   std::size_t max_completion_tokens{static_cast<std::size_t>(config_defaults::kChatMaxCompletionTokens)};
   std::size_t max_generated_bytes{static_cast<std::size_t>(config_defaults::kChatMaxGeneratedBytes)};
+  // SP5 M1 Task 12 (C-9; Ruling T12-b): the content-array gate. vision_capable is set
+  // ONLY from the composed launch — vision.enabled AND the manifest's launch.mmproj —
+  // never from the request. max_images is vision.max_n (pin :103 family, re-scoped);
+  // max_image_b64_chars bounds each URL's base64 LENGTH before anything decodes
+  // (T12-c: the pin's IMAGE_URL_MAX = 32 MiB of decoded bytes, serve/server.py:2474).
+  bool vision_capable{false};
+  std::size_t max_images{4};
+  std::size_t max_image_b64_chars{(std::size_t{32} << 20) / 3U * 4U + 4U};
 };
 
 struct ChatRequestError final {

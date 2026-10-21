@@ -7,6 +7,9 @@
 // shapes the supervision tests need:
 //   oversize : after the record lines, print one > 8192-byte line (never READY) and exit 3
 //   diedie   : exit 3 immediately after the record lines (never READY)
+//   badenc   : READY, then every ENC is answered "ERR broken" (the child stays up)
+//   silentenc: READY, then ENC is never answered (the encode timeout must fire)
+//   dieenc   : READY, the FIRST ENC is answered "OK 5" and the child then exits
 // Unknown arguments (--mmproj PATH, --model PATH, --threads N, ...) are accepted and
 // echoed; the launch-proof tests read the record, not behaviour.
 #include <cstdlib>
@@ -55,14 +58,20 @@ int main(int argc, char** argv) {
   while (std::getline(std::cin, line)) {
     if (line == "QUIT") return 0;
     if (line.starts_with("ENC ")) {
+      if (mode == "silentenc") continue;  // never answers: the encode timeout must fire
+      if (mode == "badenc") {
+        std::cout << "ERR broken image\n" << std::flush;
+        continue;
+      }
       // "ENC <img> <out>" (pin #480: names are relative to the child's cwd, no spaces).
       const auto rest = line.substr(4);
       const auto space = rest.find(' ');
       const std::string out_name = space == std::string::npos ? std::string{"out.sve"} : rest.substr(space + 1);
       std::ofstream out(std::filesystem::path(out_name), std::ios::binary);
-      out << "\x00sve0";
+      out.write("\x00sve0", 5);  // five bytes including the leading NUL (a << b"..." would stop at it)
       out.flush();
       std::cout << "OK 5\n" << std::flush;
+      if (mode == "dieenc") return 0;  // the first answer is also the exit
     }
   }
   return 0;  // stdin closed (the frontend's EOF path): exit like the pin's stop

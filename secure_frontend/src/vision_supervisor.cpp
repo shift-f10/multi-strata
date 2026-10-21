@@ -41,11 +41,18 @@ VisionSupervisor::VisionSupervisor(ProcessFactory factory, VisionLimits limits)
 VisionSupervisor::~VisionSupervisor() { stop(); }
 
 void VisionSupervisor::start() {
-  if (state_ == VisionState::up || state_ == VisionState::circuit_open) return;
+  std::lock_guard lock(exchange_);
+  shutdown_requested_ = false;  // an explicit start() is a fresh boot, not a post-shutdown wake
+  start_locked();
+}
+
+// start() with exchange_ held (boot, or encode's lazy wake).
+void VisionSupervisor::start_locked() {
+  if (up() || state_.load() == VisionState::circuit_open) return;
   state_ = VisionState::starting;
-  while (state_ == VisionState::starting) {
+  while (state_.load() == VisionState::starting) {
     ++generation_;
-    auto spawned = factory_(generation_);
+    auto spawned = factory_(generation_.load());
     if (const auto* failure = std::get_if<SpawnFailure>(&spawned)) {
       (void)failure;  // a spawn that produced no child is a generation failure (SP2 §3.3 family)
     } else {
@@ -65,7 +72,7 @@ void VisionSupervisor::start() {
       state_ = VisionState::circuit_open;
       return;
     }
-    std::this_thread::sleep_for(decision.delay);  // backoff on the owner thread (boot-time, single)
+    std::this_thread::sleep_for(decision.delay);  // backoff under the exchange lock (one ENC at a time)
   }
 }
 
@@ -102,6 +109,8 @@ bool VisionSupervisor::end_generation() {
 }
 
 void VisionSupervisor::stop() {
+  std::lock_guard lock(exchange_);
+  shutdown_requested_ = true;  // stop() IS shutdown: encode() refuses instead of waking (T12-h)
   if (process_ != nullptr) {
     // The pin's stop: QUIT, then the drain-else-kill shape (serve/server.py:2792).
     std::string error;
@@ -122,6 +131,79 @@ void VisionSupervisor::stop() {
     process_.reset();
   }
   state_ = VisionState::stopped;
+}
+
+VisionEncodeResult VisionSupervisor::encode(const std::string_view image_name, const std::string_view out_name) {
+  // Names ride one protocol line, space-separated, RELATIVE to the child's cwd
+  // (the pin's #480): anything containing a space, a control byte, or nothing at all
+  // never reaches the child. The route only ever hands hex keys with fixed suffixes,
+  // so this is the fail-closed backstop, not the ordinary path.
+  const auto bad_name = [](const std::string_view name) {
+    return name.empty() || name.size() > 128U || name.find_first_of(" \t\r\n") != std::string_view::npos ||
+           name.front() == '.';
+  };
+  if (bad_name(image_name) || bad_name(out_name)) return VisionEncodeError{VisionEncodeError::Kind::bad_name};
+  std::lock_guard lock(exchange_);
+  if (shutdown_requested_ || state_.load() == VisionState::circuit_open)
+    return VisionEncodeError{VisionEncodeError::Kind::not_running};
+  if (state_.load() == VisionState::stopped) {
+    // The pin's laziness (:2646): the request itself wakes the encoder. A wake that
+    // exhausts the policy is not retried inside this call — the role reports and the
+    // NEXT request tries again (the tracker keeps counting READY failures).
+    start_locked();
+    if (!up()) return VisionEncodeError{VisionEncodeError::Kind::wake_failed};
+  }
+  if (!up()) return VisionEncodeError{VisionEncodeError::Kind::not_running};
+
+  // One exchange: write, then read until the answer, the child's end, or the
+  // VISION_ENCODE_S bound (:328; 0 = wait for ever, :291).
+  std::string io_error;
+  if (!process_->transport().write_line("ENC " + std::string{image_name} + " " + std::string{out_name},
+                                        MonotonicClock::now() + std::chrono::milliseconds{500}, io_error)) {
+    // stdin closed: the child is gone (or never took commands). Same path as a silent one.
+    if (!end_generation()) state_ = VisionState::circuit_open;
+    else state_ = VisionState::stopped;
+    return VisionEncodeError{VisionEncodeError::Kind::no_reply};
+  }
+  const bool forever = limits_.encode_timeout.count() == 0;
+  const auto deadline = MonotonicClock::now() + limits_.encode_timeout;
+  while (forever || MonotonicClock::now() < deadline) {
+    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - MonotonicClock::now());
+    const auto slice = forever ? std::chrono::milliseconds{250} : std::min(left, std::chrono::milliseconds{250});
+    const auto read = process_->transport().read_line(slice);
+    if (read.kind == EngineReadKind::line) {
+      if (read.line.rfind("OK ", 0) == 0) {
+        // The pin parses `OK (\d+)` (:2777-2778): digits only, positive.
+        const std::string count{read.line.substr(3)};
+        if (!count.empty() && count.find_first_not_of("0123456789") == std::string::npos && count.size() <= 9U &&
+            count != "0") {
+          return VisionEncoded{static_cast<std::size_t>(std::stoul(count))};
+        }
+        continue;  // malformed OK: not an answer; keep waiting (a later line may answer)
+      }
+      if (read.line.rfind("ERR", 0) == 0) {
+        // The image failed, not the role (:2774): the child goes back to the pool.
+        return VisionEncodeError{VisionEncodeError::Kind::encoder_rejected};
+      }
+      continue;  // the pin's reply loop ignores noise (log lines) until the gate ends
+    }
+    if (read.kind == EngineReadKind::timeout) {
+      if (process_->try_reap().has_value()) {
+        if (!end_generation()) state_ = VisionState::circuit_open;
+        else state_ = VisionState::stopped;
+        return VisionEncodeError{VisionEncodeError::Kind::no_reply};
+      }
+      continue;
+    }
+    // closed stdout / failed read: the child is gone (dieenc family).
+    if (!end_generation()) state_ = VisionState::circuit_open;
+    else state_ = VisionState::stopped;
+    return VisionEncodeError{VisionEncodeError::Kind::no_reply};
+  }
+  // The encode gate closed (VISION_ENCODE_S): kill, reap, stopped — the next request wakes.
+  if (!end_generation()) state_ = VisionState::circuit_open;
+  else state_ = VisionState::stopped;
+  return VisionEncodeError{VisionEncodeError::Kind::no_reply};
 }
 
 }  // namespace secure_frontend

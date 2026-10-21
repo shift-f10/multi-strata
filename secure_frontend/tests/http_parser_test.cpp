@@ -414,7 +414,14 @@ const secure_frontend::ChatCompletionRequest* ok(const secure_frontend::ChatRequ
 }
 
 void dos01_json_depth_5_is_400() {
-  expect(fails_with(parse(body_with(R"("logit_bias":{"a":{"b":{"c":{"d":1}}}})")), ApiError::invalid_json), "depth 5 is invalid_json");
+  // The ceiling moved to 6 in SP5 M1 Task 12 (C-9 parts grammar, Ruling T12-k): the
+  // parts form nests request -> messages -> message -> content -> part -> image_url.
+  // The DOS property stands, one level deeper: depth 5 now reaches the SCHEMA, which
+  // answers its own fixed 400; depth 7 is still invalid_json at the reader.
+  expect(fails_with(parse(body_with(R"("logit_bias":{"a":{"b":{"c":{"d":1}}}})")), ApiError::unsupported_parameter, "logit_bias"),
+         "depth 5 (new ceiling 6) reaches the schema: unsupported_parameter logit_bias");
+  expect(fails_with(parse(body_with(R"("logit_bias":{"a":{"b":{"c":{"d":{"e":{"f":1}}}}}})")), ApiError::invalid_json),
+         "depth 7 is invalid_json");
   expect(fails_with(parse(body_with(R"("logit_bias":{"a":{"b":1}})")), ApiError::unsupported_parameter, "logit_bias"),
          "depth 4 parses and reaches the schema");
   expect(fails_with(parse("{\"model\":"), ApiError::invalid_json), "truncated JSON is invalid_json");
@@ -445,19 +452,28 @@ void dos01_json_limits() {
   expect(fails_with(parse(body_with(R"("user":")" + std::string(257, 'u') + "\"")), ApiError::invalid_request), "user over 256 bytes");
   expect(ok(parse(body_with(R"("user":"alice")"))) != nullptr, "user is accepted and ignored");
   expect(fails_with(parse(body_with("", R"([{"role":"user","content":"https://x"}])")), ApiError::invalid_request), "remote scheme (SP0)");
-  expect(fails_with(parse(R"({"model":"pull:x","messages":[{"role":"user","content":"Hi"}]})"), ApiError::invalid_request), "model grammar");
+  // Ruling T12-l (SP5 M1 Task 12): name:tag is the served managed-model grammar, so
+  // a colon alone no longer answers at the schema — "x::y" (empty segment) still
+  // does, and "pull:x" passes the grammar only to be refused model_not_found by the
+  // route (still a 400, still no engine contact — the egress proof covers it).
+  expect(fails_with(parse(R"({"model":"x::y","messages":[{"role":"user","content":"Hi"}]})"), ApiError::invalid_request),
+         "model grammar: an empty segment is invalid_request");
+  expect(ok(parse(R"({"model":"pull:x","messages":[{"role":"user","content":"Hi"}]})")) != nullptr,
+         "model grammar: name:tag parses and reaches the route");
 }
 
 void dos01_content_array_is_unsupported_parameter() {
   // A content array is container depth 4 and reaches the schema. The OpenAI
-  // parts form nests an object inside it (depth 5 > kChatMaxJsonDepth), so the
-  // reader refuses it first as invalid_json (spec §3.1: depth <= 4).
+  // parts form nests deeper — since SP5 M1 Task 12 (C-9, Ruling T12-k) the reader
+  // allows depth 6 so the VISION capability, not the JSON reader, answers it:
+  // without one the schema refuses the array as unsupported_parameter "content".
   expect(fails_with(parse(body_with("", R"([{"role":"user","content":["Hi"]}])")),
                     ApiError::unsupported_parameter, "content"), "array content is unsupported_parameter content");
   expect(fails_with(parse(body_with("", R"([{"role":"user","content":[]}])")),
                     ApiError::unsupported_parameter, "content"), "empty array content is unsupported_parameter content");
-  expect(fails_with(parse(body_with("", R"([{"role":"user","content":[{"type":"text","text":"Hi"}]}])")), ApiError::invalid_json),
-         "content parts (depth 5) are invalid_json at the reader");
+  expect(fails_with(parse(body_with("", R"([{"role":"user","content":[{"type":"text","text":"Hi"}]}])")),
+                    ApiError::unsupported_parameter, "content"),
+         "content parts (depth 5) reach the schema and are unsupported_parameter content");
   expect(fails_with(parse(body_with("", R"([{"role":"tool","content":"run"}])")), ApiError::extension_disabled, "role"), "role tool");
   expect(fails_with(parse(body_with("", R"([{"role":"function","content":"run"}])")), ApiError::extension_disabled, "role"), "role function");
   for (const char* key : {"tools", "tool_choice", "functions", "function_call", "parallel_tool_calls", "mcp_servers"}) {

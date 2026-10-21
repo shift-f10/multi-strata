@@ -222,18 +222,32 @@ std::optional<EngineProtocolError> EngineProtocolClient::await_ready(const std::
 
 std::optional<EngineProtocolError> EngineProtocolClient::begin_generation(
     const std::uint32_t max_new_tokens, const std::vector<std::uint32_t>& prompt_token_ids,
-    const MonotonicClock::time_point write_deadline, const SamplingParams& sampling) {
+    const MonotonicClock::time_point write_deadline, const SamplingParams& sampling, const std::string_view embeddings) {
   stop_cause_.reset();  // a cause never outlives its request, even if this GEN is refused
   if (state_ != State::idle) return EngineProtocolError{EngineProtocolErrorCode::invalid_state, "engine is not idle"};
   if (max_new_tokens == 0 || max_new_tokens > limits_.max_new_tokens || prompt_token_ids.empty() ||
       prompt_token_ids.size() > limits_.max_prompt_tokens) {
     return EngineProtocolError{EngineProtocolErrorCode::invalid_argument, "generation request exceeds protocol limits"};
   }
-  std::string command = "GEN " + std::to_string(max_new_tokens) + render_sampling_keys(sampling) + " ";
+  // The embeddings path is protocol-visible: whitespace or control bytes would split the
+  // line (#480 — the pin's own rule for the encoder's file names).
+  if (!embeddings.empty() &&
+      (embeddings.find_first_of(" \t\r\n") != std::string_view::npos || embeddings.size() > kProtocolMaxLineBytes / 2U)) {
+    return EngineProtocolError{EngineProtocolErrorCode::invalid_argument, "embeddings path is not a protocol field"};
+  }
+  std::string command = embeddings.empty() ? "GEN " : "GENI ";
+  command += std::to_string(max_new_tokens) + render_sampling_keys(sampling) + " ";
   for (std::size_t index = 0; index < prompt_token_ids.size(); ++index) {
     if (index != 0) command.push_back(',');
     command += std::to_string(prompt_token_ids[index]);
     if (command.size() > effective_max_line_bytes_) {
+      return EngineProtocolError{EngineProtocolErrorCode::invalid_argument, "generation command exceeds line limit"};
+    }
+  }
+  if (!embeddings.empty()) {
+    command.push_back(' ');
+    command.append(embeddings);
+    if (command.size() > effective_max_line_bytes_) {  // the tail rides the same cap (SP3 DOS rule, extended)
       return EngineProtocolError{EngineProtocolErrorCode::invalid_argument, "generation command exceeds line limit"};
     }
   }

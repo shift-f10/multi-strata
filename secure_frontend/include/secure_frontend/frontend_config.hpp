@@ -239,6 +239,7 @@ struct VisionConfig final {
   bool resident{true};                       // vision.resident (false: woken by the first image, Task 12)
   std::int64_t threads{0};                   // vision.threads (0: unset — the pin's truthy skip, :2562)
   std::int64_t ready_timeout_s{300};         // vision.ready_timeout_s (0: wait for ever — the pin's :291 rule)
+  std::int64_t encode_timeout_s{300};        // vision.encode_timeout_s (VISION_ENCODE_S gate, :328; 0: for ever)
 };
 
 struct EngineLaunch final {

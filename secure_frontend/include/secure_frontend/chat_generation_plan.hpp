@@ -6,6 +6,7 @@
 #include "secure_frontend/tokenizer_pack.hpp"
 
 #include <cstddef>
+#include <span>
 #include <string>
 #include <variant>
 #include <vector>
@@ -38,22 +39,28 @@ struct ChatGenerationPlanError final {
 
 using ChatGenerationPlanResult = std::variant<ChatGenerationPlan, ChatGenerationPlanError>;
 
-// Converts the already schema-validated, text-only request into a fixed Qwen
-// ChatML prompt and then local token IDs.  This function never loads files,
-// executes templates, starts the engine, or contacts the network.  It rejects
-// zero output tokens and prompt sizes beyond the supplied fixed limit.
+// Converts the already schema-validated request into a fixed Qwen ChatML prompt and
+// then local token IDs.  This function never loads files, executes templates, starts
+// the engine, or contacts the network.  It rejects zero output tokens and prompt sizes
+// beyond the supplied fixed limit.
+// SP5 M1 Task 12 (Ruling T12-f): image parts (schema-gated by the composed vision
+// capability) render the template's per-image marker runs; image_token_counts carries
+// the encoder's per-image token counts IN PART ORDER and must match the request's
+// image parts exactly — a mismatch is an internal wiring bug, closed here.
 [[nodiscard]] ChatGenerationPlanResult make_qwen_chat_generation_plan(
     const ChatCompletionRequest& request, const TokenizerPack& tokenizer,
     std::size_t maximum_prompt_tokens = static_cast<std::size_t>(config_defaults::kChatMaxPromptTokens),
     std::size_t default_max_tokens = static_cast<std::size_t>(config_defaults::kChatDefaultMaxTokens),
-    const SamplingDefaults& defaults = {});
+    const SamplingDefaults& defaults = {}, std::span<const std::size_t> image_token_counts = {});
 
 // Converts a schema-validated text request using only the fixed GLM-5.3
 // profile. It neither interprets a model template nor contacts the network.
+// Images never reach this profile (the manifest rules refuse launch.mmproj for
+// glm53, Task 11): an image part closes the plan as invalid_request.
 [[nodiscard]] ChatGenerationPlanResult make_glm53_chat_generation_plan(
     const ChatCompletionRequest& request, const TokenizerPack& tokenizer,
     std::size_t maximum_prompt_tokens = static_cast<std::size_t>(config_defaults::kChatMaxPromptTokens),
     std::size_t default_max_tokens = static_cast<std::size_t>(config_defaults::kChatDefaultMaxTokens),
-    const SamplingDefaults& defaults = {});
+    const SamplingDefaults& defaults = {}, std::span<const std::size_t> image_token_counts = {});
 
 }  // namespace secure_frontend

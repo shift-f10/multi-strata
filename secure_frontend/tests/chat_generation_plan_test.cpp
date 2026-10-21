@@ -1,4 +1,5 @@
 #include "secure_frontend/chat_generation_plan.hpp"
+#include "secure_frontend/frontend_config.hpp"
 #include "support/test_support.hpp"
 
 #include <cstdlib>
@@ -33,7 +34,8 @@ std::string byte_symbol(const unsigned char byte) {
 }
 
 secure_frontend::TokenizerPack tokenizer_for(const std::string& text,
-                                             const bool include_qwen_controls = false) {
+                                             const bool include_qwen_controls = false,
+                                             const bool include_vision_controls = false) {
   secure_frontend::TokenizerPack pack;
   std::unordered_set<std::string> seen;
   for (const unsigned char character : text) {
@@ -47,6 +49,15 @@ secure_frontend::TokenizerPack tokenizer_for(const std::string& text,
     pack.tokens_by_id.push_back("<|im_end|>");
     pack.token_types.push_back(3);
   }
+  if (include_vision_controls) {
+    // SP5 M1 Task 12 (Ruling T12-f): the three vision markers as exactly-one CONTROL tokens.
+    pack.tokens_by_id.push_back("<|vision_start|>");
+    pack.token_types.push_back(3);
+    pack.tokens_by_id.push_back("<|image_pad|>");
+    pack.token_types.push_back(3);
+    pack.tokens_by_id.push_back("<|vision_end|>");
+    pack.token_types.push_back(3);
+  }
   return pack;
 }
 
@@ -56,6 +67,76 @@ std::size_t token_id_for(const secure_frontend::TokenizerPack& pack,
     if (pack.tokens_by_id[id] == token) return id;
   }
   return pack.tokens_by_id.size();
+}
+
+// SP5 M1 Task 12 (Ruling T12-f): image parts render the Qwen template's per-image run
+// — <|vision_start|> + N x <|image_pad|> + <|vision_end|> — with N the image-token count
+// the encoder answered (the pin expands the pad run one id per image token,
+// serve/server.py:4488-4505). The plan takes the counts in a parallel vector; a mismatch
+// with the request's image parts is a closed invalid_request (it can only be an internal
+// wiring bug — the route feeds both from the same parse).
+void vision_marker_runs_join_the_prompt_ids() {
+  secure_frontend::ChatCompletionRequest request;
+  request.model = "qwen-local";
+  secure_frontend::ChatMessage user;
+  user.role = "user";
+  user.content = "look";
+  user.parts.push_back(secure_frontend::ChatMessagePart{"look", {}});
+  user.parts.push_back(secure_frontend::ChatMessagePart{{}, "data:image/png;base64,YWJj"});
+  request.messages.push_back(user);
+  request.max_tokens = 12U;
+
+  const std::string expected_prompt =
+      "<|im_start|>user\nlook<|vision_start|><|image_pad|><|image_pad|><|image_pad|><|vision_end|>"
+      "<|im_end|>\n<|im_start|>assistant\n";
+  const auto pack = tokenizer_for(expected_prompt, true, true);
+  const std::vector<std::size_t> counts{3U};
+  const auto result = secure_frontend::make_qwen_chat_generation_plan(request, pack, 4096U, 12U,
+                                                                      secure_frontend::SamplingDefaults{}, counts);
+  const auto* plan = std::get_if<secure_frontend::ChatGenerationPlan>(&result);
+  expect(plan != nullptr, "an image request with a token count plans");
+  if (plan == nullptr) return;
+  const std::size_t vision_start = token_id_for(pack, "<|vision_start|>");
+  const std::size_t pad = token_id_for(pack, "<|image_pad|>");
+  const std::size_t vision_end = token_id_for(pack, "<|vision_end|>");
+  expect(vision_start < pack.tokens_by_id.size() && pad < pack.tokens_by_id.size() &&
+             vision_end < pack.tokens_by_id.size(),
+         "the vision markers are single CONTROL ids");
+  const auto& ids = plan->prompt_token_ids;
+  std::size_t run = 0U;
+  for (std::size_t i = 1U; i + 4U < ids.size(); ++i) {
+    if (ids[i] == vision_start && ids[i + 1U] == pad && ids[i + 2U] == pad && ids[i + 3U] == pad &&
+        ids[i + 4U] == vision_end) {
+      run = i;
+      break;
+    }
+  }
+  expect(run != 0U, "the ids carry exactly one vision_start + 3 x image_pad + vision_end run");
+  if (run != 0U) {
+    expect(ids[run + 5U] != pad, "exactly three pads, not more (the count is the encoder's)");
+  }
+  // Mismatched bookkeeping closes the request (it never reaches the engine):
+  const std::vector<std::size_t> none;
+  const auto missing = secure_frontend::make_qwen_chat_generation_plan(request, pack, 4096U, 12U,
+                                                                       secure_frontend::SamplingDefaults{}, none);
+  expect(std::holds_alternative<secure_frontend::ChatGenerationPlanError>(missing), "counts must match the parts");
+  const std::vector<std::size_t> two{3U, 3U};
+  const auto extra = secure_frontend::make_qwen_chat_generation_plan(request, pack, 4096U, 12U,
+                                                                     secure_frontend::SamplingDefaults{}, two);
+  expect(std::holds_alternative<secure_frontend::ChatGenerationPlanError>(extra), "extra counts close too");
+  // GLM never composes with images (manifest rule, Task 11): its plan closes by request.
+  const auto glm = secure_frontend::make_glm53_chat_generation_plan(request, pack, 4096U, 12U,
+                                                                    secure_frontend::SamplingDefaults{}, counts);
+  expect(std::holds_alternative<secure_frontend::ChatGenerationPlanError>(glm), "no image plans on the GLM profile");
+  // A text request with an EMPTY counts vector renders exactly today's prompt (T12-e: no
+  // behaviour change for text).
+  secure_frontend::ChatCompletionRequest text_only;
+  text_only.model = "qwen-local";
+  text_only.messages.push_back(secure_frontend::ChatMessage{"user", "rose", {}});
+  text_only.max_tokens = 12U;
+  const auto plain = secure_frontend::make_qwen_chat_generation_plan(text_only, pack, 4096U, 12U,
+                                                                     secure_frontend::SamplingDefaults{}, none);
+  expect(std::holds_alternative<secure_frontend::ChatGenerationPlan>(plain), "text plans stay open");
 }
 
 void composes_schema_prompt_and_tokenizer() {
@@ -196,6 +277,7 @@ void sampling_defaults_merge_under_request_overrides() {
 int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
       {"composes_schema_prompt_and_tokenizer", composes_schema_prompt_and_tokenizer},
+      {"vision_marker_runs_join_the_prompt_ids", vision_marker_runs_join_the_prompt_ids},
       {"defaults_output_limit_and_rejects_unsafe_inputs", defaults_output_limit_and_rejects_unsafe_inputs},
       {"rejects_missing_or_non_control_framing_tokens", rejects_missing_or_non_control_framing_tokens},
       {"does_not_parse_arbitrary_special_literals", does_not_parse_arbitrary_special_literals},

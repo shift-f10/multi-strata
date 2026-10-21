@@ -35,7 +35,7 @@ std::string decimal_text(const double value) {
   return ec == std::errc{} ? std::string{buffer, end} : std::string{"?"};
 }
 
-constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 8> kSchema{{
+constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9> kSchema{{
     {"schema_version", T::integer, false, 1, 1, d::kSchemaVersion, false, "", "",
      "Config format version; must be 1. Required in a config file."},
     {"listener.host", T::string, false, 0, 0, 0, false, "127.0.0.1", "--host",
@@ -300,6 +300,10 @@ constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 8> kSc
     // took in Task 8; bound added, C-1).
     {"vision.ready_timeout_s", T::integer, false, 0, 86400, 300, false, "", "",
      "Seconds the encoder gets to print READY (0: wait for ever, as at the pin)."},
+    // The STRATA_VISION_ENCODE_S counterpart promised by the Task-2 parity row
+    // (gate default 300 s, server.py:328; 0 = wait for ever, :291; bound added, C-1).
+    {"vision.encode_timeout_s", T::integer, false, 0, 86400, 300, false, "", "",
+     "Seconds one image encoding may take (0: wait for ever, as at the pin)."},
 }};
 
 void add(ConfigErrors& errors, std::string key, const ConfigIssueCode code, std::string reason) {
@@ -988,6 +992,7 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   vision.resident = read.boolean("vision.resident");
   vision.threads = read.integer("vision.threads");
   vision.ready_timeout_s = read.integer("vision.ready_timeout_s");
+  vision.encode_timeout_s = read.integer("vision.encode_timeout_s");
 
   // pull (SP4 §3.9)
   std::filesystem::path downloader = default_downloader_path();

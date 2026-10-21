@@ -58,6 +58,48 @@ void runs_the_solo_protocol() {
   expect(generation.done_line == "DONE 2 3 1.0 2.0 length" && client.ready(), "DONE should restore idle state");
 }
 
+// SP5 M1 Task 12 (Ruling T12-i): the pin's GENI variant — the same head and ids, with the
+// request's combined embeddings file at the END of the line (serve/server.py:1778). With no
+// embeddings the GEN line stays byte-for-byte today's (text requests see no change).
+void gen_line_unchanged_without_embeddings_geni_with_them() {
+  {
+    FakeTransport transport;
+    transport.reads = {line("READY 8192 stop")};
+    EngineProtocolClient client(transport);
+    secure_frontend::EngineReady ready{};
+    expect(!client.await_ready(std::chrono::seconds(1), ready).has_value(), "READY");
+    expect(!client.begin_generation(4, {1, 2, 3}, secure_frontend::deadline_after(std::chrono::seconds(5))).has_value(),
+           "GEN (no embeddings) is emitted exactly as today");
+    expect(transport.writes == std::vector<std::string>({"GEN 4 1,2,3"}), "GEN unchanged");
+  }
+  {
+    FakeTransport transport;
+    transport.reads = {line("READY 8192 stop")};
+    EngineProtocolClient client(transport);
+    secure_frontend::EngineReady ready{};
+    expect(!client.await_ready(std::chrono::seconds(1), ready).has_value(), "READY");
+    expect(!client.begin_generation(4, {1, 2, 3}, secure_frontend::deadline_after(std::chrono::seconds(5)), {},
+                                    "vision/req-0123456789ab.sve")
+                .has_value(),
+           "GENI with an embeddings path is accepted");
+    expect(transport.writes == std::vector<std::string>({"GENI 4 1,2,3 vision/req-0123456789ab.sve"}),
+           "GENI renders the pin's tail (:1778): head, ids, then the path");
+  }
+  {
+    // The path rides the same line cap: a line that would overrun the cap is refused
+    // before anything is written (SP3 DOS rule extended to the new tail).
+    FakeTransport transport;
+    transport.reads = {line("READY 1 stop")};  // tiny context -> tiny effective cap
+    EngineProtocolClient client(transport);
+    secure_frontend::EngineReady ready{};
+    expect(!client.await_ready(std::chrono::seconds(1), ready).has_value(), "READY");
+    const auto oversize_path = "v/" + std::string(200U, 'x') + ".sve";
+    const auto result = client.begin_generation(4, {1}, secure_frontend::deadline_after(std::chrono::seconds(5)), {},
+                                                oversize_path);
+    expect(result.has_value() && transport.writes.empty(), "an over-long GENI line is refused, nothing written");
+  }
+}
+
 void stop_and_quit_are_explicit() {
   FakeTransport transport;
   transport.reads = {line("READY 1024 stop"), line("T 7"), line("DONE 1 1 1 1 stop")};
@@ -458,6 +500,7 @@ void next_event_finish_forms_and_nonfinite_stays_idle() {
 int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
       {"runs_the_solo_protocol", runs_the_solo_protocol},
+      {"gen_line_unchanged_without_embeddings_geni_with_them", gen_line_unchanged_without_embeddings_geni_with_them},
       {"stop_and_quit_are_explicit", stop_and_quit_are_explicit},
       {"write_deadlines_reach_the_transport", write_deadlines_reach_the_transport},
       {"refuses_stop_when_not_advertised", refuses_stop_when_not_advertised},

@@ -6,7 +6,9 @@
 #include "secure_frontend/models_store.hpp"
 #include "secure_frontend/sha256.hpp"
 #include "support/test_support.hpp"
+#include "support/test_tokenizer.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <set>
 #include <stdexcept>
@@ -65,6 +67,30 @@ inline std::string manifest_text(const std::string_view name, const std::string_
 inline std::vector<PayloadFile> qwen_payload_vision(const std::string_view salt = "") {
   auto files = qwen_payload(salt);
   files.push_back(PayloadFile{"mmproj/mmproj.gguf", secure_frontend::FileRole::mmproj, "mmproj " + std::string{salt}});
+  return files;
+}
+
+// SP5 M1 Task 12 (D-9 e2e): the vision model the chat server can boot — same as
+// qwen_payload_vision, but the pack/tokenizer/* entries are the REAL byte-level test
+// tokenizer pack (test_tokenizer.hpp): a chat server must encode prompts, and the toy
+// 3-token vocab cannot resolve the ChatML markers. merges.txt is one newline (the pack
+// loader skips blank lines; manifest entries must not be size 0).
+inline std::vector<PayloadFile> qwen_payload_vision_pack(const std::string_view salt = "") {
+  auto files = qwen_payload_vision(salt);
+  // Replace the three files load_local_tokenizer_pack reads; tokenizer.json stays as
+  // the bundle validator requires it (load ignores its contents, like the trio proof).
+  files.erase(std::remove_if(files.begin(), files.end(),
+                             [](const PayloadFile& f) {
+                               return f.path == "pack/tokenizer/vocab.json" || f.path == "pack/tokenizer/merges.txt" ||
+                                      f.path == "pack/tokenizer/token_type.json";
+                             }),
+              files.end());
+  for (const auto& [name, bytes] : test_support::tokenizer_pack_files(test_support::vision_byte_tokenizer())) {
+    // Manifest entries must not be size 0; the loader skips blank merge lines, so a single
+    // newline stands in for the empty merges list.
+    files.push_back(PayloadFile{"pack/tokenizer/" + name, secure_frontend::FileRole::tokenizer,
+                                bytes.empty() ? std::string{"\n"} : bytes});
+  }
   return files;
 }
 

@@ -492,14 +492,18 @@ bool sleep_or_stop(StdinReader& reader, const int milliseconds) {
 }
 
 void run_generation(const Options& options, const std::string& line, StdinReader& reader) {
-  // GEN <max_new> [k=v ...] <ids>
-  std::istringstream fields(line.substr(4));
+  // GEN <max_new> [k=v ...] <ids>   and the SP5 M1 Task 12 variant
+  // GENI <max_new> [k=v ...] <ids> <embeddings-file> (the pin's :1778 shape; the trailing
+  // path is not an id run — skip it when counting the prompt).
+  const bool geni = line.rfind("GENI ", 0) == 0;
+  std::istringstream fields(line.substr(geni ? 5 : 4));
   unsigned long max_new = 0;
   fields >> max_new;
   std::string token;
   std::size_t prompt = 0;
   while (fields >> token) {
     if (token.find('=') != std::string::npos) continue;
+    if (geni && token.find_first_not_of("0123456789,") != std::string::npos) continue;  // the .sve path
     prompt = static_cast<std::size_t>(std::count(token.begin(), token.end(), ',')) + 1U;
   }
   const unsigned long total = options.tokens.value_or(options.token_ids.size());
@@ -593,7 +597,7 @@ int serve(const Options& options) {
   StdinReader reader(options.record_file);
   while (const auto next = reader.next()) {
     const std::string& line = *next;
-    if (line.rfind("GEN ", 0) == 0) {
+    if (line.rfind("GEN ", 0) == 0 || line.rfind("GENI ", 0) == 0) {
       if (options.hang_in_gen) sleep_forever();  // stops acting on stdin: STOP is never seen
       if (options.abort_in_gen) {
         std::cout << "T 7\n" << std::flush;
