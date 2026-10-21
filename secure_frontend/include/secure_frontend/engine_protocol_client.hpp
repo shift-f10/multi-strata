@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 namespace secure_frontend {
@@ -81,6 +82,18 @@ struct EngineProtocolError final {
   std::string message;
 };
 
+// SP3 M2 (spec §3.3): one generation record at a time. `finish` is always one
+// of the static literals stop|length|cancel|nonfinite.
+struct TokenEvent final {
+  std::uint32_t id;
+};
+struct DoneEvent final {
+  std::string_view finish;
+  std::size_t generated;  // this generation's T records
+};
+struct ProgressEvent final {};
+using GenerationEvent = std::variant<TokenEvent, DoneEvent, ProgressEvent, EngineProtocolError>;
+
 struct EngineProtocolLimits final {
   // 0 means "derive from READY": min(32 + 11 * max_context_tokens, kProtocolMaxLineBytes)
   // (10 digits + separator per id).
@@ -144,6 +157,10 @@ class EngineProtocolClient final {
   // the client idle: the engine is alive and resets on the next GEN.
   [[nodiscard]] std::optional<EngineProtocolError> read_generation(
       std::chrono::milliseconds timeout, EngineGeneration& generation);
+  // Reads at most one record within `timeout` (a per-call budget, SP3 §3.3).
+  // Timeout: EngineProtocolError{timeout}, generation still active. DONE (also
+  // DONE ... nonfinite) returns to idle. Any other failure closes the protocol.
+  [[nodiscard]] GenerationEvent next_event(std::chrono::milliseconds timeout);
   // Sends STOP once per generation; `cause` is recorded only when STOP was
   // written and is forgotten by the next begin_generation() call, even a refused one.
   // STOP and QUIT are single-chunk control records sent after (or without) a

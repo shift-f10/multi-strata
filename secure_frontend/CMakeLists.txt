@@ -1040,7 +1040,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         resume_and_reused_progress_is_consumed_in_the_strata_profile
         gen_carries_bounded_sampling_keys
         generation_total_deadline_is_enforced
-        gen_line_fits_max_prompt_tokens derived_line_cap_is_clamped_to_protocol_max stop_cause_and_completed_generations)
+        gen_line_fits_max_prompt_tokens derived_line_cap_is_clamped_to_protocol_max stop_cause_and_completed_generations
+        next_event_yields_tokens_progress_and_done next_event_timeout_keeps_generation_active
+        next_event_finish_forms_and_nonfinite_stays_idle)
 
     secure_frontend_add_test_executable(secure_frontend_model_inventory_tests tests/model_inventory_test.cpp
         secure_frontend_model_inventory)

@@ -360,6 +360,65 @@ void derived_line_cap_is_clamped_to_protocol_max() {
          "a GEN line beyond kProtocolMaxLineBytes must be rejected cleanly before any write");
 }
 
+// SP3 M2 Task 4: next_event. Ruling t4-test: EngineProtocolClient holds an
+// atomic member (never moved or copied), so the plan's by-value
+// generating_client helper is inlined into each test; begin_generation keeps
+// M1's write_deadline argument. Semantics identical.
+template <typename T>
+const T* as(const secure_frontend::GenerationEvent& event) { return std::get_if<T>(&event); }
+
+void next_event_yields_tokens_progress_and_done() {
+  FakeTransport transport;
+  transport.reads = {line("READY 64 stop"), line("T 5"), line("PP 1 2"), line("T 6"), line("DONE 2 1 1.0 1.0 length")};
+  EngineProtocolClient client(transport, {}, secure_frontend::EngineProtocolFlavor::lighttransport_glm53);
+  secure_frontend::EngineReady ready{};
+  (void)client.await_ready(std::chrono::seconds(1), ready);
+  (void)client.begin_generation(4, {1}, secure_frontend::deadline_after(std::chrono::seconds(5)));
+  const auto first = client.next_event(std::chrono::seconds(1));
+  expect(as<secure_frontend::TokenEvent>(first) && as<secure_frontend::TokenEvent>(first)->id == 5U, "first token");
+  expect(as<secure_frontend::ProgressEvent>(client.next_event(std::chrono::seconds(1))) != nullptr, "PP is a progress event");
+  expect(as<secure_frontend::TokenEvent>(client.next_event(std::chrono::seconds(1))) != nullptr, "second token");
+  const auto done = client.next_event(std::chrono::seconds(1));
+  expect(as<secure_frontend::DoneEvent>(done) && as<secure_frontend::DoneEvent>(done)->finish == "length" &&
+             as<secure_frontend::DoneEvent>(done)->generated == 2U, "DONE carries finish and count");
+  expect(client.idle(), "DONE returns the client to idle");
+}
+
+void next_event_timeout_keeps_generation_active() {
+  FakeTransport transport;
+  transport.reads = {line("READY 64 stop")};
+  EngineProtocolClient client(transport);
+  secure_frontend::EngineReady ready{};
+  (void)client.await_ready(std::chrono::seconds(1), ready);
+  (void)client.begin_generation(4, {1}, secure_frontend::deadline_after(std::chrono::seconds(5)));
+  const auto waited = client.next_event(std::chrono::milliseconds(10));
+  expect(as<secure_frontend::EngineProtocolError>(waited) &&
+             as<secure_frontend::EngineProtocolError>(waited)->code == EngineProtocolErrorCode::timeout, "an empty slice is a timeout");
+  expect(client.generating(), "the generation stays active");
+  expect(!client.stop().has_value(), "STOP can still be sent");
+  transport.reads.push_back(line("DONE 0 1 1.0 1.0 cancel"));
+  const auto done = client.next_event(std::chrono::seconds(1));
+  expect(as<secure_frontend::DoneEvent>(done) && as<secure_frontend::DoneEvent>(done)->finish == "cancel", "drained to cancel");
+}
+
+void next_event_finish_forms_and_nonfinite_stays_idle() {
+  const auto finish_of = [](const std::string& done_line) -> std::string {
+    FakeTransport transport;
+    transport.reads = {line("READY 64 stop"), line(done_line)};
+    EngineProtocolClient client(transport);
+    secure_frontend::EngineReady ready{};
+    (void)client.await_ready(std::chrono::seconds(1), ready);
+    (void)client.begin_generation(4, {1}, secure_frontend::deadline_after(std::chrono::seconds(5)));
+    const auto event = client.next_event(std::chrono::seconds(1));
+    if (const auto* done = as<secure_frontend::DoneEvent>(event)) return std::string(done->finish) + (client.idle() ? "/idle" : "/busy");
+    return client.closed() ? "closed" : "other";
+  };
+  expect(finish_of("DONE 1") == "stop/idle", "legacy short form is an ordinary end");
+  expect(finish_of("DONE stop") == "stop/idle", "two-field finish form");
+  expect(finish_of("DONE 1 1 1.0 1.0 nonfinite") == "nonfinite/idle", "nonfinite keeps the engine idle (SP0 E3)");
+  expect(finish_of("DONE 1 1 1.0 1.0 bogus") == "closed", "unknown finish in a full record is malformed");
+}
+
 int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
       {"runs_the_solo_protocol", runs_the_solo_protocol},
@@ -376,5 +435,8 @@ int main(int argc, char** argv) {
       {"derived_line_cap_is_clamped_to_protocol_max", derived_line_cap_is_clamped_to_protocol_max},
       {"stop_cause_and_completed_generations", stop_cause_and_completed_generations},
       {"gen_carries_bounded_sampling_keys", gen_carries_bounded_sampling_keys},
+      {"next_event_yields_tokens_progress_and_done", next_event_yields_tokens_progress_and_done},
+      {"next_event_timeout_keeps_generation_active", next_event_timeout_keeps_generation_active},
+      {"next_event_finish_forms_and_nonfinite_stays_idle", next_event_finish_forms_and_nonfinite_stays_idle},
   }, failures);
 }
