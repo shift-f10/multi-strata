@@ -46,6 +46,22 @@ struct ParityRow final {
 // option of the pin and no extra rule row).
 [[nodiscard]] const ParityRow* strata_parity_row(std::string_view key) noexcept;
 
+// ---- GLM profile (SP5 M2): the vendored Project Maya v1.1.8 reference -------
+// The same discipline against `engines/maya-ref/` (D-10): every option the
+// vendored source reads has exactly one dispositioned row, cited file:line.
+
+// The generated inventory of the vendored Maya reference
+// (secure_frontend/tests/parity_keys_maya.hpp).
+[[nodiscard]] std::span<const std::string_view> maya_config_keys() noexcept;
+[[nodiscard]] std::span<const std::string_view> maya_env_knobs() noexcept;
+
+// Every row of the GLM table, in table order (meta-tests scan this for
+// duplicates and for rows that name no inventory key).
+[[nodiscard]] std::span<const ParityRow> maya_parity_rows() noexcept;
+
+// The one row for `key` in the GLM table, or nullptr when the table has a gap.
+[[nodiscard]] const ParityRow* maya_parity_row(std::string_view key) noexcept;
+
 } // namespace secure_frontend::parity
 
 #endif // SECURE_FRONTEND_PARITY_TABLE_HPP

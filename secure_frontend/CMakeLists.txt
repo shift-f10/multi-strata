@@ -1235,7 +1235,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         secure_frontend_parity)
     secure_frontend_add_cases(secure_frontend_parity_table_tests
         every_upstream_key_has_exactly_one_disposition every_env_knob_is_dispositioned
-        typed_rows_name_a_destination)
+        typed_rows_name_a_destination every_maya_key_has_exactly_one_disposition
+        every_maya_env_knob_is_dispositioned dflash_is_rejected_on_licence
+        updater_and_installer_rows_are_rejected)
 
     secure_frontend_add_test_executable(secure_frontend_typed_config_tests tests/typed_config_test.cpp
         secure_frontend_typed_config)

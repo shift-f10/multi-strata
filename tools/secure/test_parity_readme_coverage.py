@@ -1,6 +1,8 @@
-"""SP5 M1 Task 15: the README parity blocks mirror the parity table for the whole
-generated option inventory (plan Task 15 Step 1) — every inventory name lands in the
-block for its disposition, and the mirror is proven non-vacuous by row count."""
+"""SP5 M1 Task 15 / SP5 M2 Task 2: the README parity blocks mirror the Strata
+parity table for the whole generated option inventory (plan Task 15 Step 1) —
+every inventory name lands in the block for its disposition, and the mirror is
+proven non-vacuous by row count. The GLM (Maya) table is counted here too;
+Task 10 extends the README mirror to it."""
 
 from __future__ import annotations
 
@@ -21,10 +23,20 @@ def region(readme: str, marker: str) -> str:
     return readme[start + len(begin):stop]
 
 
+def array_body(text: str, opener: str) -> str:
+    start = text.index(opener)
+    return text[start:text.index("}};", start)]
+
+
 def test_parity_readme_coverage() -> None:
     table = (REPO / "secure_frontend/src/parity_table.cpp").read_text(encoding="utf-8")
-    rows = ROW.findall(table)
+    rows = ROW.findall(array_body(table, "kRows{{"))
     assert len(rows) == 121, f"the parity table shape changed ({len(rows)} rows parsed) — update this gate and the README"
+
+    # SP5 M2: the GLM table must exist and stay whole (README mirror lands with
+    # Task 10; until then the count is the guard against a silently shrinking table).
+    maya_rows = ROW.findall(array_body(table, "kMayaRows{{"))
+    assert len(maya_rows) == 178, f"the GLM table changed ({len(maya_rows)} rows) — extend the README mirror (Task 10) and this gate together"
 
     inventory = (REPO / "secure_frontend/tests/parity_keys_upstream.hpp").read_text(encoding="utf-8")
     names = [name for body in ARRAY.findall(inventory) for name in NAME.findall(body)]
