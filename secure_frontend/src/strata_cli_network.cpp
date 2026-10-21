@@ -6,6 +6,7 @@
 #include "secure_frontend/strata_cli.hpp"
 #include "doctor_checks.hpp"
 #include "service_ops.hpp"
+#include "uninstall_plan.hpp"
 #include "strata_cli_internal.hpp"
 
 #include <algorithm>
@@ -557,6 +558,149 @@ int verb_doctor(const FrontendConfig& config, const std::filesystem::path& confi
   return all_checks_passed ? 0 : 1;
 }
 
+// --- SP7 M1 Task 5 (spec D-5/D-6): the service verbs and uninstall in production ---
+
+// The user config home (R-T2-a): XDG_CONFIG_HOME when set and non-empty, else
+// HOME/.config; Windows has no systemd and the task branch (Task 6) will use
+// its own location — the plans answer "not wired yet" until then.
+std::filesystem::path user_config_home() {
+  if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg != nullptr && xdg[0] != '\0') return std::filesystem::path{xdg};
+  if (const char* home = std::getenv("HOME"); home != nullptr && home[0] != '\0') return std::filesystem::path{home} / ".config";
+  return {};
+}
+
+std::filesystem::path self_executable() {
+#if defined(_WIN32)
+  std::vector<wchar_t> buffer(32768);
+  const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+  if (length == 0 || length >= buffer.size()) return {};
+  return std::filesystem::path(std::wstring(buffer.data(), length));
+#else
+  char buffer[4096];
+  const ssize_t length = readlink("/proc/self/exe", buffer, sizeof buffer - 1U);
+  if (length <= 0) return {};
+  buffer[length] = '\0';
+  return std::filesystem::path(buffer);
+#endif
+}
+
+int verb_service(const FrontendConfig& config, const std::filesystem::path& config_file, const std::span<const std::string> rest,
+                 CliStreams& io) {
+  const auto args = parse_args(rest, {}, {});
+  if (!args || args->positional.size() != 1U ||
+      (args->positional.front() != "enable" && args->positional.front() != "disable" && args->positional.front() != "status")) {
+    return usage(io, "service enable|disable|status");
+  }
+  const std::string sub = args->positional.front();
+  const auto home = user_config_home();
+  if (home.empty()) {
+    io.out << "service: neither XDG_CONFIG_HOME nor HOME is set, so there is no user unit directory\n";
+    return 1;
+  }
+  service::ServiceEnv env;
+  env.user_unit_dir = home / "systemd" / "user";
+  env.unit_path = env.user_unit_dir / std::string{service::kUnitFileName};
+  if (sub != "status") {
+    // enable/disable render the unit; the served process needs its write target.
+    if (!config.roots.state) {
+      io.out << "service: roots.state is not set in your config; strata will not install a service without it\n";
+      return 1;
+    }
+    const auto target = service::resolve_current_target(self_executable());
+    if (auto* error = std::get_if<service::ServiceError>(&target)) {
+      io.out << "service: " << error->message << '\n';
+      return 1;
+    }
+    env.unit.exec_start = std::get<std::filesystem::path>(target);
+    env.unit.config_file = std::filesystem::weakly_canonical(config_file).generic_string();
+    // R-T1-a: the unit's ReadWritePaths are exactly the roots serve writes.
+    env.unit.read_write_paths.push_back(config.roots.state->generic_string());
+    if (config.roots.logs) env.unit.read_write_paths.push_back(config.roots.logs->generic_string());
+    if (config.roots.cache) env.unit.read_write_paths.push_back(config.roots.cache->generic_string());
+  }
+  service::CommandRunner runner = &service::run_argv;
+  if (sub == "status") {
+    const auto status = service::plan_status(env, runner);
+    io.out << status.enabled_line << '\n' << status.active_line << '\n';
+    return 0;  // a report, not a verdict (R-T5-a)
+  }
+  const auto outcome = sub == "enable" ? service::plan_enable(env, runner) : service::plan_disable(env, runner);
+  io.out << outcome.message << '\n';
+  return outcome.ok ? 0 : 1;
+}
+
+int verb_uninstall(const FrontendConfig& config, const std::filesystem::path& config_file, const std::span<const std::string> rest,
+                   CliStreams& io) {
+  const auto args = parse_args(rest, {"--purge"}, {});
+  if (!args || !args->positional.empty()) return usage(io, "uninstall [--purge]");
+
+  uninstall::UninstallEnv env;
+  env.config_path = std::filesystem::weakly_canonical(config_file);
+  if (config.roots.state) env.state_root = *config.roots.state;
+  if (const auto token = token_file_below_secret(config)) env.token_path = *token;
+  env.models_root = config.roots.models.path();
+  if (config.roots.logs) env.logs_root = *config.roots.logs;
+  const auto home = user_config_home();
+  const auto unit_path = home.empty() ? std::filesystem::path{} : home / "systemd" / "user" / std::string{service::kUnitFileName};
+  std::error_code ec;
+  if (!unit_path.empty() && std::filesystem::exists(unit_path, ec)) {
+    env.unit_installed = true;
+    env.unit_path = unit_path;
+  }
+  service::CommandRunner runner = &service::run_argv;
+  env.manager_available = service::user_manager_reachable(runner);
+  env.server_listening = uninstall::server_answers_on(config.listener.host, config.listener.port);
+  // M1 has no install metadata yet — the versioned layout and `current` pointer
+  // are the M2 update's own story; nothing to compare, so honestly matching (R-T5-b).
+  env.install_location_ok = true;
+  env.purge = args->flags.contains("--purge");
+  if (env.purge) {
+    io.out << "uninstall: --purge also removes your models under " << env.models_root.generic_string() << '\n'
+           << "uninstall: type the word purge to confirm: " << std::flush;
+    std::string line;
+    if (std::getline(io.in, line)) {
+      while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
+      env.purge_confirmed = line == "purge";
+    }
+  }
+  env.allowed_roots = {env.config_path.parent_path(), env.state_root, env.models_root, env.logs_root, home};
+  if (config.roots.secret) env.allowed_roots.push_back(config.roots.secret->path());
+  const auto plan = uninstall::plan_uninstall(env);
+  if (!plan.proceed) {
+    io.out << "uninstall: " << plan.deny_reason << '\n';
+    return 1;
+  }
+  if (plan.stop == uninstall::StopDecision::via_service_manager) {
+    service::ServiceEnv service_env;
+    service_env.user_unit_dir = home / "systemd" / "user";
+    service_env.unit_path = unit_path;
+    const auto stopped = service::plan_disable(service_env, runner);
+    io.out << stopped.message << '\n';
+    if (!stopped.ok) {
+      io.out << "uninstall: the service could not be stopped; nothing was removed\n";
+      return 1;
+    }
+  }
+  for (const auto& removal : plan.removals) {
+    std::error_code exists_ec;
+    if (!std::filesystem::exists(removal, exists_ec)) {
+      // Legitimately gone already: disable --now removed the unit file itself.
+      io.out << "uninstall: " << removal.generic_string() << " is already gone\n";
+      continue;
+    }
+    std::error_code remove_ec;
+    const auto removed = std::filesystem::is_directory(removal, remove_ec) ? std::filesystem::remove_all(removal, remove_ec)
+                                                                          : std::filesystem::remove(removal, remove_ec);
+    if (remove_ec || removed == 0) {
+      io.out << "uninstall: could not remove " << removal.generic_string() << "; stopping here\n";
+      return 1;
+    }
+    io.out << "uninstall: removed " << removal.generic_string() << '\n';
+  }
+  for (const auto& kept : plan.kept) io.out << "uninstall: kept " << kept.generic_string() << '\n';
+  return 0;
+}
+
 }  // namespace
 
 int run_network_verb(const std::string& verb, const FrontendConfig& config, const std::filesystem::path& config_file,
@@ -565,6 +709,8 @@ int run_network_verb(const std::string& verb, const FrontendConfig& config, cons
   if (verb == "pull") return verb_pull(config, config_file, rest, io, services);
   if (verb == "run") return verb_run(config, config_file, rest, io, services);
   if (verb == "doctor") return verb_doctor(config, config_file, rest, io, services);
+  if (verb == "service") return verb_service(config, config_file, rest, io);
+  if (verb == "uninstall") return verb_uninstall(config, config_file, rest, io);
   return verb_update_models(config, config_file, rest, io, services);
 }
 

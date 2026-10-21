@@ -100,6 +100,10 @@ struct ServiceStatus final {
 };
 [[nodiscard]] ServiceStatus plan_status(const ServiceEnv& env, CommandRunner& runner);
 
+// One read-only probe: does a systemd user manager answer? The uninstall verb
+// needs the same classification the plans use (R-T2-c), without planning anything.
+[[nodiscard]] bool user_manager_reachable(CommandRunner& runner);
+
 
 }  // namespace service
 }  // namespace secure_frontend

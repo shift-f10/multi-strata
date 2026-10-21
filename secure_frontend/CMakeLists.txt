@@ -648,6 +648,8 @@ target_sources(secure_frontend_strata_cli PRIVATE src/strata_cli_network.cpp)
 target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_downloader)
 # SP7 M1 Tasks 1-3: service verbs and the full doctor live beside the network verbs.
 target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_service_ops secure_frontend_doctor)
+# SP7 M1 Task 4/5: the uninstall verb.
+target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_uninstall)
 if(WIN32)
     target_link_libraries(secure_frontend_strata_cli PUBLIC ws2_32)
 endif()
@@ -1451,6 +1453,22 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         uninstall_plan_purge_needs_the_typed_word uninstall_plan_refuses_paths_outside_allowed_roots
         uninstall_plan_missing_optional_paths_are_skipped uninstall_plan_refuses_when_install_metadata_mismatches
         uninstall_health_probe_answers_on_a_listener_and_not_without_one)
+
+    # SP7 M1 Task 5: the new CLI verbs as real child processes against temp roots.
+    secure_frontend_add_test_executable(secure_frontend_cli_verbs_tests tests/cli_verbs_test.cpp
+        secure_frontend_test_support)
+    secure_frontend_add_cases(secure_frontend_cli_verbs_tests
+        cli_usage_lists_the_new_verbs cli_uninstall_refuses_while_a_server_answers
+        ARGS $<TARGET_FILE:strata> TIMEOUT 120)
+    if(NOT WIN32)
+        # The systemd-shim and unit-file cases are POSIX until the Task 6
+        # Windows task branch exists.
+        secure_frontend_add_cases(secure_frontend_cli_verbs_tests
+            cli_service_enable_status_disable_roundtrip cli_service_enable_without_user_manager
+            cli_uninstall_plain_removes_and_keeps cli_uninstall_purge_without_the_word_refuses
+            cli_uninstall_purge_with_typed_word_removes_models
+            ARGS $<TARGET_FILE:strata> TIMEOUT 120)
+    endif()
     if(NOT WIN32)
         # Symlink layouts are POSIX-only here; the Windows pointer form (current.txt)
         # arrives with the Task 6 windows-runtime cases. The enable/disable/status

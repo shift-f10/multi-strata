@@ -29,6 +29,7 @@ struct ProcessSpec final {
   std::filesystem::path executable;
   std::vector<std::string> arguments;
   std::vector<std::pair<std::string, std::string>> environment;  // the child's whole environment
+  std::filesystem::path stdin_file{};                              // empty: the null device, as before
 };
 
 struct ProcessResult final {
@@ -41,7 +42,8 @@ inline bool contains(const std::string& haystack, const std::string_view needle)
   return haystack.find(needle) != std::string::npos;
 }
 
-// stdin is the null device; stdout/stderr go to files in a scratch directory
+// stdin is the null device (or spec.stdin_file when set); stdout/stderr go to
+// files in a scratch directory
 // (files, not pipes, so a chatty child can never block on a full pipe).
 class ChildProcess final {
  public:
@@ -59,7 +61,10 @@ class ChildProcess final {
     output_ = make_scratch_directory();
 #if defined(_WIN32)
     SECURITY_ATTRIBUTES inherit{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
-    HANDLE in = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit, OPEN_EXISTING, 0, nullptr);
+    HANDLE in = spec.stdin_file.empty()
+                    ? CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit, OPEN_EXISTING, 0, nullptr)
+                    : CreateFileW(spec.stdin_file.c_str(), GENERIC_READ, FILE_SHARE_READ, &inherit, OPEN_EXISTING,
+                                  FILE_ATTRIBUTE_NORMAL, nullptr);
     HANDLE out = CreateFileW((output_ / "stdout").c_str(), GENERIC_WRITE, FILE_SHARE_READ, &inherit, CREATE_ALWAYS,
                              FILE_ATTRIBUTE_NORMAL, nullptr);
     HANDLE err = CreateFileW((output_ / "stderr").c_str(), GENERIC_WRITE, FILE_SHARE_READ, &inherit, CREATE_ALWAYS,
@@ -112,7 +117,7 @@ class ChildProcess final {
     const std::string err = (output_ / "stderr").string();
     posix_spawn_file_actions_t actions;
     posix_spawn_file_actions_init(&actions);
-    posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_addopen(&actions, 0, spec.stdin_file.empty() ? "/dev/null" : spec.stdin_file.c_str(), O_RDONLY, 0);
     posix_spawn_file_actions_addopen(&actions, 1, out.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
     posix_spawn_file_actions_addopen(&actions, 2, err.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
     std::vector<std::string> argv_text{spec.executable.string()};

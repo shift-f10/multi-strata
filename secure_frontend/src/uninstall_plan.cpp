@@ -44,8 +44,9 @@ bool at_or_under(const std::filesystem::path& path, const std::filesystem::path&
 }
 
 bool inside_any_allowed(const std::filesystem::path& path, const std::vector<std::filesystem::path>& allowed) {
-  return std::any_of(allowed.begin(), allowed.end(),
-                     [&path](const std::filesystem::path& root) { return at_or_under(path, root); });
+  return std::any_of(allowed.begin(), allowed.end(), [&path](const std::filesystem::path& root) {
+    return !root.empty() && at_or_under(path, root);  // an unset optional root bounds nothing
+  });
 }
 
 }  // namespace

@@ -342,5 +342,10 @@ ServiceStatus plan_status(const ServiceEnv& env, CommandRunner& runner) {
                        "service: active: " + (active_state.empty() ? std::string{"inactive"} : active_state)};
 }
 
+bool user_manager_reachable(CommandRunner& runner) {
+  const auto probe = runner({"systemctl", "--user", "is-enabled", std::string{kServiceName}});
+  return !manager_unreachable(probe);
+}
+
 }  // namespace service
 }  // namespace secure_frontend
