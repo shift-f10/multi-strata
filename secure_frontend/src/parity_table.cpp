@@ -25,7 +25,7 @@ constexpr ParityDisposition kMapped = ParityDisposition::mapped_away;
 
 using enum ParityDestination;
 
-constexpr std::array<ParityRow, 121> kRows{{
+constexpr std::array<ParityRow, 123> kRows{{
     // ---- config keys, alphabetical (the generated inventory) --------------
     {"aliases", kTyped, frontend_behavior, "serve/server.py:8046, set_aliases :3764-3777; runconfig.py:34 (M1 Task 8: model.aliases — /v1/models lists them, chat matches exactly)"},
     {"allowed_hosts", kTyped, frontend_behavior, "already typed (SP1/SP3 listen); serve/server.py:8066"},
@@ -120,6 +120,8 @@ constexpr std::array<ParityRow, 121> kRows{{
     // Ruling T7-d (Task 7): the APU hint arbitrates the frontend's image/vision turn —
     // no argv composes for it.
     {"uma", kTyped, frontend_behavior, "serve/images.py:23, :334 (M1 Task 7: engine.uma; Tasks 11-12 consume it)"},
+    // SP7 M2 Task 3 (D-10): our own typed key as a disposition row (PX §4 reserved it).
+    {"update.source", kTyped, config_only, "our key (PX §4 reserved; SP7 M2 D-10): the HTTPS mirror list read only by 'strata update'"},
     {"url", kRejected, none, "spec §4 MCP url; serve/mcp.py:384"},
     {"user_args", kRejected, none, "spec §4 free-form process control; serve/server.py:2918"},
     {"vision", kTyped, config_only, "serve/server.py:2930 (M1 Task 11: the vision.* block)"},
@@ -149,6 +151,7 @@ constexpr std::array<ParityRow, 121> kRows{{
     {"STRATA_OFFLINE", kMapped, none, "PRIV-01: the frontend never reaches the network; enforced by design and the DL-01 proof; serve/server.py:3240"},
     {"STRATA_OWNER_ATTEST_KEY", kRejected, none, "spec §4 signing material, deferred to SP7; serve/server.py:7820"},
     {"STRATA_PARALLEL_SOLO", kRejected, none, "spec C-4: N-child replica scheduling is the accepted narrowing; serve/server.py:1727"},
+    {"STRATA_RELEASE_PUBKEY_HEX", kMapped, none, "compile definition pinning the Ed25519 release public key (SP7 M2 D-2); read by the release-manifest verifier and reported by 'strata update'; empty refuses updates"},
     {"STRATA_REPLICA_START", kRejected, none, "spec C-4: N-child replica scheduling is the accepted narrowing; serve/server.py:7565"},
     {"STRATA_REQUEST_LINES", kMapped, none, "the wire record is fixed by docs/security/engine-protocol-limits.md; serve/server.py:639"},
     {"STRATA_RUNTIME_PROFILE", kRejected, none, "spec §4 no new web/diagnostics surface; serve/lifeline.py:265"},

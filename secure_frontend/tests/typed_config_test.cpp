@@ -1700,6 +1700,39 @@ void vision_rows_match_the_pin() {
              set->vision.ready_timeout_s == 45,
          "the vision family is typed: " + issues_of(set_result));
 }
+// SP7 M2 Task 3 (spec D-10): the typed `update.source` key — release mirrors,
+// HTTPS-only entries, the standard list cap, empty default, --check row.
+void cfg_update_source_typed() {
+  ConfigFixture f;
+  const auto* row = secure_frontend::find_config_key("update.source");
+  expect(row != nullptr && row->type == ConfigValueType::string_array, "update.source is a typed string array");
+  const auto defaults = with_literals(f, {});
+  const auto* validated = std::get_if<secure_frontend::ValidatedConfig>(&defaults);
+  expect(validated != nullptr, "defaults validate: " + issues_of(defaults));
+  if (validated != nullptr) {
+    expect(validated->get().update.source.empty(), "update.source defaults to empty");
+    const std::string text = secure_frontend::describe(validated->get());
+    expect(text.find("update.source = []") != std::string::npos, "--check prints update.source");
+  }
+  const auto ok = with_literals(
+      f, {{"update.source", string_array({"https://releases.example/strata/release.env", "https://mirror.example/release.env"})}});
+  const auto* good = std::get_if<secure_frontend::ValidatedConfig>(&ok);
+  expect(good != nullptr, "two HTTPS mirrors validate: " + issues_of(ok));
+  if (good != nullptr) {
+    expect(good->get().update.source.size() == 2 && good->get().update.source[0] == "https://releases.example/strata/release.env",
+           "mirrors preserved verbatim, in order");
+  }
+  expect(has_issue(with_literals(f, {{"update.source", string_array({"http://insecure.example/release.env"})}}), "update.source",
+                   ConfigIssueCode::invalid_value), "plain HTTP mirrors are rejected");
+  expect(has_issue(with_literals(f, {{"update.source", string_array({"https://user@releases.example/release.env"})}}),
+                   "update.source", ConfigIssueCode::invalid_value), "userinfo is rejected");
+  expect(has_issue(with_literals(f, {{"update.source", string_array({"https://releases.example"})}}), "update.source",
+                   ConfigIssueCode::invalid_value), "host without a path is rejected");
+  std::vector<std::string> seventeen;
+  for (int i = 0; i < 17; ++i) seventeen.push_back("https://mirror" + std::to_string(i) + ".example/release.env");
+  expect(has_issue(with_literals(f, {{"update.source", string_array(seventeen)}}), "update.source", ConfigIssueCode::out_of_range),
+         "17 mirrors hit the standard list cap");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1728,6 +1761,7 @@ int main(int argc, char** argv) {
       {"replicas_parallel_row_at_the_pin", replicas_parallel_row_at_the_pin},
       {"multi_child_replicas_reject_with_the_ruling", multi_child_replicas_reject_with_the_ruling},
       {"vision_rows_match_the_pin", vision_rows_match_the_pin},
+      {"cfg_update_source_typed", cfg_update_source_typed},
       {"bounds_are_the_pins_at_each_edge", bounds_are_the_pins_at_each_edge},
       {"typed_config_accepts_minimal_file_and_applies_defaults", typed_config_accepts_minimal_file_and_applies_defaults},
       {"cfg01_unknown_key_rejected", cfg01_unknown_key_rejected},

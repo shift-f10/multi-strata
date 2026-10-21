@@ -35,7 +35,7 @@ std::string decimal_text(const double value) {
   return ec == std::errc{} ? std::string{buffer, end} : std::string{"?"};
 }
 
-constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9> kSchema{{
+constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 + 1> kSchema{{
     {"schema_version", T::integer, false, 1, 1, d::kSchemaVersion, false, "", "",
      "Config format version; must be 1. Required in a config file."},
     {"listener.host", T::string, false, 0, 0, 0, false, "127.0.0.1", "--host",
@@ -134,6 +134,10 @@ constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9>
     {"pull.max_duration_s", T::integer, false, 60, 604800, 172800, false, "", "", "Time budget for a whole pull run."},
     {"pull.stall_timeout_s", T::integer, false, 10, 3600, 120, false, "", "", "Abort a transfer slower than 1024 B/s for this long."},
     {"pull.connect_timeout_s", T::integer, false, 1, 300, 30, false, "", "", "TCP/TLS connect timeout per request."},
+    // SP7 M2 Task 3 (spec D-10): the release mirrors. Untrusted list; trust
+    // comes from the pinned release key (D-2), never from these URLs.
+    {"update.source", T::string_array, false, 0, 0, 0, false, "", "",
+     "HTTPS release-mirror URLs that 'strata update' fetches the signed release envelope from."},
     {"logging.requests", T::boolean, false, 0, 0, 0, false, "", "",
      "One line per request to stderr: route, status, code, time, bytes, loopback or remote; never paths, headers, tokens or text."},
     // SP5 M1 Task 4 (parity row `sampling`): bounds copied from the pin —
@@ -544,9 +548,33 @@ bool is_absolute_store_path(const std::string& text) noexcept {
          path_from_utf8(text).is_absolute();
 }
 
-constexpr std::array<ConfigKeyExtension, 5> kSchemaExtensions{{
+// SP7 M2 Task 3 (D-10): the config grammar for update.source entries. Mirrors
+// parse_source_url's constraints (HTTPS, host + path, no port, no userinfo,
+// no query/fragment, printable and unambiguous); the verb re-parses with
+// parse_source_url as the authority at use time.
+bool is_valid_release_source_url(std::string_view text) noexcept {
+  if (!text.starts_with("https://") || text.size() > 512) return false;
+  const std::string_view rest = text.substr(8);
+  if (rest.empty()) return false;
+  for (const char c : rest) {
+    const auto u = static_cast<unsigned char>(c);
+    if (u < 0x21U || u > 0x7EU) return false;
+    if (c == '@' || c == '?' || c == '#' || c == '%' || c == '[' || c == ']') return false;
+  }
+  const std::size_t slash = rest.find('/');
+  if (slash == std::string_view::npos || slash == 0) return false;
+  const std::string_view host = rest.substr(0, slash);
+  for (const char c : host) {
+    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '-')) return false;
+  }
+  return !host.empty() && host.front() != '-' && host.back() != '-' && host.find("..") == std::string_view::npos;
+}
+
+constexpr std::array<ConfigKeyExtension, 6> kSchemaExtensions{{
     {"listener.cors_origins", static_cast<std::size_t>(config_defaults::kMaxListEntries), &is_valid_cors_origin,
      "each entry must be http:// or https://, a lower-case host, an optional port and no path; * and null are not allowed", ""},
+    {"update.source", static_cast<std::size_t>(config_defaults::kMaxListEntries), &is_valid_release_source_url,
+     "each entry must be an HTTPS release URL: https://host/path, no port, userinfo, query or fragment", ""},
     {"listener.host_aliases", static_cast<std::size_t>(config_defaults::kMaxListEntries), &is_valid_host_alias,
      "each entry must be a host or host:port", ""},
     // SP5 M1 Task 8 (parity row aliases): the entry grammar is SP1's one model-ID grammar
@@ -1129,6 +1157,8 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
     }
   }
   const bool allow_private = read.boolean("pull.allow_private_addresses");
+  // SP7 M2 Task 3 (D-10): the release mirrors, schema-bounded like the arrays above.
+  std::vector<std::string> update_source = read_bounded_strings(read, errors, "update.source");
   const auto max_total = read.integer("pull.max_total_bytes");
   const auto max_duration = read.integer("pull.max_duration_s");
   const auto stall = read.integer("pull.stall_timeout_s");
@@ -1189,7 +1219,7 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
                                       static_cast<std::uint64_t>(max_total), std::chrono::seconds(max_duration),
                                       std::chrono::seconds(stall), std::chrono::seconds(connect)},
                          LoggingConfig{log_requests}, std::move(sampling_defaults), reasoning, std::move(session),
-                         replicas, vision, std::move(glm)));
+                         replicas, vision, std::move(glm), UpdateSettings{std::move(update_source)}));
   return ValidatedConfig{std::move(config_ptr)};
 }
 

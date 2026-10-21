@@ -650,6 +650,8 @@ target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_download
 target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_service_ops secure_frontend_doctor)
 # SP7 M1 Task 4/5: the uninstall verb.
 target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_uninstall)
+# SP7 M2 Task 3: `strata update` verifies the D-3 envelope against the pinned key.
+target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_release_manifest)
 if(WIN32)
     target_link_libraries(secure_frontend_strata_cli PUBLIC ws2_32)
 endif()
@@ -1470,6 +1472,23 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         tampered_manifest_rejected tampered_signature_rejected wrong_pinned_key_rejected
         no_pinned_key_refuses_exact_line malformed_envelopes_rejected schema_violations_rejected
         LABELS release-also TIMEOUT 120)
+
+    # SP7 M2 Task 3: the `strata update` verb — golden install/flip flow, refusals,
+    # tamper, digest mismatch, mirror fallback and rollback over the scripted transport.
+    # Generated file; envelopes are RFC 8032 reference signatures (R-T0-b).
+    secure_frontend_add_test_executable(secure_frontend_update_cli_tests tests/update_cli_test.cpp
+        secure_frontend_strata_cli secure_frontend_test_support)
+    secure_frontend_add_cases(secure_frontend_update_cli_tests update_refuses_without_update_source
+        update_refuses_without_pinned_key LABELS release-also TIMEOUT 120)
+    # PX §7 source-scan invariant: it reads the frontend src tree, so pass it as ARGS.
+    secure_frontend_add_cases(secure_frontend_update_cli_tests px7_nothing_but_the_update_verb_touches_update_source
+        ARGS ${CMAKE_CURRENT_SOURCE_DIR}/src LABELS release-also TIMEOUT 60)
+    if(SECURE_FRONTEND_TEST_HOOKS)
+        secure_frontend_add_cases(secure_frontend_update_cli_tests update_refuses_plain_install
+            update_installs_and_flips_current update_declines_without_yes update_digest_mismatch_keeps_current
+            update_tampered_envelope_rejected update_falls_back_to_next_source update_rollback_flips_both_directions
+            update_rollback_without_previous LABELS release-also TIMEOUT 120)
+    endif()
 
     # SP7 M1 Task 3: the D-7 doctor checks, all driven by fake ProbeBundles.
     secure_frontend_add_test_executable(secure_frontend_doctor_tests tests/doctor_checks_test.cpp

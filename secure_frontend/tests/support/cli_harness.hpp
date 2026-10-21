@@ -29,7 +29,9 @@ struct CliHarness final {
     return "\"" + out + "\"";
   }
 
-  void write_config(const std::string& extra_members) {
+  // `extra_top_level` (SP7 M2 Task 3): raw JSON appended after the pull object, e.g.
+  // ",\n  \"update\": {\"source\": [\"https://release.example/current\"]}". Must start with a comma.
+  void write_config(const std::string& extra_members, const std::string& extra_top_level = "") {
     const auto quote = [](const std::filesystem::path& p) {
       // UTF-8, never path::string() (a non-ASCII root must survive on Windows too).
       std::string text = secure_frontend::path_to_utf8(std::filesystem::canonical(p));
@@ -42,7 +44,7 @@ struct CliHarness final {
                                                  "  \"token\": {\"source\": \"env:STRATA_TEST_TOKEN\"},\n"
                                                  "  \"engine\": {\"executable\": " + quote(scratch / "bin" / "engine") +
                                                  ", \"model_id\": \"m\"},\n"
-                                                 "  \"pull\": {\"downloader\": " + missing_downloader() + extra_members + "}\n}\n");
+                                                 "  \"pull\": {\"downloader\": " + missing_downloader() + extra_members + "}" + extra_top_level + "\n}\n");
   }
 
   // A managed config (SP4 §4.9 c/d): roots.tokenizer_pack removed, engine.model_id = model_ref,

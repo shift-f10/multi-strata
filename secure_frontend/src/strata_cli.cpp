@@ -36,7 +36,7 @@ const std::string_view kUsage =
     "  doctor [--downloader] [--deep]\n"
     "  service enable|disable|status  (per-user strata service; Linux systemd user unit)\n"
     "  uninstall [--purge]            (removes unit, token, config, state; models only with --purge and a typed word)\n"
-    "strata update        (program update: not available until SP7, exit 12)";
+    "strata update        (program update: signed release fetch from update.source; --yes applies, --rollback flips back)";
 
 std::optional<Args> parse_args(const std::span<const std::string> args, const std::set<std::string>& flags,
                                const std::set<std::string>& options) {
@@ -499,21 +499,17 @@ int run_strata(const std::span<const std::string> all_args, CliStreams& io, CliS
     io.out << "usage: " << kUsage << '\n';
     return args.empty() ? exit_code_value(ExitCode::usage) : 0;
   }
-  // §6.2 / Controller note 16 / C7: program updates need SP7's signature verification. No network
-  // access: no transport, probe or resolver is created.
-  const auto program_update = [&io] {
-    io.out << "program update not available in this release; install the new release manually\n";
-    return exit_code_value(ExitCode::program_update);
-  };
+  // SP7 M2 Task 3 (ruling R-T3-e): the program update was the exit-12 placeholder
+  // here. It is a real verb now: `strata update` (and `update --rollback`) reads
+  // config (update.source) and goes through the network verbs; the models half
+  // (`update --models …`, SP4 §6.1) is unchanged. A bare `strata update` with no
+  // --config falls through to the --config-required usage line, like every other
+  // config-reading verb. §6.2's "no network for the program update" no longer
+  // applies: update fetches through the confined downloader stack only.
   // SP5 M1 Task 14 (Ruling T14-b): bare `strata version` reads no config at all —
   // the spec writes it without --config. The --config form validates, then answers
   // the same thing through the verb table below.
   if (args[0] == "version" && args.size() == 1) return verb_version(io);
-  if (args[0] == "update" && args.size() == 1) return program_update();
-  // The documented form under note 2 (--config on every verb): `update` with no operands is the
-  // program part too, exactly like the bare form (the config is not read). `update --models …`
-  // (and any other operand) goes to the network verbs (Task 27).
-  if (args.size() == 3 && args[0] == "--config" && args[2] == "update") return program_update();
   if (args[0] != "--config" || args.size() < 3) return usage(io, "--config <file> is required before the verb (no default location yet)");
   auto loaded = load_config(args[1], io);
   if (auto* code = std::get_if<int>(&loaded)) return *code;

@@ -323,6 +323,13 @@ struct PullSettings final {
   std::chrono::seconds connect_timeout;
 };
 
+// SP7 M2 Task 3 (spec D-10): release mirror URLs for `strata update`. The list
+// is untrusted (trust comes from the pinned release key, D-2); each entry is a
+// plain HTTPS source URL.
+struct UpdateSettings final {
+  std::vector<std::string> source;
+};
+
 // Linux /usr/bin/curl; Windows GetSystemDirectoryW() + "\curl.exe". Empty (so
 // not absolute, and refused when a transfer runs) if Windows cannot report its
 // system directory.
@@ -337,6 +344,7 @@ class FrontendConfig final {
   const SecretSource token;  // metadata only: env name or relative file path (CFG-06)
   const EngineLaunch engine;
   const PullSettings pull;
+  const UpdateSettings update;  // SP7 M2 Task 3 (D-10): update.source mirrors
   const LoggingConfig logging;  // SP3 §8
   const SamplingDefaults sampling;  // SP5 M1 Task 4: defaults.sampling.*
   const ReasoningConfig reasoning;  // SP5 M1 Task 5: reasoning.*
@@ -350,9 +358,11 @@ class FrontendConfig final {
   FrontendConfig(ListenerConfig listener_value, Limits limits_value, Roots roots_value, SecretSource token_value,
                  EngineLaunch engine_value, PullSettings pull_value, LoggingConfig logging_value,
                  SamplingDefaults sampling_value, ReasoningConfig reasoning_value, SessionPolicy session_value,
-                 ReplicasConfig replicas_value, VisionConfig vision_value, GlmSettings glm_value)
+                 ReplicasConfig replicas_value, VisionConfig vision_value, GlmSettings glm_value,
+                 UpdateSettings update_value = {})
       : listener(std::move(listener_value)), limits(limits_value), roots(std::move(roots_value)),
         token(std::move(token_value)), engine(std::move(engine_value)), pull(std::move(pull_value)),
+        update(std::move(update_value)),
         logging(logging_value), sampling(std::move(sampling_value)), reasoning(reasoning_value),
         session(std::move(session_value)), replicas(replicas_value), vision(vision_value), glm(std::move(glm_value)) {}
 };
