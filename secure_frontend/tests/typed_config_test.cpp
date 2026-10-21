@@ -61,6 +61,12 @@ std::string issues_of(const secure_frontend::ConfigValidationResult& result) {
   return text;
 }
 
+std::string describe_of(const secure_frontend::ConfigValidationResult& result) {
+  const auto* validated = std::get_if<secure_frontend::ValidatedConfig>(&result);
+  if (validated == nullptr) return {};
+  return secure_frontend::describe(validated->get());
+}
+
 std::string valid_sample(const secure_frontend::ConfigKey& key) {
   switch (key.type) {
     case ConfigValueType::integer: return std::to_string(key.minimum);
@@ -969,6 +975,97 @@ void sampling_defaults_cover_the_pinned_validator() {
 // reasoning_loop_recovery false|"stop"|"recover"|true :8129-8136 (the typed row takes the three
 // string words); effort_position start|end :2841-2843; anthropic_thinking model|on_request
 // :8102-8104; fit_max_tokens bool default true :3485-3488 read at :7996.
+// SP5 M2 Task 3: the glm.* surface at Maya's names (C-3), kinds/defaults at
+// the vendored pin (C-1), and the profile gate (Review Focus 5: an explicit
+// qwen profile refuses glm.* by name). Behaviour-only assertions (the M1
+// cfg01_sp3_rows pattern) so the RED lands as failing cases, not a compile error.
+void glm_keys_parse_with_mayas_kinds_and_defaults() {
+  ConfigFixture f;
+  // The SP1-era pass-through rule still stands (Task 7 retires it): a glm53
+  // profile config needs at least one engine arg, so the fixtures carry one.
+  const auto glm53 = [](std::map<std::string, std::string> extra) {
+    std::map<std::string, std::string> literals{{"engine.args", "[\"--max-context\", \"32768\"]"},
+                                                {"engine.profile", "\"glm53\""}};
+    for (auto& [key, value] : extra) literals[key] = value;
+    return literals;
+  };
+  for (const char* path : {"glm.thinking_budget", "glm.reasoning_effort", "glm.fit_max_tokens",
+                           "glm.experimental_speed_projection", "glm.gpu", "glm.layer_split",
+                           "glm.tokenizer", "glm.model_name"}) {
+    expect(secure_frontend::find_config_key(path) != nullptr, std::string{"the schema row exists: "} + path);
+  }
+  const auto accepted = with_literals(f, glm53({
+      {"glm.thinking_budget", "4096"},
+      {"glm.reasoning_effort", "\"max\""},
+      {"glm.fit_max_tokens", "true"},
+      {"glm.experimental_speed_projection", "true"},
+      {"glm.layer_split", "\"18,32\""},
+      {"glm.gpu", "\"0,1\""},
+      {"glm.tokenizer", "\"/opt/tokenizer-pack\""},
+      {"glm.model_name", "\"glm-5.3-flash\""}}));
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(accepted),
+         "the full glm.* block validates on the glm53 profile: " + issues_of(accepted));
+  const std::string described = describe_of(accepted);
+  expect(described.find("glm.thinking_budget = 4096") != std::string::npos, "describe() carries the budget");
+  expect(described.find("glm.reasoning_effort = max") != std::string::npos, "describe() carries the effort");
+  for (const char* v : {"\"none\"", "\"low\"", "\"high\"", "\"max\""}) {
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(
+               with_literals(f, glm53({{"glm.reasoning_effort", v}}))),
+           std::string{"accepts the canonical level "} + v);
+  }
+  const auto rejected = [&](const std::map<std::string, std::string>& row) {
+    const auto result = with_literals(f, glm53(row));
+    expect(std::holds_alternative<secure_frontend::ConfigErrors>(result),
+           "rejects a bad glm row: " + issues_of(result));
+  };
+  // Maya normalizes "medium" away (vendored serve/frontend.py:94: medium maps to
+  // high) — the typed row admits only the four canonical level words.
+  rejected({{"glm.reasoning_effort", "\"medium\""}});
+  rejected({{"glm.reasoning_effort", "\"ultrathink\""}});
+  rejected({{"glm.thinking_budget", "-1"}});
+  rejected({{"glm.thinking_budget", "1000000001"}});  // added bound (C-1)
+  rejected({{"glm.thinking_budget", "\"4096\""}});
+  rejected({{"glm.experimental_speed_projection", "\"true\""}});
+  rejected({{"glm.layer_split", "\"auto;rm\""}});  // closed grammar (SETTINGS.md:31)
+  rejected({{"glm.tokenizer", "\"relative/path\""}});  // absolute like session.slot_save_path
+  const auto bare_result = with_literals(f, glm53({}));
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(bare_result),
+         "a glm53 config without glm rows validates: " + issues_of(bare_result));
+  const std::string bare = describe_of(bare_result);
+  expect(bare.find("glm.layer_split = \"auto\"") != std::string::npos, "layer_split defaults to auto (serve/server.py:1212)");
+}
+
+void glm_keys_rejected_on_strata_profile_by_name() {
+  ConfigFixture f;
+  const auto result = with_literals(f, {{"engine.profile", "\"qwen\""}, {"glm.thinking_budget", "4096"},
+                                        {"glm.model_name", "\"glm\""}});
+  expect(has_issue(result, "glm.thinking_budget", ConfigIssueCode::conflicting_values),
+         "glm.thinking_budget is refused by name on the qwen profile: " + issues_of(result));
+  expect(has_issue(result, "glm.model_name", ConfigIssueCode::conflicting_values),
+         "glm.model_name is refused by name on the qwen profile: " + issues_of(result));
+  // A managed model takes its profile from the SP4 manifest, which the loader
+  // cannot see: the rows validate here and the Task-7 launch refuses them for a
+  // qwen manifest (Ruling T3-a).
+  const auto managed = with_literals(f, {{"glm.thinking_budget", "4096"}});
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(managed),
+         "without an explicit profile the rows validate (the manifest decides at launch): " + issues_of(managed));
+}
+
+void thinking_budget_default_is_mayas_32768() {
+  ConfigFixture f;
+  const auto result = with_literals(f, {{"engine.args", "[\"--max-context\", \"32768\"]"},
+                                        {"engine.profile", "\"glm53\""}});
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result),
+         "the bare glm53 config validates: " + issues_of(result));
+  const std::string described = describe_of(result);
+  expect(described.find("glm.thinking_budget = 32768") != std::string::npos,
+         "Maya's thinking_budget default is 32768 (vendored serve/server.py:3440; C-3 keeps Maya's name)");
+  expect(described.find("glm.fit_max_tokens = false") != std::string::npos,
+         "Maya's fit_max_tokens defaults false (serve/server.py:3427 reads `is True`)");
+  expect(described.find("glm.experimental_speed_projection = false") != std::string::npos,
+         "speed projection defaults false (serve/server.py:3255)");
+}
+
 void reasoning_rows_match_the_pinned_validator() {
   ConfigFixture f;
   const auto accept = [&](const char* path, const char* value) {
@@ -1492,6 +1589,9 @@ int main(int argc, char** argv) {
       {"each_rejected_upstream_key_errors_at_load_naming_it", each_rejected_upstream_key_errors_at_load_naming_it},
       {"sampling_defaults_cover_the_pinned_validator", sampling_defaults_cover_the_pinned_validator},
       {"reasoning_rows_match_the_pinned_validator", reasoning_rows_match_the_pinned_validator},
+      {"glm_keys_parse_with_mayas_kinds_and_defaults", glm_keys_parse_with_mayas_kinds_and_defaults},
+      {"glm_keys_rejected_on_strata_profile_by_name", glm_keys_rejected_on_strata_profile_by_name},
+      {"thinking_budget_default_is_mayas_32768", thinking_budget_default_is_mayas_32768},
       {"lifecycle_rows_match_the_pin", lifecycle_rows_match_the_pin},
       {"vram_family_rows_match_the_pin", vram_family_rows_match_the_pin},
       {"timeout_shape_rows_match_the_pin", timeout_shape_rows_match_the_pin},

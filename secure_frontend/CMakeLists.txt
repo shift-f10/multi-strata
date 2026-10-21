@@ -1255,6 +1255,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_typed_config_tests each_rejected_upstream_key_errors_at_load_naming_it
         sampling_defaults_cover_the_pinned_validator
         reasoning_rows_match_the_pinned_validator
+        glm_keys_parse_with_mayas_kinds_and_defaults
+        glm_keys_rejected_on_strata_profile_by_name
+        thinking_budget_default_is_mayas_32768
         lifecycle_rows_match_the_pin
         vram_family_rows_match_the_pin
         timeout_shape_rows_match_the_pin

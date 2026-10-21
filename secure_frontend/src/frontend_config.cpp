@@ -35,7 +35,7 @@ std::string decimal_text(const double value) {
   return ec == std::errc{} ? std::string{buffer, end} : std::string{"?"};
 }
 
-constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9> kSchema{{
+constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 8> kSchema{{
     {"schema_version", T::integer, false, 1, 1, d::kSchemaVersion, false, "", "",
      "Config format version; must be 1. Required in a config file."},
     {"listener.host", T::string, false, 0, 0, 0, false, "127.0.0.1", "--host",
@@ -304,6 +304,28 @@ constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9> kSc
     // (gate default 300 s, server.py:328; 0 = wait for ever, :291; bound added, C-1).
     {"vision.encode_timeout_s", T::integer, false, 0, 86400, 300, false, "", "",
      "Seconds one image encoding may take (0: wait for ever, as at the pin)."},
+    // SP5 M2 Task 3 (spec §D-2; C-3 keeps Maya's names): the engine-side GLM
+    // knobs. Kinds and defaults are Maya v1.1.8's verbatim (parity table rows
+    // cite the vendored pin); the caps and closed sets are added (C-1). The
+    // rows are accepted while engine.profile is absent (a managed model's
+    // SP4 manifest decides the profile; the launch, Task 7, refuses them for
+    // a qwen manifest) and refused by name when engine.profile is "qwen".
+    {"glm.thinking_budget", T::integer, false, 0, 1000000000, 32768, false, "", "",
+     "Thinking-token budget when a request names none (Maya's default 32768; 0 disables the budget)."},
+    {"glm.reasoning_effort", T::string, false, 0, 0, 0, false, "", "",
+     "Thinking level when a request names none: none, low, high or max (Maya's canonical levels; Maya's aliases such as \"medium\" are not accepted here)."},
+    {"glm.fit_max_tokens", T::boolean, false, 0, 0, 0, false, "", "",
+     "Fit a request's output budget to the context room on the GLM side (Maya's default: false)."},
+    {"glm.experimental_speed_projection", T::boolean, false, 0, 0, 0, false, "", "",
+     "GLM speed projection (Maya's default: false)."},
+    {"glm.gpu", T::string, false, 0, 0, 0, false, "", "",
+     "GPU device indices for the GLM engine, e.g. 0 or 0,1 (distinct, 0-255, at most 16)."},
+    {"glm.layer_split", T::string, false, 0, 0, 0, false, "auto", "",
+     "First layer of each later GPU's share (rising numbers, e.g. 18 or 16,32), or auto; the GLM engine's --layer-split."},
+    {"glm.tokenizer", T::string, false, 0, 0, 0, false, "", "",
+     "Absolute tokenizer-pack path for the GLM engine (default: the pack named by the model)."},
+    {"glm.model_name", T::string, false, 0, 0, 0, false, "", "",
+     "Served model id for the GLM engine (1-256 characters; a managed model takes its identity from the manifest)."},
 }};
 
 void add(ConfigErrors& errors, std::string key, const ConfigIssueCode code, std::string reason) {
@@ -994,6 +1016,93 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   vision.ready_timeout_s = read.integer("vision.ready_timeout_s");
   vision.encode_timeout_s = read.integer("vision.encode_timeout_s");
 
+  // SP5 M2 Task 3 (spec §D-2): the glm.* family. Kinds and defaults are the
+  // vendored pin's (serve/server.py:3440/:3427/:3255/:1210-1213, validators
+  // :3234); the caps, the closed effort vocabulary and the layer_split
+  // grammar are added (C-1). The qwen-profile gate mirrors the existing
+  // engine.gpu rule the other way: an explicit engine.profile "qwen" refuses
+  // every present glm.* row by name (conflicting_values); with no explicit
+  // profile a managed model's SP4 manifest decides at launch, so the rows
+  // validate here and Task 7 refuses them for a qwen manifest (R-T3-a).
+  GlmSettings glm;
+  bool any_glm_row = false;
+  for (const auto& [path, entry] : draft.entries) {
+    static_cast<void>(entry);
+    if (path.rfind("glm.", 0) == 0) any_glm_row = true;
+  }
+  glm.thinking_budget = read.integer("glm.thinking_budget");
+  if (const auto text = read.string("glm.reasoning_effort")) {
+    if (*text == "none") glm.reasoning_effort = GlmReasoningEffort::none;
+    else if (*text == "low") glm.reasoning_effort = GlmReasoningEffort::low;
+    else if (*text == "high") glm.reasoning_effort = GlmReasoningEffort::high;
+    else if (*text == "max") glm.reasoning_effort = GlmReasoningEffort::max;
+    else add(errors, "glm.reasoning_effort", ConfigIssueCode::invalid_value, "must be none, low, high or max");
+  }
+  glm.fit_max_tokens = read.boolean("glm.fit_max_tokens");
+  glm.experimental_speed_projection = read.boolean("glm.experimental_speed_projection");
+  if (const auto gpu_text = read.string("glm.gpu")) {
+    if (const auto parsed = parse_gpu_list(*gpu_text)) glm.gpus = *parsed;
+    else add(errors, "glm.gpu", ConfigIssueCode::invalid_value,
+             "must be a comma-separated list of distinct device indices 0-255, at most 16");
+  }
+  glm.layer_split = read.string("glm.layer_split").value_or("");
+  if (glm.layer_split.empty()) glm.layer_split = "auto";
+  if (glm.layer_split != "auto") {
+    // The vendored grammar (serve/server.py:1210-1213): the first layer of
+    // each later GPU's share, e.g. "18" or "16,32". The rising-numbers check
+    // is added (C-1); the count-against-gpus check belongs to the launch
+    // (Task 7), because a manifest may name the cards the config does not.
+    std::vector<std::int64_t> layers;
+    bool grammar = true;
+    std::size_t start = 0;
+    while (start <= glm.layer_split.size()) {
+      const auto comma = glm.layer_split.find(',', start);
+      const auto token = glm.layer_split.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+      const std::size_t begin = token.find_first_not_of(" \t");
+      const std::size_t end = token.find_last_not_of(" \t");
+      if (begin == std::string::npos) {
+        grammar = false;
+        break;
+      }
+      std::int64_t value = 0;
+      const auto [ptr, ec] = std::from_chars(token.data() + begin, token.data() + end + 1, value);
+      if (ec != std::errc{} || ptr != token.data() + end + 1 || value < 1) {
+        grammar = false;
+        break;
+      }
+      layers.push_back(value);
+      if (comma == std::string::npos) break;
+      start = comma + 1;
+    }
+    bool rising = grammar && !layers.empty();
+    for (std::size_t i = 1; i < layers.size(); ++i) {
+      if (layers[i] <= layers[i - 1]) rising = false;
+    }
+    if (!rising) {
+      add(errors, "glm.layer_split", ConfigIssueCode::invalid_value,
+          "must be auto, or the first layer of each later GPU's share: rising numbers from 1 (for example \"18\" or \"16,32\")");
+    }
+  }
+  if (const auto text = read.string("glm.tokenizer")) {
+    if (is_absolute_store_path(*text)) glm.tokenizer = *text;
+    else add(errors, "glm.tokenizer", ConfigIssueCode::invalid_value, "must be an absolute path");
+  }
+  if (const auto text = read.string("glm.model_name")) {
+    if (text->empty() || text->size() > 256 || text->find('\0') != std::string::npos) {
+      add(errors, "glm.model_name", ConfigIssueCode::invalid_value, "must be 1-256 characters");
+    } else {
+      glm.model_name = *text;
+    }
+  }
+  if (any_glm_row && profile == EngineProfile::qwen) {
+    for (const auto& [path, entry] : draft.entries) {
+      static_cast<void>(entry);
+      if (path.rfind("glm.", 0) == 0) {
+        add(errors, path, ConfigIssueCode::conflicting_values, "is only supported with engine.profile glm53");
+      }
+    }
+  }
+
   // pull (SP4 §3.9)
   std::filesystem::path downloader = default_downloader_path();
   if (const auto text = read.string("pull.downloader")) {
@@ -1072,7 +1181,7 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
                                       static_cast<std::uint64_t>(max_total), std::chrono::seconds(max_duration),
                                       std::chrono::seconds(stall), std::chrono::seconds(connect)},
                          LoggingConfig{log_requests}, std::move(sampling_defaults), reasoning, std::move(session),
-                         replicas, vision));
+                         replicas, vision, std::move(glm)));
   return ValidatedConfig{std::move(config_ptr)};
 }
 
@@ -1211,6 +1320,23 @@ std::string describe(const FrontendConfig& c) {
   line("vision.resident", c.vision.resident ? "true" : "false");
   line("vision.threads", std::to_string(c.vision.threads));
   line("vision.ready_timeout_s", std::to_string(c.vision.ready_timeout_s));
+  // SP5 M2 Task 3: the glm.* family (spec §D-2).
+  line("glm.thinking_budget", std::to_string(c.glm.thinking_budget));
+  line("glm.reasoning_effort",
+       !c.glm.reasoning_effort.has_value()
+           ? std::string{"(unset)"}
+           : *c.glm.reasoning_effort == GlmReasoningEffort::none ? "none"
+           : *c.glm.reasoning_effort == GlmReasoningEffort::low  ? "low"
+           : *c.glm.reasoning_effort == GlmReasoningEffort::high ? "high"
+                                                                  : "max");
+  line("glm.fit_max_tokens", c.glm.fit_max_tokens ? "true" : "false");
+  line("glm.experimental_speed_projection", c.glm.experimental_speed_projection ? "true" : "false");
+  std::string glm_gpus;
+  for (const unsigned device : c.glm.gpus) glm_gpus += (glm_gpus.empty() ? "" : ",") + std::to_string(device);
+  line("glm.gpu", glm_gpus.empty() ? std::string{"(unset)"} : json_quoted(glm_gpus));
+  line("glm.layer_split", json_quoted(c.glm.layer_split));
+  line("glm.tokenizer", c.glm.tokenizer.has_value() ? json_quoted(*c.glm.tokenizer) : std::string{"(unset)"});
+  line("glm.model_name", c.glm.model_name.has_value() ? json_quoted(*c.glm.model_name) : std::string{"(unset)"});
   line("engine.fit_max_tokens", c.engine.fit_max_tokens ? "true" : "false");
   // SP5 M1 Task 6: the lifecycle family (runconfig.py:35-38).
   line("engine.lazy_load", c.engine.lazy_load ? "true" : "false");

@@ -351,6 +351,14 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `vision.threads` | integer | `0` | 0-256 | - | Encoder CPU threads (0: the tool's own default; cap added, C-1). |
 | `vision.ready_timeout_s` | integer | `300` | 0-86400 | - | Seconds the encoder gets to print READY (0: wait for ever, as at the pin). |
 | `vision.encode_timeout_s` | integer | `300` | 0-86400 | - | Seconds one image encoding may take (0: wait for ever, as at the pin). |
+| `glm.thinking_budget` | integer | `32768` | 0-1000000000 | - | Thinking-token budget when a request names none (Maya's default 32768; 0 disables the budget). |
+| `glm.reasoning_effort` | string | unset | - | - | Thinking level when a request names none: none, low, high or max (Maya's canonical levels; Maya's aliases such as "medium" are not accepted here). |
+| `glm.fit_max_tokens` | boolean | `false` | - | - | Fit a request's output budget to the context room on the GLM side (Maya's default: false). |
+| `glm.experimental_speed_projection` | boolean | `false` | - | - | GLM speed projection (Maya's default: false). |
+| `glm.gpu` | string | unset | - | - | GPU device indices for the GLM engine, e.g. 0 or 0,1 (distinct, 0-255, at most 16). |
+| `glm.layer_split` | string | `auto` | - | - | First layer of each later GPU's share (rising numbers, e.g. 18 or 16,32), or auto; the GLM engine's --layer-split. |
+| `glm.tokenizer` | string | unset | - | - | Absolute tokenizer-pack path for the GLM engine (default: the pack named by the model). |
+| `glm.model_name` | string | unset | - | - | Served model id for the GLM engine (1-256 characters; a managed model takes its identity from the manifest). |
 <!-- config-keys:end -->
 
 `roots.secret` defaults to the config file's directory only for a `file:` token
