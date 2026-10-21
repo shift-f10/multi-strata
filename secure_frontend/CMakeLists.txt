@@ -170,7 +170,7 @@ target_compile_features(secure_frontend_typed_config PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_typed_config PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
 target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_config secure_frontend_json
-    secure_frontend_model_inventory secure_frontend_engine_arguments)
+    secure_frontend_model_inventory secure_frontend_engine_arguments secure_frontend_parity)
 target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_paths)
 # SP4 §3.9: pull.proxy is parsed by parse_proxy (ProxySetting).
 target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_manifest_core)
@@ -1188,6 +1188,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # SP4 §4.9 c, d: engine.model_id is name or name:tag; roots.tokenizer_pack is optional.
     secure_frontend_add_cases(secure_frontend_typed_config_tests typed_config_model_reference_accepts_name_tag
         describe_reports_unset_expert_keys LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    secure_frontend_add_cases(secure_frontend_typed_config_tests each_rejected_upstream_key_errors_at_load_naming_it)
     # SP4 Task 24b (spec §4.9 c/d; F-8): managed-model config errors, also through strata-secure-server --check.
     target_link_libraries(secure_frontend_typed_config_tests PRIVATE secure_frontend_launch secure_frontend_strata_cli)
     add_dependencies(secure_frontend_typed_config_tests strata-secure-server)
@@ -1612,6 +1613,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_privacy_tests priv03_api_payloads_resembling_pull_trigger_nothing ${_sf_server_args}
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
     secure_frontend_add_cases(secure_frontend_privacy_tests doctor_proxy_hint_is_presence_only ARGS $<TARGET_FILE:strata>
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    secure_frontend_add_cases(secure_frontend_privacy_tests doctor_warns_on_strata_env_knob ARGS $<TARGET_FILE:strata>
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     secure_frontend_add_cases(secure_frontend_privacy_tests priv04_secure_server_does_not_link_acquisition
         ARGS ${CMAKE_CURRENT_BINARY_DIR}/strata-secure-server.link-set.txt ${CMAKE_CURRENT_BINARY_DIR}/strata.link-set.txt

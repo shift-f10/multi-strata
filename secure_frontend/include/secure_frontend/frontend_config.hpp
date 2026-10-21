@@ -74,6 +74,7 @@ struct FrontendConfigDraft final {
 enum class ConfigIssueCode {
   malformed_document, unknown_key, duplicate_key, wrong_type, missing_required, out_of_range, invalid_value,
   conflicting_values, remote_not_enabled, wildcard_bind_not_enabled, file_unavailable, file_untrusted,
+  excluded_key,
 };
 
 // key_path names a key ("limits.http.max_request_bytes") or "config file";

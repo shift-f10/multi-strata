@@ -1,10 +1,12 @@
 #pragma once
 
 #include "secure_frontend/frontend_config.hpp"
+#include "secure_frontend/json.hpp"
 
 #include <cstddef>
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -12,6 +14,13 @@
 namespace secure_frontend {
 
 inline constexpr std::size_t kMaxConfigFileBytes = 64U * 1024U;
+
+// The dotted path of the first config member whose SP5 parity row is
+// `rejected` (document order, any depth), or nullopt. A path the schema knows
+// as a key or a section never matches: typed names win over the flat reject.
+// parse_config_text checks this before unknown-key detection so the issue
+// names the key and its excluding rule (spec D-3).
+[[nodiscard]] std::optional<std::string> find_rejected_key(const JsonValue& root);
 
 // Converts config file text into a draft without touching the filesystem.
 // Every JSON or shape problem becomes a ConfigIssue; values are never echoed.

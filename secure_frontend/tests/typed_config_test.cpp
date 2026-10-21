@@ -1,6 +1,7 @@
 #include "secure_frontend/config_file.hpp"
 #include "secure_frontend/frontend_config.hpp"
 #include "secure_frontend/launch_composition.hpp"
+#include "secure_frontend/parity_table.hpp"
 #include "secure_frontend/secret_bytes.hpp"
 #include "secure_frontend/secret_source.hpp"
 #include "secure_frontend/token_reader.hpp"
@@ -876,6 +877,24 @@ void cfg01_explicit_values_are_not_adjusted() {
   expect(c != nullptr && c->limits.concurrency.max_queued_generations == 2U && !c->limits.concurrency.queue_derived,
          "an explicit valid value is kept as written");
 }
+// SP5 M1 Task 3 (spec D-3): every rejected parity row fails at load, naming
+// the key and (via the fixed reason) its rule — before unknown-key detection.
+void each_rejected_upstream_key_errors_at_load_naming_it() {
+  ConfigFixture f;
+  for (const auto& row : secure_frontend::parity::strata_parity_rows()) {
+    if (row.disposition != secure_frontend::parity::ParityDisposition::rejected) continue;
+    const auto result = with_literals(f, {{std::string{row.key}, "1"}});
+    expect(has_issue(result, std::string{row.key}, ConfigIssueCode::excluded_key),
+           "config with excluded key '" + std::string{row.key} + "' must fail at load naming the key: " + issues_of(result));
+  }
+  const auto nested = with_literals(f, {{"engine.mcp", "1"}});
+  expect(has_issue(nested, "engine.mcp", ConfigIssueCode::excluded_key),
+         "a nested excluded member names its full path: " + issues_of(nested));
+  // A schema-typed path that shares a rejected flat name stays valid (typed wins).
+  const auto typed = with_literals(f, {{"engine.lib_dirs", "[\"/opt/lib\"]"}});
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(typed),
+         "engine.lib_dirs remains a typed key: " + issues_of(typed));
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -884,6 +903,7 @@ int main(int argc, char** argv) {
       {"cfg01_tokenizer_pack_root_rejected_for_managed_model", cfg01_tokenizer_pack_root_rejected_for_managed_model},
       {"cfg01_model_reference_rejected_for_managed_model", cfg01_model_reference_rejected_for_managed_model},
       {"describe_reports_unset_expert_keys", describe_reports_unset_expert_keys},
+      {"each_rejected_upstream_key_errors_at_load_naming_it", each_rejected_upstream_key_errors_at_load_naming_it},
       {"typed_config_accepts_minimal_file_and_applies_defaults", typed_config_accepts_minimal_file_and_applies_defaults},
       {"cfg01_unknown_key_rejected", cfg01_unknown_key_rejected},
       {"cfg01_duplicate_key_rejected", cfg01_duplicate_key_rejected},

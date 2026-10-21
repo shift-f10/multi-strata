@@ -2,6 +2,7 @@
 
 #include "secure_frontend/canonical_path.hpp"
 #include "secure_frontend/json.hpp"
+#include "secure_frontend/parity_table.hpp"
 
 #include <cstdint>
 #include <functional>
@@ -17,6 +18,27 @@ namespace {
 
 constexpr JsonLimits kConfigJsonLimits{.max_bytes = kMaxConfigFileBytes, .max_depth = 4U,
                                        .max_container_entries = 256U, .max_string_bytes = 4096U};
+
+// SP5 M1 (spec D-3): document-order walk for the first member whose parity row
+// is `rejected`. Paths the schema knows (a key or a section) never match: the
+// typed namespace wins over the flat upstream name.
+bool walk_rejected(const std::vector<JsonMember>& members, const std::string& prefix, std::optional<std::string>& out) {
+  for (const auto& member : members) {
+    if (member.key.empty() || member.key.find('.') != std::string::npos) continue;  // not a path segment
+    const std::string path = prefix.empty() ? member.key : prefix + "." + member.key;
+    if (find_config_key(path) == nullptr && is_config_section(path) == false) {
+      const auto* row = parity::strata_parity_row(member.key);
+      if (row != nullptr && row->disposition == parity::ParityDisposition::rejected) {
+        out = path;
+        return true;
+      }
+    }
+    if (const auto* inner = member.value.if_object()) {
+      if (walk_rejected(*inner, path, out)) return true;
+    }
+  }
+  return false;
+}
 
 std::optional<ConfigDraftValue> draft_value(const JsonValue& value) {
   if (const auto* b = value.if_boolean()) return ConfigDraftValue{*b};
@@ -63,6 +85,14 @@ void collect(const std::vector<JsonMember>& members, const std::string& prefix, 
 
 }  // namespace
 
+std::optional<std::string> find_rejected_key(const JsonValue& root) {
+  const auto* members = root.if_object();
+  if (members == nullptr) return std::nullopt;
+  std::optional<std::string> found;
+  walk_rejected(*members, "", found);
+  return found;
+}
+
 std::variant<FrontendConfigDraft, ConfigErrors> parse_config_text(const std::string_view text,
                                                                   const std::filesystem::path& config_directory) {
   const auto parsed = parse_json(text, kConfigJsonLimits);
@@ -76,6 +106,12 @@ std::variant<FrontendConfigDraft, ConfigErrors> parse_config_text(const std::str
   const auto* members = std::get<JsonValue>(parsed).if_object();
   if (members == nullptr) {
     return ConfigErrors{ConfigIssue{"config file", ConfigIssueCode::malformed_document, "must be a JSON object"}};
+  }
+  // SP5 M1 Task 3: an excluded upstream option is named with its rule before
+  // generic unknown-key detection (spec D-3).
+  if (const auto rejected = find_rejected_key(std::get<JsonValue>(parsed))) {
+    return ConfigErrors{ConfigIssue{*rejected, ConfigIssueCode::excluded_key,
+                                    "is an excluded upstream option (SP5 parity table; threat model docs/security/threat-model.md)"}};
   }
   FrontendConfigDraft draft;
   draft.config_directory = config_directory;
