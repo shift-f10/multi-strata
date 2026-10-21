@@ -190,6 +190,17 @@ void append_expert_profile_save_arguments(std::vector<std::string>& arguments, c
   arguments.push_back(std::to_string(save.every));
 }
 
+// SP5 M1 Task 10 (serve/server.py:2955-2975): the guards are the pin's, in order — operator
+// --batch/--slots first (:2961), then the <=1 no-op (:2968), then the value rides as
+// --batch N even past the 8-row window (:2969-2975).
+void append_parallel_batch_arguments(std::vector<std::string>& arguments, const ParallelBatchArgs& parallel,
+                                     const std::vector<std::string>& user_arguments) {
+  if (owns_flag(user_arguments, "--batch") || owns_flag(user_arguments, "--slots")) return;
+  if (parallel.parallel <= 1) return;
+  arguments.emplace_back("--batch");
+  arguments.push_back(std::to_string(parallel.parallel));
+}
+
 std::vector<unsigned> effective_gpu_list(const std::vector<unsigned>& gpus, std::optional<std::int64_t> hip_ordinal) {
   // hip_visible (:3025): the ordinal wins only while at most one card is configured.
   if (hip_ordinal.has_value() && gpus.size() <= 1U) return {static_cast<unsigned>(*hip_ordinal)};

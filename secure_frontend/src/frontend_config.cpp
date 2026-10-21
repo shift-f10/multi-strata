@@ -35,7 +35,7 @@ std::string decimal_text(const double value) {
   return ec == std::errc{} ? std::string{buffer, end} : std::string{"?"};
 }
 
-constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8> kSchema{{
+constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1> kSchema{{
     {"schema_version", T::integer, false, 1, 1, d::kSchemaVersion, false, "", "",
      "Config format version; must be 1. Required in a config file."},
     {"listener.host", T::string, false, 0, 0, 0, false, "127.0.0.1", "--host",
@@ -268,6 +268,12 @@ constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8> kSchema{{
      "Codex compaction cache (#924; the pin's opt-in; the route is not served here)."},
     {"session.keep_files", T::integer, false, 1, 1024, 64, false, "", "",
      "How many image-scratch files to retain (pin default 64; bounds added, C-1; the consumer is out per D-9)."},
+    // SP5 M1 Task 10 (the C-4 narrowing): engine-internal parallelism only — the pin renders
+    // this as --batch N (serve/server.py:2975); 2..8 is the engine's batch window
+    // (PARALLEL_MAX :2954) and larger values ride on for the engine to adjust (:2969-2974).
+    // The cap 1024 is added (C-1), taken from the pin's own --parallel bound (:7845).
+    {"replicas.parallel", T::integer, false, 1, 1024, 1, false, "", "",
+     "Decode up to N requests together inside the one engine (1: one at a time; the N-child scheduler is not implemented)."},
 }};
 
 void add(ConfigErrors& errors, std::string key, const ConfigIssueCode code, std::string reason) {
@@ -944,6 +950,8 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   session.codex_thread_titles = read.boolean("session.codex_thread_titles");
   session.codex_compaction_cache = read.boolean("session.codex_compaction_cache");
   session.keep_files = read.integer("session.keep_files");
+  // SP5 M1 Task 10 (the C-4 narrowing): engine-internal parallelism only.
+  const ReplicasConfig replicas{read.integer("replicas.parallel")};
 
   // pull (SP4 §3.9)
   std::filesystem::path downloader = default_downloader_path();
@@ -1022,7 +1030,8 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
                          PullSettings{std::move(downloader), std::move(proxy), allow_private,
                                       static_cast<std::uint64_t>(max_total), std::chrono::seconds(max_duration),
                                       std::chrono::seconds(stall), std::chrono::seconds(connect)},
-                         LoggingConfig{log_requests}, std::move(sampling_defaults), reasoning, std::move(session)));
+                         LoggingConfig{log_requests}, std::move(sampling_defaults), reasoning, std::move(session),
+                         replicas));
   return ValidatedConfig{std::move(config_ptr)};
 }
 
@@ -1150,6 +1159,8 @@ std::string describe(const FrontendConfig& c) {
   line("session.codex_thread_titles", c.session.codex_thread_titles ? "true" : "false");
   line("session.codex_compaction_cache", c.session.codex_compaction_cache ? "true" : "false");
   line("session.keep_files", std::to_string(c.session.keep_files));
+  // SP5 M1 Task 10: engine-internal parallelism (the C-4 narrowing's surviving half).
+  line("replicas.parallel", std::to_string(c.replicas.parallel));
   line("engine.fit_max_tokens", c.engine.fit_max_tokens ? "true" : "false");
   // SP5 M1 Task 6: the lifecycle family (runconfig.py:35-38).
   line("engine.lazy_load", c.engine.lazy_load ? "true" : "false");

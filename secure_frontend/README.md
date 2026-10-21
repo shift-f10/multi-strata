@@ -341,12 +341,21 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `session.codex_thread_titles` | boolean | `false` | - | - | Codex thread titles (#923; the pin's opt-in; the route is not served here). |
 | `session.codex_compaction_cache` | boolean | `false` | - | - | Codex compaction cache (#924; the pin's opt-in; the route is not served here). |
 | `session.keep_files` | integer | `64` | 1-1024 | - | How many image-scratch files to retain (pin default 64; bounds added, C-1; the consumer is out per D-9). |
+| `replicas.parallel` | integer | `1` | 1-1024 | - | Decode up to N requests together inside the one engine (1: one at a time; the N-child scheduler is not implemented). |
 <!-- config-keys:end -->
 
 `roots.secret` defaults to the config file's directory only for a `file:` token
 source; an `env:` source never opens it. `roots.logs` and `roots.cache` may be
 absent if their parent is a private directory; only serving and `init` create
 them. `--check` creates nothing.
+
+**Replicas (SP5 narrowing, spec C-4).** N-child replica scheduling is not
+implemented in SP5; `--parallel` within one engine is. The pinned scheduler's
+`replicas` entry and its `replica_*` members are rejected at load, naming the
+key; what stands is engine-internal parallelism: `replicas.parallel` decodes up
+to N requests together inside the one engine child (rendered to the engine as
+`--batch N`, exactly like the pinned server; 1, the default, is one request at
+a time, and the engine's batch window is 8).
 
 **Constants.** Internal constants live in
 `include/secure_frontend/api_constants.hpp` (SP3) and `config_defaults.hpp`

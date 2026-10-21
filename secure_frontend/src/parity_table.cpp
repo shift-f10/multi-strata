@@ -91,7 +91,7 @@ constexpr std::array<ParityRow, 121> kRows{{
     {"need_mib", kTyped, frontend_behavior, "serve/images.py:156 (M1 Task 11: vision.need_mib; added security bound)"},
     {"open_browser", kRejected, none, "spec §4 web/desktop; serve/server.py:8191"},
     {"out_dir", kMapped, none, "spec D-9 image generation is out; serve/images.py:185"},
-    {"parallel", kTyped, engine_arg, "serve/server.py:2963, bound 1..1024 at serve/server.py:7844 (M1 Task 10: replicas.parallel)"},
+    {"parallel", kTyped, engine_arg, "serve/server.py:2955-2975 (replicas.parallel renders --batch N, :2975; window PARALLEL_MAX 8 at :2954; cap 1024 from the pin's own bound :7845, M1 Task 10)"},
     {"prevent_sleep", kRejected, none, "spec §4 desktop; serve/server.py:8031"},
     {"quant", kMapped, none, "quant identity comes from the SP4 manifest; serve/images.py:282"},
     {"queue_timeout", kMapped, none, "the SP3 row limits.concurrency.queue_timeout_ms already carries admission waiting (pin bound 0.1..600 at serve/server.py:7839; Ruling T8-a)"},

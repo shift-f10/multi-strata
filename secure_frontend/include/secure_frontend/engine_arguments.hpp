@@ -121,6 +121,19 @@ struct ExpertProfileSaveArgs final {
 void append_expert_profile_save_arguments(std::vector<std::string>& arguments, const ExpertProfileSaveArgs& save,
                                           const std::vector<std::string>& user_arguments);
 
+// SP5 M1 Task 10 (parity row parallel; serve/replicas.py + serve/server.py:2955-2975, the
+// C-4 narrowing): replicas.parallel 2..N decodes together INSIDE the one engine child —
+// the pin renders it as --batch N (llama.cpp's historical name, :2975). <=1: nothing (the
+// pin's "1 or absent: one at a time"); an operator --batch or --slots wins (:2961). The
+// value is forwarded even past PARALLEL_MAX 8 (:2954): the engine warns and adjusts,
+// recommend never force (:2969-2974).
+struct ParallelBatchArgs final {
+  std::int64_t parallel{1};  // replicas.parallel (1: one request at a time)
+};
+
+void append_parallel_batch_arguments(std::vector<std::string>& arguments, const ParallelBatchArgs& parallel,
+                                     const std::vector<std::string>& user_arguments);
+
 // Parses the operator's --gpu value: comma-separated decimal device indices
 // 0-255, no sign, spaces or leading zeros, distinct, 1-16 entries.
 [[nodiscard]] std::optional<std::vector<unsigned>> parse_gpu_list(std::string_view value);

@@ -122,6 +122,15 @@ void cfg01_unknown_key_rejected() {
     auto literals = f.literals;
     literals[path] = "1";
     const auto result = validate_text(render_config_json(literals), f.dir);
+    // SP5 M1 Task 10 (Ruling T10-b): `replicas` is BOTH our typed section (replicas.parallel)
+    // and a rejected pinned name (the N-child scheduler dict, serve/replicas.py:44). An object
+    // under it that uses none of the typed children IS the pinned dict — it still fails at load
+    // by name, with the C-4 rule (excluded_key), not the generic unknown-key code.
+    if (path.rfind("replicas.", 0) == 0) {
+      expect(has_issue(result, "replicas", ConfigIssueCode::excluded_key),
+             "a typo under the shared name replicas fails with its narrowing rule: " + path);
+      continue;
+    }
     expect(has_issue(result, path, ConfigIssueCode::unknown_key), "unknown key must be rejected by name: " + path);
   }
 }
@@ -1364,6 +1373,55 @@ void session_rows_at_each_edge() {
   reject("session.keep_files", "0");
   reject("session.keep_files", "1025");
 }
+
+// SP5 M1 Task 10 (parity row parallel; serve/server.py:2955-2975): the typed half of the
+// C-4 narrowing. replicas.parallel defaults to 1 — one request at a time (the pin's
+// docstring, :2957-2958) — with the added 1..1024 cap taken from the pin's OWN --parallel
+// bound (:7845; C-1). 2..8 is the engine's full batch window (PARALLEL_MAX :2954); 9..1024
+// stay pin-valid: the pin forwards them and the engine warns and adjusts (:2969-2974).
+void replicas_parallel_row_at_the_pin() {
+  ConfigFixture f;
+  const auto bare_result = with_literals(f, {});
+  const auto* bare = config_of(bare_result);
+  expect(bare != nullptr, "a config without the parallel row still validates: " + issues_of(bare_result));
+  if (bare != nullptr) {
+    expect(bare->replicas.parallel == 1, "default 1: one request at a time, like the pin (:2957)");
+    expect(secure_frontend::describe(*bare).find("replicas.parallel = 1\n") != std::string::npos, "describe reports it");
+  }
+  const auto accept = [&](const char* path, const std::string& value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result),
+           std::string{"accepts "} + value + " for " + path + ": " + issues_of(result));
+  };
+  const auto reject = [&](const char* path, const std::string& value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ConfigErrors>(result), std::string{"rejects "} + value + " for " + path);
+  };
+  accept("replicas.parallel", "2");
+  accept("replicas.parallel", "8");   // PARALLEL_MAX: the full engine window (:2954)
+  accept("replicas.parallel", "1024");
+  reject("replicas.parallel", "1025");
+  reject("replicas.parallel", "0");   // one-at-a-time is 1/absent (the pin's), not a typed zero
+  reject("replicas.parallel", "-1");
+}
+
+// SP5 M1 Task 10 (plan test): the N-child half — the replicas dict (serve/replicas.py:44)
+// and its replica_* members fail at load BY NAME (Task 3's rule-first scan already covers
+// every rejected row; this names the replicas family and checks the fixed reason points at
+// the README's narrowing sentence, per the plan's step 2).
+void multi_child_replicas_reject_with_the_ruling() {
+  ConfigFixture f;
+  const auto dict = with_literals(f, {{"replicas", R"({"count":4})"}});
+  expect(has_issue(dict, "replicas", secure_frontend::ConfigIssueCode::excluded_key),
+         "the replicas dict fails at load naming the key: " + issues_of(dict));
+  expect(issues_of(dict).find("README") != std::string::npos,
+         "the rejection reason cites README where C-4 is written down: " + issues_of(dict));
+  for (const char* key : {"replica_cpus", "replica_load_tokens"}) {
+    const auto result = with_literals(f, {{key, "2"}});
+    expect(has_issue(result, std::string{key}, secure_frontend::ConfigIssueCode::excluded_key),
+           std::string{key} + " is rejected by name (the C-4 narrowing): " + issues_of(result));
+  }
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1383,6 +1441,8 @@ int main(int argc, char** argv) {
       {"slot_save_path_is_a_bounded_private_path", slot_save_path_is_a_bounded_private_path},
       {"codex_and_tool_call_rows_are_dispositioned", codex_and_tool_call_rows_are_dispositioned},
       {"session_rows_at_each_edge", session_rows_at_each_edge},
+      {"replicas_parallel_row_at_the_pin", replicas_parallel_row_at_the_pin},
+      {"multi_child_replicas_reject_with_the_ruling", multi_child_replicas_reject_with_the_ruling},
       {"bounds_are_the_pins_at_each_edge", bounds_are_the_pins_at_each_edge},
       {"typed_config_accepts_minimal_file_and_applies_defaults", typed_config_accepts_minimal_file_and_applies_defaults},
       {"cfg01_unknown_key_rejected", cfg01_unknown_key_rejected},

@@ -215,6 +215,14 @@ struct SessionPolicy final {
   std::int64_t keep_files{64};                 // session.keep_files (images.py:188; typed only, T9-e)
 };
 
+// SP5 M1 Task 10 (the C-4 narrowing, spec + README): N-child replica scheduling is not
+// implemented — the pin's `replicas` dict and replica_* members are rejected at load by
+// name. What stands is engine-INTERNAL parallelism: replicas.parallel decodes up to N
+// requests together inside the one child (serve/server.py:2955-2975 renders --batch N).
+struct ReplicasConfig final {
+  std::int64_t parallel{1};  // replicas.parallel (1: one request at a time, the pin's default)
+};
+
 struct EngineLaunch final {
   std::optional<EngineProfile> profile;  // --expert only; a managed model's manifest sets it (SP4 §4.9 c)
   CanonicalFile executable;
@@ -287,16 +295,18 @@ class FrontendConfig final {
   const SamplingDefaults sampling;  // SP5 M1 Task 4: defaults.sampling.*
   const ReasoningConfig reasoning;  // SP5 M1 Task 5: reasoning.*
   const SessionPolicy session;      // SP5 M1 Task 9: session.*
+  const ReplicasConfig replicas;    // SP5 M1 Task 10: replicas.parallel (the C-4 narrowing)
 
  private:
   friend std::variant<ValidatedConfig, std::vector<ConfigIssue>> validate(const FrontendConfigDraft& draft);
   FrontendConfig(ListenerConfig listener_value, Limits limits_value, Roots roots_value, SecretSource token_value,
                  EngineLaunch engine_value, PullSettings pull_value, LoggingConfig logging_value,
-                 SamplingDefaults sampling_value, ReasoningConfig reasoning_value, SessionPolicy session_value)
+                 SamplingDefaults sampling_value, ReasoningConfig reasoning_value, SessionPolicy session_value,
+                 ReplicasConfig replicas_value)
       : listener(std::move(listener_value)), limits(limits_value), roots(std::move(roots_value)),
         token(std::move(token_value)), engine(std::move(engine_value)), pull(std::move(pull_value)),
         logging(logging_value), sampling(std::move(sampling_value)), reasoning(reasoning_value),
-        session(std::move(session_value)) {}
+        session(std::move(session_value)), replicas(replicas_value) {}
 };
 
 // Immutable after validation; subsystems derive their limits from it once.

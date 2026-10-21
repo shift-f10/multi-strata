@@ -457,6 +457,31 @@ void gpu_and_elastic_rows_reach_the_engine_argv() {
   expect(secure_frontend::effective_gpu_list({2, 3}, std::nullopt) == (std::vector<unsigned>{2, 3}), "unset: unchanged");
 }
 
+// SP5 M1 Task 10 (parity row parallel; serve/server.py:2955-2975): replicas.parallel rides
+// as ONE engine flag, --batch N — the pin's own rendering ("parallel" in, --batch out;
+// llama.cpp's historical name, :2975). One at a time at <=1 (the pin's docstring); an
+// operator --batch or --slots in the engine args silences the composition (:2961); past the
+// 8-row batch window (PARALLEL_MAX, :2954) the value rides on — the engine warns and adjusts,
+// recommend never force (:2969-2974).
+void parallel_reaches_the_engine_within_one_child() {
+  const auto compose = [](secure_frontend::ParallelBatchArgs p, const std::vector<std::string>& user) {
+    std::vector<std::string> args = {"--ngl", "99"};
+    secure_frontend::append_parallel_batch_arguments(args, p, user);
+    return args;
+  };
+  expect(compose({1}, {}).size() == 2U, "1 (the default): one request at a time, no flag (:2966-2968)");
+  expect(compose({0}, {}).size() == 2U, "0: not more than one, no flag (the pin treats <=1 as absent)");
+  const auto four = compose({4}, {});
+  const auto batch = std::find(four.begin(), four.end(), "--batch");
+  expect(batch != four.end() && std::next(batch) != four.end() && *std::next(batch) == "4",
+         "four requests decode together through --batch 4 (the pin's rendering, :2975)");
+  const auto big = compose({20}, {});
+  expect(std::count(big.begin(), big.end(), "--batch") == 1 && std::count(big.begin(), big.end(), "20") == 1,
+         "past the 8-row window the value rides on: the engine warns and adjusts (:2969-2974)");
+  expect(compose({4}, {"--batch", "8"}).size() == 2U, "an operator --batch in the engine args wins (:2961)");
+  expect(compose({4}, {"--slots", "8"}).size() == 2U, "an operator --slots wins too (:2961)");
+}
+
 // SP5 M1 Task 9 (parity rows expert_profile_save / expert_profile_save_every;
 // serve/server.py:3000-3005): a configured learned-profile save path composes
 // --expert-profile-save plus the every-minutes re-save (the pin's default 10, :2996; 0 = at
@@ -511,5 +536,6 @@ int main(int argc, char** argv) {
       {"vram_reserve_mib_becomes_the_pinned_flag", vram_reserve_mib_becomes_the_pinned_flag},
       {"gpu_and_elastic_rows_reach_the_engine_argv", gpu_and_elastic_rows_reach_the_engine_argv},
       {"expert_profile_flags_reach_launch", expert_profile_flags_reach_launch},
+      {"parallel_reaches_the_engine_within_one_child", parallel_reaches_the_engine_within_one_child},
   }, failures);
 }

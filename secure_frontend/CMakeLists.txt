@@ -1137,6 +1137,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         vram_reserve_mib_becomes_the_pinned_flag
         gpu_and_elastic_rows_reach_the_engine_argv
         expert_profile_flags_reach_launch
+        parallel_reaches_the_engine_within_one_child
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     # Pure parsing, no canonical root: runs under wine too.
     secure_frontend_add_cases(secure_frontend_engine_arguments_tests gpu_list_rejects_malformed_values)
@@ -1211,6 +1212,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         slot_save_path_is_a_bounded_private_path
         codex_and_tool_call_rows_are_dispositioned
         session_rows_at_each_edge
+        replicas_parallel_row_at_the_pin
+        multi_child_replicas_reject_with_the_ruling
         bounds_are_the_pins_at_each_edge)
     # SP4 Task 24b (spec §4.9 c/d; F-8): managed-model config errors, also through strata-secure-server --check.
     target_link_libraries(secure_frontend_typed_config_tests PRIVATE secure_frontend_launch secure_frontend_strata_cli)

@@ -24,12 +24,25 @@ constexpr JsonLimits kConfigJsonLimits{.max_bytes = kMaxConfigFileBytes, .max_de
 
 // SP5 M1 (spec D-3): document-order walk for the first member whose parity row
 // is `rejected`. Paths the schema knows (a key or a section) never match: the
-// typed namespace wins over the flat upstream name.
+// typed namespace wins over the flat upstream name. SP5 M1 Task 10 sharpens the
+// section rule: a section name wins ONLY when the object actually speaks the typed
+// namespace — every member names a schema path under it. `replicas: {"count": 4}` is
+// the pinned rejected scheduler dict, not our `replicas.parallel` section (C-4).
+bool typed_section_object(const JsonValue& value, const std::string& prefix) {
+  const auto* members = value.if_object();
+  if (members == nullptr) return false;
+  for (const auto& member : *members) {
+    if (member.key.empty() || member.key.find('.') != std::string::npos) return false;
+    if (find_config_key(prefix + "." + member.key) == nullptr) return false;
+  }
+  return true;
+}
+
 bool walk_rejected(const std::vector<JsonMember>& members, const std::string& prefix, std::optional<std::string>& out) {
   for (const auto& member : members) {
     if (member.key.empty() || member.key.find('.') != std::string::npos) continue;  // not a path segment
     const std::string path = prefix.empty() ? member.key : prefix + "." + member.key;
-    if (find_config_key(path) == nullptr && is_config_section(path) == false) {
+    if (find_config_key(path) == nullptr && !(is_config_section(path) && typed_section_object(member.value, path))) {
       const auto* row = parity::strata_parity_row(member.key);
       if (row != nullptr && row->disposition == parity::ParityDisposition::rejected) {
         out = path;
@@ -146,7 +159,8 @@ std::variant<FrontendConfigDraft, ConfigErrors> parse_config_text(const std::str
   // generic unknown-key detection (spec D-3).
   if (const auto rejected = find_rejected_key(std::get<JsonValue>(parsed))) {
     return ConfigErrors{ConfigIssue{*rejected, ConfigIssueCode::excluded_key,
-                                    "is an excluded upstream option (SP5 parity table; threat model docs/security/threat-model.md)"}};
+                                    "is an excluded upstream option (SP5 parity table; the accepted narrowing is in "
+                                    "README, section Configuration; threat model docs/security/threat-model.md)"}};
   }
   FrontendConfigDraft draft;
   draft.config_directory = config_directory;
