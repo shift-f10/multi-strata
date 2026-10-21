@@ -208,11 +208,64 @@ void fake_engine_dump_is_parseable() {
   (void)second.terminate(std::chrono::milliseconds(250));
 }
 
+// SP3 Task 14 (spec §9.2, M1 modes): streaming fake — cycled token ids,
+// counts, intervals, finishes, STOP with a delay, prefill delay; the SP2
+// short form stays unchanged when no new flag is given.
+void fake_engine_stream_modes_selftest() {
+  {
+    Child child({"--token-ids=5,6", "--tokens=5", "--token-interval-ms=10"});
+    expect(child.line() == "READY 4096 stop", "ready");
+    child.send("GEN 100 1,2,3");
+    std::vector<std::string> lines;
+    for (int i = 0; i < 6; ++i) lines.push_back(child.line());
+    expect(lines == std::vector<std::string>{"T 5", "T 6", "T 5", "T 6", "T 5", "DONE 5 3 0 0 stop"}, "ids cycle until --tokens, full DONE");
+  }
+  {
+    Child child({"--tokens=50", "--token-interval-ms=5"});
+    (void)child.line();
+    child.send("GEN 3 1");
+    expect(child.line() == "T 7" && child.line() == "T 7" && child.line() == "T 7" && child.line() == "DONE 3 1 0 0 length",
+           "max_new reached first ends with length");
+  }
+  {
+    Child child({"--tokens=1", "--finish=nonfinite"});
+    (void)child.line();
+    child.send("GEN 10 1,2");
+    expect(child.line() == "T 7" && child.line() == "DONE 1 2 0 0 nonfinite", "--finish sets the finish field");
+  }
+  {
+    Child child({"--tokens=10000", "--token-interval-ms=5", "--stop-delay-ms=100"});
+    (void)child.line();
+    child.send("GEN 100000 1");
+    expect(child.line() == "T 7", "generation running");
+    const auto sent = std::chrono::steady_clock::now();
+    child.send("STOP");
+    std::string line;
+    do { line = child.line(); } while (line == "T 7");
+    expect(line.rfind("DONE ", 0) == 0 && line.size() > 7 && line.substr(line.size() - 6) == "cancel", "STOP ends with DONE ... cancel: " + line);
+    expect(std::chrono::steady_clock::now() - sent >= 100ms, "--stop-delay-ms delays the cancel");
+  }
+  {
+    Child child({"--prefill-delay-ms=300", "--tokens=1"});
+    (void)child.line();
+    child.send("GEN 5 1");
+    expect(child.kind(200ms) == secure_frontend::EngineReadKind::timeout, "--prefill-delay-ms holds the first T back");
+    expect(child.line() == "T 7", "then the token");
+  }
+  {
+    Child child({});
+    (void)child.line();
+    child.send("GEN 5 1");
+    expect(child.line() == "T 7" && child.line() == "DONE stop", "without new modes the SP2 short form is unchanged");
+  }
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
   return secure_frontend_test::run_cases(argc, argv,
                                          {{"fake_engine_modes_selftest", fake_engine_modes_selftest},
-                                          {"fake_engine_dump_is_parseable", fake_engine_dump_is_parseable}},
+                                          {"fake_engine_dump_is_parseable", fake_engine_dump_is_parseable},
+                                          {"fake_engine_stream_modes_selftest", fake_engine_stream_modes_selftest}},
                                          failures);
 }

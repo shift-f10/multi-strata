@@ -1,7 +1,11 @@
 #include "secure_frontend/http_policy.hpp"
 
+#include "secure_frontend/api_errors.hpp"
+
 #include <algorithm>
 #include <cstdint>
+#include <iterator>
+#include <utility>
 
 namespace secure_frontend {
 namespace {
@@ -88,14 +92,6 @@ bool is_valid_ipv6(std::string_view value) {
   return compression == std::string_view::npos ? groups == 8U : groups < 8U;
 }
 
-bool is_allowed(const std::vector<std::string>& values, std::string_view candidate) {
-  return std::any_of(values.begin(), values.end(), [candidate](const std::string& value) { return value == candidate; });
-}
-
-HttpPolicyDecision reject(HttpPolicyError error) {
-  return {.allowed = false, .error = error, .access_control_allow_origin = std::nullopt};
-}
-
 }  // namespace
 
 bool is_valid_host_header(std::string_view value) {
@@ -114,34 +110,104 @@ bool is_valid_host_header(std::string_view value) {
   return is_valid_hostname(value);
 }
 
-bool is_valid_origin_header(std::string_view value) {
-  if (value.empty() || has_control_or_non_ascii(value)) return false;
-  const std::size_t scheme_end = value.find("://");
-  if (scheme_end == std::string_view::npos) return false;
-  const std::string_view scheme = value.substr(0U, scheme_end);
-  if (scheme != "http" && scheme != "https") return false;
-  const std::string_view authority = value.substr(scheme_end + 3U);
-  return authority.find_first_of("/?#@") == std::string_view::npos && is_valid_host_header(authority);
+namespace {
+
+bool contains(const std::vector<std::string>& values, std::string_view candidate) {
+  return std::find(values.begin(), values.end(), candidate) != values.end();
 }
 
-HttpPolicyDecision validate_http_request_headers(const HttpPolicy& policy,
-                                                 const std::vector<std::string_view>& hosts,
-                                                 const std::vector<std::string_view>& origins) {
-  if (hosts.empty()) return reject(HttpPolicyError::missing_host);
-  if (hosts.size() != 1U) return reject(HttpPolicyError::duplicate_host);
-  if (!is_valid_host_header(hosts.front())) return reject(HttpPolicyError::invalid_host);
-  if (!is_allowed(policy.allowed_hosts, hosts.front())) return reject(HttpPolicyError::untrusted_host);
-  if (origins.empty()) return {.allowed = true, .error = std::nullopt, .access_control_allow_origin = std::nullopt};
-  if (origins.size() != 1U) return reject(HttpPolicyError::duplicate_origin);
-  const std::string_view origin = origins.front();
-  if (!is_valid_origin_header(origin)) return reject(HttpPolicyError::invalid_origin);
-  if (is_allowed(policy.same_origin_origins, origin)) {
-    return {.allowed = true, .error = std::nullopt, .access_control_allow_origin = std::nullopt};
+std::string bound_authority(const IpAddress& bind, std::uint16_t port) {
+  const std::string& text = bind.canonical_text();
+  return (bind.family() == IpFamily::v6 ? "[" + text + "]" : text) + ":" + std::to_string(port);
+}
+
+constexpr std::string_view kAllowedRequestHeaders[] = {
+    "authorization", "content-type", "x-stainless-arch", "x-stainless-lang", "x-stainless-os",
+    "x-stainless-package-version", "x-stainless-retry-count", "x-stainless-runtime",
+    "x-stainless-runtime-version", "x-stainless-timeout"};
+
+// Every comma-separated item of every Access-Control-Request-Headers field,
+// OWS-trimmed and compared ASCII case-insensitively, is in the fixed list.
+// Empty items (",,", a trailing comma) are skipped.
+bool request_headers_allowed(const std::vector<std::string_view>& lists) {
+  for (std::string_view list : lists) {
+    for (;;) {
+      const std::size_t comma = list.find(',');
+      const std::string_view item = trim_ows(list.substr(0, comma));
+      if (!item.empty() &&
+          std::none_of(std::begin(kAllowedRequestHeaders), std::end(kAllowedRequestHeaders),
+                       [item](std::string_view allowed) { return ascii_iequal(item, allowed); })) {
+        return false;
+      }
+      if (comma == std::string_view::npos) break;
+      list.remove_prefix(comma + 1U);
+    }
   }
-  if (policy.cors_enabled && is_allowed(policy.cors_allowed_origins, origin)) {
-    return {.allowed = true, .error = std::nullopt, .access_control_allow_origin = std::string{origin}};
+  return true;
+}
+
+}  // namespace
+
+bool is_valid_host_alias(const std::string_view value) noexcept {
+  return value.find('@') == std::string_view::npos && is_valid_host_header(value);
+}
+
+bool is_valid_cors_origin(const std::string_view value) noexcept {
+  std::string_view rest;
+  if (value.starts_with("http://")) {
+    rest = value.substr(7U);
+  } else if (value.starts_with("https://")) {
+    rest = value.substr(8U);
+  } else {
+    return false;
   }
-  return reject(HttpPolicyError::untrusted_origin);
+  if (rest.empty() || rest.find_first_of("/?#@") != std::string_view::npos) return false;
+  if (std::any_of(rest.begin(), rest.end(), [](char c) { return c >= 'A' && c <= 'Z'; })) return false;
+  return is_valid_host_header(rest);
+}
+
+HttpPolicy make_http_policy(const IpAddress& bind, const std::uint16_t port, const std::vector<std::string>& host_aliases,
+                            const std::vector<std::string>& cors_origins) {
+  HttpPolicy policy;
+  if (bind.scope() != AddressScope::wildcard) policy.allowed_hosts.push_back(bound_authority(bind, port));
+  if (bind.scope() == AddressScope::loopback) policy.allowed_hosts.push_back("localhost:" + std::to_string(port));
+  for (const auto& alias : host_aliases) {
+    std::string lowered = ascii_to_lower(alias);
+    if (!contains(policy.allowed_hosts, lowered)) policy.allowed_hosts.push_back(std::move(lowered));
+  }
+  for (const auto& host : policy.allowed_hosts) policy.same_origins.push_back("http://" + host);
+  policy.cors_origins = cors_origins;
+  return policy;
+}
+
+PolicyVerdict check_host(const HttpPolicy& policy, const std::vector<std::string_view>& hosts) {
+  if (hosts.size() != 1U || !is_valid_host_header(hosts.front())) return PolicyVerdict::malformed;
+  return contains(policy.allowed_hosts, ascii_to_lower(hosts.front())) ? PolicyVerdict::allowed : PolicyVerdict::forbidden;
+}
+
+OriginDecision check_origin(const HttpPolicy& policy, const std::vector<std::string_view>& origins) {
+  if (origins.empty()) return {PolicyVerdict::allowed, std::nullopt};
+  if (origins.size() != 1U) return {PolicyVerdict::forbidden, std::nullopt};
+  if (contains(policy.same_origins, origins.front())) return {PolicyVerdict::allowed, std::nullopt};
+  if (contains(policy.cors_origins, origins.front())) return {PolicyVerdict::allowed, std::string{origins.front()}};
+  return {PolicyVerdict::forbidden, std::nullopt};
+}
+
+std::optional<HttpResponse> evaluate_preflight(const HttpPolicy& policy, const RequestHead& head) {
+  const auto origins = head.values("origin");
+  const auto methods = head.values("access-control-request-method");
+  if (head.method != "OPTIONS" || origins.empty() || methods.empty()) return std::nullopt;
+  const bool allowed = origins.size() == 1U && contains(policy.cors_origins, origins.front()) && methods.size() == 1U &&
+                       (methods.front() == "GET" || methods.front() == "POST") &&
+                       request_headers_allowed(head.values("access-control-request-headers"));
+  if (!allowed) return make_error_response(ApiError::forbidden);
+  return HttpResponse{.status = 204,
+                      .headers = {{"Access-Control-Allow-Origin", std::string{origins.front()}},
+                                  {"Access-Control-Allow-Methods", "GET, POST"},
+                                  {"Access-Control-Allow-Headers", std::string{kPreflightAllowHeaders}},
+                                  {"Access-Control-Max-Age", "600"},
+                                  {"Vary", "Origin"}},
+                      .body = ""};
 }
 
 }  // namespace secure_frontend

@@ -82,6 +82,19 @@ function(secure_frontend_add_cases binary)
     endforeach()
 endfunction()
 
+# secure_frontend_add_library(<name> SOURCES <src>... [LINKS <lib>...])  (SP3)
+function(secure_frontend_add_library name)
+    cmake_parse_arguments(PARSE_ARGV 1 _sfal "" "" "SOURCES;LINKS")
+    add_library(${name} ${_sfal_SOURCES})
+    target_compile_features(${name} PUBLIC cxx_std_20)
+    target_include_directories(${name} PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+    if(_sfal_LINKS)
+        target_link_libraries(${name} PUBLIC ${_sfal_LINKS})
+    endif()
+    secure_frontend_set_warnings(${name})
+endfunction()
+
 add_library(secure_frontend_config
     src/config.cpp
     src/secret_source.cpp
@@ -98,6 +111,14 @@ add_library(secure_frontend_http_policy
 add_library(secure_frontend_http_request_handler
     src/http_request_handler.cpp
 )
+
+secure_frontend_add_library(secure_frontend_api_core
+    SOURCES src/api_errors.cpp src/http_wire.cpp src/http_request_head.cpp
+    LINKS secure_frontend_json)
+secure_frontend_add_library(secure_frontend_socket_io SOURCES src/socket_io.cpp LINKS secure_frontend_api_core)
+if(WIN32)
+    target_link_libraries(secure_frontend_socket_io PUBLIC ws2_32)
+endif()
 
 add_library(secure_frontend_api_router
     src/api_router.cpp
@@ -119,6 +140,7 @@ add_library(secure_frontend_engine_stdio_process
 
 add_library(secure_frontend_http_socket_server
     src/http_socket_server.cpp
+    src/connection_handler.cpp
     src/process_defaults.cpp
 )
 
@@ -149,6 +171,8 @@ target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_config
 target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_paths)
 # SP4 §3.9: pull.proxy is parsed by parse_proxy (ProxySetting).
 target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_manifest_core)
+# SP3 §5.1: listener.host_aliases / cors_origins entries use the HTTP policy grammar.
+target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_http_policy)
 
 add_library(secure_frontend_server_cli src/server_cli.cpp)
 target_sources(secure_frontend_server_cli PRIVATE src/frontend_init.cpp)
@@ -231,6 +255,7 @@ target_include_directories(secure_frontend_http_policy
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
+target_link_libraries(secure_frontend_http_policy PUBLIC secure_frontend_api_core secure_frontend_config)
 
 target_compile_features(secure_frontend_http_request_handler PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_http_request_handler
@@ -239,6 +264,7 @@ target_include_directories(secure_frontend_http_request_handler
         $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(secure_frontend_http_request_handler PUBLIC secure_frontend_http_policy secure_frontend_secrets)
+target_link_libraries(secure_frontend_http_request_handler PUBLIC secure_frontend_api_core)
 
 target_compile_features(secure_frontend_http_socket_server PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_http_socket_server
@@ -246,7 +272,26 @@ target_include_directories(secure_frontend_http_socket_server
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(secure_frontend_http_socket_server PUBLIC secure_frontend_http_request_handler secure_frontend_config)
+target_link_libraries(secure_frontend_http_socket_server PUBLIC secure_frontend_socket_io secure_frontend_http_request_handler
+    secure_frontend_config secure_frontend_api_core)
+# SP3 Task 11: admission state (§2.3) and the lingering-close list (§2.4).
+# Task 12: the pool itself (§2.1, §2.8) — accept thread + fixed workers.
+secure_frontend_add_library(secure_frontend_connection_pool
+    SOURCES src/admission.cpp src/linger_list.cpp src/connection_pool.cpp
+    LINKS secure_frontend_http_socket_server secure_frontend_socket_io secure_frontend_api_core)
+# SP3 Task 13: SupervisorPort (one mutex into SP2, D-1) and the FIFO generation gate (§2.5).
+secure_frontend_add_library(secure_frontend_generation_gate
+    SOURCES src/supervisor_port.cpp src/generation_gate.cpp
+    LINKS secure_frontend_engine_supervisor secure_frontend_api_core)
+
+secure_frontend_add_library(secure_frontend_chat_route
+    SOURCES src/chat_route.cpp
+    LINKS secure_frontend_generation_gate secure_frontend_chat_execution secure_frontend_chat_schema
+          secure_frontend_chat_generation_plan secure_frontend_secrets secure_frontend_api_core)
+
+secure_frontend_add_library(secure_frontend_request_log
+    SOURCES src/request_log.cpp
+    LINKS secure_frontend_connection_pool)
 
 target_compile_features(secure_frontend_api_router PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_api_router
@@ -254,7 +299,8 @@ target_include_directories(secure_frontend_api_router
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(secure_frontend_api_router PUBLIC secure_frontend_http_request_handler)
+target_link_libraries(secure_frontend_api_router PUBLIC secure_frontend_http_policy secure_frontend_http_request_handler)
+target_link_libraries(secure_frontend_api_router PUBLIC secure_frontend_api_core)
 
 target_compile_features(secure_frontend_engine_process PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_engine_process
@@ -295,7 +341,7 @@ target_link_libraries(secure_frontend_engine_arguments PUBLIC secure_frontend_pa
 target_compile_features(secure_frontend_json PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_json PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
-target_link_libraries(secure_frontend_chat_schema PUBLIC secure_frontend_json)
+target_link_libraries(secure_frontend_chat_schema PUBLIC secure_frontend_json secure_frontend_api_core)
 target_link_libraries(secure_frontend_tokenizer_pack PUBLIC secure_frontend_json secure_frontend_paths)
 target_compile_features(secure_frontend_chat_schema PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_chat_schema
@@ -364,6 +410,8 @@ target_link_libraries(strata-secure-server PRIVATE secure_frontend_config secure
     secure_frontend_chat_generation_plan secure_frontend_chat_execution secure_frontend_engine_arguments)
 target_link_libraries(strata-secure-server PRIVATE secure_frontend_server_cli secure_frontend_typed_config)
 target_link_libraries(strata-secure-server PRIVATE secure_frontend_subsystem_limits secure_frontend_engine_supervisor)
+target_link_libraries(strata-secure-server PRIVATE secure_frontend_socket_io secure_frontend_api_core)
+target_link_libraries(strata-secure-server PRIVATE secure_frontend_connection_pool secure_frontend_chat_route secure_frontend_request_log)
 target_compile_features(strata-secure-server PRIVATE cxx_std_20)
 # Spec A2: UTF-8 argv from the wide command line on Windows, shared by
 # strata-secure-server and strata (CommandLineToArgvW: shell32).
@@ -678,7 +726,12 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
 
     # SP2 F1: test-only stand-in for `strata --serve`. Never installed. SP1's own
     # fake (tests/fake_engine_main.cpp, secure_frontend_fake_engine) is separate.
+    # SP3 Task 14: the fake reads stdin on a thread; the toolchain needs the
+    # thread library linked (find_package adds it portably: -pthread on Linux,
+    # winpthread for the mingw cross).
+    find_package(Threads REQUIRED)
     add_executable(strata-supervision-fake-engine tests/supervision_fake_engine_main.cpp)
+    target_link_libraries(strata-supervision-fake-engine PRIVATE Threads::Threads)
     target_include_directories(strata-supervision-fake-engine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_compile_features(strata-supervision-fake-engine PRIVATE cxx_std_20)
     secure_frontend_set_warnings(strata-supervision-fake-engine)
@@ -693,10 +746,29 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
             "STRATA_FAKE_ENGINE_PATH=\"$<TARGET_FILE:strata-supervision-fake-engine>\""
             "STRATA_SECURE_SERVER_PATH=\"$<TARGET_FILE:strata-secure-server>\"")
         add_dependencies(${target} strata-supervision-fake-engine strata-secure-server)
+        if(TARGET strata_egress_tripwire)  # SP3 Task 19: Linux-only tripwire targets, when defined
+            target_compile_definitions(${target} PRIVATE
+                STRATA_EGRESS_TRIPWIRE_PATH="$<TARGET_FILE:strata_egress_tripwire>"
+                STRATA_EGRESS_PROBE_PATH="$<TARGET_FILE:strata-egress-probe-helper>")
+            add_dependencies(${target} strata_egress_tripwire strata-egress-probe-helper)
+        endif()
         if(WIN32)
             target_link_libraries(${target} PRIVATE advapi32)  # grant_current_user()
         endif()
     endfunction()
+
+    # SP3 Task 19 (spec §6.2): the LD_PRELOAD egress tripwire and its probe helper.
+    # Test-only, Linux-only, and defined above the first secure_frontend_test_paths
+    # call so if(TARGET ...) is true for every test binary that follows.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_library(strata_egress_tripwire SHARED tests/support/egress_tripwire.cpp)
+        target_link_libraries(strata_egress_tripwire PRIVATE ${CMAKE_DL_LIBS})
+        target_compile_features(strata_egress_tripwire PRIVATE cxx_std_20)
+        secure_frontend_set_warnings(strata_egress_tripwire)
+        add_executable(strata-egress-probe-helper tests/egress_probe_helper.cpp)
+        target_compile_features(strata-egress-probe-helper PRIVATE cxx_std_20)
+        secure_frontend_set_warnings(strata-egress-probe-helper)
+    endif()
 
     # SP1 Task 2 already builds and registers secure_frontend_engine_stdio_process_tests.
     secure_frontend_test_paths(secure_frontend_engine_stdio_process_tests)
@@ -706,6 +778,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_test_paths(secure_frontend_fake_engine_tests)
     # Crash exit codes are Windows runtime semantics: MSYS2 only.
     secure_frontend_add_cases(secure_frontend_fake_engine_tests fake_engine_modes_selftest fake_engine_dump_is_parseable
+        fake_engine_stream_modes_selftest
         TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     # F3: start/stop the real server with the fake engine; process-tree helpers.
@@ -714,6 +787,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/tests ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_compile_features(secure_frontend_test_support PUBLIC cxx_std_20)
     target_link_libraries(secure_frontend_test_support PUBLIC secure_frontend_tokenizer_pack)
+    # SP3 Task 9 (pre-flight P36): §7.2 bodies (api_errors) and the --config file renderer (config_json.hpp).
+    target_link_libraries(secure_frontend_test_support PUBLIC secure_frontend_api_core secure_frontend_typed_config)
     if(WIN32)
         target_link_libraries(secure_frontend_test_support PUBLIC ws2_32 advapi32)
     endif()
@@ -736,6 +811,48 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     endif()
     secure_frontend_add_cases(secure_frontend_server_tests ${SECURE_FRONTEND_SERVER_CASES}
         TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    if(WIN32)
+        target_link_libraries(secure_frontend_server_tests PRIVATE iphlpapi)  # SP3 Task 20: SocketScan reads the iphlpapi tables
+    endif()
+
+    secure_frontend_add_test_executable(secure_frontend_api_server_tests tests/api_server_test.cpp
+        secure_frontend_test_support secure_frontend_api_core secure_frontend_socket_io)
+    secure_frontend_test_paths(secure_frontend_api_server_tests)
+    set(SECURE_FRONTEND_API_SERVER_CASES
+        dos01_body_over_limit_is_413_before_reading dos01_content_length_over_request_limit_is_413_before_auth
+        dos01_unauthenticated_gets_401_before_body_is_read dos01_expect_continue_after_auth_only
+        dos01_slow_header_is_408_at_header_deadline dos01_slow_body_is_408_at_request_deadline
+        dos01_incomplete_body_then_close_frees_worker err_unauthenticated_is_401_on_every_path_and_method
+        security_headers_on_every_response
+        web01_bad_host_rejected_on_every_route web01_ipv6_bound_host_rules web02_bound_authority_and_localhost_alias_succeed web02_host_alias_from_config_succeeds
+        web03_untrusted_origin_no_cors_header web04_default_emits_no_cors_header_anywhere web05_only_exact_configured_origin_allowed web06_preflight_matrix
+        web06_cross_origin_post_without_trust_rejected auth01_every_route_rejects_missing_malformed_wrong_token cfg01_wildcard_bind_requires_host_aliases
+        dos01_eviction_over_tcp_admits_new_client dos01_slowloris_cannot_starve_a_real_client dos01_slow_body_clients_cannot_starve_a_real_client
+        net01_workers_add_no_listener net01_ipv6_loopback_listener_only
+        max_tokens_above_limit_is_clamped max_tokens_clamped_to_context_room prompt_alone_over_context_is_400
+        absent_max_tokens_uses_auto sampling_passthrough_reaches_gen dos01_context_rule_is_400_without_gen
+        chat_response_has_openai_shape dos02_excess_connections_get_503_retry_after dos02_queue_full_is_503
+        dos02_queue_timeout_is_503 dos02_queue_is_fifo dos02_health_answers_while_generation_places_full
+        dos02_serial_mode_one_worker
+        dos02_queued_client_disconnect_leaves_queue dos02_non_stream_disconnect_cancels
+        dos02_resources_return_to_idle shutdown_errors_never_report_fatal
+        dos01_service_healthy_after_each_attack
+        ext01_upstream_control_routes_are_404_after_auth ext02_http_headers_cannot_enable_extensions
+        log_line_format_and_rate_limit err_no_token_prompt_or_path_in_any_body_or_log)
+    if(WIN32)
+        # SP3 Task 22: Winsock parity cases (the same code paths run on Linux by hand; see the test file note).
+        secure_frontend_add_cases(secure_frontend_api_server_tests win_refusal_is_read_not_reset
+            win_eviction_wakes_worker_within_one_slice win_disconnect_detected_by_peek
+            LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+    endif()
+    # Ruling R-J: these cases start the real server over sockets; wine excludes them, MSYS2 is authoritative.
+    secure_frontend_add_cases(secure_frontend_api_server_tests ${SECURE_FRONTEND_API_SERVER_CASES}
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+    set_tests_properties(secure_frontend_api_server_tests.web01_ipv6_bound_host_rules PROPERTIES SKIP_RETURN_CODE 77)
+    set_tests_properties(secure_frontend_api_server_tests.net01_ipv6_loopback_listener_only PROPERTIES SKIP_RETURN_CODE 77)
+    if(WIN32)
+        target_link_libraries(secure_frontend_api_server_tests PRIVATE iphlpapi)
+    endif()
 
     secure_frontend_add_test_executable(secure_frontend_deadline_tests tests/deadline_test.cpp secure_frontend_engine_stdio_process)
     secure_frontend_test_paths(secure_frontend_deadline_tests)
@@ -771,6 +888,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     if(WIN32)
         enable_language(RC)
         add_executable(strata-supervision-fake-engine-elevated tests/supervision_fake_engine_main.cpp tests/fake_engine_elevated.rc)
+        target_link_libraries(strata-supervision-fake-engine-elevated PRIVATE Threads::Threads)
         target_include_directories(strata-supervision-fake-engine-elevated PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
         target_compile_features(strata-supervision-fake-engine-elevated PRIVATE cxx_std_20)
         target_link_libraries(strata-supervision-fake-engine-elevated PRIVATE shell32 advapi32)
@@ -814,10 +932,25 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         set_tests_properties(secure_frontend_engine_supervisor_tests.proc05_cgroup_kill_when_delegated PROPERTIES SKIP_RETURN_CODE 77)
     endif()
 
-    secure_frontend_add_test_executable(secure_frontend_http_policy_tests tests/http_policy_test.cpp secure_frontend_http_policy)
+    secure_frontend_add_test_executable(secure_frontend_http_policy_tests tests/http_policy_test.cpp secure_frontend_http_policy
+        secure_frontend_api_core secure_frontend_config secure_frontend_http_request_handler)
     secure_frontend_add_cases(secure_frontend_http_policy_tests
-        accepts_exact_host_without_browser_origin rejects_ambiguous_or_untrusted_host requires_an_exact_same_origin
-        rejects_duplicate_or_malformed_origin permits_only_configured_cors_origin_when_enabled)
+        web01_host_matrix web02_host_name_case_is_folded web03_origin_matrix web06_preflight_rules_unit cors_and_alias_grammar)
+
+    secure_frontend_add_test_executable(secure_frontend_http_parser_tests tests/http_parser_test.cpp
+        secure_frontend_api_core secure_frontend_http_request_handler)
+    secure_frontend_add_cases(secure_frontend_http_parser_tests
+        err_every_code_renders_fixed_body err_param_is_key_only
+        imf_fixdate_is_bounded_for_out_of_range_clocks
+        wire_response_has_security_headers_and_date
+        dos01_request_line_over_limit_is_414 dos01_header_block_over_limit_is_431 dos01_too_many_headers_is_431
+        dos01_transfer_encoding_variants_are_411 dos01_content_length_variants head_request_line_and_header_syntax
+        wire_head_has_no_content_length route_result_seam_returns_complete_response
+        dos01_status_matrix_415_417_505 content_type_variants_accepted auth_and_route_order_follows_spec
+        dos01_json_depth_5_is_400 dos01_json_limits dos01_content_array_is_unsupported_parameter
+        sampling_neutral_values_are_no_ops sampling_bounds_rejected sampling_integer_forms_accepted)
+    target_link_libraries(secure_frontend_http_parser_tests PRIVATE
+        secure_frontend_api_router secure_frontend_secrets secure_frontend_http_policy secure_frontend_chat_schema)
 
     secure_frontend_add_test_executable(secure_frontend_http_request_handler_tests tests/http_request_handler_test.cpp
         secure_frontend_http_request_handler)
@@ -827,6 +960,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         fails_closed_before_calling_validator_for_untrusted_origin emits_cors_only_for_policy_approved_origin
         handles_policy_approved_preflight_without_exposing_an_endpoint constant_time_helper_matches_only_equal_tokens
         auth03_router_uses_verifier)
+    target_link_libraries(secure_frontend_http_request_handler_tests PRIVATE
+        secure_frontend_api_router secure_frontend_http_policy secure_frontend_secrets)
 
     secure_frontend_add_test_executable(secure_frontend_http_socket_server_tests tests/http_socket_server_test.cpp
         secure_frontend_http_socket_server)
@@ -838,7 +973,34 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         socket_server_survives_reset_before_accept socket_server_responds_after_client_half_close
         parser_honors_configured_max_request_bytes socket_server_shutdown_listener_wakes_accept
         socket_server_shutdown_listener_wakes_idle_client
+        socket_server_rejects_oversize_header_with_431 head_terminator_split_across_reads
+        expect_continue_skipped_when_body_already_sent expect_continue_sent_after_authorization
+        stream_handler_dispatch_writes_head_chunks_and_terminal_chunk no_response_status_closes_without_writing
+        listener_and_accepted_sockets_are_not_inherited
+        send_retries_on_eintr accept_backs_off_on_transient_failure send_some_slices_to_max_send_chunk
+        send_all_bounded_stops_at_stall_on_a_stalled_reader send_all_bounded_meets_deadline_and_completes
+        send_all_bounded_stall_restarts_on_progress send_all_bounded_stop_flag_cuts_an_inflight_write_within_the_drain_budget
+        socket_io_poll_probe_and_recv set_no_inherit_marks_the_socket
         TIMEOUT 300)
+    target_link_libraries(secure_frontend_http_socket_server_tests PRIVATE secure_frontend_socket_io
+        secure_frontend_api_router secure_frontend_secrets secure_frontend_http_policy)
+    secure_frontend_test_paths(secure_frontend_http_socket_server_tests)
+    set_tests_properties(secure_frontend_http_socket_server_tests.socket_server_ipv6_bind_is_v6only PROPERTIES SKIP_RETURN_CODE 77)
+    if(WIN32)
+        secure_frontend_add_cases(secure_frontend_http_socket_server_tests win_send_chunks_respect_write_stall
+            LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+    endif()
+
+    secure_frontend_add_test_executable(secure_frontend_concurrency_tests tests/concurrency_test.cpp
+        secure_frontend_connection_pool secure_frontend_generation_gate secure_frontend_request_log)
+    secure_frontend_test_paths(secure_frontend_concurrency_tests)
+    # Portable and unlabeled: these also run under wine.
+    set(SECURE_FRONTEND_CONCURRENCY_CASES dos01_oldest_header_phase_connection_is_evicted dos01_remote_address_cap
+        dos01_linger_list_overflow_closes_oldest dos01_linger_closes_on_peer_eof refusal_response_is_fixed_and_small
+        gate_first_request_gets_the_slot gate_queue_full_is_busy gate_zero_queue_admits_one_at_a_time gate_fifo_order gate_timeout_returns_timeout
+        request_log_format_and_token_bucket
+        gate_cancelled_waiter_leaves_queue gate_fast_fails_when_engine_not_ready gate_shutdown_refuses_waiters)
+    secure_frontend_add_cases(secure_frontend_concurrency_tests ${SECURE_FRONTEND_CONCURRENCY_CASES} TIMEOUT 120)
 
     secure_frontend_add_test_executable(secure_frontend_api_router_tests tests/api_router_test.cpp secure_frontend_api_router)
     secure_frontend_add_cases(secure_frontend_api_router_tests
@@ -846,8 +1008,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         health_is_503_with_engine_state_when_unavailable dispatches_exact_health_route
         dispatches_models_with_json_escaping rejects_non_exact_routes
         fails_closed_when_provider_throws_or_returns_invalid_model health_carries_recovery_only_with_failed
-        auth01_every_route_rejects_missing_malformed_wrong_token)
-    target_link_libraries(secure_frontend_api_router_tests PRIVATE secure_frontend_secrets)
+        auth01_every_route_rejects_missing_malformed_wrong_token models_list_keeps_utf8_model_id)
+    target_link_libraries(secure_frontend_api_router_tests PRIVATE
+        secure_frontend_secrets secure_frontend_api_router secure_frontend_http_policy)
 
     secure_frontend_add_test_executable(secure_frontend_engine_process_tests tests/engine_process_test.cpp
         secure_frontend_engine_process)
@@ -865,6 +1028,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         rejects_malformed_and_unexpected_engine_output bounds_and_engine_errors_fail_closed
         prefill_progress_is_bounded_in_both_profiles
         resume_and_reused_progress_is_consumed_in_the_strata_profile
+        gen_carries_bounded_sampling_keys
         generation_total_deadline_is_enforced
         gen_line_fits_max_prompt_tokens derived_line_cap_is_clamped_to_protocol_max stop_cause_and_completed_generations)
 
@@ -907,13 +1071,35 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_test_executable(secure_frontend_chat_schema_tests tests/chat_schema_test.cpp secure_frontend_chat_schema)
     secure_frontend_add_cases(secure_frontend_chat_schema_tests
         parses_minimal_text_request rejects_unsupported_and_unsafe_features rejects_duplicate_and_malformed_json
-        renders_escaped_minimal_response)
+        renders_escaped_minimal_response
+        renders_openai_completion_shape)
+
+    # SP3 Task 18: static egress tripwire (spec §6.2) over the server binary itself.
+    secure_frontend_add_test_executable(secure_frontend_egress_tests tests/egress_test.cpp secure_frontend_test_support)
+    secure_frontend_test_paths(secure_frontend_egress_tests)
+    set(SECURE_FRONTEND_EGRESS_CASES egress_server_imports_no_resolver_or_http_client
+        egress_static_tripwire_fails_on_binary_without_dynamic_section)
+    secure_frontend_add_cases(secure_frontend_egress_tests ${SECURE_FRONTEND_EGRESS_CASES} TIMEOUT 120)
+    # SP3 Task 19: runtime tripwires. On Windows the interposer cases are not registered (no interposer);
+    # the server-starting cases carry the windows-runtime label (ruling R-J).
+    target_link_libraries(secure_frontend_egress_tests PRIVATE secure_frontend_socket_io)
+    if(WIN32)
+        secure_frontend_add_cases(secure_frontend_egress_tests egress_command_like_values_trigger_nothing
+            LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+        secure_frontend_add_cases(secure_frontend_egress_tests egress_table_scan_during_lifecycle
+            LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+        target_link_libraries(secure_frontend_egress_tests PRIVATE iphlpapi)
+    else()
+        secure_frontend_add_cases(secure_frontend_egress_tests egress_interposer_self_test
+            egress_interposer_records_nothing_during_lifecycle egress_table_scan_during_lifecycle
+            egress_command_like_values_trigger_nothing LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+    endif()
 
     secure_frontend_add_test_executable(secure_frontend_json_tests tests/json_test.cpp secure_frontend_json)
     secure_frontend_add_cases(secure_frontend_json_tests
         json_accepts_strict_document json_rejects_duplicate_keys json_rejects_depth_over_limit
         json_rejects_non_integer_numbers json_rejects_bom_trailing_data_and_comments
-        json_enforces_size_entry_and_string_limits json_string_escaper_round_trips)
+        json_enforces_size_entry_and_string_limits json_string_escaper_round_trips json_decimals_only_when_enabled)
 
     secure_frontend_add_test_executable(secure_frontend_typed_config_tests tests/typed_config_test.cpp
         secure_frontend_typed_config)
@@ -950,6 +1136,14 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # SP4 §4.9 delta e: the pull.* keys (scratch roots, DACL-private on Windows).
     secure_frontend_add_cases(secure_frontend_typed_config_tests cfg01_pull_keys_table_driven
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # SP3 SP1-addendum A1 (spec §5.1): unlabelled, so the wine smoke runs them (pre-flight T4).
+    secure_frontend_add_cases(secure_frontend_typed_config_tests cfg01_sp3_rows_type_and_range
+        cfg01_header_deadline_le_request_deadline cfg01_response_deadline_ge_write_stall
+        cfg01_wildcard_bind_requires_host_aliases cfg01_host_alias_grammar_and_count
+        web05_cors_origin_config_rejects_wildcard_null_path_duplicate_and_17_entries
+        cfg01_sp3_concurrency_rows_and_defaults cfg01_queue_plus_two_le_workers cfg01_serial_requires_zero_queue
+        cfg01_remote_cap_le_workers cfg01_sp1_config_with_one_worker_still_valid
+        cfg01_derived_defaults_follow_worker_count cfg01_explicit_values_are_not_adjusted)
     if(WIN32)
         secure_frontend_add_cases(secure_frontend_typed_config_tests cfg01_config_with_everyone_write_ace_rejected
             LABELS windows-runtime)
@@ -993,7 +1187,11 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         chat_recovers_after_generation_timeout chat_gen_write_bounded_by_generation_deadline chat_marks_engine_failed_when_drain_fails
         chat_rejects_nonfinite_done_and_stays_ready health_reflects_protocol_state
         health_is_failed_after_engine_closed_mid_generation health_is_failed_when_engine_closes_before_ready
-        chat_applies_engine_context_rule_with_eight_token_margin chat_uses_adopted_ready_without_waiting)
+        chat_applies_engine_context_rule_with_eight_token_margin chat_uses_adopted_ready_without_waiting
+        resolve_max_tokens_follows_decisions_1_and_2
+        run_generation_reports_finish_usage_and_context run_generation_cancel_sends_stop_and_drains
+        run_generation_timeout_stops_and_reports_timed_out run_generation_drain_failure_abandons
+        run_generation_shutdown_uses_short_drain run_generation_maps_engine_errors)
 
     secure_frontend_add_test_executable(secure_frontend_subsystem_limits_tests tests/subsystem_limits_test.cpp
         secure_frontend_subsystem_limits)

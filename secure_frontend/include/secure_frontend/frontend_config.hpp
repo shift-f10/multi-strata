@@ -6,6 +6,7 @@
 #include "secure_frontend/secret_source.hpp"
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -39,6 +40,15 @@ struct ConfigKey final {
 
 [[nodiscard]] std::span<const ConfigKey> config_schema() noexcept;
 [[nodiscard]] const ConfigKey* find_config_key(std::string_view path) noexcept;
+// SP3 addendum: per-key extras kept beside SP1's positional rows.
+struct ConfigKeyExtension final {
+  std::string_view path;
+  std::size_t max_entries;                         // string_array: most entries (0 = unbounded)
+  bool (*entry_valid)(std::string_view) noexcept;  // string_array: per-entry grammar (nullptr = any)
+  std::string_view entry_reason;                   // fixed reason when an entry fails entry_valid
+  std::string_view derived_default;                // non-empty: default derived from other keys (README / --check text)
+};
+[[nodiscard]] const ConfigKeyExtension* find_config_key_extension(std::string_view path) noexcept;
 // True for an object path that prefixes at least one key ("limits", "limits.http").
 [[nodiscard]] bool is_config_section(std::string_view path) noexcept;
 [[nodiscard]] std::string_view type_reason(ConfigValueType type) noexcept;
@@ -95,6 +105,8 @@ struct ListenerConfig final {
   bool allow_remote;
   bool allow_wildcard_bind;
   std::uint32_t backlog;
+  std::vector<std::string> cors_origins;  // SP3 §4.4: exact origins, each is_valid_cors_origin
+  std::vector<std::string> host_aliases;  // SP3 §4.3: extra exact Host values, each is_valid_host_alias
 };
 struct HttpLimits final {
   std::chrono::milliseconds request_deadline;
@@ -102,6 +114,10 @@ struct HttpLimits final {
   std::uint32_t max_header_bytes;
   std::uint32_t max_headers;
   std::uint32_t max_request_line_bytes;
+  std::chrono::milliseconds header_deadline;          // SP3 §5.1
+  std::chrono::milliseconds write_stall;
+  std::chrono::milliseconds response_write_deadline;
+  std::chrono::milliseconds stream_keepalive;
 };
 struct ChatLimits final {
   std::uint32_t max_body_bytes;
@@ -117,14 +133,27 @@ struct EngineLimits final {
   std::chrono::seconds generation_timeout;
   std::chrono::seconds stop_drain_timeout;
 };
+// SP3 §5.1: an absent queue / per-remote key takes its value derived from the
+// worker count (the *_derived flags record that for --check).
 struct ConcurrencyLimits final {
   std::uint32_t max_concurrent_requests;
+  std::uint32_t max_queued_generations;
+  std::chrono::milliseconds queue_timeout;
+  std::uint32_t max_connections_per_remote_address;
+  bool queue_derived;
+  bool remote_cap_derived;
 };
+[[nodiscard]] std::uint32_t derived_max_queued_generations(std::uint32_t workers) noexcept;
+[[nodiscard]] std::uint32_t derived_max_connections_per_remote_address(std::uint32_t workers) noexcept;
 struct Limits final {
   HttpLimits http;
   ChatLimits chat;
   EngineLimits engine;
   ConcurrencyLimits concurrency;
+};
+// SP3 §8: logging.requests (one stderr line per request when true).
+struct LoggingConfig final {
+  bool requests;
 };
 struct Roots final {
   CanonicalRoot models;
@@ -175,13 +204,15 @@ class FrontendConfig final {
   const SecretSource token;  // metadata only: env name or relative file path (CFG-06)
   const EngineLaunch engine;
   const PullSettings pull;
+  const LoggingConfig logging;  // SP3 §8
 
  private:
   friend std::variant<ValidatedConfig, std::vector<ConfigIssue>> validate(const FrontendConfigDraft& draft);
   FrontendConfig(ListenerConfig listener_value, Limits limits_value, Roots roots_value, SecretSource token_value,
-                 EngineLaunch engine_value, PullSettings pull_value)
+                 EngineLaunch engine_value, PullSettings pull_value, LoggingConfig logging_value)
       : listener(std::move(listener_value)), limits(limits_value), roots(std::move(roots_value)),
-        token(std::move(token_value)), engine(std::move(engine_value)), pull(std::move(pull_value)) {}
+        token(std::move(token_value)), engine(std::move(engine_value)), pull(std::move(pull_value)),
+        logging(logging_value) {}
 };
 
 // Immutable after validation; subsystems derive their limits from it once.

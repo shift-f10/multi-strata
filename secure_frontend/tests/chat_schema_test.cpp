@@ -61,6 +61,20 @@ void renders_escaped_minimal_response() {
     expect(response->find("\"stream\"") == std::string::npos, "response must be non-streaming only");
   }
 }
+// SP3 Task 15 (spec §3.5): the non-streaming OpenAI completion shape, exact bytes.
+void renders_openai_completion_shape() {
+  const auto body = secure_frontend::render_chat_completion({.id = "chatcmpl-0123456789abcdef0123456789abcdef", .created = 1791963785,
+                                                             .model = "fake-model", .text = "Hi \"there\"\n", .finish_reason = "length",
+                                                             .prompt_tokens = 7U, .completion_tokens = 3U});
+  expect(body == std::optional<std::string>{
+                      "{\"id\":\"chatcmpl-0123456789abcdef0123456789abcdef\",\"object\":\"chat.completion\",\"created\":1791963785,"
+                      "\"model\":\"fake-model\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"Hi \\\"there\\\"\\n\"},"
+                      "\"logprobs\":null,\"finish_reason\":\"length\"}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10}}\n"},
+         "spec §3.5 shape: " + body.value_or("<nullopt>"));
+  expect(!secure_frontend::render_chat_completion({.id = "x", .created = 0, .model = "m", .text = "\xff", .finish_reason = "stop",
+                                                   .prompt_tokens = 0U, .completion_tokens = 0U}).has_value(), "invalid UTF-8 is refused");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -69,5 +83,6 @@ int main(int argc, char** argv) {
       {"rejects_unsupported_and_unsafe_features", rejects_unsupported_and_unsafe_features},
       {"rejects_duplicate_and_malformed_json", rejects_duplicate_and_malformed_json},
       {"renders_escaped_minimal_response", renders_escaped_minimal_response},
+      {"renders_openai_completion_shape", renders_openai_completion_shape},
   }, failures);
 }

@@ -16,9 +16,11 @@
 #include <filesystem>
 #include <functional>
 #include <iostream>
+#include <map>
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -90,9 +92,9 @@ void typed_config_accepts_minimal_file_and_applies_defaults() {
              c.limits.http.max_header_bytes == 16384U && c.limits.http.max_headers == 64U &&
              c.limits.http.max_request_line_bytes == 4096U, "http limit defaults");
   expect(c.limits.chat.max_body_bytes == 49152U && c.limits.chat.max_messages == 128U &&
-             c.limits.chat.max_completion_tokens == 4096U && c.limits.chat.default_max_tokens == 256U, "chat defaults");
+             c.limits.chat.max_completion_tokens == 4096U && c.limits.chat.default_max_tokens == 0U, "chat defaults");
   expect(c.limits.engine.ready_timeout == std::chrono::seconds(900), "ready_timeout defaults to 900 s");
-  expect(c.limits.concurrency.max_concurrent_requests == 1U, "one request at a time until SP3");
+  expect(c.limits.concurrency.max_concurrent_requests == 8U, "eight workers (SP3 B11)");
   expect(c.token.kind() == secure_frontend::SecretSourceKind::protected_file && c.token.location() == "token",
          "token.source defaults to file:token");
   expect(!c.engine.profile.has_value() && c.engine.model_id.value() == "qwen-local",
@@ -661,6 +663,219 @@ void describe_reports_unset_expert_keys() {
   expect(text.find("\nengine.profile = (unset)\n") != std::string::npos, "engine.profile = (unset)");
   expect(text.find("\nengine.model_id = \"m:t\"\n") != std::string::npos, "engine.model_id as given");
 }
+
+// SP3 SP1-addendum A1 (spec §5.1, §4.3, §4.4): string-array rows, Host/CORS
+// grammar, HTTP deadline keys and logging.requests.
+struct Sp3Row { const char* path; ConfigValueType type; std::int64_t minimum; std::int64_t maximum; };
+constexpr Sp3Row kSp3RowsA1[] = {
+    {"listener.cors_origins", ConfigValueType::string_array, 0, 0},
+    {"listener.host_aliases", ConfigValueType::string_array, 0, 0},
+    {"limits.http.header_deadline_ms", ConfigValueType::integer, 1, 3'600'000},
+    {"limits.http.write_stall_ms", ConfigValueType::integer, 100, 300'000},
+    {"limits.http.response_write_deadline_ms", ConfigValueType::integer, 1'000, 3'600'000},
+    {"limits.http.stream_keepalive_ms", ConfigValueType::integer, 1'000, 300'000},
+    {"logging.requests", ConfigValueType::boolean, 0, 0},
+};
+
+std::string string_array(const std::vector<std::string>& values) {
+  std::string out = "[";
+  for (std::size_t i = 0; i < values.size(); ++i) out += (i ? "," : "") + secure_frontend_test::json_literal(values[i]);
+  return out + "]";
+}
+
+secure_frontend::ConfigValidationResult with_literals(const ConfigFixture& f, const std::map<std::string, std::string>& extra) {
+  auto literals = f.literals;
+  for (const auto& [k, v] : extra) literals[k] = v;
+  return validate_text(render_config_json(literals), f.dir);
+}
+
+void cfg01_sp3_rows_type_and_range() {
+  ConfigFixture f;
+  for (const auto& row : kSp3RowsA1) {
+    const auto* key = secure_frontend::find_config_key(row.path);
+    expect(key != nullptr && key->type == row.type, std::string{"row exists with its type: "} + row.path);
+    if (key != nullptr && row.type == ConfigValueType::integer) {
+      expect(key->minimum == row.minimum && key->maximum == row.maximum, std::string{"range of "} + row.path);
+    }
+  }
+  const auto defaults = with_literals(f, {});
+  const auto* validated = std::get_if<secure_frontend::ValidatedConfig>(&defaults);
+  expect(validated != nullptr, "defaults validate: " + issues_of(defaults));
+  if (validated != nullptr) {
+    const auto& c = validated->get();
+    expect(c.listener.cors_origins.empty() && c.listener.host_aliases.empty(), "array defaults are empty");
+    expect(c.limits.http.header_deadline == std::chrono::milliseconds(10000) && c.limits.http.write_stall == std::chrono::milliseconds(10000) &&
+           c.limits.http.response_write_deadline == std::chrono::milliseconds(60000) &&
+           c.limits.http.stream_keepalive == std::chrono::milliseconds(15000), "HTTP deadline defaults");
+    expect(!c.logging.requests, "request logging is off by default");
+    const std::string text = secure_frontend::describe(c);
+    for (const auto& row : kSp3RowsA1) expect(text.find(row.path) != std::string::npos, std::string{"--check prints "} + row.path);
+  }
+  std::vector<std::string> seventeen;
+  for (int i = 0; i < 17; ++i) seventeen.push_back("h" + std::to_string(i) + ".lan:8080");
+  expect(has_issue(with_literals(f, {{"listener.host_aliases", string_array(seventeen)}}), "listener.host_aliases",
+                   ConfigIssueCode::out_of_range), "17 aliases are rejected");
+  seventeen.pop_back();
+  expect(!has_issue(with_literals(f, {{"listener.host_aliases", string_array(seventeen)}}), "listener.host_aliases",
+                    ConfigIssueCode::out_of_range), "16 aliases are accepted");
+  expect(has_issue(with_literals(f, {{"listener.cors_origins", "[1]"}}), "listener.cors_origins", ConfigIssueCode::wrong_type),
+         "a non-string entry is a type error");
+}
+
+void cfg01_header_deadline_le_request_deadline() {
+  ConfigFixture f;
+  expect(has_issue(with_literals(f, {{"limits.http.header_deadline_ms", "30001"}}), "limits.http.header_deadline_ms",
+                   ConfigIssueCode::conflicting_values), "header deadline above the request deadline is rejected");
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(with_literals(f, {{"limits.http.header_deadline_ms", "30000"}})),
+         "equal deadlines are valid");
+}
+
+void cfg01_response_deadline_ge_write_stall() {
+  ConfigFixture f;
+  expect(has_issue(with_literals(f, {{"limits.http.write_stall_ms", "20000"}, {"limits.http.response_write_deadline_ms", "19999"}}),
+                   "limits.http.response_write_deadline_ms", ConfigIssueCode::conflicting_values),
+         "response deadline below the stall bound is rejected");
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(
+             with_literals(f, {{"limits.http.write_stall_ms", "20000"}, {"limits.http.response_write_deadline_ms", "20000"}})),
+         "equal values are valid");
+}
+
+void cfg01_wildcard_bind_requires_host_aliases() {
+  ConfigFixture f;
+  const std::map<std::string, std::string> wildcard{{"listener.host", "\"0.0.0.0\""}, {"listener.allow_remote", "true"},
+                                                    {"listener.allow_wildcard_bind", "true"}};
+  expect(has_issue(with_literals(f, wildcard), "listener.host_aliases", ConfigIssueCode::invalid_value),
+         "a wildcard bind without aliases names listener.host_aliases");
+  auto with_alias = wildcard;
+  with_alias["listener.host_aliases"] = string_array({"box.lan:8080"});
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(with_literals(f, with_alias)), "one alias is enough");
+}
+
+void cfg01_host_alias_grammar_and_count() {
+  ConfigFixture f;
+  for (const std::string bad : {"http://x", "x:", "x:99999", "a b", "user@x", "x.:80", ""}) {
+    expect(has_issue(with_literals(f, {{"listener.host_aliases", string_array({bad})}}), "listener.host_aliases",
+                     ConfigIssueCode::invalid_value), "alias rejected: " + bad);
+  }
+  expect(has_issue(with_literals(f, {{"listener.host_aliases", string_array({"a.lan:1", "a.lan:1"})}}), "listener.host_aliases",
+                   ConfigIssueCode::invalid_value), "duplicate aliases are rejected");
+  const auto ok = with_literals(f, {{"listener.host_aliases", string_array({"Strata.LAN:8080", "[fe80::1]:8080", "box"})}});
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(ok), "valid aliases: " + issues_of(ok));
+  const auto text = issues_of(with_literals(f, {{"listener.host_aliases", string_array({"secret-host-value:"})}}));
+  expect(text.find("secret-host-value") == std::string::npos, "the issue never echoes the value");
+}
+
+void web05_cors_origin_config_rejects_wildcard_null_path_duplicate_and_17_entries() {
+  ConfigFixture f;
+  for (const std::string bad : {"*", "null", "http://app.example/", "http://app.example/path", "http://App.example",
+                                "ftp://app.example", "app.example:3000", "http://app.example:3000?x"}) {
+    expect(has_issue(with_literals(f, {{"listener.cors_origins", string_array({bad})}}), "listener.cors_origins",
+                     ConfigIssueCode::invalid_value), "origin rejected: " + bad);
+  }
+  expect(has_issue(with_literals(f, {{"listener.cors_origins", string_array({"http://a.example", "http://a.example"})}}),
+                   "listener.cors_origins", ConfigIssueCode::invalid_value), "duplicate origins are rejected");
+  std::vector<std::string> seventeen;
+  for (int i = 0; i < 17; ++i) seventeen.push_back("http://a" + std::to_string(i) + ".example");
+  expect(has_issue(with_literals(f, {{"listener.cors_origins", string_array(seventeen)}}), "listener.cors_origins",
+                   ConfigIssueCode::out_of_range), "17 origins are rejected");
+  const auto ok = with_literals(f, {{"listener.cors_origins", string_array({"http://app.example:3000", "https://ui.example"})}});
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(ok), "two exact origins: " + issues_of(ok));
+}
+
+// SP3 SP1-addendum A2 (spec §5.1, owner decisions B1/B11): concurrency rows,
+// defaults derived from the worker count, default_max_tokens 0 = auto.
+constexpr Sp3Row kSp3RowsA2[] = {
+    {"limits.concurrency.max_concurrent_requests", ConfigValueType::integer, 1, 256},
+    {"limits.concurrency.max_queued_generations", ConfigValueType::integer, 0, 254},
+    {"limits.concurrency.queue_timeout_ms", ConfigValueType::integer, 1'000, 3'600'000},
+    {"limits.concurrency.max_connections_per_remote_address", ConfigValueType::integer, 1, 256},
+    {"limits.chat.default_max_tokens", ConfigValueType::integer, 0, 16'384},
+};
+
+const secure_frontend::FrontendConfig* config_of(const secure_frontend::ConfigValidationResult& result) {
+  const auto* validated = std::get_if<secure_frontend::ValidatedConfig>(&result);
+  return validated == nullptr ? nullptr : &validated->get();
+}
+
+void cfg01_sp3_concurrency_rows_and_defaults() {
+  ConfigFixture f;
+  for (const auto& row : kSp3RowsA2) {
+    const auto* key = secure_frontend::find_config_key(row.path);
+    expect(key != nullptr && key->type == row.type && key->minimum == row.minimum && key->maximum == row.maximum,
+           std::string{"row and range: "} + row.path);
+  }
+  const auto result = with_literals(f, {});
+  const auto* c = config_of(result);
+  expect(c != nullptr, "defaults validate: " + issues_of(result));
+  if (c == nullptr) return;
+  expect(c->limits.concurrency.max_concurrent_requests == 8U && c->limits.concurrency.max_queued_generations == 4U &&
+         c->limits.concurrency.queue_timeout == std::chrono::milliseconds(300000) &&
+         c->limits.concurrency.max_connections_per_remote_address == 4U, "spec §5.1 defaults (B11)");
+  expect(c->limits.concurrency.queue_derived && c->limits.concurrency.remote_cap_derived, "absent keys are derived");
+  expect(c->limits.chat.default_max_tokens == 0U, "default_max_tokens defaults to 0 = auto (B1)");
+  const std::string text = secure_frontend::describe(*c);
+  expect(text.find("limits.concurrency.max_queued_generations = 4 (derived)") != std::string::npos &&
+         text.find("limits.concurrency.max_connections_per_remote_address = 4 (derived)") != std::string::npos,
+         "--check marks derived values: " + text);
+}
+
+void cfg01_queue_plus_two_le_workers() {
+  ConfigFixture f;
+  expect(has_issue(with_literals(f, {{"limits.concurrency.max_concurrent_requests", "5"}, {"limits.concurrency.max_queued_generations", "4"}}),
+                   "limits.concurrency.max_queued_generations", ConfigIssueCode::conflicting_values), "4 + 2 > 5 is rejected");
+  expect(config_of(with_literals(f, {{"limits.concurrency.max_concurrent_requests", "6"}, {"limits.concurrency.max_queued_generations", "4"}})) != nullptr,
+         "4 + 2 = 6 is valid");
+}
+
+void cfg01_serial_requires_zero_queue() {
+  ConfigFixture f;
+  expect(has_issue(with_literals(f, {{"limits.concurrency.max_concurrent_requests", "1"}, {"limits.concurrency.max_queued_generations", "1"}}),
+                   "limits.concurrency.max_queued_generations", ConfigIssueCode::conflicting_values), "serial needs queue 0");
+  expect(config_of(with_literals(f, {{"limits.concurrency.max_concurrent_requests", "1"}, {"limits.concurrency.max_queued_generations", "0"}})) != nullptr,
+         "serial with queue 0 is valid");
+}
+
+void cfg01_remote_cap_le_workers() {
+  ConfigFixture f;
+  expect(has_issue(with_literals(f, {{"limits.concurrency.max_concurrent_requests", "3"},
+                                     {"limits.concurrency.max_connections_per_remote_address", "4"}}),
+                   "limits.concurrency.max_connections_per_remote_address", ConfigIssueCode::conflicting_values), "cap above workers");
+}
+
+void cfg01_sp1_config_with_one_worker_still_valid() {
+  ConfigFixture f;
+  const auto* c = config_of(with_literals(f, {{"limits.concurrency.max_concurrent_requests", "1"}}));
+  expect(c != nullptr, "an SP1-era file with one worker validates");
+  if (c != nullptr) {
+    expect(c->limits.concurrency.max_queued_generations == 0U && c->limits.concurrency.max_connections_per_remote_address == 1U,
+           "queue 0 and remote cap 1 are derived");
+  }
+}
+
+void cfg01_derived_defaults_follow_worker_count() {
+  ConfigFixture f;
+  const std::pair<int, std::pair<unsigned, unsigned>> table[] = {{1, {0U, 1U}}, {2, {0U, 2U}}, {3, {1U, 3U}},
+                                                                  {6, {4U, 4U}}, {8, {4U, 4U}}, {256, {4U, 4U}}};
+  for (const auto& [workers, expected] : table) {
+    const auto* c = config_of(with_literals(f, {{"limits.concurrency.max_concurrent_requests", std::to_string(workers)}}));
+    expect(c != nullptr && c->limits.concurrency.max_queued_generations == expected.first &&
+           c->limits.concurrency.max_connections_per_remote_address == expected.second,
+           "derived for " + std::to_string(workers) + " workers");
+    expect(secure_frontend::derived_max_queued_generations(static_cast<std::uint32_t>(workers)) == expected.first &&
+           secure_frontend::derived_max_connections_per_remote_address(static_cast<std::uint32_t>(workers)) == expected.second,
+           "derivation functions for " + std::to_string(workers));
+  }
+}
+
+void cfg01_explicit_values_are_not_adjusted() {
+  ConfigFixture f;
+  const auto result = with_literals(f, {{"limits.concurrency.max_concurrent_requests", "1"}, {"limits.concurrency.max_queued_generations", "4"}});
+  expect(config_of(result) == nullptr && has_issue(result, "limits.concurrency.max_queued_generations", ConfigIssueCode::conflicting_values),
+         "an explicit queue of 4 with one worker is an error naming the key, never silently lowered");
+  const auto* c = config_of(with_literals(f, {{"limits.concurrency.max_queued_generations", "2"}}));
+  expect(c != nullptr && c->limits.concurrency.max_queued_generations == 2U && !c->limits.concurrency.queue_derived,
+         "an explicit valid value is kept as written");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -685,6 +900,20 @@ int main(int argc, char** argv) {
       {"cfg06_validated_config_bytes_do_not_contain_token", cfg06_validated_config_bytes_do_not_contain_token},
       {"readme_config_table_matches_schema", readme_config_table_matches_schema},
       {"cfg01_pull_keys_table_driven", cfg01_pull_keys_table_driven},
+      {"cfg01_sp3_rows_type_and_range", cfg01_sp3_rows_type_and_range},
+      {"cfg01_header_deadline_le_request_deadline", cfg01_header_deadline_le_request_deadline},
+      {"cfg01_response_deadline_ge_write_stall", cfg01_response_deadline_ge_write_stall},
+      {"cfg01_wildcard_bind_requires_host_aliases", cfg01_wildcard_bind_requires_host_aliases},
+      {"cfg01_host_alias_grammar_and_count", cfg01_host_alias_grammar_and_count},
+      {"web05_cors_origin_config_rejects_wildcard_null_path_duplicate_and_17_entries",
+       web05_cors_origin_config_rejects_wildcard_null_path_duplicate_and_17_entries},
+      {"cfg01_sp3_concurrency_rows_and_defaults", cfg01_sp3_concurrency_rows_and_defaults},
+      {"cfg01_queue_plus_two_le_workers", cfg01_queue_plus_two_le_workers},
+      {"cfg01_serial_requires_zero_queue", cfg01_serial_requires_zero_queue},
+      {"cfg01_remote_cap_le_workers", cfg01_remote_cap_le_workers},
+      {"cfg01_sp1_config_with_one_worker_still_valid", cfg01_sp1_config_with_one_worker_still_valid},
+      {"cfg01_derived_defaults_follow_worker_count", cfg01_derived_defaults_follow_worker_count},
+      {"cfg01_explicit_values_are_not_adjusted", cfg01_explicit_values_are_not_adjusted},
 #if !defined(_WIN32)
       {"cfg02_env_token_ignores_config_folder_permissions", cfg02_env_token_ignores_config_folder_permissions},
       {"cfg02_file_token_default_secret_root_reports_one_issue", cfg02_file_token_default_secret_root_reports_one_issue},

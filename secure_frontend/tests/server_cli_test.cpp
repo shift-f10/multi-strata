@@ -332,10 +332,13 @@ void auth04_no_switch_disables_auth() {
     if (key.type == secure_frontend::ConfigValueType::boolean) {
       // SP2 Task 26 (owner-visible edit of this SP1 security test): the engine's
       // Linux NNP opt-out; SP4 §3.5: pull.allow_private_addresses widens the
-      // downloader's address policy. Neither touches authentication.
+      // downloader's address policy; SP3 §8: logging.requests turns on the
+      // per-request stderr line. None of them touches authentication.
       expect(path == "listener.allow_remote" || path == "listener.allow_wildcard_bind" ||
-                 path == "engine.allow_new_privileges" || path == "pull.allow_private_addresses",
-             "the only switches are the two bind opt-ins, the engine's NNP opt-out and the pull address opt-in: " + path);
+                 path == "engine.allow_new_privileges" || path == "pull.allow_private_addresses" ||
+                 path == "logging.requests",
+             "the only switches are the two bind opt-ins, the engine's NNP opt-out, the pull address opt-in and "
+             "request logging: " + path);
     }
   }
   expect(flags.count("--allow-remote") == 1U && flags.count("--token-env") == 1U && flags.count("--check") == 1U,

@@ -1,17 +1,22 @@
+#include "secure_frontend/api_errors.hpp"
 #include "secure_frontend/api_router.hpp"
 #include "secure_frontend/chat_execution.hpp"
+#include "secure_frontend/chat_route.hpp"
 #include "secure_frontend/chat_schema.hpp"
 #include "secure_frontend/config.hpp"
+#include "secure_frontend/connection_pool.hpp"
 #include "secure_frontend/engine_arguments.hpp"
 #include "secure_frontend/engine_environment.hpp"
 #include "secure_frontend/engine_supervisor.hpp"
 #include "secure_frontend/frontend_config.hpp"
 #include "secure_frontend/frontend_init.hpp"
-#include "secure_frontend/http_request_handler.hpp"
+#include "secure_frontend/generation_gate.hpp"
+#include "secure_frontend/http_policy.hpp"
 #include "secure_frontend/http_socket_server.hpp"
 #include "secure_frontend/launch_composition.hpp"
 #include "secure_frontend/privilege_check.hpp"
 #include "secure_frontend/process_defaults.hpp"
+#include "secure_frontend/request_log.hpp"
 #include "secure_frontend/server_cli.hpp"
 #include "secure_frontend/shutdown_signal.hpp"
 #include "secure_frontend/subsystem_limits.hpp"
@@ -40,12 +45,6 @@ using secure_frontend::FrontendConfig;
 std::string host_header(const secure_frontend::Config& config) {
   const bool ipv6 = config.host.find(':') != std::string::npos;
   return (ipv6 ? "[" + config.host + "]" : config.host) + ":" + std::to_string(config.port);
-}
-
-secure_frontend::HttpResponse json_error(const int status, const char* message) {
-  return {.status = status,
-          .headers = {{"Content-Type", "application/json; charset=utf-8"}, {"Cache-Control", "no-store"}},
-          .body = std::string{"{\"error\":\""} + message + "\"}\n"};
 }
 
 secure_frontend::TokenReadResult read_configured_token(const FrontendConfig& config) {
@@ -137,7 +136,6 @@ int run(const FrontendConfig& config, const bool expert) {
   const secure_frontend::Config listener = secure_frontend::listener_config(config);
   // Derived once, before bind/spawn; each subsystem keeps its own const copy.
   const auto schema_limits = secure_frontend::chat_schema_limits(config);
-  const auto listener_limits = secure_frontend::http_socket_server_limits(config);
   // SP4 §2.3/§4.9 (Task 24b): managed models launch from the installed manifest;
   // --expert keeps SP1's operator path (inventory, roots.tokenizer_pack).
   auto composed = secure_frontend::compose_engine_launch(config, expert);
@@ -156,9 +154,6 @@ int run(const FrontendConfig& config, const bool expert) {
   const std::string& model_id = launch.model_id;
   const bool glm = launch.profile == EngineProfile::glm53;
   auto* engine_arguments = &launch.engine_args;
-  std::vector<secure_frontend::ApiModel> models;
-  models.reserve(launch.served_models.size());
-  for (const auto& id : launch.served_models) models.push_back({.id = id, .owned_by = "local"});
 
   // Profile, protocol flavor, chat limits and the READY deadline all come from
   // the validated config (limits.engine.ready_timeout_s drives the policy).
@@ -197,46 +192,50 @@ int run(const FrontendConfig& config, const bool expert) {
 #endif
   // The supervisor thread spawns, watches and restarts the engine (spec §3.1).
   // Declared before the listener and the router, so it outlives both; a Lease
-  // lives only inside one execute_with_lease() call.
+  // lives only inside one ChatRoute::handle call.
   secure_frontend::EngineSupervisor supervisor(supervisor_config, secure_frontend::make_stdio_process_factory(std::move(plan)));
 
-  const std::string authority = host_header(listener);
-  secure_frontend::HttpPolicy policy{.allowed_hosts = {authority}, .same_origin_origins = {"http://" + authority},
-                                     .cors_allowed_origins = {}, .cors_enabled = false};
-  // /health takes one supervisor snapshot per request: the router calls the
-  // bool provider first, then the engine and recovery providers, once each
-  // (api_router.hpp), and the listener is serial.
-  secure_frontend::HealthSnapshot health = secure_frontend::health_for(secure_frontend::SupervisorState::stopped);
-  const secure_frontend::ApiRouter router(
-      [&supervisor, &health] {
-        health = supervisor.snapshot();
-        return health.healthy;
+  const std::string authority = host_header(listener);  // the startup line only
+  // SP3 Task 16 (spec §2.2, §2.5): SupervisorPort serializes the frontend's
+  // snapshot/acquire/report_fatal into SP2 (D-1); GenerationGate holds the
+  // single generation slot with a FIFO queue; ChatRoute validates (P4) before a
+  // queue place is taken and runs the generation through the lease (P6).
+  // Declaration order here — supervisor, port, gate, chat route, then router,
+  // server, pool — keeps every object a pool worker touches alive until the
+  // pool is joined.
+  secure_frontend::SupervisorPort port(supervisor);
+  secure_frontend::GenerationGate gate({.max_queued = config.limits.concurrency.max_queued_generations,
+                                        .queue_timeout = config.limits.concurrency.queue_timeout});
+  secure_frontend::ChatRoute chat_route(
+      secure_frontend::ChatRouteConfig{.schema = schema_limits, .model_id = model_id, .profile = supervisor_config.profile,
+                                       .max_prompt_tokens = config.limits.chat.max_prompt_tokens,
+                                       .max_completion_tokens = config.limits.chat.max_completion_tokens,
+                                       .default_max_tokens = config.limits.chat.default_max_tokens,
+                                       .queue_timeout = config.limits.concurrency.queue_timeout},
+      port, gate, *tokenizer);
+  // Spec §4.1: every request goes through the header-first router (Host,
+  // Origin, preflight, bearer token, route table, Content-Type, body limit)
+  // before a body byte is read. Spec §3.6 (E9, re-anchor 4 / P26): /v1/models
+  // lists only the served model, launch.model_id, owned by "local".
+  secure_frontend::ApiRouter router(secure_frontend::ApiRouterConfig{
+      .policy = secure_frontend::make_http_policy(config.listener.host, config.listener.port, config.listener.host_aliases,
+                                                  config.listener.cors_origins),
+      .validator = secure_frontend::make_bearer_validator(verifier),
+      .model_id = model_id,
+      .owned_by = "local",
+      .chat_body_limit = config.limits.chat.max_body_bytes,
+      .health = [&port] {
+        const auto s = port.snapshot();
+        return secure_frontend::HealthView{s.healthy, s.engine, s.recovery};
       },
-      [models] { return models; }, [&health] { return health.engine; }, [&health] { return health.recovery; });
-  auto server = secure_frontend::HttpSocketServer::bind(
-      listener, std::move(policy), secure_frontend::make_bearer_validator(verifier),
-      [&router, &supervisor, &tokenizer, &model_id, &schema_limits](
-          const std::string_view method, const std::string_view target, const std::string_view body) {
-        if (method == "GET") return router.dispatch(method, target);
-        if (method != "POST" || target != "/v1/chat/completions") return json_error(404, "Not Found");
-        // Parse first: a request the frontend refuses (tools, functions, MCP,
-        // stream, unknown fields) is answered with no engine or process action (EXT-01).
-        const auto request = secure_frontend::parse_chat_completion_request(body, schema_limits);
-        if (!request || request->model != model_id) return json_error(400, "Bad Request");
-        // Outside `ready` there is no lease: an immediate generic 503, never a wait (spec §3.4).
-        const auto outcome = secure_frontend::execute_with_lease(supervisor, *request, *tokenizer);
-        if (!outcome) return json_error(503, "Service Unavailable");
-        const auto* completion = std::get_if<secure_frontend::ChatExecutionResult>(&*outcome);
-        if (completion == nullptr) return json_error(503, "Service Unavailable");
-        const auto response =
-            secure_frontend::render_chat_completion_response(*request, completion->text, schema_limits);
-        if (!response) return json_error(503, "Service Unavailable");
-        return secure_frontend::HttpResponse{
-            .status = 200,
-            .headers = {{"Content-Type", "application/json; charset=utf-8"}, {"Cache-Control", "no-store"}},
-            .body = *response};
-      },
-      nullptr, listener_limits);
+      // ChatRoute: P4 validation, then the gate, then P6 through the lease
+      // (spec §2.2). The route answers its own refusals.
+      .chat = [&chat_route](const std::string_view body, const secure_frontend::RequestContext& context) -> secure_frontend::RouteResult {
+        return chat_route.handle(body, context);
+      }});
+  const secure_frontend::ConnectionLimits connection_bounds = secure_frontend::connection_limits(config);
+  std::string bind_error;
+  auto server = secure_frontend::HttpSocketServer::bind(listener, static_cast<int>(config.listener.backlog), &bind_error);
   if (!server) { std::cerr << "Unable to bind secure listener.\n"; return EXIT_FAILURE; }
   // Bound first, spawned second: a listener that cannot bind never leaves an
   // engine child behind (CFG-01). The token was read above, before any spawn.
@@ -244,6 +243,10 @@ int run(const FrontendConfig& config, const bool expert) {
   // which wakes the accept() below. Signals route to the supervisor's wake.
   supervisor.set_on_stopped([&server] { server->shutdown_listener(); });
   secure_frontend::install_shutdown_signals(supervisor.wake());
+  // Spec §8: the operator-facing startup summary — the process's own settings
+  // only (stderr, once; like --check prints them). Never any secret or path.
+  std::cerr << "strata: listening " << authority << ", workers " << config.limits.concurrency.max_concurrent_requests
+            << ", queued generations " << config.limits.concurrency.max_queued_generations << '\n' << std::flush;
   if (!supervisor.start()) { std::cerr << "Unable to start the engine supervisor.\n"; return EXIT_FAILURE; }
   // Every way out of this scope, an exception included, stops the supervisor
   // while the listener its on-stopped hook uses still exists.
@@ -253,16 +256,31 @@ int run(const FrontendConfig& config, const bool expert) {
   } stop_supervisor{supervisor};
   std::cout << "Secure server listening on http://" << authority << " (authenticated; Ctrl-C to stop)\n";
   std::cout.flush();
-  for (;;) {
-    std::string error;
-    const bool served = server->serve_one(&error);
-    if (supervisor.stop_requested()) break;
-    if (!served && server->listener_failed()) {
-      std::cerr << "listener stopped: " << error << '\n';
-      supervisor.shutdown(secure_frontend::config_defaults::kShutdownBound);
-      return EXIT_FAILURE;
-    }
-    // Any other failure was one client's; keep serving.
+  // Task 12: the server is concurrent (spec §2.1). The accept loop runs on this
+  // thread; the workers exist for the life of the pool, which is constructed
+  // after supervisor.start() and destroyed (already joined) before the
+  // supervisor shutdown below.
+  secure_frontend::RequestLogger request_log(config.logging.requests, secure_frontend::stderr_sink());
+  secure_frontend::ConnectionPool pool(
+      *server,
+      secure_frontend::PoolLimits{.workers = config.limits.concurrency.max_concurrent_requests,
+                                  .per_remote_cap = config.limits.concurrency.max_connections_per_remote_address,
+                                  .connection = connection_bounds},
+      router,
+      // Spec §8: one fixed-field line per finished connection when logging.requests is on.
+      [&request_log](const secure_frontend::FinishedConnection& finished) { request_log.record(secure_frontend::log_record_for(finished)); });
+  // Pre-flight P33 (kept per ruling T16-pool: shutdown_signalled() alone would
+  // miss the recovery-exhausted exit): the supervisor's stop request ends the
+  // accept loop; the on-stopped hook closing the listener is the second exit
+  // path. T12b: a dead listener ends the loop with PoolExit::listener_failed,
+  // handled exactly as SP2's loop handled it: orderly supervisor shutdown, exit
+  // non-zero. The on-shutdown hook (Task 16) wakes gate waiters as
+  // shutting_down before the workers are joined.
+  const auto pool_exit = pool.run_until([&supervisor] { return supervisor.stop_requested(); }, [&gate] { gate.shutdown(); });
+  if (pool_exit == secure_frontend::PoolExit::listener_failed) {
+    std::cerr << "listener stopped\n";
+    supervisor.shutdown(secure_frontend::config_defaults::kShutdownBound);
+    return EXIT_FAILURE;
   }
   supervisor.shutdown(secure_frontend::config_defaults::kShutdownBound);
   // Spec C4: exit 0 means no engine is left; an unreaped one was logged.
@@ -272,6 +290,8 @@ int run(const FrontendConfig& config, const bool expert) {
 }  // namespace
 
 int main(int argc, char* argv[]) {
+  // Spec §10: Winsock is initialized once per process (bind() no longer calls WSAStartup).
+  const secure_frontend::WinsockGuard winsock;
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
   std::cerr << "warning: test hooks compiled in (" << secure_frontend::kTestHooksMarker << "); never ship this binary\n";
 #endif

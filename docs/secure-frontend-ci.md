@@ -102,6 +102,23 @@ creates one). G3
 (`proc06_elevation_required_is_spawn_failed`) is not a CTest test: the runners
 are elevated, so it is a validation-kit step for a non-elevated Windows prompt.
 
+SP3 M1 adds two test binaries — `secure_frontend_concurrency_tests` (pool,
+admission, linger list, FIFO gate, request logger) and
+`secure_frontend_egress_tests` (static import tripwire plus, on Linux only, the
+runtime `LD_PRELOAD` interposer `libstrata_egress_tripwire.so` and
+`strata-egress-probe-helper`; both artifacts are test-only and are never
+linked into a product binary). The three `win_*` Winsock-parity cases in
+`secure_frontend_api_server_tests` carry `windows-runtime` (MSYS2 pending). A
+non-blocking `linux-clang-tsan` job (ruling T22-tsan) rebuilds the
+`linux-clang` preset with `-fsanitize=thread` and runs
+`ctest -R '(concurrency_tests|api_server_tests|http_socket_server_tests)'
+-E 'egress_interposer'` (the interposer and TSan do not mix; static import
+checks are a separate job) after setting `vm.mmap_rnd_bits=28` — but per the
+owner's 2026-10-20 ruling GitHub Actions are disabled and agents never push,
+so no CI has run since; the job is the future vehicle for the TSan follow-up
+(clang/TSan are not installed on the dev host). The Windows runtime proof of
+every SP3 case waits for `windows-msys2-clang` on the owner's hardware.
+
 ## Root build
 
     cmake -S . -B out/root -G Ninja

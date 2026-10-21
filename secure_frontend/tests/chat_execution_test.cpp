@@ -2,10 +2,12 @@
 #include "support/test_support.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <deque>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unordered_set>
@@ -143,16 +145,14 @@ void rejects_context_and_output_limits_before_generation() {
          "context overflow must not emit GEN");
 
   FakeTransport limit_transport;
-  limit_transport.reads = {line("READY 512")};
+  limit_transport.reads = {line("READY 512"), line("DONE 0")};
   secure_frontend::EngineProtocolClient limit_protocol(limit_transport);
   secure_frontend::ChatExecutionService limit_service(
       limit_protocol, {.maximum_prompt_tokens = 128U, .maximum_output_tokens = 1U});
   const auto limit_result = limit_service.execute(valid_request(2U), tokenizer);
-  const auto* limit_error = std::get_if<secure_frontend::ChatExecutionError>(&limit_result);
-  expect(limit_error != nullptr &&
-             limit_error->code == secure_frontend::ChatExecutionErrorCode::invalid_request &&
-             limit_transport.writes.empty(),
-         "local output bound must reject before GEN");
+  expect(std::holds_alternative<secure_frontend::ChatExecutionResult>(limit_result) &&
+             limit_transport.writes.size() == 1U && limit_transport.writes.front().rfind("GEN 1 ", 0) == 0,
+         "a request above the local output bound is clamped to it (B2), not rejected");
 }
 
 void fails_closed_on_invalid_engine_output() {
@@ -349,6 +349,143 @@ void chat_uses_adopted_ready_without_waiting() {
   expect(std::holds_alternative<secure_frontend::ChatExecutionResult>(result), "execute does not wait for a second READY");
 }
 
+void resolve_max_tokens_follows_decisions_1_and_2() {
+  using secure_frontend::resolve_max_tokens;
+  // requested, prompt, ctx, max_completion, default -> result
+  expect(resolve_max_tokens(100U, 10U, 4096U, 4096U, 0U) == std::optional<std::size_t>{100U}, "fits as asked");
+  expect(resolve_max_tokens(16384U, 10U, 100000U, 4096U, 0U) == std::optional<std::size_t>{4096U}, "clamped to max_completion (B2)");
+  expect(resolve_max_tokens(1000U, 50U, 100U, 4096U, 0U) == std::optional<std::size_t>{42U}, "clamped to ctx - n - 8 (B2)");
+  expect(resolve_max_tokens(std::nullopt, 50U, 100U, 4096U, 0U) == std::optional<std::size_t>{42U}, "auto = min(max, ctx - n - 8) (B1)");
+  expect(resolve_max_tokens(std::nullopt, 10U, 100000U, 4096U, 0U) == std::optional<std::size_t>{4096U}, "auto capped by max_completion");
+  expect(resolve_max_tokens(std::nullopt, 10U, 4096U, 4096U, 256U) == std::optional<std::size_t>{256U}, "a configured default applies");
+  expect(!resolve_max_tokens(5U, 92U, 100U, 4096U, 0U).has_value(), "prompt alone fills the context: 400 (B2)");
+  expect(resolve_max_tokens(5U, 91U, 100U, 4096U, 0U) == std::optional<std::size_t>{1U}, "one token of room is still allowed");
+  expect(resolve_max_tokens(5U, 100000U, 0U, 4096U, 0U) == std::optional<std::size_t>{5U}, "unknown context: no context clamp");
+}
+
+// SP3 Task 15 (run_generation, spec §2.6 P6): a transport that answers STOP
+// with a cancel DONE the next time it is read. Adapted to the re-anchored
+// write_line(line, deadline, error) signature; assertions as planned.
+class StopAwareTransport final : public secure_frontend::EngineLineTransport {
+ public:
+  std::deque<std::string> reads;
+  std::vector<std::string> writes;
+  std::string cancel_line{"DONE 1 3 0 0 cancel"};
+  bool answer_stop{true};
+  bool write_line(const std::string_view line, const secure_frontend::MonotonicClock::time_point, std::string&) override {
+    writes.emplace_back(line);
+    if (line == "STOP" && answer_stop) reads.push_back(cancel_line);
+    return true;
+  }
+  secure_frontend::EngineReadResult read_line(const std::chrono::milliseconds timeout) override {
+    if (reads.empty()) {
+      std::this_thread::sleep_for(std::min(timeout, std::chrono::milliseconds(2)));
+      return {secure_frontend::EngineReadKind::timeout, {}, {}};
+    }
+    std::string next = std::move(reads.front());
+    reads.pop_front();
+    return {secure_frontend::EngineReadKind::line, std::move(next), {}};
+  }
+};
+
+struct ReadyService final {
+  StopAwareTransport transport;
+  secure_frontend::EngineProtocolClient protocol{transport};
+  secure_frontend::ChatExecutionService service;
+  explicit ReadyService(secure_frontend::ChatExecutionLimits limits = {}) : service(protocol, limits) {
+    transport.reads = {"READY 512 stop"};
+    secure_frontend::EngineReady ready{};
+    expect(!protocol.await_ready(std::chrono::seconds(1), ready).has_value(), "READY consumed");
+    service.adopt_ready(ready);
+  }
+};
+
+void run_generation_reports_finish_usage_and_context() {
+  const auto tokenizer = tokenizer_for("OK");
+  ReadyService f;
+  expect(f.service.context_tokens() == 512U, "context_tokens is the READY context");
+  const auto o = token_id_for(tokenizer, "O");
+  const auto k = token_id_for(tokenizer, "K");
+  f.transport.reads = {"T " + std::to_string(o), "T " + std::to_string(k), "DONE 2 3 1.0 1.0 length"};
+  const auto outcome = f.service.run_generation({1U, 2U, 3U}, {.max_tokens = 2U}, {}, tokenizer);
+  const auto* result = std::get_if<secure_frontend::GenerationResult>(&outcome);
+  expect(result != nullptr && result->text == "OK" && result->prompt_tokens == 3U && result->completion_tokens == 2U &&
+         result->finish == secure_frontend::FinishReason::length, "text, usage and finish from DONE");
+  expect(f.transport.writes.front().rfind("GEN 2 ", 0) == 0, "GEN carries the resolved budget");
+  f.transport.reads = {"T " + std::to_string(o), "DONE stop"};
+  const auto short_form = f.service.run_generation({1U}, {.max_tokens = 5U}, {}, tokenizer);
+  expect(std::holds_alternative<secure_frontend::GenerationResult>(short_form) &&
+         std::get<secure_frontend::GenerationResult>(short_form).finish == secure_frontend::FinishReason::stop, "short DONE is stop");
+}
+
+void run_generation_cancel_sends_stop_and_drains() {
+  const auto tokenizer = tokenizer_for("O");
+  ReadyService f;
+  f.transport.reads = {"T " + std::to_string(token_id_for(tokenizer, "O"))};
+  int checks = 0;
+  const auto outcome = f.service.run_generation({1U, 2U, 3U}, {.max_tokens = 100U}, {.cancelled = [&checks] { return ++checks > 2; }}, tokenizer);
+  expect(std::holds_alternative<secure_frontend::GenerationFailure>(outcome) &&
+         std::get<secure_frontend::GenerationFailure>(outcome) == secure_frontend::GenerationFailure::cancelled, "a gone client cancels");
+  expect(std::count(f.transport.writes.begin(), f.transport.writes.end(), "STOP") == 1, "exactly one STOP");
+  expect(f.protocol.idle(), "drained to DONE: the engine is idle for the next request");
+}
+
+void run_generation_timeout_stops_and_reports_timed_out() {
+  const auto tokenizer = tokenizer_for("O");
+  ReadyService f({.generation_timeout = std::chrono::milliseconds(100), .stop_drain_timeout = std::chrono::milliseconds(500)});
+  const auto started = std::chrono::steady_clock::now();
+  const auto outcome = f.service.run_generation({1U}, {.max_tokens = 100U}, {}, tokenizer);
+  expect(std::holds_alternative<secure_frontend::GenerationFailure>(outcome) &&
+         std::get<secure_frontend::GenerationFailure>(outcome) == secure_frontend::GenerationFailure::timed_out, "timeout");
+  expect(std::chrono::steady_clock::now() - started < std::chrono::seconds(1), "bounded by generation_timeout + drain");
+  expect(f.protocol.idle(), "STOP drained");
+}
+
+void run_generation_drain_failure_abandons() {
+  const auto tokenizer = tokenizer_for("O");
+  ReadyService f({.generation_timeout = std::chrono::milliseconds(50), .stop_drain_timeout = std::chrono::milliseconds(100)});
+  f.transport.answer_stop = false;
+  const auto outcome = f.service.run_generation({1U}, {.max_tokens = 100U}, {}, tokenizer);
+  expect(std::holds_alternative<secure_frontend::GenerationFailure>(outcome) &&
+         std::get<secure_frontend::GenerationFailure>(outcome) == secure_frontend::GenerationFailure::engine_unavailable,
+         "an engine that ignores STOP is unavailable");
+  expect(f.protocol.closed(), "and abandoned (the route reports drain_failed through the port)");
+}
+
+void run_generation_shutdown_uses_short_drain() {
+  const auto tokenizer = tokenizer_for("O");
+  ReadyService f;
+  std::atomic<bool> shutting{true};
+  const auto outcome = f.service.run_generation({1U}, {.max_tokens = 100U}, {.cancelled = {}, .shutting_down = &shutting}, tokenizer);
+  expect(std::holds_alternative<secure_frontend::GenerationFailure>(outcome) &&
+         std::get<secure_frontend::GenerationFailure>(outcome) == secure_frontend::GenerationFailure::shutting_down, "shutdown");
+  expect(std::count(f.transport.writes.begin(), f.transport.writes.end(), "STOP") == 1, "STOP sent during shutdown");
+}
+
+void run_generation_maps_engine_errors() {
+  const auto tokenizer = tokenizer_for("O");
+  {
+    ReadyService f;
+    f.transport.reads = {"DONE 0 1 1.0 1.0 nonfinite"};
+    const auto outcome = f.service.run_generation({1U}, {.max_tokens = 5U}, {}, tokenizer);
+    expect(std::get<secure_frontend::GenerationFailure>(outcome) == secure_frontend::GenerationFailure::engine_error && f.protocol.idle(),
+           "nonfinite: engine_error, engine stays idle");
+  }
+  {
+    ReadyService f;
+    f.transport.reads = {"ERR bad request"};
+    const auto outcome = f.service.run_generation({1U}, {.max_tokens = 5U}, {}, tokenizer);
+    expect(std::get<secure_frontend::GenerationFailure>(outcome) == secure_frontend::GenerationFailure::engine_error && f.protocol.closed(),
+           "ERR: engine_error, protocol closed (SP2 restarts and counts)");
+  }
+  {
+    ReadyService f;
+    f.transport.reads = {"T 0", "T 0", "DONE 2 1 0 0 stop"};
+    const auto outcome = f.service.run_generation({1U}, {.max_tokens = 1U}, {}, tokenizer);
+    expect(std::get<secure_frontend::GenerationFailure>(outcome) == secure_frontend::GenerationFailure::engine_error, "more tokens than asked");
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -366,5 +503,12 @@ int main(int argc, char** argv) {
       {"health_is_failed_when_engine_closes_before_ready", health_is_failed_when_engine_closes_before_ready},
       {"chat_applies_engine_context_rule_with_eight_token_margin", chat_applies_engine_context_rule_with_eight_token_margin},
       {"chat_uses_adopted_ready_without_waiting", chat_uses_adopted_ready_without_waiting},
+      {"resolve_max_tokens_follows_decisions_1_and_2", resolve_max_tokens_follows_decisions_1_and_2},
+      {"run_generation_reports_finish_usage_and_context", run_generation_reports_finish_usage_and_context},
+      {"run_generation_cancel_sends_stop_and_drains", run_generation_cancel_sends_stop_and_drains},
+      {"run_generation_timeout_stops_and_reports_timed_out", run_generation_timeout_stops_and_reports_timed_out},
+      {"run_generation_drain_failure_abandons", run_generation_drain_failure_abandons},
+      {"run_generation_shutdown_uses_short_drain", run_generation_shutdown_uses_short_drain},
+      {"run_generation_maps_engine_errors", run_generation_maps_engine_errors},
   }, failures);
 }

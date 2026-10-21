@@ -1,5 +1,7 @@
 #pragma once
 
+#include "secure_frontend/api_errors.hpp"
+
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -18,8 +20,9 @@ inline constexpr std::string_view kHarnessTokenEnv = "STRATA_HARNESS_TOKEN";
 inline constexpr std::string_view kHarnessToken = "SP2harnessToken_0123456789-abcdefghijklmnop";
 inline constexpr std::string_view kHealthStarting = "{\"status\":\"unavailable\",\"engine\":\"starting\"}\n";
 inline constexpr std::string_view kHealthReady = "{\"status\":\"ok\",\"engine\":\"ready\"}\n";
-inline constexpr std::string_view kGeneric503 = "{\"error\":\"Service Unavailable\"}\n";
-inline constexpr std::string_view kBadRequest = "{\"error\":\"Bad Request\"}\n";
+// Spec §7.2 bodies (SP3 Task 9): the SP2 generic bodies became the fixed OpenAI-shaped error rows.
+inline const std::string kGeneric503 = secure_frontend::render_error_body(secure_frontend::ApiError::engine_unavailable);
+inline const std::string kBadRequest = secure_frontend::render_error_body(secure_frontend::ApiError::invalid_request);
 inline constexpr std::string_view kChatBody = R"({"model":"fake-model","messages":[{"role":"user","content":"Hi"}],"max_tokens":2})";
 
 // POSIX: the direct children of `pid` (from every thread's /proc/<pid>/task/<tid>/children). Windows: empty.
@@ -61,6 +64,9 @@ struct ServerOptions final {
   std::map<std::string, std::string> extra_env{};    // added to the server's own environment
   std::optional<std::filesystem::path> engine{};     // default: the fake engine
   std::optional<std::filesystem::path> state_dir{};  // --state-dir; default: <root>/state, created 0700
+  // Key path -> JSON literal. Non-empty: <root>/config.json (owner-only) holds
+  // schema_version 1 plus these keys and the server gets --config <path>.
+  std::map<std::string, std::string> config_literals{};
 };
 
 // strata-secure-server as a test child: fixture models (fake-model.gguf, 0600)

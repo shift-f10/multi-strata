@@ -120,11 +120,14 @@ using SupervisorLog = std::function<void(std::string_view line)>;
 //   (~Lease) may be called concurrently from any number of threads. Each one
 //   takes `mutex_` (or reads an atomic) for the duration of the call only;
 //   none forks, reaps, kills or waits on a child. That stays on the supervisor
-//   thread (spec §3.1), with one exception: a Lease that outlives the
-//   supervisor and holds a generation the supervisor abandoned (never reaped)
-//   drops the last reference, and that process's destructor runs
-//   terminate(250 ms) (group kill, then a bounded wait) on the thread
-//   destroying the Lease.
+//   thread (spec §3.1), with one exception per platform: on POSIX, a Lease
+//   that outlives the supervisor and holds a generation the supervisor
+//   abandoned (never reaped) drops the last reference, and that process's
+//   destructor runs terminate(250 ms) (group kill, then a bounded wait) on
+//   the thread destroying the Lease; on Windows the same holds of a
+//   generation that WAS reaped but a Lease still held (it waits in
+//   retired_): once the supervisor is gone, its process cleanup (handle
+//   release) runs on the thread destroying the Lease.
 // - At most one Lease exists at a time: acquire() returns nullopt while one is
 //   out, so callers need no lock of their own around it.
 // - A Lease is used by one thread at a time: its accessors and the

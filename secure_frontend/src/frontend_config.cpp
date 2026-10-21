@@ -2,11 +2,13 @@
 
 #include "secure_frontend/config_defaults.hpp"
 #include "secure_frontend/engine_arguments.hpp"
+#include "secure_frontend/http_policy.hpp"
 #include "secure_frontend/json.hpp"
 #include "secure_frontend/model_inventory.hpp"
 
 #include <algorithm>
 #include <array>
+#include <set>
 #include <string>
 #include <utility>
 
@@ -19,7 +21,7 @@ namespace {
 namespace d = config_defaults;
 using T = ConfigValueType;
 
-constexpr std::array<ConfigKey, 43> kSchema{{
+constexpr std::array<ConfigKey, 43 + 7 + 3> kSchema{{
     {"schema_version", T::integer, false, 1, 1, d::kSchemaVersion, false, "", "",
      "Config format version; must be 1. Required in a config file."},
     {"listener.host", T::string, false, 0, 0, 0, false, "127.0.0.1", "--host",
@@ -30,6 +32,10 @@ constexpr std::array<ConfigKey, 43> kSchema{{
     {"listener.allow_wildcard_bind", T::boolean, false, 0, 0, 0, false, "", "--allow-wildcard-bind",
      "Also required for 0.0.0.0, :: and every other spelling of the unspecified address."},
     {"listener.backlog", T::integer, false, 1, 4096, d::kListenerBacklog, false, "", "", "listen() backlog."},
+    {"listener.cors_origins", T::string_array, false, 0, 0, 0, false, "", "",
+     "Exact browser origins allowed CORS: http:// or https://, a lower-case host, an optional port, no path; never * or null; at most 16."},
+    {"listener.host_aliases", T::string_array, false, 0, 0, 0, false, "", "",
+     "Extra exact Host values (host or host:port) clients use; required when the bind is a wildcard; at most 16."},
     {"limits.http.request_deadline_ms", T::integer, false, 1, 3'600'000, d::kRequestDeadlineMs, false, "", "",
      "Total time to read one request, header and body."},
     {"limits.http.max_request_bytes", T::integer, false, 4096, 16'777'216, d::kMaxRequestBytes, false, "", "",
@@ -39,6 +45,14 @@ constexpr std::array<ConfigKey, 43> kSchema{{
     {"limits.http.max_headers", T::integer, false, 8, 256, d::kMaxHeaders, false, "", "", "Most header fields."},
     {"limits.http.max_request_line_bytes", T::integer, false, 256, 16'384, d::kMaxRequestLineBytes, false, "", "",
      "Longest request line; at most limits.http.max_header_bytes."},
+    {"limits.http.header_deadline_ms", T::integer, false, 1, 3'600'000, d::kHeaderDeadlineMs, false, "", "",
+     "Time from accept to the end of the request header; at most limits.http.request_deadline_ms."},
+    {"limits.http.write_stall_ms", T::integer, false, 100, 300'000, d::kWriteStallMs, false, "", "",
+     "Longest send without progress before the client is treated as gone."},
+    {"limits.http.response_write_deadline_ms", T::integer, false, 1'000, 3'600'000, d::kResponseWriteDeadlineMs, false, "", "",
+     "Time to send a whole complete response, or a stream's tail after DONE; at least limits.http.write_stall_ms."},
+    {"limits.http.stream_keepalive_ms", T::integer, false, 1'000, 300'000, d::kStreamKeepaliveMs, false, "", "",
+     "SSE comment interval while no content flows (streaming)."},
     {"limits.chat.max_body_bytes", T::integer, false, 1, 16'777'216, d::kChatMaxBodyBytes, false, "", "",
      "Largest chat request body; at most max_request_bytes minus max_header_bytes."},
     {"limits.chat.max_messages", T::integer, false, 1, 128, d::kChatMaxMessages, false, "", "",
@@ -49,8 +63,8 @@ constexpr std::array<ConfigKey, 43> kSchema{{
      "Largest tokenized prompt sent to the engine."},
     {"limits.chat.max_completion_tokens", T::integer, false, 1, 16'384, d::kChatMaxCompletionTokens, false, "", "",
      "Largest max_tokens a request may ask for."},
-    {"limits.chat.default_max_tokens", T::integer, false, 1, 16'384, d::kChatDefaultMaxTokens, false, "", "",
-     "max_tokens when a request omits it; at most limits.chat.max_completion_tokens."},
+    {"limits.chat.default_max_tokens", T::integer, false, 0, 16'384, d::kChatDefaultMaxTokens, false, "", "",
+     "max_tokens when a request omits it; 0 = auto: min(max_completion_tokens, context - prompt - 8); at most limits.chat.max_completion_tokens."},
     {"limits.chat.max_generated_bytes", T::integer, false, 1, 16'777'216, d::kChatMaxGeneratedBytes, false, "", "",
      "Largest generated text returned."},
     {"limits.engine.ready_timeout_s", T::integer, false, 1, 86'400, d::kEngineReadyTimeoutS, false, "", "",
@@ -59,8 +73,14 @@ constexpr std::array<ConfigKey, 43> kSchema{{
      "Total time for one generation before STOP."},
     {"limits.engine.stop_drain_timeout_s", T::integer, false, 1, 600, d::kEngineStopDrainTimeoutS, false, "", "",
      "Time to drain to DONE after STOP before the engine is marked failed."},
-    {"limits.concurrency.max_concurrent_requests", T::integer, false, 1, 1, d::kMaxConcurrentRequests, false, "", "",
-     "Requests served at once; only 1 until SP3."},
+    {"limits.concurrency.max_concurrent_requests", T::integer, false, 1, 256, d::kMaxConcurrentRequests, false, "", "",
+     "Worker threads: connections read or answered at once; 1 = serial."},
+    {"limits.concurrency.max_queued_generations", T::integer, false, 0, 254, 0, false, "", "",
+     "Chats waiting behind the running generation; 0 when max_concurrent_requests is 1, otherwise at most max_concurrent_requests - 2."},
+    {"limits.concurrency.queue_timeout_ms", T::integer, false, 1'000, 3'600'000, d::kQueueTimeoutMs, false, "", "",
+     "Longest wait for the engine before 503 server_busy."},
+    {"limits.concurrency.max_connections_per_remote_address", T::integer, false, 1, 256, 0, false, "", "",
+     "Workers one non-loopback address may hold; at most max_concurrent_requests. Loopback is exempt."},
     {"roots.models", T::string, true, 0, 0, 0, false, "", "--models-root",
      "Absolute directory of .gguf files. The root itself may be a symlink; nothing below it may be."},
     {"roots.tokenizer_pack", T::string, false, 0, 0, 0, false, "", "--tokenizer-pack",
@@ -100,6 +120,8 @@ constexpr std::array<ConfigKey, 43> kSchema{{
     {"pull.max_duration_s", T::integer, false, 60, 604800, 172800, false, "", "", "Time budget for a whole pull run."},
     {"pull.stall_timeout_s", T::integer, false, 10, 3600, 120, false, "", "", "Abort a transfer slower than 1024 B/s for this long."},
     {"pull.connect_timeout_s", T::integer, false, 1, 300, 30, false, "", "", "TCP/TLS connect timeout per request."},
+    {"logging.requests", T::boolean, false, 0, 0, 0, false, "", "",
+     "One line per request to stderr: route, status, code, time, bytes, loopback or remote; never paths, headers, tokens or text."},
 }};
 
 void add(ConfigErrors& errors, std::string key, const ConfigIssueCode code, std::string reason) {
@@ -253,6 +275,60 @@ const ConfigKey* find_config_key(const std::string_view path) noexcept {
   return nullptr;
 }
 
+namespace {
+constexpr std::array<ConfigKeyExtension, 4> kSchemaExtensions{{
+    {"listener.cors_origins", static_cast<std::size_t>(config_defaults::kMaxListEntries), &is_valid_cors_origin,
+     "each entry must be http:// or https://, a lower-case host, an optional port and no path; * and null are not allowed", ""},
+    {"listener.host_aliases", static_cast<std::size_t>(config_defaults::kMaxListEntries), &is_valid_host_alias,
+     "each entry must be a host or host:port", ""},
+    {"limits.concurrency.max_queued_generations", 0U, nullptr, "", "derived: min(4, max(0, workers-2))"},
+    {"limits.concurrency.max_connections_per_remote_address", 0U, nullptr, "", "derived: min(4, workers)"},
+}};
+
+// Reads a string-array row and applies its SP3 bounds; any failure records one
+// fixed issue naming the key and yields an empty list.
+std::vector<std::string> read_bounded_strings(DraftReader& read, ConfigErrors& errors, const std::string_view path) {
+  std::vector<std::string> values = read.strings(path);
+  const ConfigKeyExtension* extension = find_config_key_extension(path);
+  if (extension == nullptr) return values;
+  if (extension->max_entries != 0U && values.size() > extension->max_entries) {
+    add(errors, std::string{path}, ConfigIssueCode::out_of_range,
+        "must have at most " + std::to_string(extension->max_entries) + " entries");
+    return {};
+  }
+  std::set<std::string> seen;
+  for (const auto& value : values) {
+    if (extension->entry_valid != nullptr && !extension->entry_valid(value)) {
+      add(errors, std::string{path}, ConfigIssueCode::invalid_value, std::string{extension->entry_reason});
+      return {};
+    }
+    if (!seen.insert(value).second) {
+      add(errors, std::string{path}, ConfigIssueCode::invalid_value, "must not repeat an entry");
+      return {};
+    }
+  }
+  return values;
+}
+
+bool has_issue_for(const ConfigErrors& errors, const std::string_view path) {
+  return std::any_of(errors.begin(), errors.end(), [path](const ConfigIssue& issue) { return issue.key_path == path; });
+}
+}  // namespace
+
+const ConfigKeyExtension* find_config_key_extension(const std::string_view path) noexcept {
+  for (const auto& extension : kSchemaExtensions) if (extension.path == path) return &extension;
+  return nullptr;
+}
+
+std::uint32_t derived_max_queued_generations(const std::uint32_t workers) noexcept {
+  const std::uint32_t spare = workers > 2U ? workers - 2U : 0U;
+  return std::min<std::uint32_t>(static_cast<std::uint32_t>(config_defaults::kDerivedQueueCap), spare);
+}
+
+std::uint32_t derived_max_connections_per_remote_address(const std::uint32_t workers) noexcept {
+  return std::min<std::uint32_t>(static_cast<std::uint32_t>(config_defaults::kDerivedRemoteCap), workers);
+}
+
 bool is_config_section(const std::string_view path) noexcept {
   return std::any_of(kSchema.begin(), kSchema.end(), [path](const ConfigKey& key) {
     return key.path.size() > path.size() && key.path.substr(0, path.size()) == path && key.path[path.size()] == '.';
@@ -283,6 +359,9 @@ std::string render_config_schema_markdown() {
       case ConfigValueType::integer:
         type = "integer";
         fallback = "`" + std::to_string(key.default_integer) + "`";
+        if (const auto* ext = find_config_key_extension(key.path); ext != nullptr && !ext->derived_default.empty()) {
+          fallback = "`" + std::string{ext->derived_default} + "`";
+        }
         range = std::to_string(key.minimum) + "-" + std::to_string(key.maximum);
         break;
       case ConfigValueType::string:
@@ -343,6 +422,14 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
     add(errors, "listener.host", ConfigIssueCode::wildcard_bind_not_enabled,
         "a wildcard address also needs listener.allow_wildcard_bind (--allow-wildcard-bind)");
   }
+  // SP3 §4.3/§4.4: a wildcard bind trusts only the configured Host aliases.
+  std::vector<std::string> cors_origins = read_bounded_strings(read, errors, "listener.cors_origins");
+  std::vector<std::string> host_aliases = read_bounded_strings(read, errors, "listener.host_aliases");
+  if (host.has_value() && host->scope() == AddressScope::wildcard && host_aliases.empty() &&
+      !has_issue_for(errors, "listener.host_aliases")) {
+    add(errors, "listener.host_aliases", ConfigIssueCode::invalid_value,
+        "must name at least one Host value when the bind is a wildcard");
+  }
 
   // limits
   const auto deadline_ms = read.integer("limits.http.request_deadline_ms");
@@ -350,6 +437,11 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   const auto max_header = read.integer("limits.http.max_header_bytes");
   const auto max_headers = read.integer("limits.http.max_headers");
   const auto max_line = read.integer("limits.http.max_request_line_bytes");
+  const auto header_deadline_ms = read.integer("limits.http.header_deadline_ms");
+  const auto write_stall_ms = read.integer("limits.http.write_stall_ms");
+  const auto response_deadline_ms = read.integer("limits.http.response_write_deadline_ms");
+  const auto keepalive_ms = read.integer("limits.http.stream_keepalive_ms");
+  const bool log_requests = read.boolean("logging.requests");
   const auto max_body = read.integer("limits.chat.max_body_bytes");
   const auto max_messages = read.integer("limits.chat.max_messages");
   const auto max_message = read.integer("limits.chat.max_message_bytes");
@@ -361,6 +453,16 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   const auto generation_s = read.integer("limits.engine.generation_timeout_s");
   const auto drain_s = read.integer("limits.engine.stop_drain_timeout_s");
   const auto concurrent = read.integer("limits.concurrency.max_concurrent_requests");
+  // SP3 §5.1: a derived value is used only when the key is absent; an explicit
+  // value is validated as written and never adjusted.
+  const auto workers = static_cast<std::uint32_t>(concurrent);
+  const bool queue_set = read.present("limits.concurrency.max_queued_generations");
+  const auto queued = queue_set ? read.integer("limits.concurrency.max_queued_generations")
+                                : static_cast<std::int64_t>(derived_max_queued_generations(workers));
+  const auto queue_timeout_ms = read.integer("limits.concurrency.queue_timeout_ms");
+  const bool cap_set = read.present("limits.concurrency.max_connections_per_remote_address");
+  const auto remote_cap = cap_set ? read.integer("limits.concurrency.max_connections_per_remote_address")
+                                  : static_cast<std::int64_t>(derived_max_connections_per_remote_address(workers));
   if (max_header > max_request) {
     add(errors, "limits.http.max_header_bytes", ConfigIssueCode::conflicting_values,
         "must not exceed limits.http.max_request_bytes");
@@ -376,6 +478,25 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   if (default_max > max_completion) {
     add(errors, "limits.chat.default_max_tokens", ConfigIssueCode::conflicting_values,
         "must not exceed limits.chat.max_completion_tokens");
+  }
+  if (header_deadline_ms > deadline_ms) {
+    add(errors, "limits.http.header_deadline_ms", ConfigIssueCode::conflicting_values,
+        "must not exceed limits.http.request_deadline_ms");
+  }
+  if (response_deadline_ms < write_stall_ms) {
+    add(errors, "limits.http.response_write_deadline_ms", ConfigIssueCode::conflicting_values,
+        "must be at least limits.http.write_stall_ms");
+  }
+  if (concurrent == 1 && queued != 0) {
+    add(errors, "limits.concurrency.max_queued_generations", ConfigIssueCode::conflicting_values,
+        "must be 0 when limits.concurrency.max_concurrent_requests is 1");
+  } else if (concurrent >= 2 && queued + 2 > concurrent) {
+    add(errors, "limits.concurrency.max_queued_generations", ConfigIssueCode::conflicting_values,
+        "plus 2 must not exceed limits.concurrency.max_concurrent_requests");
+  }
+  if (remote_cap > concurrent) {
+    add(errors, "limits.concurrency.max_connections_per_remote_address", ConfigIssueCode::conflicting_values,
+        "must not exceed limits.concurrency.max_concurrent_requests");
   }
 
   // roots: each is opened once, here, and held open by the FrontendConfig.
@@ -500,20 +621,25 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
     return errors;
   }
   const auto u32 = [](const std::int64_t v) { return static_cast<std::uint32_t>(v); };
-  ListenerConfig listener{*host, static_cast<std::uint16_t>(port), allow_remote, allow_wildcard, u32(backlog)};
+  ListenerConfig listener{*host, static_cast<std::uint16_t>(port), allow_remote, allow_wildcard, u32(backlog),
+                          std::move(cors_origins), std::move(host_aliases)};
   const Limits limits{
-      HttpLimits{std::chrono::milliseconds(deadline_ms), u32(max_request), u32(max_header), u32(max_headers), u32(max_line)},
+      HttpLimits{std::chrono::milliseconds(deadline_ms), u32(max_request), u32(max_header), u32(max_headers), u32(max_line),
+                 std::chrono::milliseconds(header_deadline_ms), std::chrono::milliseconds(write_stall_ms),
+                 std::chrono::milliseconds(response_deadline_ms), std::chrono::milliseconds(keepalive_ms)},
       ChatLimits{u32(max_body), u32(max_messages), u32(max_message), u32(max_prompt), u32(max_completion), u32(default_max),
                  u32(max_generated)},
       EngineLimits{std::chrono::seconds(ready_s), std::chrono::seconds(generation_s), std::chrono::seconds(drain_s)},
-      ConcurrencyLimits{u32(concurrent)}};
+      ConcurrencyLimits{u32(concurrent), u32(queued), std::chrono::milliseconds(queue_timeout_ms), u32(remote_cap), !queue_set,
+                        !cap_set}};
   Roots roots{*models, tokenizer, secret, logs, cache, state};
   EngineLaunch engine{profile, *executable, std::move(*model_id), args, std::move(lib_dirs), std::move(gpus), allow_new_privileges};
   return ValidatedConfig{std::shared_ptr<const FrontendConfig>(
       new FrontendConfig(std::move(listener), limits, std::move(roots), std::move(*token), std::move(engine),
                          PullSettings{std::move(downloader), std::move(proxy), allow_private,
                                       static_cast<std::uint64_t>(max_total), std::chrono::seconds(max_duration),
-                                      std::chrono::seconds(stall), std::chrono::seconds(connect)}))};
+                                      std::chrono::seconds(stall), std::chrono::seconds(connect)},
+                         LoggingConfig{log_requests}))};
 }
 
 std::string describe(const FrontendConfig& c) {
@@ -534,11 +660,22 @@ std::string describe(const FrontendConfig& c) {
   line("listener.allow_remote", c.listener.allow_remote ? "true" : "false");
   line("listener.allow_wildcard_bind", c.listener.allow_wildcard_bind ? "true" : "false");
   line("listener.backlog", std::to_string(c.listener.backlog));
+  const auto list_text = [](const std::vector<std::string>& values) {
+    std::string text = "[";
+    for (std::size_t i = 0; i < values.size(); ++i) text += (i ? "," : "") + json_quoted(values[i]);
+    return text + "]";
+  };
+  line("listener.cors_origins", list_text(c.listener.cors_origins));
+  line("listener.host_aliases", list_text(c.listener.host_aliases));
   line("limits.http.request_deadline_ms", std::to_string(c.limits.http.request_deadline.count()));
   line("limits.http.max_request_bytes", std::to_string(c.limits.http.max_request_bytes));
   line("limits.http.max_header_bytes", std::to_string(c.limits.http.max_header_bytes));
   line("limits.http.max_headers", std::to_string(c.limits.http.max_headers));
   line("limits.http.max_request_line_bytes", std::to_string(c.limits.http.max_request_line_bytes));
+  line("limits.http.header_deadline_ms", std::to_string(c.limits.http.header_deadline.count()));
+  line("limits.http.write_stall_ms", std::to_string(c.limits.http.write_stall.count()));
+  line("limits.http.response_write_deadline_ms", std::to_string(c.limits.http.response_write_deadline.count()));
+  line("limits.http.stream_keepalive_ms", std::to_string(c.limits.http.stream_keepalive.count()));
   line("limits.chat.max_body_bytes", std::to_string(c.limits.chat.max_body_bytes));
   line("limits.chat.max_messages", std::to_string(c.limits.chat.max_messages));
   line("limits.chat.max_message_bytes", std::to_string(c.limits.chat.max_message_bytes));
@@ -549,7 +686,13 @@ std::string describe(const FrontendConfig& c) {
   line("limits.engine.ready_timeout_s", std::to_string(c.limits.engine.ready_timeout.count()));
   line("limits.engine.generation_timeout_s", std::to_string(c.limits.engine.generation_timeout.count()));
   line("limits.engine.stop_drain_timeout_s", std::to_string(c.limits.engine.stop_drain_timeout.count()));
-  line("limits.concurrency.max_concurrent_requests", std::to_string(c.limits.concurrency.max_concurrent_requests));
+  const auto& cc = c.limits.concurrency;
+  line("limits.concurrency.max_concurrent_requests", std::to_string(cc.max_concurrent_requests));
+  line("limits.concurrency.max_queued_generations",
+       std::to_string(cc.max_queued_generations) + (cc.queue_derived ? " (derived)" : ""));
+  line("limits.concurrency.queue_timeout_ms", std::to_string(cc.queue_timeout.count()));
+  line("limits.concurrency.max_connections_per_remote_address",
+       std::to_string(cc.max_connections_per_remote_address) + (cc.remote_cap_derived ? " (derived)" : ""));
   line("roots.models", root_text(c.roots.models));
   line("roots.tokenizer_pack", root_or_unset(c.roots.tokenizer_pack));
   line("roots.secret", root_or_unset(c.roots.secret));
@@ -580,6 +723,7 @@ std::string describe(const FrontendConfig& c) {
   line("pull.max_duration_s", std::to_string(c.pull.max_duration.count()));
   line("pull.stall_timeout_s", std::to_string(c.pull.stall_timeout.count()));
   line("pull.connect_timeout_s", std::to_string(c.pull.connect_timeout.count()));
+  line("logging.requests", c.logging.requests ? "true" : "false");
   return out;
 }
 

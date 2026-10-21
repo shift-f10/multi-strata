@@ -1,11 +1,11 @@
 #pragma once
 
 #include "secure_frontend/config.hpp"
-#include "secure_frontend/http_request_handler.hpp"
-#include "secure_frontend/config_defaults.hpp"
+#include "secure_frontend/connection_handler.hpp"
+#include "secure_frontend/socket_io.hpp"
 
+#include <array>
 #include <chrono>
-#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -13,56 +13,41 @@
 
 namespace secure_frontend {
 
-// Listener and parser bounds. request_deadline covers reading the whole
-// request (header and body) from accept(); the response send gets the
-// remaining budget, but never less than one second. Derived from
-// FrontendConfig by http_socket_server_limits().
-struct HttpSocketServerLimits final {
-  std::chrono::milliseconds request_deadline{config_defaults::kRequestDeadlineMs};  // header+body, total
-  std::size_t max_request_bytes{static_cast<std::size_t>(config_defaults::kMaxRequestBytes)};
-  std::size_t max_header_bytes{static_cast<std::size_t>(config_defaults::kMaxHeaderBytes)};
-  std::size_t max_headers{static_cast<std::size_t>(config_defaults::kMaxHeaders)};
-  std::size_t max_request_line_bytes{static_cast<std::size_t>(config_defaults::kMaxRequestLineBytes)};
-  int backlog{static_cast<int>(config_defaults::kListenerBacklog)};
-};
-
-// A deliberately small, synchronous listener for the authenticated HTTP
-// boundary. It only accepts TCP clients; it never creates outbound sockets or
-// resolves DNS names. The configured bind host must therefore be an IP
-// literal. Each serve_one call handles at most one complete bounded request.
+// The listening socket. It only accepts TCP clients; it never creates
+// outbound sockets or resolves names (spec §6.1): the bind host must be an IP
+// literal. Networking is initialized by the process's WinsockGuard, not here.
+// The listener and every accepted socket are close-on-exec / non-inheritable
+// (SP2 K4), and accepted sockets are non-blocking (socket_io's precondition).
 class HttpSocketServer final {
  public:
-  [[nodiscard]] static std::optional<HttpSocketServer> bind(const Config& listener_config,
-                                                              HttpPolicy policy,
-                                                              BearerTokenValidator validator,
-                                                              RequestDispatcher dispatcher,
-                                                              std::string* error,
-                                                              HttpSocketServerLimits limits = {});
+  // port 0 binds an ephemeral port (tests only; the schema range is 1-65535).
+  [[nodiscard]] static std::optional<HttpSocketServer> bind(const Config& listener, int backlog, std::string* error);
   HttpSocketServer(HttpSocketServer&&) noexcept;
   HttpSocketServer& operator=(HttpSocketServer&&) noexcept;
   ~HttpSocketServer();
 
-  HttpSocketServer(const HttpSocketServer&) = delete;
-  HttpSocketServer& operator=(const HttpSocketServer&) = delete;
-
-  // Returns false for a transport failure. HTTP policy failures are sent as
-  // normal HTTP responses and return true. This API is intentionally one-shot
-  // so callers can bound concurrency and apply their own lifecycle policy.
-  [[nodiscard]] bool serve_one(std::string* error);
+  enum class AcceptStatus { accepted, timeout, transient, listener_failed, stopped };
+  struct Accepted final {
+    Socket socket;
+    AddressScope peer_scope{AddressScope::remote};
+    std::array<unsigned char, 17> peer_key{};   // family byte + 16 address bytes (IPv4-mapped folded to v4)
+    std::chrono::steady_clock::time_point accepted_at{};
+  };
+  // Waits at most `slice` for a client; a transient failure sleeps the 50 ms backoff first.
+  [[nodiscard]] AcceptStatus accept_next(std::chrono::milliseconds slice, Accepted* out);
+  // Accepts one client (polling in kAcceptPollSlice) and serves it with
+  // serve_connection. True for every answered request (4xx/5xx included);
+  // false for a client that never completed a request, a write that failed,
+  // or a stopped/failed listener (error "listener stopped" after
+  // shutdown_listener(), which also ends an in-flight P1/P3 within one slice).
+  [[nodiscard]] bool serve_one(RequestRouter& router, const ConnectionLimits& limits, std::string* error);
   [[nodiscard]] std::uint16_t port() const;
-  // True once accept() failed because the listening socket itself is broken
-  // (not a socket, invalid, or networking not initialised); callers should
-  // stop serving. Client errors, peer resets, network errors and resource
-  // exhaustion never set it.
+  // True once accept() failed because the listening socket itself is broken.
   [[nodiscard]] bool listener_failed() const noexcept;
-  // Thread-safe. Makes a blocked serve_one() return and every later call fail
-  // with listener_failed(): POSIX shutdown(2) wakes accept() and stops new
-  // connections; Windows closes the socket. A serve_one() already handling a
-  // client returns too, without a response: the client socket is shut down
-  // (never closed here) and the request read re-checks the shutdown at least
-  // every 100 ms, so an idle or slow peer cannot hold the caller. Used by the
-  // orderly shutdown (SP2 C4).
+  // Closes the listener; accept_next/serve_one return `stopped` afterwards and
+  // native_handle() is kInvalidNativeSocket. Thread-safe and idempotent.
   void shutdown_listener() noexcept;
+  [[nodiscard]] NativeSocket native_handle() const noexcept;
 
  private:
   struct State;

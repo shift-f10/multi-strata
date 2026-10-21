@@ -436,7 +436,12 @@ void priv03_api_payloads_resembling_pull_trigger_nothing() {
   expect(f.start(server, expert(f)), "server starts");
   for (const auto* target : {"/api/pull", "/v1/pull", "/api/models/pull", "/v1/models/pull"}) {
     const auto response = f.request("POST", target, f.bearer(), R"({"name":"qwen3.8-flash-next:iq2_xs","stream":false})");
-    expect(status_is(response, "404"), std::string{"no such route: "} + target);
+    // Ruling (merge re-anchor, 2026-10-20): the SP3-approved router answers a
+    // known path with the wrong method 405 + Allow, not 404; `/v1/models/` is
+    // a known prefix route, so `/v1/models/pull` is a method refusal now. The
+    // privacy contract is unchanged: no status on this loop may stage or spawn.
+    const bool known_prefix_route = std::string_view{target} == "/v1/models/pull";
+    expect(status_is(response, known_prefix_route ? "405" : "404"), std::string{"route answer for "} + target);
   }
   (void)f.request("POST", "/v1/chat/completions", f.bearer(), chat_body());
   server.terminate();

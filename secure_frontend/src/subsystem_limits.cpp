@@ -4,15 +4,12 @@
 
 namespace secure_frontend {
 
-HttpSocketServerLimits http_socket_server_limits(const FrontendConfig& c) {
-  HttpSocketServerLimits limits;
-  limits.request_deadline = c.limits.http.request_deadline;
-  limits.max_request_bytes = c.limits.http.max_request_bytes;
-  limits.max_header_bytes = c.limits.http.max_header_bytes;
-  limits.max_headers = c.limits.http.max_headers;
-  limits.max_request_line_bytes = c.limits.http.max_request_line_bytes;
-  limits.backlog = static_cast<int>(c.listener.backlog);
-  return limits;
+ConnectionLimits connection_limits(const FrontendConfig& config) {
+  const auto& http = config.limits.http;
+  return {.head = {.max_request_line_bytes = http.max_request_line_bytes, .max_header_bytes = http.max_header_bytes,
+                   .max_headers = http.max_headers, .max_request_bytes = http.max_request_bytes},
+          .header_deadline = http.header_deadline, .request_deadline = http.request_deadline,
+          .write_stall = http.write_stall, .response_write_deadline = http.response_write_deadline};
 }
 
 ChatSchemaLimits chat_schema_limits(const FrontendConfig& c) {

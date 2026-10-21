@@ -48,6 +48,8 @@ the SP2 merge).
 - Wildcard binds (`0.0.0.0`, `::` and every other spelling of the unspecified
   address) additionally require `listener.allow_wildcard_bind = true`
   (`--allow-wildcard-bind`); a regular remote-listening opt-in is not enough.
+  A wildcard listener also needs a non-empty `listener.host_aliases` (config
+  file): those are the only `Host` values it accepts.
 - The whole configuration is schema-validated before the listener binds or the
   engine starts; `--check` opens and inspects but never creates, writes,
   renames or deletes anything. The server binds before it spawns the engine.
@@ -61,11 +63,22 @@ the SP2 merge).
 - HTTP messages are bounded, require exactly one trusted `Host`, reject
   untrusted or ambiguous browser `Origin`, keep CORS off by default, and require
   exactly one bearer token before reaching route dispatch.
-- The socket listener (`HttpSocketServerLimits`, from `limits.http.*`) gives
-  each connection a total deadline for the whole request (default 30 s) and a
-  send timeout, rejects a request over `limits.http.max_request_bytes`
-  (default 64 KiB), binds `::` as IPv6-only, survives clients that close or
-  reset early, and stops only when the listening socket itself fails.
+- Since SP3 the server is concurrent: one accept thread plus
+  `limits.concurrency.max_concurrent_requests` workers (default 8). Each
+  connection gets a header deadline (`limits.http.header_deadline_ms`, 10 s)
+  before authentication completes and a total request deadline
+  (`limits.http.request_deadline_ms`, 30 s) with a body cap
+  (`limits.http.max_request_bytes`, 64 KiB); chat bodies are capped at 49152
+  bytes. Unauthenticated clients can hold a worker only in the header phase
+  (oldest-P1 eviction); bodies are read only after the bearer token checks.
+  Over-admission (per-remote cap `max_connections_per_remote_address`, derived
+  min(4, workers), loopback exempt) and an over-full generation queue
+  (`limits.concurrency.max_queued_generations`, derived default 4,
+  `queue_timeout_ms` default 300 s) answer one fixed 503 `server_busy` +
+  `Retry-After: 1` read through a lingering close. Response writes are bounded
+  by the stall rule (`limits.http.write_stall_ms` 10 s measured on progress,
+  `limits.http.response_write_deadline_ms` 60 s). `::` binds IPv6-only, and
+  the listener stops only when the socket itself fails.
 - Engine children are started directly without a shell, with a minimal
   allowlisted environment. Embedded NUL bytes in the executable path, argv, or
   environment are rejected before the platform process API can truncate them.
@@ -235,22 +248,31 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `listener.allow_remote` | boolean | `false` | - | `--allow-remote` | Required for every non-loopback address. |
 | `listener.allow_wildcard_bind` | boolean | `false` | - | `--allow-wildcard-bind` | Also required for 0.0.0.0, :: and every other spelling of the unspecified address. |
 | `listener.backlog` | integer | `16` | 1-4096 | - | listen() backlog. |
+| `listener.cors_origins` | string array | `[]` | - | - | Exact browser origins allowed CORS: http:// or https://, a lower-case host, an optional port, no path; never * or null; at most 16. |
+| `listener.host_aliases` | string array | `[]` | - | - | Extra exact Host values (host or host:port) clients use; required when the bind is a wildcard; at most 16. |
 | `limits.http.request_deadline_ms` | integer | `30000` | 1-3600000 | - | Total time to read one request, header and body. |
 | `limits.http.max_request_bytes` | integer | `65536` | 4096-16777216 | - | Largest request (header and body) the listener and parser accept. |
 | `limits.http.max_header_bytes` | integer | `16384` | 1024-65536 | - | Largest header block; at most limits.http.max_request_bytes. |
 | `limits.http.max_headers` | integer | `64` | 8-256 | - | Most header fields. |
 | `limits.http.max_request_line_bytes` | integer | `4096` | 256-16384 | - | Longest request line; at most limits.http.max_header_bytes. |
+| `limits.http.header_deadline_ms` | integer | `10000` | 1-3600000 | - | Time from accept to the end of the request header; at most limits.http.request_deadline_ms. |
+| `limits.http.write_stall_ms` | integer | `10000` | 100-300000 | - | Longest send without progress before the client is treated as gone. |
+| `limits.http.response_write_deadline_ms` | integer | `60000` | 1000-3600000 | - | Time to send a whole complete response, or a stream's tail after DONE; at least limits.http.write_stall_ms. |
+| `limits.http.stream_keepalive_ms` | integer | `15000` | 1000-300000 | - | SSE comment interval while no content flows (streaming). |
 | `limits.chat.max_body_bytes` | integer | `49152` | 1-16777216 | - | Largest chat request body; at most max_request_bytes minus max_header_bytes. |
 | `limits.chat.max_messages` | integer | `128` | 1-128 | - | Most messages in one chat request. |
 | `limits.chat.max_message_bytes` | integer | `65536` | 1-65536 | - | Largest single message content. |
 | `limits.chat.max_prompt_tokens` | integer | `32768` | 1-262144 | - | Largest tokenized prompt sent to the engine. |
 | `limits.chat.max_completion_tokens` | integer | `4096` | 1-16384 | - | Largest max_tokens a request may ask for. |
-| `limits.chat.default_max_tokens` | integer | `256` | 1-16384 | - | max_tokens when a request omits it; at most limits.chat.max_completion_tokens. |
+| `limits.chat.default_max_tokens` | integer | `0` | 0-16384 | - | max_tokens when a request omits it; 0 = auto: min(max_completion_tokens, context - prompt - 8); at most limits.chat.max_completion_tokens. |
 | `limits.chat.max_generated_bytes` | integer | `1048576` | 1-16777216 | - | Largest generated text returned. |
 | `limits.engine.ready_timeout_s` | integer | `900` | 1-86400 | - | How long the supervisor waits for the engine's READY after each start; a miss kills and restarts it (upstream STRATA_ENGINE_READY_S). |
 | `limits.engine.generation_timeout_s` | integer | `120` | 1-86400 | - | Total time for one generation before STOP. |
 | `limits.engine.stop_drain_timeout_s` | integer | `5` | 1-600 | - | Time to drain to DONE after STOP before the engine is marked failed. |
-| `limits.concurrency.max_concurrent_requests` | integer | `1` | 1-1 | - | Requests served at once; only 1 until SP3. |
+| `limits.concurrency.max_concurrent_requests` | integer | `8` | 1-256 | - | Worker threads: connections read or answered at once; 1 = serial. |
+| `limits.concurrency.max_queued_generations` | integer | `derived: min(4, max(0, workers-2))` | 0-254 | - | Chats waiting behind the running generation; 0 when max_concurrent_requests is 1, otherwise at most max_concurrent_requests - 2. |
+| `limits.concurrency.queue_timeout_ms` | integer | `300000` | 1000-3600000 | - | Longest wait for the engine before 503 server_busy. |
+| `limits.concurrency.max_connections_per_remote_address` | integer | `derived: min(4, workers)` | 1-256 | - | Workers one non-loopback address may hold; at most max_concurrent_requests. Loopback is exempt. |
 | `roots.models` | string | required | - | `--models-root` | Absolute directory of .gguf files. The root itself may be a symlink; nothing below it may be. |
 | `roots.tokenizer_pack` | string | unset | - | `--tokenizer-pack` | Absolute tokenizer directory; only with strata-secure-server --expert (a managed model brings its own). |
 | `roots.secret` | string | unset | - | `--secret-root` | Absolute directory holding the token file. Default: the config file's directory. |
@@ -272,6 +294,7 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `pull.max_duration_s` | integer | `172800` | 60-604800 | - | Time budget for a whole pull run. |
 | `pull.stall_timeout_s` | integer | `120` | 10-3600 | - | Abort a transfer slower than 1024 B/s for this long. |
 | `pull.connect_timeout_s` | integer | `30` | 1-300 | - | TCP/TLS connect timeout per request. |
+| `logging.requests` | boolean | `false` | - | - | One line per request to stderr: route, status, code, time, bytes, loopback or remote; never paths, headers, tokens or text. |
 <!-- config-keys:end -->
 
 `roots.secret` defaults to the config file's directory only for a `file:` token
@@ -279,16 +302,70 @@ source; an `env:` source never opens it. `roots.logs` and `roots.cache` may be
 absent if their parent is a private directory; only serving and `init` create
 them. `--check` creates nothing.
 
+**Constants.** Internal constants live in
+`include/secure_frontend/api_constants.hpp` (SP3) and `config_defaults.hpp`
+(SP1). SP3 removed SP1's 1000 ms minimum send budget (SP1 addendum A4); the
+half-close drain (100 ms / 256 KiB) moved to `api_constants.hpp`.
+
 ## Run the native inference server
 
 `strata-secure-server` is the first runnable native chat path. It starts one
 local Strata engine as a direct child (never through a shell), communicates
 only through private stdio, and exposes authenticated `GET /health`, `GET
-/v1/models`, and non-streaming, text-only `POST /v1/chat/completions`. Its
+/v1/models`, `GET /v1/models/<id>`, and non-streaming, text-only `POST
+/v1/chat/completions` (streaming lands in SP3 M2). Its
 default fixed native profile uses the local GPT-2-byte-BPE tokenizer pack and
 the fixed Qwen ChatML renderer; the separately selected GLM-5.3 profile is
 documented below. It deliberately rejects streaming, tools, images, URLs, MCP,
 downloads, and a request whose `model` is not the one model selected at startup.
+
+### Routes, errors, headers (SP3)
+
+Every route requires `Authorization: Bearer <token>`; authentication happens
+when the request header is complete, before any body byte. Unknown paths are
+404 `not_found` and wrong methods 405 `method_not_allowed` (with `Allow`) only
+after authentication — unauthenticated requests get 401 on every path, so the
+route table is not observable without a token. Errors are fixed JSON bodies
+`{"error":{"message","type","param","code"}}` — the message is a compile-time
+literal, `param` names at most a fixed-list key, never request bytes:
+
+| Status | `code` | Message |
+| --- | --- | --- |
+| 400 | `invalid_request` | The request is malformed or not supported. |
+| 400 | `invalid_json` | The request body is not valid JSON within the allowed limits. |
+| 400 | `unsupported_parameter` | This parameter is not supported by this server. |
+| 400 | `extension_disabled` | Tools, functions and extensions are disabled on this server. |
+| 400 | `context_length_exceeded` | The prompt exceeds the model context or the configured prompt limit. |
+| 401 | `invalid_api_key` | Missing or invalid API key. (`WWW-Authenticate: Bearer`) |
+| 403 | `forbidden` | The request origin or host is not allowed. |
+| 404 | `not_found` / `model_not_found` | Not found. / The requested model is not served here. |
+| 405 | `method_not_allowed` | Method not allowed. (`Allow`) |
+| 408 | `request_timeout` | The request was not received in time. |
+| 411 | `length_required` | A Content-Length body is required; chunked bodies are not accepted. |
+| 413 | `request_too_large` | The request body is too large. |
+| 414 | `request_line_too_long` | The request line is too long. |
+| 415 | `unsupported_media_type` | Send application/json. |
+| 417 | `expectation_failed` | Unsupported Expect header. |
+| 431 | `header_too_large` | The request header is too large. |
+| 500 | `internal_error` | Internal error. |
+| 503 | `server_busy` | The server is busy; retry later. (`Retry-After: 1`) |
+| 503 | `engine_unavailable` | The local engine is not available. (`Retry-After: 5` or none) |
+| 503 | `engine_error` | The local engine could not complete the request. (`x-should-retry: false`) |
+| 503 | `server_shutting_down` | The server is shutting down. |
+| 505 | `http_version_not_supported` | Only HTTP/1.1 is supported. |
+
+Every response carries `Cache-Control: no-store`,
+`X-Content-Type-Options: nosniff`,
+`Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`,
+`Referrer-Policy: no-referrer` and `Date`. `Vary: Origin` and (only for
+configured origins) `Access-Control-Allow-Origin` appear as per §4.4.
+
+Default limits (all config keys; see the table below): 8 workers, 4 queued
+generations (queue timeout 300 s), 4 connections per remote address (loopback
+exempt), 10 s header / 30 s request deadlines, 64 KiB request cap (49152-byte
+chat body), 10 s write stall / 60 s response-write deadline, `logging.requests`
+off (when on: one fixed-field stderr line per request under a token bucket —
+never tokens, prompts, paths or payload text).
 
 The launch described in this section is the `--expert` bring-up mode: the
 operator supplies `engine.profile`, `roots.tokenizer_pack` (required) and the

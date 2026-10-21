@@ -16,17 +16,26 @@ inline constexpr std::int64_t kMaxRequestBytes = 65'536;
 inline constexpr std::int64_t kMaxHeaderBytes = 16'384;
 inline constexpr std::int64_t kMaxHeaders = 64;
 inline constexpr std::int64_t kMaxRequestLineBytes = 4'096;
+// SP3 addendum (spec §5.1).
+inline constexpr std::int64_t kHeaderDeadlineMs = 10'000;
+inline constexpr std::int64_t kWriteStallMs = 10'000;
+inline constexpr std::int64_t kResponseWriteDeadlineMs = 60'000;
+inline constexpr std::int64_t kStreamKeepaliveMs = 15'000;
+inline constexpr std::int64_t kMaxListEntries = 16;
 inline constexpr std::int64_t kChatMaxBodyBytes = kMaxRequestBytes - kMaxHeaderBytes;  // 49152, see the plan's Global Constraints
 inline constexpr std::int64_t kChatMaxMessages = 128;
 inline constexpr std::int64_t kChatMaxMessageBytes = 65'536;
 inline constexpr std::int64_t kChatMaxPromptTokens = 32'768;
 inline constexpr std::int64_t kChatMaxCompletionTokens = 4'096;
-inline constexpr std::int64_t kChatDefaultMaxTokens = 256;
+inline constexpr std::int64_t kChatDefaultMaxTokens = 0;  // 0 = auto (SP3 B1)
 inline constexpr std::int64_t kChatMaxGeneratedBytes = 1'048'576;
 inline constexpr std::int64_t kEngineReadyTimeoutS = 900;   // upstream STRATA_ENGINE_READY_S
 inline constexpr std::int64_t kEngineGenerationTimeoutS = 120;
 inline constexpr std::int64_t kEngineStopDrainTimeoutS = 5;
-inline constexpr std::int64_t kMaxConcurrentRequests = 1;
+inline constexpr std::int64_t kMaxConcurrentRequests = 8;  // SP3 B11
+inline constexpr std::int64_t kQueueTimeoutMs = 300'000;
+inline constexpr std::int64_t kDerivedQueueCap = 4;   // max_queued_generations = min(4, max(0, workers - 2))
+inline constexpr std::int64_t kDerivedRemoteCap = 4;  // max_connections_per_remote_address = min(4, workers)
 
 // Supervision (SP2). Restart policy (spec §3.3, owner decision 2026-10-13);
 // the READY timeout is kEngineReadyTimeoutS above, not a second copy.

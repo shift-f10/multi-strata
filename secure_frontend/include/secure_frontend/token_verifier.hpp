@@ -20,7 +20,7 @@ class TokenVerifier final {
   SecretBytes token_;
 };
 
-// A BearerTokenValidator for HttpSocketServer::bind that shares the verifier;
+// A BearerTokenValidator for a RequestRouter (ApiRouterConfig::validator) that shares the verifier;
 // the token is never copied into the closure.
 [[nodiscard]] std::function<bool(std::string_view)> make_bearer_validator(std::shared_ptr<const TokenVerifier> verifier);
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "secure_frontend/deadline.hpp"
+#include "secure_frontend/sampling_params.hpp"
 
 #include <array>
 #include <atomic>
@@ -70,6 +71,11 @@ inline constexpr std::array<std::string_view, 4> kEngineFatalPrefixes{
 
 [[nodiscard]] bool is_engine_fatal_line(std::string_view line) noexcept;
 
+// SP3 B6: the GEN sampling keys for these params — " temperature=0.5 top_p=0.9
+// seed=42", shortest round-trip form, "" when nothing is set (engine stays
+// greedy). Values are already bounded by the chat schema (finite, in range).
+[[nodiscard]] std::string render_sampling_keys(const SamplingParams& sampling);
+
 struct EngineProtocolError final {
   EngineProtocolErrorCode code;
   std::string message;
@@ -126,9 +132,11 @@ class EngineProtocolClient final {
   // `write_deadline` bounds the whole GEN write (the request's generation
   // deadline, supplied by ChatExecutionService); a miss fails the protocol with
   // transport_write_failed, which the supervisor kills as write_timeout.
+  // SP3 (B6, ruling T15-signature): `sampling` carries the schema-bounded
+  // temperature/top_p/seed keys between max_new and the ids; empty = greedy.
   [[nodiscard]] std::optional<EngineProtocolError> begin_generation(
       std::uint32_t max_new_tokens, const std::vector<std::uint32_t>& prompt_token_ids,
-      MonotonicClock::time_point write_deadline);
+      MonotonicClock::time_point write_deadline, const SamplingParams& sampling = {});
   // Reads until DONE. `timeout` is the TOTAL budget for this call, not a
   // per-line allowance. A timeout leaves a generation active so the caller may
   // issue STOP and continue draining; all malformed/terminal failures close it.

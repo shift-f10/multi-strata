@@ -1,288 +1,118 @@
 #include "secure_frontend/http_socket_server.hpp"
 
+#include "secure_frontend/api_constants.hpp"
+
 #include <algorithm>
-#include <array>
 #include <atomic>
-#include <cctype>
 #include <cerrno>
-#include <chrono>
-#include <climits>
-#include <cstddef>
-#include <cstdint>
-#include <limits>
-#include <mutex>
-#include <optional>
-#include <string_view>
+#include <cstring>
 #include <thread>
 #include <utility>
 #include <variant>
 
-#ifdef _WIN32
+#if defined(_WIN32)
 #include "secure_frontend/win32_prelude.hpp"
+#include <ws2tcpip.h>
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
-#include <poll.h>
 #include <sys/socket.h>
-#include <sys/time.h>
-#include <unistd.h>
 #endif
 
 namespace secure_frontend {
 namespace {
-using Clock = std::chrono::steady_clock;
-// A response that is ready to go always gets at least this long to be sent,
-// so a legitimate large response is not cut off by a nearly spent deadline.
-constexpr std::chrono::milliseconds kMinimumSendBudget{1000};
-// Longest single wait for request bytes, so a serve_one() reading from an idle
-// or slow client sees shutdown_listener() promptly (SP2 C4: main must reach
-// the supervisor's shutdown() inside the 5 s bound).
-constexpr std::chrono::milliseconds kShutdownPollSlice{100};
 
-#ifdef _WIN32
-using NativeSocket = SOCKET;
-using NativeAddressLength = int;
-constexpr NativeSocket kInvalidSocket = INVALID_SOCKET;
+#if defined(_WIN32)
+using AddressLength = int;
 #else
-using NativeSocket = int;
-using NativeAddressLength = socklen_t;
-constexpr NativeSocket kInvalidSocket = -1;
+using AddressLength = socklen_t;
 #endif
 
-void close_socket(const NativeSocket socket) {
-  if (socket == kInvalidSocket) return;
-#ifdef _WIN32
-  closesocket(socket);
+// Pre-flight V12 (SP2 K4): the listener is created non-inheritable, so no
+// engine child (or any other child) can ever hold it.
+NativeSocket open_listener_socket(const int family) noexcept {
+#if defined(_WIN32)
+  return WSASocketW(family, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
+#elif defined(SOCK_CLOEXEC)
+  return ::socket(family, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
 #else
-  close(socket);
-#endif
-}
-
-// Applies the same receive and send timeout. Values below 1 ms are clamped to
-// 1 ms because a zero timeout means "wait forever" to the socket layer.
-bool set_socket_timeouts(const NativeSocket socket, const std::chrono::milliseconds remaining) {
-  const auto clamped = std::clamp<long long>(remaining.count(), 1, 3600000);
-#ifdef _WIN32
-  const DWORD ms = static_cast<DWORD>(clamped);
-  return setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&ms), sizeof(ms)) == 0 &&
-         setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&ms), sizeof(ms)) == 0;
-#else
-  timeval tv{static_cast<time_t>(clamped / 1000), static_cast<suseconds_t>((clamped % 1000) * 1000)};
-  return setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0 &&
-         setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) == 0;
-#endif
-}
-
-// Whole milliseconds left until deadline, rounded up so a timeout derived
-// from it never fires before the deadline itself.
-std::chrono::milliseconds remaining_until(const Clock::time_point deadline) {
-  return std::chrono::ceil<std::chrono::milliseconds>(deadline - Clock::now());
-}
-
-// True when the last socket call failed only because its timeout elapsed (or
-// it was interrupted), so the caller should re-check its deadline and retry.
-bool last_call_timed_out() {
-#ifdef _WIN32
-  const int code = WSAGetLastError();
-  return code == WSAETIMEDOUT || code == WSAEWOULDBLOCK || code == WSAEINTR;
-#else
-  return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
-#endif
-}
-
-// Waits up to `timeout` for `socket` to become readable (or to report EOF,
-// reset or an error, which the following recv() then returns). 1 = ready,
-// 0 = timed out, -1 = failed (last_call_timed_out() tells an EINTR apart).
-// select() on Windows (no descriptor-number limit there), poll() on POSIX.
-int wait_readable(const NativeSocket socket, const std::chrono::milliseconds timeout) {
-  const auto clamped = std::clamp<long long>(timeout.count(), 0, 3600000);
-#ifdef _WIN32
-  fd_set readable;
-  FD_ZERO(&readable);
-  FD_SET(socket, &readable);
-  timeval tv{static_cast<long>(clamped / 1000), static_cast<long>((clamped % 1000) * 1000)};
-  const int result = select(0, &readable, nullptr, nullptr, &tv);
-  return result == SOCKET_ERROR ? -1 : (result > 0 ? 1 : 0);
-#else
-  pollfd entry{socket, POLLIN, 0};
-  const int result = poll(&entry, 1, static_cast<int>(clamped));
-  return result < 0 ? -1 : (result > 0 ? 1 : 0);
-#endif
-}
-
-// After the last response byte: half-close our send side and briefly drain
-// what the peer still sends, so close() does not discard unread request bytes
-// with an RST that (on Windows especially) can destroy the response before the
-// client reads it -- e.g. S4's 413. Bounded by kDrainBudget and kDrainBytes.
-constexpr std::chrono::milliseconds kDrainBudget{100};
-constexpr std::size_t kDrainBytes = 256U * 1024U;
-
-void finish_response(const NativeSocket socket) {
-#ifdef _WIN32
-  if (shutdown(socket, SD_SEND) != 0) return;
-#else
-  if (shutdown(socket, SHUT_WR) != 0) return;
-#endif
-  const Clock::time_point drain_deadline = Clock::now() + kDrainBudget;
-  std::array<char, 4096> sink{};
-  std::size_t drained = 0;
-  while (drained < kDrainBytes) {
-    const std::chrono::milliseconds budget = remaining_until(drain_deadline);
-    if (budget.count() <= 0 || !set_socket_timeouts(socket, budget)) return;
-#ifdef _WIN32
-    const int received = recv(socket, sink.data(), static_cast<int>(sink.size()), 0);
-#else
-    const ssize_t received = recv(socket, sink.data(), sink.size(), 0);
-#endif
-    if (received < 0 && last_call_timed_out()) continue;  // the deadline check above decides
-    if (received <= 0) return;                             // peer closed (0) or reset (-1)
-    drained += static_cast<std::size_t>(received);
+  const NativeSocket s = ::socket(family, SOCK_STREAM, IPPROTO_TCP);
+  if (s != kInvalidNativeSocket && !set_no_inherit(s)) {
+    close_native_socket(s);
+    return kInvalidNativeSocket;
   }
-}
-
-bool ascii_case_equal(const std::string_view left, const std::string_view right) {
-  if (left.size() != right.size()) return false;
-  for (std::size_t index = 0; index < left.size(); ++index) {
-    const unsigned char a = static_cast<unsigned char>(left[index]);
-    const unsigned char b = static_cast<unsigned char>(right[index]);
-    const unsigned char lower_a = a >= 'A' && a <= 'Z' ? static_cast<unsigned char>(a + ('a' - 'A')) : a;
-    const unsigned char lower_b = b >= 'A' && b <= 'Z' ? static_cast<unsigned char>(b + ('a' - 'A')) : b;
-    if (lower_a != lower_b) return false;
-  }
-  return true;
-}
-
-// Returns the body size required by a syntactically simple Content-Length
-// field. A malformed or duplicate field leaves the whole message to the HTTP
-// policy layer, which will issue its generic 400 response without waiting for
-// untrusted bytes.
-std::size_t required_message_size(const std::string& bytes, const std::size_t headers_end,
-                                  const std::size_t maximum_request_bytes) {
-  std::size_t start = bytes.find("\r\n") + 2U;
-  std::optional<std::size_t> content_length;
-  while (start < headers_end) {
-    const std::size_t end = bytes.find("\r\n", start);
-    if (end == std::string::npos || end > headers_end) return headers_end + 4U;
-    const std::string_view line{bytes.data() + start, end - start};
-    const std::size_t colon = line.find(':');
-    if (colon != std::string_view::npos && ascii_case_equal(line.substr(0, colon), "content-length")) {
-      if (content_length.has_value()) return headers_end + 4U;
-      std::string_view value = line.substr(colon + 1U);
-      while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) value.remove_prefix(1U);
-      std::size_t parsed = 0;
-      if (value.empty()) return headers_end + 4U;
-      for (const char character : value) {
-        if (character < '0' || character > '9' || parsed > (maximum_request_bytes / 10U)) {
-          return headers_end + 4U;
-        }
-        parsed = (parsed * 10U) + static_cast<std::size_t>(character - '0');
-      }
-      content_length = parsed;
-    }
-    start = end + 2U;
-  }
-  const std::size_t base = headers_end + 4U;
-  if (!content_length.has_value() || *content_length > maximum_request_bytes - base) return base;
-  return base + *content_length;
-}
-
-const char* reason_phrase(const int status) {
-  switch (status) {
-    case 200: return "OK";
-    case 204: return "No Content";
-    case 400: return "Bad Request";
-    case 401: return "Unauthorized";
-    case 403: return "Forbidden";
-    case 404: return "Not Found";
-    case 408: return "Request Timeout";
-    case 413: return "Content Too Large";
-    case 503: return "Service Unavailable";
-    default: return "Internal Server Error";
-  }
-}
-
-// At most this many bytes per send() call. Winsock accepts one large blocking
-// send() whole (the 32 MiB S2 body "completed" in ~130 ms into a peer that
-// never read, measured on the windows-msys2-clang runner), leaving the kernel
-// holding the unsent data after close; bounded calls stall at the socket
-// buffer exactly as on POSIX, so SO_SNDTIMEO and send_deadline apply.
-constexpr std::size_t kMaxSendChunk = 64U * 1024U;
-
-// Sends every byte or gives up at send_deadline. Each send() gets only the
-// time left, so a peer that stops reading cannot hold the listener.
-bool send_all(const NativeSocket socket, const std::string_view bytes, const Clock::time_point send_deadline) {
-  std::size_t sent = 0;
-  while (sent < bytes.size()) {
-    const std::chrono::milliseconds budget = remaining_until(send_deadline);
-    if (budget.count() <= 0 || !set_socket_timeouts(socket, budget)) return false;
-    const std::size_t remaining = std::min(bytes.size() - sent, kMaxSendChunk);
-#ifdef _WIN32
-    const int result = send(socket, bytes.data() + sent,
-                            static_cast<int>(std::min(remaining, static_cast<std::size_t>(INT_MAX))), 0);
-#else
-#if defined(MSG_NOSIGNAL)
-    const ssize_t result = send(socket, bytes.data() + sent, remaining, MSG_NOSIGNAL);
-#else
-    const ssize_t result = send(socket, bytes.data() + sent, remaining, 0);
+  return s;
 #endif
-#endif
-    if (result <= 0) return false;
-    sent += static_cast<std::size_t>(result);
-  }
-  return true;
 }
 
-std::string serialize_response(const HttpResponse& response) {
-  std::string output{"HTTP/1.1 "};
-  output += std::to_string(response.status);
-  output += ' ';
-  output += reason_phrase(response.status);
-  output += "\r\nConnection: close\r\nContent-Length: ";
-  output += std::to_string(response.body.size());
-  output += "\r\n";
-  for (const auto& [name, value] : response.headers) {
-    // Response fields are produced by local policy code, never copied from a
-    // client request. Defend this boundary anyway if a future route adds one.
-    if (name.find_first_of("\r\n") == std::string::npos && value.find_first_of("\r\n") == std::string::npos) {
-      output += name;
-      output += ": ";
-      output += value;
-      output += "\r\n";
-    }
+// accept() whose result is close-on-exec / non-inheritable and non-blocking
+// (socket_io's precondition), or kInvalidNativeSocket with the socket error set.
+NativeSocket accept_client(const NativeSocket listener, sockaddr_storage* peer, AddressLength* peer_size) noexcept {
+#if defined(__linux__)
+  return ::accept4(listener, reinterpret_cast<sockaddr*>(peer), peer_size, SOCK_CLOEXEC | SOCK_NONBLOCK);
+#else
+  const NativeSocket client = ::accept(listener, reinterpret_cast<sockaddr*>(peer), peer_size);
+  if (client == kInvalidNativeSocket) return client;
+  if (!set_no_inherit(client) || !set_non_blocking(client)) {
+    const int code = detail::last_socket_error();
+    close_native_socket(client);
+    detail::set_last_socket_error(code);
+    return kInvalidNativeSocket;
   }
-  output += "\r\n";
-  output += response.body;
-  return output;
+  return client;
+#endif
+}
+
+void classify_peer(const sockaddr_storage& address, HttpSocketServer::Accepted* out) {
+  out->peer_key.fill(0);
+  if (address.ss_family == AF_INET) {
+    const auto* v4 = reinterpret_cast<const sockaddr_in*>(&address);
+    unsigned char bytes[4];
+    std::memcpy(bytes, &v4->sin_addr, 4U);
+    out->peer_key[0] = 4;
+    std::memcpy(out->peer_key.data() + 1, bytes, 4U);
+    out->peer_scope = bytes[0] == 127U ? AddressScope::loopback : AddressScope::remote;
+    return;
+  }
+  if (address.ss_family != AF_INET6) {
+    out->peer_scope = AddressScope::remote;
+    return;
+  }
+  const auto* v6 = reinterpret_cast<const sockaddr_in6*>(&address);
+  unsigned char bytes[16];
+  std::memcpy(bytes, &v6->sin6_addr, 16U);
+  static constexpr unsigned char kMapped[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
+  static constexpr unsigned char kLoopback[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+  if (std::memcmp(bytes, kMapped, 12U) == 0) {   // ::ffff:a.b.c.d is the IPv4 peer a.b.c.d
+    out->peer_key[0] = 4;
+    std::memcpy(out->peer_key.data() + 1, bytes + 12, 4U);
+    out->peer_scope = bytes[12] == 127U ? AddressScope::loopback : AddressScope::remote;
+    return;
+  }
+  out->peer_key[0] = 6;
+  std::memcpy(out->peer_key.data() + 1, bytes, 16U);
+  out->peer_scope = std::memcmp(bytes, kLoopback, 16U) == 0 ? AddressScope::loopback : AddressScope::remote;
+}
+
+bool would_block(const int code) noexcept {
+#if defined(_WIN32)
+  return code == WSAEWOULDBLOCK;
+#else
+  return code == EAGAIN || code == EWOULDBLOCK;
+#endif
 }
 
 }  // namespace
 
 struct HttpSocketServer::State final {
-  NativeSocket socket{kInvalidSocket};
+  std::atomic<NativeSocket> socket{kInvalidNativeSocket};
   std::uint16_t port{0};
-  HttpPolicy policy;
-  BearerTokenValidator validator;
-  RequestDispatcher dispatcher;
-  HttpSocketServerLimits limits;
-  bool listener_failed{false};
-  // Set by shutdown_listener() from another thread (SP2 C4).
-  std::atomic<bool> listener_closed{false};
-  // The client serve_one() is handling, if any. shutdown_listener() shuts it
-  // down too (final review I1), under the mutex so it never touches a socket
-  // serve_one() has already closed (and the OS may have reused).
-  std::mutex client_mutex;
-  NativeSocket client{kInvalidSocket};
-#ifdef _WIN32
-  bool winsock_started{false};
-#endif
-  ~State() {
-#ifdef _WIN32
-    if (!listener_closed.exchange(true)) close_socket(socket);
-    if (winsock_started) WSACleanup();
-#else
-    close_socket(socket);
-#endif
-  }
+  std::atomic<bool> listener_failed{false};
+  // Set by shutdown_listener(); serve_one() hands it to serve_connection as
+  // WorkerSignals::shutting_down, so an in-flight P1/P3 ends within one 20 ms
+  // slice (pre-flight P34, SP2 C4).
+  std::atomic<bool> stopped{false};
+  ~State() { close_native_socket(socket.exchange(kInvalidNativeSocket)); }
 };
 
 HttpSocketServer::HttpSocketServer(std::unique_ptr<State> state) : state_(std::move(state)) {}
@@ -290,250 +120,153 @@ HttpSocketServer::HttpSocketServer(HttpSocketServer&&) noexcept = default;
 HttpSocketServer& HttpSocketServer::operator=(HttpSocketServer&&) noexcept = default;
 HttpSocketServer::~HttpSocketServer() = default;
 
-std::optional<HttpSocketServer> HttpSocketServer::bind(const Config& listener_config, HttpPolicy policy,
-                                                        BearerTokenValidator validator,
-                                                        RequestDispatcher dispatcher, std::string* error,
-                                                        HttpSocketServerLimits limits) {
+std::optional<HttpSocketServer> HttpSocketServer::bind(const Config& listener, const int backlog, std::string* error) {
   if (error != nullptr) error->clear();
   // Config is a public value type, so do not assume a caller obtained it via
   // validate_config. Re-apply the bind-related policy before opening a socket.
-  const ConfigInput verification_input{.host = listener_config.host,
-                                       .port = listener_config.port,
-                                       .api_key = listener_config.has_api_key ? std::optional<std::string>{"present"}
-                                                                             : std::nullopt,
-                                       .allow_remote = listener_config.allow_remote,
-                                       .allow_wildcard_bind = listener_config.allow_wildcard_bind};
-  const ConfigValidation verification = validate_config(verification_input);
-  const auto* verified = std::get_if<Config>(&verification);
-  if (verified == nullptr || !validator || !dispatcher) {
+  // The policy check does not depend on the port value, so port 0 is checked as 1.
+  const ConfigInput verification{.host = listener.host,
+                                 .port = listener.port == 0U ? 1U : listener.port,
+                                 .api_key = listener.has_api_key ? std::optional<std::string>{"present"} : std::nullopt,
+                                 .allow_remote = listener.allow_remote,
+                                 .allow_wildcard_bind = listener.allow_wildcard_bind};
+  const ConfigValidation verified = validate_config(verification);
+  const auto* checked = std::get_if<Config>(&verified);
+  if (checked == nullptr) {
     if (error != nullptr) *error = "invalid listener configuration";
     return std::nullopt;
   }
-  auto state = std::make_unique<State>();
-#ifdef _WIN32
-  WSADATA data{};
-  if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
-    if (error != nullptr) *error = "Winsock initialization failed";
-    return std::nullopt;
-  }
-  state->winsock_started = true;
-#endif
   sockaddr_storage address{};
-  NativeAddressLength address_size = 0;
+  AddressLength size = 0;
   int family = AF_UNSPEC;
-  auto* address4 = reinterpret_cast<sockaddr_in*>(&address);
-  auto* address6 = reinterpret_cast<sockaddr_in6*>(&address);
-  if (inet_pton(AF_INET, verified->host.c_str(), &address4->sin_addr) == 1) {
+  auto* v4 = reinterpret_cast<sockaddr_in*>(&address);
+  auto* v6 = reinterpret_cast<sockaddr_in6*>(&address);
+  if (inet_pton(AF_INET, checked->host.c_str(), &v4->sin_addr) == 1) {
     family = AF_INET;
-    address4->sin_family = AF_INET;
-    address4->sin_port = htons(listener_config.port);
-    address_size = static_cast<NativeAddressLength>(sizeof(sockaddr_in));
-  } else if (inet_pton(AF_INET6, verified->host.c_str(), &address6->sin6_addr) == 1) {
+    v4->sin_family = AF_INET;
+    v4->sin_port = htons(listener.port);
+    size = static_cast<AddressLength>(sizeof(sockaddr_in));
+  } else if (inet_pton(AF_INET6, checked->host.c_str(), &v6->sin6_addr) == 1) {
     family = AF_INET6;
-    address6->sin6_family = AF_INET6;
-    address6->sin6_port = htons(listener_config.port);
-    address_size = static_cast<NativeAddressLength>(sizeof(sockaddr_in6));
+    v6->sin6_family = AF_INET6;
+    v6->sin6_port = htons(listener.port);
+    size = static_cast<AddressLength>(sizeof(sockaddr_in6));
   } else {
     if (error != nullptr) *error = "listener host must be a numeric IP literal";
     return std::nullopt;
   }
-  state->socket = socket(family, SOCK_STREAM, IPPROTO_TCP);
-  if (state->socket == kInvalidSocket) {
+  Socket socket{open_listener_socket(family)};
+  if (!socket.valid()) {
     if (error != nullptr) *error = "listener socket setup failed";
     return std::nullopt;
   }
-  {
-    const int one = 1;
-    // Quick restarts must not fail on TIME_WAIT (POSIX); on Windows the
-    // equivalent protection is exclusive use so no other socket can hijack
-    // the port.
-#ifdef _WIN32
-    (void)setsockopt(state->socket, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&one), sizeof(one));
+  const int one = 1;
+  // Quick restarts must not fail on TIME_WAIT (POSIX); on Windows the
+  // equivalent protection is exclusive use so no other socket can hijack the port.
+#if defined(_WIN32)
+  (void)setsockopt(socket.get(), SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&one), sizeof(one));
 #else
-    (void)setsockopt(state->socket, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+  (void)setsockopt(socket.get(), SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
 #endif
-    // An IPv6 listener serves IPv6 only; IPv4 needs its own explicit bind.
-    if (family == AF_INET6 &&
-        setsockopt(state->socket, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<const char*>(&one), sizeof(one)) != 0) {
-      if (error != nullptr) *error = "listener socket setup failed";
-      return std::nullopt;
-    }
-  }
-  // No timeout on the listening socket: accept() blocks until a client
-  // arrives. Per-client bounds are applied to each accepted socket.
-  if (::bind(state->socket, reinterpret_cast<const sockaddr*>(&address), address_size) != 0 ||
-      listen(state->socket, std::clamp(limits.backlog, 1, 4096)) != 0) {
+  // An IPv6 listener serves IPv6 only; IPv4 needs its own explicit bind.
+  if (family == AF_INET6 &&
+      setsockopt(socket.get(), IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<const char*>(&one), sizeof(one)) != 0) {
     if (error != nullptr) *error = "listener socket setup failed";
     return std::nullopt;
   }
-  state->port = listener_config.port;
-  state->policy = std::move(policy);
-  state->validator = std::move(validator);
-  state->dispatcher = std::move(dispatcher);
-  // Same bounds as the socket timeout clamp, so now + request_deadline can
-  // never overflow the clock for extreme caller values.
-  limits.request_deadline = std::clamp(limits.request_deadline, std::chrono::milliseconds(1), std::chrono::milliseconds(3600000));
-  state->limits = limits;
+  // The listener is non-blocking and polled in slices (accept_next).
+  if (::bind(socket.get(), reinterpret_cast<const sockaddr*>(&address), size) != 0 ||
+      ::listen(socket.get(), std::clamp(backlog, 1, 4096)) != 0 || !set_non_blocking(socket.get())) {
+    if (error != nullptr) *error = "listener socket setup failed";
+    return std::nullopt;
+  }
+  sockaddr_storage bound{};
+  AddressLength bound_size = sizeof(bound);
+  if (getsockname(socket.get(), reinterpret_cast<sockaddr*>(&bound), &bound_size) != 0) {
+    if (error != nullptr) *error = "listener socket setup failed";
+    return std::nullopt;
+  }
+  auto state = std::make_unique<State>();
+  state->port = ntohs(family == AF_INET ? reinterpret_cast<const sockaddr_in*>(&bound)->sin_port
+                                        : reinterpret_cast<const sockaddr_in6*>(&bound)->sin6_port);
+  state->socket = socket.release();
   return HttpSocketServer{std::move(state)};
 }
 
-bool HttpSocketServer::serve_one(std::string* error) {
-  if (error != nullptr) error->clear();
-  if (!state_) { if (error != nullptr) *error = "listener is not initialized"; return false; }
-  if (state_->listener_closed.load()) {
-    state_->listener_failed = true;
-    if (error != nullptr) *error = "listener shut down";
-    return false;
-  }
-  const NativeSocket client = accept(state_->socket, nullptr, nullptr);
-  if (client == kInvalidSocket) {
-    // shutdown_listener() woke this accept(): Windows may report the closed
-    // socket as WSAEINTR, which would otherwise read as transient.
-    if (state_->listener_closed.load()) {
-      state_->listener_failed = true;
-      if (error != nullptr) *error = "listener shut down";
-      return false;
-    }
+HttpSocketServer::AcceptStatus HttpSocketServer::accept_next(const std::chrono::milliseconds slice, Accepted* out) {
+  if (!state_ || state_->stopped.load()) return AcceptStatus::stopped;
+  const NativeSocket listener = state_->socket.load();
+  PollEntry entry{listener, true, false};
+  const int ready = poll_sockets(std::span<PollEntry>{&entry, 1U}, slice);
+  if (state_->stopped.load()) return AcceptStatus::stopped;
+  if (ready == 0) return AcceptStatus::timeout;
+  sockaddr_storage peer{};
+  AddressLength peer_size = sizeof(peer);
+  const NativeSocket client = accept_client(listener, &peer, &peer_size);
+  if (client == kInvalidNativeSocket) {
+    const int code = detail::last_socket_error();
+    // shutdown_listener() raced the poll: the handle is closed (or reused), not broken.
+    if (state_->stopped.load()) return AcceptStatus::stopped;
+    if (would_block(code)) return AcceptStatus::timeout;   // a client that went away before accept
     // Inverted on purpose: only errors that mean the listening socket itself
-    // is broken stop serving. Anything a peer or the network can cause (resets,
-    // pending protocol errors, resource pressure) is transient, so no client
-    // behaviour can ever shut the listener down.
-#ifdef _WIN32
-    const int code = WSAGetLastError();
-    const bool fatal = code == WSAENOTSOCK || code == WSAEINVAL || code == WSANOTINITIALISED;
-    const bool exhausted = code == WSAEMFILE || code == WSAENOBUFS;
-#else
-    const int code = errno;
-    const bool fatal = code == EBADF || code == ENOTSOCK || code == EINVAL;
-    const bool exhausted = code == EMFILE || code == ENFILE || code == ENOBUFS || code == ENOMEM;
-#endif
-    const bool transient = !fatal;
-    // Prevents a hot spin in the serve loops under resource exhaustion.
-    if (exhausted) std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    if (fatal) state_->listener_failed = true;
-    if (error != nullptr) *error = transient ? "accept interrupted" : "accept failed";
-    return false;
-  }
-#if defined(SO_NOSIGPIPE)
-  { const int one = 1; (void)setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one)); }
-#endif
-  {
-    std::lock_guard lock(state_->client_mutex);
-    state_->client = client;
-  }
-  struct ClientCloser final {
-    State& state;
-    NativeSocket value;
-    ~ClientCloser() {
-      {
-        std::lock_guard lock(state.client_mutex);
-        state.client = kInvalidSocket;
-      }
-      close_socket(value);
-    }
-  } closer{*state_, client};
-  // shutdown_listener() stores listener_closed before it takes client_mutex,
-  // so it either saw this client above or its store is visible here.
-  if (state_->listener_closed.load()) {
-    state_->listener_failed = true;
-    if (error != nullptr) *error = "listener shut down";
-    return false;
-  }
-  // One total budget for the whole request (header and body), measured from
-  // accept(). A per-recv timeout alone lets a client drip one byte at a time.
-  const Clock::time_point deadline = Clock::now() + state_->limits.request_deadline;
-  const std::size_t maximum_request_bytes = state_->limits.max_request_bytes;
-  const auto send_deadline = [&deadline] { return std::max(deadline, Clock::now() + kMinimumSendBudget); };
-  std::string request;
-  request.reserve(4096U);
-  std::array<char, 4096> chunk{};
-  std::size_t expected_size = 0;
-  while (request.size() < maximum_request_bytes) {
-    const std::chrono::milliseconds remaining = remaining_until(deadline);
-    if (remaining.count() <= 0) {
-      const HttpResponse timed_out{.status = 408, .headers = {{"Content-Type", "text/plain; charset=utf-8"}},
-                                   .body = "Request Timeout\n"};
-      if (send_all(client, serialize_response(timed_out), Clock::now() + kMinimumSendBudget)) finish_response(client);
-      if (error != nullptr) *error = "request deadline exceeded";
-      return false;
-    }
-    // Wait in slices so an idle or slow client cannot hold the orderly
-    // shutdown: no response, the connection just closes (Review Focus 3).
-    if (state_->listener_closed.load()) {
+    // is broken stop serving; anything a peer or the network can cause backs off.
+    const auto backoff = detail::accept_backoff_for(code);
+    if (!backoff.has_value()) {
       state_->listener_failed = true;
-      if (error != nullptr) *error = "listener shut down";
-      return false;
+      return AcceptStatus::listener_failed;
     }
-    const int readable = wait_readable(client, std::min(remaining, kShutdownPollSlice));
-    if (readable == 0 || (readable < 0 && last_call_timed_out())) continue;
-    if (readable < 0) { if (error != nullptr) *error = "client wait failed"; return false; }
-    if (!set_socket_timeouts(client, remaining)) {
-      if (error != nullptr) *error = "client timeout setup failed";
-      return false;
-    }
-#ifdef _WIN32
-    const int received = recv(client, chunk.data(), static_cast<int>(chunk.size()), 0);
-#else
-    const ssize_t received = recv(client, chunk.data(), chunk.size(), 0);
-#endif
-    if (received < 0 && last_call_timed_out()) continue;  // the deadline check above decides
-    if (received <= 0) {
-      // shutdown_listener() shut this client down: report the shutdown, not the client.
-      const bool closed = state_->listener_closed.load();
-      if (closed) state_->listener_failed = true;
-      if (error != nullptr) *error = closed ? "listener shut down" : "incomplete client request";
-      return false;
-    }
-    const std::size_t count = static_cast<std::size_t>(received);
-    if (count > maximum_request_bytes - request.size()) break;
-    request.append(chunk.data(), count);
-    const std::size_t headers_end = request.find("\r\n\r\n");
-    if (headers_end != std::string::npos && expected_size == 0U) {
-      expected_size = required_message_size(request, headers_end, maximum_request_bytes);
-      if (expected_size > maximum_request_bytes) break;
-    }
-    if (expected_size != 0U && request.size() >= expected_size) {
-      request.resize(expected_size);
-      const std::string response = serialize_response(
-          handle_http_request(request, state_->policy, state_->validator, state_->dispatcher,
-                              HttpParserLimits{state_->limits.max_request_bytes, state_->limits.max_header_bytes,
-                                               state_->limits.max_headers, state_->limits.max_request_line_bytes}));
-      if (!send_all(client, response, send_deadline())) { if (error != nullptr) *error = "response send failed"; return false; }
-      finish_response(client);
-      return true;
-    }
+    std::this_thread::sleep_for(*backoff);
+    return AcceptStatus::transient;
   }
-  const HttpResponse too_large{.status = 413, .headers = {{"Content-Type", "text/plain; charset=utf-8"}},
-                               .body = "Content Too Large\n"};
-  if (send_all(client, serialize_response(too_large), send_deadline())) finish_response(client);
-  if (error != nullptr) *error = "request exceeded listener bounds";
+  out->socket = Socket{client};
+  set_no_delay(client);
+#if defined(SO_NOSIGPIPE)
+  {
+    const int one = 1;
+    (void)setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+  }
+#endif
+  classify_peer(peer, out);
+  out->accepted_at = std::chrono::steady_clock::now();
+  return AcceptStatus::accepted;
+}
+
+bool HttpSocketServer::serve_one(RequestRouter& router, const ConnectionLimits& limits, std::string* error) {
+  if (error != nullptr) error->clear();
+  Accepted accepted;
+  for (;;) {
+    const AcceptStatus status = accept_next(api_constants::kAcceptPollSlice, &accepted);
+    if (status == AcceptStatus::accepted) break;
+    if (status == AcceptStatus::listener_failed) { if (error != nullptr) *error = "accept failed"; return false; }
+    if (status == AcceptStatus::stopped) { if (error != nullptr) *error = "listener stopped"; return false; }
+    if (status == AcceptStatus::transient) { if (error != nullptr) *error = "accept interrupted"; return false; }
+  }
+  // Pre-flight P34: the stop flag is the worker's shutting_down signal.
+  WorkerSignals signals;
+  signals.shutting_down = &state_->stopped;
+  const ConnectionResult result = serve_connection(accepted.socket.get(), router, limits, signals, accepted.accepted_at);
+  if (result.outcome == ConnectionOutcome::responded) return true;
+  if (error != nullptr) *error = result.outcome == ConnectionOutcome::shutdown ? "listener stopped" : "client request not completed";
   return false;
 }
 
 std::uint16_t HttpSocketServer::port() const { return state_ ? state_->port : 0U; }
-bool HttpSocketServer::listener_failed() const noexcept { return state_ && state_->listener_failed; }
+bool HttpSocketServer::listener_failed() const noexcept { return state_ && state_->listener_failed.load(); }
 
 void HttpSocketServer::shutdown_listener() noexcept {
   if (!state_) return;
-#ifdef _WIN32
-  if (!state_->listener_closed.exchange(true)) (void)closesocket(state_->socket);
-#else
-  state_->listener_closed.store(true);
-  (void)::shutdown(state_->socket, SHUT_RDWR);
+  state_->stopped = true;   // first: a racing accept_next sees it before it could use a closed handle
+  const NativeSocket socket = state_->socket.exchange(kInvalidNativeSocket);
+#if !defined(_WIN32)
+  // Task 8b carry-in: close() alone does not reliably wake an in-progress poll
+  // on the listener; shutdown(SHUT_RDWR) first so the accept slice ends at once.
+  if (socket != kInvalidNativeSocket) ::shutdown(socket, SHUT_RDWR);
 #endif
-  // Final review I1: also end the client serve_one() is handling, so a peer
-  // that sends nothing (or stops reading) cannot hold main past the 5 s
-  // bound. Only shutdown(), never close: serve_one() owns and closes the
-  // socket. A receive also re-checks listener_closed every kShutdownPollSlice,
-  // which covers a platform where shutdown() does not wake a blocked wait.
-  std::lock_guard lock(state_->client_mutex);
-  if (state_->client != kInvalidSocket) {
-#ifdef _WIN32
-    (void)::shutdown(state_->client, SD_BOTH);
-#else
-    (void)::shutdown(state_->client, SHUT_RDWR);
-#endif
-  }
+  close_native_socket(socket);
+}
+
+NativeSocket HttpSocketServer::native_handle() const noexcept {
+  return state_ ? state_->socket.load() : kInvalidNativeSocket;
 }
 
 }  // namespace secure_frontend

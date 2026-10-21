@@ -1,54 +1,57 @@
 #pragma once
 
-#include "secure_frontend/http_request_handler.hpp"
+#include "secure_frontend/http_policy.hpp"
+#include "secure_frontend/request_router.hpp"
 
+#include <cstddef>
 #include <functional>
 #include <string>
 #include <string_view>
-#include <vector>
 
 namespace secure_frontend {
 
-// Metadata returned by the local model inventory. The router copies provider
-// output into a JSON response and never exposes the provider itself to callers.
-struct ApiModel final {
-  std::string id;
+// One SP2 snapshot rendered as the /health body. engine/recovery are SP2's
+// fixed literals (health_for); recovery empty = absent. Any other value, or
+// recovery with a healthy engine or a state other than "failed", fails closed
+// (503 engine_unavailable) so the body never echoes dynamic text.
+struct HealthView final {
+  bool healthy;
+  std::string_view engine;
+  std::string_view recovery;
+};
+// Called exactly once per authenticated GET /health.
+using HealthProvider = std::function<HealthView()>;
+// A chat handler returns a complete response or (M2) a StreamHandler.
+using ChatHandler = std::function<RouteResult(std::string_view body, const RequestContext& context)>;
+
+struct ApiRouterConfig final {
+  HttpPolicy policy;
+  BearerTokenValidator validator;
+  std::string model_id;   // the one served id; /v1/models lists only it (spec §3.6, E9)
   std::string owned_by;
+  std::size_t chat_body_limit;
+  HealthProvider health;
+  ChatHandler chat;
 };
 
-// These providers are injected at construction time. They are intentionally
-// narrow: route dispatch has no engine, filesystem, process, or network access.
-using HealthStatusProvider = std::function<bool()>;
-using ModelListProvider = std::function<std::vector<ApiModel>()>;
-// Optional engine state for /health. It must return one of the fixed literals
-// "starting", "ready", "generating", "failed"; any other value fails closed
-// (503, no engine field) so the body never echoes dynamic text. The optional
-// recovery provider returns "", "restarting" or "exhausted"; a non-empty value
-// is allowed only with "failed" and anything else fails closed the same way.
-using EngineStateProvider = std::function<std::string_view()>;
+// application/json, optionally followed by `; charset=utf-8`; ASCII
+// case-insensitive, optional whitespace around each part (spec §4.2). Never allocates.
+[[nodiscard]] bool is_json_content_type(std::string_view value) noexcept;
 
-// Dispatches only the authenticated API surface currently implemented. The
-// HTTP boundary must authenticate and validate request headers before calling
-// this class. Requests for unsupported methods or targets receive a generic
-// 404 so this layer does not advertise future endpoints.
-class ApiRouter final {
+// The header-first router (spec §4.1 steps 3-7): Host, Origin, preflight,
+// bearer token, kRouteTable, then the chat route's Content-Type and body
+// limit. Nothing about routes, models or the engine is revealed before the
+// token is accepted. Every response after a CORS-approved origin carries
+// Access-Control-Allow-Origin and Vary: Origin, a 401 included.
+class ApiRouter final : public RequestRouter {
  public:
-  // /health returns {"status":"ok"|"unavailable"} and, when engine_state is
-  // set, also "engine":"<state>" and, when recovery_state returns a value,
-  // "recovery":"<value>". The status code is 200 only when health_status
-  // returns true. Per /health request the providers are called exactly once
-  // each, in the order health_status, engine_state, recovery_state, so a
-  // caller can take one snapshot in the first and report it from the others.
-  ApiRouter(HealthStatusProvider health_status, ModelListProvider model_list, EngineStateProvider engine_state = {},
-            EngineStateProvider recovery_state = {});
-
-  [[nodiscard]] HttpResponse dispatch(std::string_view method, std::string_view target) const;
+  explicit ApiRouter(ApiRouterConfig config);
+  [[nodiscard]] RouteDecision authorize(const RequestHead& head) override;
+  [[nodiscard]] RouteResult handle(const RequestHead& head, std::string_view body, const RouteDecision& decision,
+                                   const RequestContext& context) override;
 
  private:
-  const HealthStatusProvider health_status_;
-  const ModelListProvider model_list_;
-  const EngineStateProvider engine_state_;
-  const EngineStateProvider recovery_state_;
+  ApiRouterConfig config_;
 };
 
 }  // namespace secure_frontend

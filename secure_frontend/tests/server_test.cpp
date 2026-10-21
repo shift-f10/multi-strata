@@ -1,5 +1,7 @@
+#include "secure_frontend/api_errors.hpp"
 #include "secure_frontend/cgroup_scope.hpp"
 
+#include "support/egress_support.hpp"
 #include "support/fake_engine_dump.hpp"
 #include "support/server_harness.hpp"
 #include "support/test_paths.hpp"
@@ -393,8 +395,11 @@ void proc05_sigterm_during_generation_exits_cleanly() {
   const auto code = server->wait_exit(6s);
   client.join();
   expect(code == 0, "exit 0 with a request in flight, saw " + (code ? std::to_string(*code) : std::string("still running")));
-  expect(!chat || (chat->status == 503 && chat->body == test_support::kGeneric503),
-         "the in-flight client gets a generic 503 or a closed connection, never a result: " + describe(chat));
+  // SP3 Task 9 (spec §7.2): a stopping server names itself with the fixed server_shutting_down body.
+  expect(!chat || (chat->status == 503 && (chat->body == test_support::kGeneric503 ||
+                                           chat->body == secure_frontend::render_error_body(
+                                                             secure_frontend::ApiError::server_shutting_down))),
+         "the in-flight client gets a fixed 503 or a closed connection, never a result: " + describe(chat));
   for (const long pid : engine) expect(test_support::wait_until_gone(pid, 1s), "no engine is left");
 }
 
@@ -518,22 +523,42 @@ void ext01_extension_fields_spawn_nothing() {
   const auto record = dir / "record.txt";
   test_support::ServerOptions options;
   options.engine_args = {"--record-file=" + test_support::utf8_path(record)};
+  // SP3 Task 20: run this SP2 acceptance under the §6.2 runtime tripwires too.
+  const auto egress_record = test_support::make_temp_dir("egress") / "egress.txt";
+  const bool interposed = test_support::arm_egress_tripwire(options, egress_record);
   auto server = ServerProcess::start(options);
   expect(server != nullptr && server->wait_until_listening(10s) && server->wait_for_health(test_support::kHealthReady, 10s), "ready");
   if (!server) return;
+  test_support::SocketScan scan(server->pid(), server->port());
   const auto processes_before = server->active_processes();
-  const std::vector<std::string> bodies{
-      R"({"model":"fake-model","messages":[{"role":"user","content":"Hi"}],"tools":[{"type":"function","function":{"name":"x"}}]})",
-      R"({"model":"fake-model","messages":[{"role":"user","content":"Hi"}],"tool_choice":"auto"})",
-      R"({"model":"fake-model","messages":[{"role":"user","content":"Hi"}],"functions":[{"name":"x"}]})",
-      R"({"model":"fake-model","messages":[{"role":"user","content":"Hi"}],"mcp_servers":[{"url":"mcp://x"}]})",
-      R"({"model":"fake-model","messages":[{"role":"user","content":"Hi"}],"stream":true})",
-      R"({"model":"fake-model","messages":[{"role":"tool","content":"run"}]})"};
-  for (const auto& body : bodies) {
+  // Spec §6.4 (SP3 Task 9): each extension is refused with the fixed
+  // extension_disabled body naming its key; "stream" is a feature, not an
+  // extension. Every body below is within kChatMaxJsonDepth (4), so the
+  // schema's extension pre-pass answers it. Pre-flight ruling (EXT-01 under
+  // the depth limit): an over-depth extension body answers 400 invalid_json
+  // instead; the binding property there is "400 and nothing spawned".
+  const std::string hi = R"({"model":"fake-model","messages":[{"role":"user","content":"Hi"}],)";
+  const std::vector<std::pair<std::string, std::string>> bodies{
+      {hi + R"("tools":[]})", "tools"},
+      {hi + R"("tools":[{"type":"function","function":{"name":"x"}}]})", "tools"},
+      {hi + R"("tool_choice":"auto"})", "tool_choice"},
+      {hi + R"("functions":[]})", "functions"},
+      {hi + R"("functions":[{"name":"x"}]})", "functions"},
+      {hi + R"("function_call":"auto"})", "function_call"},
+      {hi + R"("parallel_tool_calls":true})", "parallel_tool_calls"},
+      {hi + R"("mcp_servers":[]})", "mcp_servers"},
+      {hi + R"("mcp_servers":[{"url":"mcp://x"}]})", "mcp_servers"},
+      {R"({"model":"fake-model","messages":[{"role":"tool","content":"run"}]})", "role"},
+      {R"({"model":"fake-model","messages":[{"role":"function","content":"run"}]})", "role"}};
+  for (const auto& [body, key] : bodies) {
     const auto response = server->post_chat(body);
-    expect(response && response->status == 400 && response->body == test_support::kBadRequest,
-           "refused with the fixed response: " + describe(response));
+    expect(response && response->status == 400 &&
+               response->body == secure_frontend::render_error_body(secure_frontend::ApiError::extension_disabled, key),
+           "refused with the fixed extension_disabled body naming " + key + ": " + describe(response));
   }
+  // Depth 5 (over kChatMaxJsonDepth): refused before the extension pre-pass.
+  const auto over_depth = server->post_chat(hi + R"("tools":[{"function":{"parameters":{}}}]})");
+  expect(over_depth && over_depth->status == 400, "an over-depth extension body is refused with 400: " + describe(over_depth));
   const auto recorded_text = [&record] {
     std::ifstream recorded(record);
     expect(recorded.is_open(), "the engine's record file exists (the fake truncates it at startup)");
@@ -546,6 +571,10 @@ void ext01_extension_fields_spawn_nothing() {
   const auto valid = server->post_chat(test_support::kChatBody, 10s);
   expect(valid && valid->status == 200, "a valid chat completes: " + describe(valid));
   expect(recorded_text().find("GEN") != std::string::npos, "a valid chat is recorded as GEN");
+  std::string violations;
+  for (const auto& v : scan.stop()) violations += v + "; ";
+  expect(violations.empty(), "scan: only the listener's sockets: " + violations);
+  if (interposed) expect(test_support::file_text(egress_record).empty(), "interposer recorded nothing");
 }
 
 void ext02_extension_env_never_reaches_child() {
@@ -556,8 +585,15 @@ void ext02_extension_env_never_reaches_child() {
                        {"STRATA_ENABLE_MCP", "1"},
                        {"LD_PRELOAD", "/nonexistent/libstrata-test.so"},
                        {"CUDA_LAUNCH_BLOCKING", "1"}};
+  // SP3 Task 20: armed AFTER the case's own extra_env (a real preload replaces
+  // the /nonexistent one — the ban that matters is the CHILD's environment,
+  // which this case asserts below), so the interposer wraps this server too.
+  const auto egress_record = test_support::make_temp_dir("egress") / "egress.txt";
+  const bool interposed = test_support::arm_egress_tripwire(options, egress_record);
   auto server = ServerProcess::start(options);
   expect(server != nullptr && server->wait_until_listening(10s), "the server listens");
+  std::optional<test_support::SocketScan> scan;
+  if (server) scan.emplace(server->pid(), server->port());
   const auto dump = test_support::read_dump_file(dir / "dump.txt", 10s);
   expect(dump.has_value(), "the engine reported its environment");
   if (!dump) return;
@@ -573,6 +609,10 @@ void ext02_extension_env_never_reaches_child() {
       expect(entry.rfind(banned, 0) != 0, "never reaches the engine: " + std::string(banned));
     }
   }
+  std::string violations;
+  if (scan) for (const auto& v : scan->stop()) violations += v + "; ";
+  expect(violations.empty(), "scan: only the listener's sockets: " + violations);
+  if (interposed) expect(test_support::file_text(egress_record).empty(), "interposer recorded nothing");
 }
 
 void ext02_rejected_before_spawn() {
@@ -594,7 +634,13 @@ void ext02_rejected_before_spawn() {
        "Error: unknown option: --enable-mcp"}};
   int index = 0;
   for (auto [name, options, message] : attempts) {
-    const auto record = dir / ("record-" + std::to_string(index++) + ".txt");
+    const auto record = dir / ("record-" + std::to_string(index) + ".txt");
+    // SP3 Task 20: these servers are refused before any spawn — no running
+    // server to scan, so only the interposer applies; the record must stay
+    // empty after the refusal (the plan's rule for start-refusal cases).
+    const auto egress_record = dir / ("egress-" + std::to_string(index) + ".txt");
+    ++index;
+    const bool interposed = test_support::arm_egress_tripwire(options, egress_record);
     options.engine_args.push_back("--record-file=" + test_support::utf8_path(record));
     auto server = ServerProcess::start(options);
     expect(server != nullptr, name + ": launched");
@@ -603,6 +649,7 @@ void ext02_rejected_before_spawn() {
     const std::string err = server->stderr_text();
     expect(err.find(message) != std::string::npos, name + ": stderr names what was rejected: " + err);
     expect(!std::filesystem::exists(record), name + ": no engine was ever started");
+    if (interposed) expect(test_support::file_text(egress_record).empty(), name + ": interposer recorded nothing");
   }
 }
 

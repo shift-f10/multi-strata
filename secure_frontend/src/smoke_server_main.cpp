@@ -1,5 +1,8 @@
+#include "secure_frontend/api_errors.hpp"
 #include "secure_frontend/api_router.hpp"
+#include "secure_frontend/config_defaults.hpp"
 #include "secure_frontend/config.hpp"
+#include "secure_frontend/http_policy.hpp"
 #include "secure_frontend/http_request_handler.hpp"
 #include "secure_frontend/http_socket_server.hpp"
 #include "secure_frontend/model_inventory.hpp"
@@ -177,24 +180,41 @@ int run(const Options& options) {
     std::cerr << "Unable to inventory local models.\n";
     return EXIT_FAILURE;
   }
-  std::vector<secure_frontend::ApiModel> models;
-  models.reserve(manifests->size());
-  for (const auto& manifest : *manifests) models.push_back({.id = manifest.id, .owned_by = manifest.owned_by});
+  // SP3 Task 6b: the router serves one model id (spec §3.6, E9); this smoke
+  // binary serves the first local model, if any. Task 8b reworks the smoke mains.
+  std::string model_id;
+  std::string owned_by{"local"};
+  if (!manifests->empty()) {
+    model_id = manifests->front().id;
+    owned_by = manifests->front().owned_by;
+  }
 
   const std::string authority = host_header(*config);
-  secure_frontend::HttpPolicy policy{.allowed_hosts = {authority},
-                                     .same_origin_origins = {"http://" + authority},
-                                     .cors_allowed_origins = {},
-                                     .cors_enabled = false};
-  const secure_frontend::ApiRouter router(
-      [] { return true; }, [models = std::move(models)] { return models; });
+  const auto bind_address = secure_frontend::parse_listener_address(config->host);
+  if (!bind_address.has_value()) {
+    std::cerr << "Invalid listener configuration.\n";
+    return EXIT_FAILURE;
+  }
+  // The bound authority (plus localhost on loopback) needs no alias. This smoke
+  // binary has no typed config and so no listener.host_aliases: a wildcard bind
+  // keeps its own authority as the one alias, or no Host could ever match. No CORS.
+  const std::vector<std::string> aliases =
+      bind_address->scope() == secure_frontend::AddressScope::wildcard ? std::vector<std::string>{authority}
+                                                                        : std::vector<std::string>{};
+  secure_frontend::HttpPolicy policy = secure_frontend::make_http_policy(*bind_address, config->port, aliases, {});
+  secure_frontend::ApiRouter router(secure_frontend::ApiRouterConfig{
+      .policy = std::move(policy),
+      .validator = secure_frontend::make_bearer_validator(verifier),
+      .model_id = std::move(model_id),
+      .owned_by = std::move(owned_by),
+      .chat_body_limit = static_cast<std::size_t>(secure_frontend::config_defaults::kChatMaxBodyBytes),
+      .health = [] { return secure_frontend::HealthView{true, "ready", ""}; },
+      // No engine here: the chat route answers 404 like every other non-GET route.
+      .chat = [](std::string_view, const secure_frontend::RequestContext&) -> secure_frontend::RouteResult {
+        return secure_frontend::make_error_response(secure_frontend::ApiError::not_found);
+      }});
   auto server = secure_frontend::HttpSocketServer::bind(
-      *config, std::move(policy),
-      secure_frontend::make_bearer_validator(verifier),
-      [&router](const std::string_view method, const std::string_view target, const std::string_view) {
-        return router.dispatch(method, target);
-      },
-      nullptr);
+      *config, static_cast<int>(secure_frontend::config_defaults::kListenerBacklog), nullptr);
   if (!server.has_value()) {
     std::cerr << "Unable to bind secure listener.\n";
     return EXIT_FAILURE;
@@ -202,9 +222,10 @@ int run(const Options& options) {
   std::cout << "Secure smoke server listening on http://" << authority
             << " (authenticated; Ctrl-C to stop)\n";
   std::cout.flush();
+  const secure_frontend::ConnectionLimits limits{};   // SP1's schema defaults
   for (;;) {
     std::string error;
-    if (!server->serve_one(&error) && server->listener_failed()) {
+    if (!server->serve_one(router, limits, &error) && server->listener_failed()) {
       std::cerr << "listener stopped: " << error << '\n';
       return EXIT_FAILURE;
     }
@@ -216,6 +237,12 @@ int run(const Options& options) {
 
 int main(int argc, char* argv[]) {
   secure_frontend::install_process_defaults();
+  // Spec §10: Winsock is initialized once per process (bind() no longer calls WSAStartup).
+  const secure_frontend::WinsockGuard winsock;
+  if (!winsock.ok()) {
+    std::cerr << "Networking initialization failed.\n";
+    return EXIT_FAILURE;
+  }
   Options options;
   bool help = false;
   std::string error;

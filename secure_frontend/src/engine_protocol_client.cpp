@@ -64,6 +64,23 @@ bool is_engine_fatal_line(const std::string_view line) noexcept {
                      [line](const std::string_view prefix) { return line.substr(0, prefix.size()) == prefix; });
 }
 
+std::string render_sampling_keys(const SamplingParams& sampling) {
+  std::string out;
+  const auto number = [&out](std::string_view key, const double value) {
+    char buffer[64];
+    const auto [end, ec] = std::to_chars(buffer, buffer + sizeof(buffer), value);  // shortest round-trip
+    if (ec != std::errc{}) return;
+    out += ' ';
+    out += key;
+    out += '=';
+    out.append(buffer, end);
+  };
+  if (sampling.temperature) number("temperature", *sampling.temperature);
+  if (sampling.top_p) number("top_p", *sampling.top_p);
+  if (sampling.seed) out += " seed=" + std::to_string(*sampling.seed);
+  return out;
+}
+
 EngineProtocolClient::EngineProtocolClient(EngineLineTransport& transport,
                                            const EngineProtocolLimits limits,
                                            const EngineProtocolFlavor flavor)
@@ -165,14 +182,14 @@ std::optional<EngineProtocolError> EngineProtocolClient::await_ready(const std::
 
 std::optional<EngineProtocolError> EngineProtocolClient::begin_generation(
     const std::uint32_t max_new_tokens, const std::vector<std::uint32_t>& prompt_token_ids,
-    const MonotonicClock::time_point write_deadline) {
+    const MonotonicClock::time_point write_deadline, const SamplingParams& sampling) {
   stop_cause_.reset();  // a cause never outlives its request, even if this GEN is refused
   if (state_ != State::idle) return EngineProtocolError{EngineProtocolErrorCode::invalid_state, "engine is not idle"};
   if (max_new_tokens == 0 || max_new_tokens > limits_.max_new_tokens || prompt_token_ids.empty() ||
       prompt_token_ids.size() > limits_.max_prompt_tokens) {
     return EngineProtocolError{EngineProtocolErrorCode::invalid_argument, "generation request exceeds protocol limits"};
   }
-  std::string command = "GEN " + std::to_string(max_new_tokens) + " ";
+  std::string command = "GEN " + std::to_string(max_new_tokens) + render_sampling_keys(sampling) + " ";
   for (std::size_t index = 0; index < prompt_token_ids.size(); ++index) {
     if (index != 0) command.push_back(',');
     command += std::to_string(prompt_token_ids[index]);

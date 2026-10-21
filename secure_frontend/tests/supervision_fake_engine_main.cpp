@@ -6,14 +6,18 @@
 // accepted and ignored, as the real engine accepts them.
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
 #include <cwchar>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -59,6 +63,16 @@ struct Options final {
   bool stall_stdin{false};
   int slow_stdin_bytes{0};  // > 0: after READY, only drain stdin, this many bytes per interval
   int slow_stdin_interval_ms{100};
+  // SP3 Task 14 (spec §9.2, M1 modes): streaming generations. Any of these set
+  // stream_modes, which switches GEN handling to run_generation and makes DONE
+  // take the full six-field form.
+  std::vector<unsigned long> token_ids{7};       // cycled across the generation
+  std::optional<unsigned long> tokens;           // T records; default: the id-list length
+  int token_interval_ms{0};                      // pause between T records
+  std::string finish{"stop"};                    // DONE finish field
+  int prefill_delay_ms{0};                       // before the first T
+  int stop_delay_ms{0};                          // between seeing STOP and the cancel DONE
+  bool stream_modes{false};
   int fail_first{0};
   std::string counter_file;
   std::string record_file;
@@ -114,6 +128,17 @@ Options parse_options(const int argc, char** argv) {
     else if (value_of(argument, "--write-inherited", value)) options.write_inherited = std::stoi(value);
     else if (value_of(argument, "--slow-stdin", value)) options.slow_stdin_bytes = std::max(1, std::stoi(value));
     else if (value_of(argument, "--slow-stdin-interval-ms", value)) options.slow_stdin_interval_ms = std::max(1, std::stoi(value));
+    else if (value_of(argument, "--token-ids", value)) {
+      options.token_ids.clear();
+      std::stringstream ids(value);
+      for (std::string id; std::getline(ids, id, ',');) options.token_ids.push_back(std::stoul(id));
+      options.stream_modes = true;
+    }
+    else if (value_of(argument, "--tokens", value)) { options.tokens = std::stoul(value); options.stream_modes = true; }
+    else if (value_of(argument, "--token-interval-ms", value)) { options.token_interval_ms = std::stoi(value); options.stream_modes = true; }
+    else if (value_of(argument, "--finish", value)) { options.finish = value; options.stream_modes = true; }
+    else if (value_of(argument, "--prefill-delay-ms", value)) { options.prefill_delay_ms = std::stoi(value); options.stream_modes = true; }
+    else if (value_of(argument, "--stop-delay-ms", value)) { options.stop_delay_ms = std::stoi(value); options.stream_modes = true; }
   }
   return options;
 }
@@ -397,6 +422,81 @@ void echo_cmdline() {
 #endif
 }
 
+// Stdin is read on its own thread (spec §9.2) so STOP is seen while T records
+// are written. Each line is recorded the moment it arrives.
+class StdinReader final {
+ public:
+  explicit StdinReader(std::string record_file) : record_file_(std::move(record_file)) {
+    thread_ = std::thread([this] {
+      std::string line;
+      while (std::getline(std::cin, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (!record_file_.empty()) {
+          std::ofstream out(record_file_, std::ios::app);
+          out << line << '\n';
+        }
+        std::lock_guard lock(mutex_);
+        lines_.push_back(line);
+        ready_.notify_all();
+      }
+      std::lock_guard lock(mutex_);
+      eof_ = true;
+      ready_.notify_all();
+    });
+    thread_.detach();   // the process exits through return/_Exit; std::getline may block forever
+  }
+  // Next line, or nullopt at EOF.
+  std::optional<std::string> next() {
+    std::unique_lock lock(mutex_);
+    ready_.wait(lock, [this] { return !lines_.empty() || eof_; });
+    if (lines_.empty()) return std::nullopt;
+    std::string line = std::move(lines_.front());
+    lines_.pop_front();
+    return line;
+  }
+  // True when a STOP line is waiting (and consumes it).
+  bool take_stop() {
+    std::lock_guard lock(mutex_);
+    const auto it = std::find(lines_.begin(), lines_.end(), "STOP");
+    if (it == lines_.end()) return false;
+    lines_.erase(it);
+    return true;
+  }
+
+ private:
+  std::string record_file_;
+  std::thread thread_;
+  std::mutex mutex_;
+  std::condition_variable ready_;
+  std::deque<std::string> lines_;
+  bool eof_{false};
+};
+
+void run_generation(const Options& options, const std::string& line, StdinReader& reader) {
+  // GEN <max_new> [k=v ...] <ids>
+  std::istringstream fields(line.substr(4));
+  unsigned long max_new = 0;
+  fields >> max_new;
+  std::string token;
+  std::size_t prompt = 0;
+  while (fields >> token) {
+    if (token.find('=') != std::string::npos) continue;
+    prompt = static_cast<std::size_t>(std::count(token.begin(), token.end(), ',')) + 1U;
+  }
+  const unsigned long total = options.tokens.value_or(options.token_ids.size());
+  if (options.prefill_delay_ms > 0) sleep_ms(options.prefill_delay_ms);
+  unsigned long generated = 0;
+  std::string finish = options.finish;
+  for (; generated < total; ++generated) {
+    if (reader.take_stop()) { finish = "cancel"; break; }
+    if (generated >= max_new) { finish = "length"; break; }
+    std::cout << "T " << options.token_ids[generated % options.token_ids.size()] << '\n' << std::flush;
+    if (options.token_interval_ms > 0) sleep_ms(options.token_interval_ms);
+  }
+  if (finish == "cancel" && options.stop_delay_ms > 0) sleep_ms(options.stop_delay_ms);
+  std::cout << "DONE " << generated << ' ' << prompt << " 0 0 " << finish << '\n' << std::flush;
+}
+
 int serve(const Options& options) {
 #if !defined(_WIN32)
   if (options.ignore_term) (void)std::signal(SIGTERM, SIG_IGN);
@@ -455,14 +555,11 @@ int serve(const Options& options) {
     }
     return 0;
   }
-  while (std::getline(std::cin, line)) {
-    if (!line.empty() && line.back() == '\r') line.pop_back();
-    if (!options.record_file.empty()) {
-      std::ofstream out(options.record_file, std::ios::app);
-      out << line << '\n';
-    }
+  StdinReader reader(options.record_file);
+  while (const auto next = reader.next()) {
+    const std::string& line = *next;
     if (line.rfind("GEN ", 0) == 0) {
-      if (options.hang_in_gen) sleep_forever();  // stops reading stdin: STOP is never seen
+      if (options.hang_in_gen) sleep_forever();  // stops acting on stdin: STOP is never seen
       if (options.abort_in_gen) {
         std::cout << "T 7\n" << std::flush;
         crash("ABRT");
@@ -472,6 +569,7 @@ int serve(const Options& options) {
         std::cout << "T 7\n" << kFatalPrefixes[index] << (index < 2U ? "12" : "") << "\nDONE stop\n" << std::flush;
         continue;
       }
+      if (options.stream_modes) { run_generation(options, line, reader); continue; }
       std::cout << "T 7\nDONE stop\n" << std::flush;
     } else if (line == "QUIT") {
       return 0;
@@ -507,5 +605,15 @@ int main(int argc, char* argv[]) {
       return 0;
     }
   }
-  return serve(parse_options(argc, argv));
+  // The detached stdin reader can be blocked inside std::getline when serve
+  // returns: exit() runs the stdio cleanup, which locks every FILE —
+  // including the stdin the reader holds — and main would wait on that lock
+  // forever (observed: QUIT leaves the fake alive, deadlock in exit). The
+  // explicit flush + _Exit is the "return/_Exit" exit the detached thread's
+  // comment promises: protocol lines are flushed at emit time, dump output
+  // here, and record-file appends are flushed at each close.
+  const int rc = serve(parse_options(argc, argv));
+  std::cout.flush();
+  std::cerr.flush();
+  std::_Exit(rc);
 }

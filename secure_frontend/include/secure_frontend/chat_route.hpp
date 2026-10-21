@@ -1,0 +1,46 @@
+#pragma once
+
+#include "secure_frontend/chat_execution.hpp"
+#include "secure_frontend/chat_schema.hpp"
+#include "secure_frontend/generation_gate.hpp"
+#include "secure_frontend/request_router.hpp"
+#include "secure_frontend/tokenizer_pack.hpp"
+
+#include <atomic>
+#include <chrono>
+#include <cstddef>
+#include <optional>
+#include <string>
+#include <string_view>
+
+namespace secure_frontend {
+
+struct ChatRouteConfig final {
+  ChatSchemaLimits schema;
+  std::string model_id;
+  NativeChatProfile profile;
+  std::size_t max_prompt_tokens;
+  std::size_t max_completion_tokens;
+  std::size_t default_max_tokens;   // 0 = auto (B1)
+  std::chrono::milliseconds queue_timeout;
+};
+
+[[nodiscard]] std::optional<std::string> make_completion_id();
+
+// POST /v1/chat/completions, non-streaming (spec §2.2 P4-P6, §2.5, §3.1, §3.5).
+class ChatRoute final {
+ public:
+  ChatRoute(ChatRouteConfig config, SupervisorPort& port, GenerationGate& gate, const TokenizerPack& tokenizer);
+  [[nodiscard]] HttpResponse handle(std::string_view body, const RequestContext& context);
+
+ private:
+  [[nodiscard]] HttpResponse refusal(GateRefusal refusal);
+  [[nodiscard]] HttpResponse engine_unavailable();
+  ChatRouteConfig config_;
+  SupervisorPort& port_;
+  GenerationGate& gate_;
+  const TokenizerPack& tokenizer_;
+  std::atomic<std::size_t> last_context_{0};   // last READY context seen through a lease; 0 = unknown
+};
+
+}  // namespace secure_frontend
