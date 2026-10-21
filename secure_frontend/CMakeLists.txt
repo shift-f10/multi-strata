@@ -619,8 +619,18 @@ target_link_libraries(strata PRIVATE secure_frontend_strata_cli secure_frontend_
 target_compile_features(strata PRIVATE cxx_std_20)
 secure_frontend_set_warnings(strata)
 
+# SP3 M2 — streaming.
+secure_frontend_add_library(secure_frontend_utf8_stream SOURCES src/utf8_stream_decoder.cpp)
+
 if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     enable_testing()
+
+    # SP3 M2: SSE encoder, UTF-8 stream decoder, sink and stream pump units. Pure: unlabeled, also run under wine.
+    secure_frontend_add_test_executable(secure_frontend_sse_tests tests/sse_test.cpp secure_frontend_utf8_stream)
+    set(SECURE_FRONTEND_SSE_CASES
+        utf8_split_across_tokens_is_held_then_released utf8_invalid_sequence_becomes_replacement_character
+        utf8_incomplete_tail_dropped_on_length_and_cancel utf8_incomplete_tail_on_stop_becomes_one_replacement)
+    secure_frontend_add_cases(secure_frontend_sse_tests ${SECURE_FRONTEND_SSE_CASES} TIMEOUT 120)
 
     secure_frontend_add_test_executable(secure_frontend_paths_tests tests/paths_test.cpp secure_frontend_paths)
     secure_frontend_add_cases(secure_frontend_paths_tests
@@ -1154,7 +1164,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_test_executable(secure_frontend_tokenizer_pack_tests tests/tokenizer_pack_test.cpp
         secure_frontend_tokenizer_pack)
     set(_tokenizer_cases loads_validates_and_decodes_offline_pack rejects_ambiguous_or_incompatible_pack_assets
-        rejects_malformed_json_and_special_literals_for_decode encoding_fails_closed_for_special_invalid_and_missing_tokens)
+        rejects_malformed_json_and_special_literals_for_decode encoding_fails_closed_for_special_invalid_and_missing_tokens
+        token_byte_decoder_returns_raw_token_bytes)
     if(WIN32)
         list(APPEND _tokenizer_cases cfg03_tokenizer_file_swapped_to_junction_rejected)
     else()

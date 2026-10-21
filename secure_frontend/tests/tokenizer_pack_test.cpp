@@ -1,5 +1,6 @@
 #include "secure_frontend/tokenizer_pack.hpp"
 #include "support/test_support.hpp"
+#include "support/test_tokenizer.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -178,6 +179,23 @@ void cfg03_tokenizer_file_swapped_to_junction_rejected() {
   std::filesystem::remove_all(outside, ignored);
 }
 #endif
+
+void token_byte_decoder_returns_raw_token_bytes() {
+  const auto pack = test_support::byte_tokenizer();
+  const secure_frontend::TokenByteDecoder decoder(pack);
+  const auto lead = decoder.bytes_for(test_support::id_for_byte(0xE2U));
+  expect(std::holds_alternative<std::string>(lead) && std::get<std::string>(lead) == "\xE2", "a lead byte alone is returned, not rejected");
+  const auto long_token = decoder.bytes_for(test_support::kLongTokenId);
+  expect(std::holds_alternative<std::string>(long_token) && std::get<std::string>(long_token) == std::string(1024U, 'a'), "multi-symbol token");
+  const auto control = decoder.bytes_for(256U);
+  expect(std::holds_alternative<secure_frontend::TokenizerPackError>(control) &&
+             std::get<secure_frontend::TokenizerPackError>(control).code == secure_frontend::TokenizerPackErrorCode::undecodable_token,
+         "control tokens are not ordinary output");
+  const auto outside = decoder.bytes_for(100000U);
+  expect(std::holds_alternative<secure_frontend::TokenizerPackError>(outside) &&
+             std::get<secure_frontend::TokenizerPackError>(outside).code == secure_frontend::TokenizerPackErrorCode::token_id_out_of_range,
+         "ids outside the vocabulary");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -186,6 +204,7 @@ int main(int argc, char** argv) {
       {"rejects_ambiguous_or_incompatible_pack_assets", rejects_ambiguous_or_incompatible_pack_assets},
       {"rejects_malformed_json_and_special_literals_for_decode", rejects_malformed_json_and_special_literals_for_decode},
       {"encoding_fails_closed_for_special_invalid_and_missing_tokens", encoding_fails_closed_for_special_invalid_and_missing_tokens},
+      {"token_byte_decoder_returns_raw_token_bytes", token_byte_decoder_returns_raw_token_bytes},
 #ifndef _WIN32
       {"rejects_symlinked_assets", rejects_symlinked_assets},
       {"cfg03_tokenizer_file_swapped_to_symlink_rejected", cfg03_tokenizer_file_swapped_to_symlink_rejected},
