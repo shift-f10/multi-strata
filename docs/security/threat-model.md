@@ -102,6 +102,25 @@ Trust boundaries:
 - (SP3) Every error body and the optional per-request log line are fixed
   literals — never a token, prompt, configured path or client payload
   (`err_no_token_prompt_or_path_in_any_body_or_log`).
+- (SP3 M2) Streaming responses are SSE under HTTP/1.1 chunked framing. A stream
+  cut before its end carries neither the terminal chunk nor `data: [DONE]`: the
+  truncation is visible to SDKs and to `curl -N` rather than silently accepted,
+  and `[DONE]` is never a success marker — an in-stream error event is followed
+  by `[DONE]` after the text already sent has been flushed
+  (`stream_cut_has_no_terminal_chunk`, `err_mid_stream_is_error_event_then_done`).
+- (SP3 M2) No bytes while queued (R6): a request waiting on the generation slot
+  has written nothing to its socket, and a full queue is refused with a plain
+  503 `server_busy` before any SSE header (`dos02_queue_full_with_streams_is_503_before_headers`).
+- (SP3 M2) Slow-reader bound: a non-reading client never backpressures the
+  engine (the pump reads at engine speed); unread decoded text is bounded per
+  streaming worker by `limits.chat.max_generated_bytes` plus one pending SSE
+  event of at most 128 KiB in the socket sink, and after
+  `limits.http.write_stall_ms` without progress the stream is cancelled with
+  `STOP` (`dos02_slow_reader_never_backpressures_engine`,
+  `dos02_slow_stream_reader_hits_write_stall`).
+- (SP3 M2) R4's real numbers are only measurable on the owner's GPU boxes:
+  `docs/validation/sp3-api-kit.md` with the `cancel-during-prefill` probe mode
+  is a release-record step, not a CI proof (see R4 under residual risks).
 
 ### Configuration and filesystem
 

@@ -305,19 +305,21 @@ them. `--check` creates nothing.
 **Constants.** Internal constants live in
 `include/secure_frontend/api_constants.hpp` (SP3) and `config_defaults.hpp`
 (SP1). SP3 removed SP1's 1000 ms minimum send budget (SP1 addendum A4); the
-half-close drain (100 ms / 256 KiB) moved to `api_constants.hpp`.
+half-close drain (100 ms / 256 KiB) moved to `api_constants.hpp`; M2 adds the
+streaming bounds `kMaxDeltaTextBytes` (16 KiB of text per content delta) and
+`kMaxSseEventBytes` (128 KiB per SSE event).
 
 ## Run the native inference server
 
 `strata-secure-server` is the first runnable native chat path. It starts one
 local Strata engine as a direct child (never through a shell), communicates
 only through private stdio, and exposes authenticated `GET /health`, `GET
-/v1/models`, `GET /v1/models/<id>`, and non-streaming, text-only `POST
-/v1/chat/completions` (streaming lands in SP3 M2). Its
+/v1/models`, `GET /v1/models/<id>`, and text-only `POST /v1/chat/completions`
+— complete JSON or streamed SSE (`"stream": true`, SP3 M2). Its
 default fixed native profile uses the local GPT-2-byte-BPE tokenizer pack and
 the fixed Qwen ChatML renderer; the separately selected GLM-5.3 profile is
-documented below. It deliberately rejects streaming, tools, images, URLs, MCP,
-downloads, and a request whose `model` is not the one model selected at startup.
+documented below. It deliberately rejects tools, images, URLs, MCP, downloads,
+and a request whose `model` is not the one model selected at startup.
 
 ### Routes, errors, headers (SP3)
 
@@ -359,6 +361,30 @@ Every response carries `Cache-Control: no-store`,
 `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`,
 `Referrer-Policy: no-referrer` and `Date`. `Vary: Origin` and (only for
 configured origins) `Access-Control-Allow-Origin` appear as per §4.4.
+
+`POST /v1/chat/completions` with `"stream": true` (SP3 M2) is served as SSE:
+`Content-Type: text/event-stream` under HTTP/1.1 chunked framing,
+`Cache-Control: no-store`, no `Content-Length`. The event sequence is a role
+chunk, content chunks coalesced to at most 16 KiB of text each
+(`api_constants::kMaxDeltaTextBytes`) with no SSE event above
+`api_constants::kMaxSseEventBytes` (128 KiB), a `: keep-alive` comment every
+`limits.http.stream_keepalive_ms` while no content flows, an optional usage
+chunk when `stream_options.include_usage` is true, a final chunk with
+`finish_reason` (`stop` or `length`), `data: [DONE]`, then the terminal chunk.
+Headers go out only after the engine lease, the context re-check and `GEN`.
+After the headers, engine failures arrive as in-stream error events with the
+§7.2 codes (`engine_error`, `engine_unavailable`, `internal_error`,
+`server_shutting_down`), each followed by `data: [DONE]` and the terminal
+chunk. A stream cancelled by the client, by `limits.http.write_stall_ms` or by
+a missed shutdown budget gets neither `data: [DONE]` nor the terminal chunk, so
+SDKs see the truncation. Keys that govern streams:
+`limits.http.write_stall_ms` (no progress → cancel + `STOP`),
+`limits.http.response_write_deadline_ms` (the tail once the generation ended),
+`limits.http.stream_keepalive_ms`, and `limits.chat.max_generated_bytes` (the
+pump's held-text bound). The loopback-only client library used by the tests
+(spec §6.1, the only `connect()` in the frontend) also serves the future
+`strata run`; its command-line form, `strata-api-probe`, is test-only and
+never installed.
 
 Default limits (all config keys; see the table below): 8 workers, 4 queued
 generations (queue timeout 300 s), 4 connections per remote address (loopback
