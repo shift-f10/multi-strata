@@ -888,7 +888,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
 
     # SP3 §9.5: test-only probe for the offline GPU kit. Never installed.
     add_executable(strata-api-probe tests/api_probe_main.cpp)
-    target_link_libraries(strata-api-probe PRIVATE secure_frontend_api_client secure_frontend_json secure_frontend_utf8_stream)
+    target_link_libraries(strata-api-probe PRIVATE secure_frontend_api_client secure_frontend_json secure_frontend_utf8_stream secure_frontend_sha256)
     target_compile_features(strata-api-probe PRIVATE cxx_std_20)
     secure_frontend_set_warnings(strata-api-probe)
 
@@ -1013,14 +1013,14 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     endif()
 
     secure_frontend_add_test_executable(secure_frontend_engine_supervisor_tests tests/engine_supervisor_test.cpp
-        secure_frontend_engine_supervisor secure_frontend_test_support)
+        secure_frontend_engine_supervisor secure_frontend_parity secure_frontend_test_support)
     secure_frontend_test_paths(secure_frontend_engine_supervisor_tests)
     # UNIT: no surviving process (in-process fakes, or a spawn that fails
     # before any child runs); also smoke-run under wine. PROCESS: real
     # fake-engine children. LINUX / WINDOWS: platform-only process cases. Later
     # tasks append case names to these four set() lines only.
-    set(SECURE_FRONTEND_SUPERVISOR_UNIT_CASES supervisor_health_literals_per_state proc04_restart_backoff_then_circuit_open proc04_healthy_window_resets_failure_count proc04_missing_engine_opens_circuit_without_spinning proc04_client_err_lines_open_circuit_until_restart supervisor_retires_ended_generation_on_its_own_thread proc04_monitor_fallback_without_pidfd proc04_backoff_survives_stale_wake proc04_fatal_line_before_ready_kills_as_fatal_line proc04_unreaped_child_opens_circuit supervisor_unreaped_at_shutdown_reports_engine_left proc06_nnp_hint_when_exit_status_lags supervisor_exception_opens_circuit supervisor_shutdown_sends_eof_first_then_kills supervisor_lease_outliving_shutdown_is_safe supervisor_wait_wakes_on_lease_release supervisor_wait_wakes_on_shutdown proc06_refuses_privileged_start engine_environment_uses_cache_root_when_set sp3_d2_kill_reason_follows_stop_cause sp3_d2_client_stop_drain_failure_restarts_uncounted sp3_d2_timeout_stop_drain_failure_still_counts sp3_d2_client_stop_counts_when_engine_ended_itself sp3_d2_uncounted_end_resets_count_after_healthy_window sp3_d2_uncounted_streak_is_bounded sp3_d2_done_resets_uncounted_streak sp6_env_strata_family_renders_unchanged sp6_env_forced_values_override_and_add sp6_env_forced_values_reject_never_list sp6_env_forcible_names_are_the_ruled_set sp6_env_hook_derives_values_from_environment sp6_env_hook_suppresses_only_optional_rows sp6_env_refused_family_is_spawn_failure idle_unload_tears_down_then_respawns_on_next_request idle_unload_never_fires_during_a_generation lazy_load_defers_the_first_spawn)
-    set(SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES proc04_recovers_after_transient_crash proc04_monitor_detects_idle_crash proc04_fatal_prefix_kills_engine proc04_ready_timeout_kills_and_counts proc04_drain_failure_kills_and_restarts proc04_no_leak_across_restarts proc02_child_env_is_exact_allowlist supervisor_serving_api_is_thread_safe proc04_slow_stdin_write_bounded_by_request_deadline sp6_env_derived_value_reaches_child vision_child_launches_with_pinned_args_when_enabled vision_child_respects_resource_limits vision_encode_round_trip_at_the_pin vision_encode_failures_take_the_pinned_paths)
+    set(SECURE_FRONTEND_SUPERVISOR_UNIT_CASES supervisor_health_literals_per_state proc04_restart_backoff_then_circuit_open proc04_healthy_window_resets_failure_count proc04_missing_engine_opens_circuit_without_spinning proc04_client_err_lines_open_circuit_until_restart supervisor_retires_ended_generation_on_its_own_thread proc04_monitor_fallback_without_pidfd proc04_backoff_survives_stale_wake proc04_fatal_line_before_ready_kills_as_fatal_line proc04_unreaped_child_opens_circuit supervisor_unreaped_at_shutdown_reports_engine_left proc06_nnp_hint_when_exit_status_lags supervisor_exception_opens_circuit supervisor_shutdown_sends_eof_first_then_kills supervisor_lease_outliving_shutdown_is_safe supervisor_wait_wakes_on_lease_release supervisor_wait_wakes_on_shutdown proc06_refuses_privileged_start engine_environment_uses_cache_root_when_set sp3_d2_kill_reason_follows_stop_cause sp3_d2_client_stop_drain_failure_restarts_uncounted sp3_d2_timeout_stop_drain_failure_still_counts sp3_d2_client_stop_counts_when_engine_ended_itself sp3_d2_uncounted_end_resets_count_after_healthy_window sp3_d2_uncounted_streak_is_bounded sp3_d2_done_resets_uncounted_streak sp6_env_strata_family_renders_unchanged sp6_env_forced_values_override_and_add sp6_env_forced_values_reject_never_list sp6_env_forcible_names_are_the_ruled_set sp6_env_hook_derives_values_from_environment sp6_env_hook_suppresses_only_optional_rows sp6_env_refused_family_is_spawn_failure idle_unload_tears_down_then_respawns_on_next_request idle_unload_never_fires_during_a_generation lazy_load_defers_the_first_spawn glm_child_env_is_exactly_the_named_typed_set forced_defaults_stay_forced_unless_the_table_moves_them dflash_never_reaches_the_child)
+    set(SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES proc04_recovers_after_transient_crash proc04_monitor_detects_idle_crash proc04_fatal_prefix_kills_engine proc04_ready_timeout_kills_and_counts proc04_drain_failure_kills_and_restarts proc04_no_leak_across_restarts proc02_child_env_is_exact_allowlist supervisor_serving_api_is_thread_safe proc04_slow_stdin_write_bounded_by_request_deadline sp6_env_derived_value_reaches_child fake_maya_dialect_round_trips_only_under_the_maya_dialect vision_child_launches_with_pinned_args_when_enabled vision_child_respects_resource_limits vision_encode_round_trip_at_the_pin vision_encode_failures_take_the_pinned_paths)
     set(SECURE_FRONTEND_SUPERVISOR_LINUX_CASES proc05_setsid_grandchild_is_reaped proc05_setsid_grandchild_is_reaped_at_shutdown supervisor_start_refuses_without_wake shutdown_signal_preserves_errno proc05_cgroup_kill_when_delegated)
     set(SECURE_FRONTEND_SUPERVISOR_WINDOWS_CASES proc04_windows_abort_does_not_stall proc04_windows_crash_does_not_stall proc04_windows_write_timeout_kills_engine)
     if(WIN32)
@@ -1143,7 +1143,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         generation_total_deadline_is_enforced
         gen_line_fits_max_prompt_tokens derived_line_cap_is_clamped_to_protocol_max stop_cause_and_completed_generations
         next_event_yields_tokens_progress_and_done next_event_timeout_keeps_generation_active
-        next_event_finish_forms_and_nonfinite_stays_idle)
+        next_event_finish_forms_and_nonfinite_stays_idle
+        maya_flavor_consumes_note_and_progress strata_flavor_still_fails_closed_on_note maya_pp_grammar_is_bounded)
 
     secure_frontend_add_test_executable(secure_frontend_model_inventory_tests tests/model_inventory_test.cpp
         secure_frontend_model_inventory)
@@ -1169,7 +1170,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         engine_receives_model_path_from_inventory engine_native_path_is_utf8_for_non_ascii_root
         engine_args_reject_owned_and_network_flags
         strata_profile_passes_pack_and_weight_flags_through rejects_invalid_relative_artifact_path
-        glm_profile_passes_arguments_through_without_native engine_args_render_typed_gpu_and_deny_gpu_passthrough
+        engine_args_render_typed_gpu_and_deny_gpu_passthrough
+        glm_launch_argv_matches_mayas_launcher_form glm_context_and_parallel_bounds_enforced
+        glm_rejects_every_engine_argument
         reasoning_config_reaches_engine_launch_and_env
         mtp_false_drops_the_mtp_arg
         vram_reserve_mib_becomes_the_pinned_flag
@@ -1183,7 +1186,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     target_link_libraries(secure_frontend_engine_arguments_tests PRIVATE secure_frontend_launch secure_frontend_strata_cli)
     secure_frontend_add_cases(secure_frontend_engine_arguments_tests launch_composed_from_manifest_qwen vision_compose_rules
         managed_launch_argv_is_utf8_for_non_ascii_models_root launch_refuses_model_not_installed
-        engine_args_reject_weight_flags_for_managed_model managed_launch_renders_typed_gpu_list LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+        engine_args_reject_weight_flags_for_managed_model managed_launch_renders_typed_gpu_list
+        managed_glm_rows_refused_for_qwen_manifest LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     # Pure in-memory (F-63): wine runs it too.
     secure_frontend_add_cases(secure_frontend_engine_arguments_tests launch_refuses_engine_too_old)
 
@@ -1235,10 +1239,12 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         secure_frontend_parity)
     secure_frontend_add_cases(secure_frontend_parity_table_tests
         every_upstream_key_has_exactly_one_disposition every_env_knob_is_dispositioned
-        typed_rows_name_a_destination)
+        typed_rows_name_a_destination every_maya_key_has_exactly_one_disposition
+        every_maya_env_knob_is_dispositioned dflash_is_rejected_on_licence
+        updater_and_installer_rows_are_rejected)
 
     secure_frontend_add_test_executable(secure_frontend_typed_config_tests tests/typed_config_test.cpp
-        secure_frontend_typed_config)
+        secure_frontend_typed_config secure_frontend_engine_supervisor)
     secure_frontend_add_cases(secure_frontend_typed_config_tests
         typed_config_accepts_minimal_file_and_applies_defaults cfg01_unknown_key_rejected cfg01_duplicate_key_rejected
         cfg01_type_confusion_rejected cfg01_missing_required_rejected cfg01_out_of_range_rejected
@@ -1253,6 +1259,12 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_typed_config_tests each_rejected_upstream_key_errors_at_load_naming_it
         sampling_defaults_cover_the_pinned_validator
         reasoning_rows_match_the_pinned_validator
+        glm_keys_parse_with_mayas_kinds_and_defaults
+        glm_keys_rejected_on_strata_profile_by_name
+        thinking_budget_default_is_mayas_32768
+        glm_environment_projection_moves_the_split_default
+        glm_max_context_typed_and_glm53_args_refused
+        glm_vision_flags_reach_both_children
         lifecycle_rows_match_the_pin
         vram_family_rows_match_the_pin
         timeout_shape_rows_match_the_pin
@@ -1337,6 +1349,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_chat_execution_tests
         executes_a_bounded_non_streaming_completion rejects_context_and_output_limits_before_generation
         fails_closed_on_invalid_engine_output executes_glm53_only_when_explicitly_selected
+        glm_profile_generation_completes_over_maya_dialect maya_dialect_cancellation_round_trips
         chat_recovers_after_generation_timeout chat_gen_write_bounded_by_generation_deadline chat_marks_engine_failed_when_drain_fails
         chat_rejects_nonfinite_done_and_stays_ready health_reflects_protocol_state
         health_is_failed_after_engine_closed_mid_generation health_is_failed_when_engine_closes_before_ready
@@ -1355,6 +1368,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         secure_frontend_subsystem_limits)
     secure_frontend_add_cases(secure_frontend_subsystem_limits_tests
         ready_timeout_defaults_to_900_seconds subsystem_limits_follow_config supervisor_policy_follows_config
+        supervisor_flavor_is_the_maya_dialect_for_glm53
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     add_executable(secure_frontend_fake_engine tests/fake_engine_main.cpp)
@@ -1786,12 +1800,14 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         add_dependencies(secure_frontend_non_elevated_run strata-secure-server)
         set(SECURE_FRONTEND_SERVER_CLI_LAUNCH secure_frontend_non_elevated_run $<TARGET_FILE:strata-secure-server>)
     endif()
-    # The GLM runner takes positional arguments: glm53 without any --engine-arg is a usage error.
-    add_test(NAME strata_secure_server_glm_requires_engine_arg
+    # SP5 M2 Task 7 (D-8, C-5): the GLM launch is composed from the model directory and the
+    # typed table — engine.args with glm53 is refused by name (SP1 pass-through retired).
+    add_test(NAME strata_secure_server_glm_rejects_engine_args
         COMMAND ${SECURE_FRONTEND_SERVER_CLI_LAUNCH} --expert --profile glm53 --models-root models --tokenizer-pack tok
-                --engine engine --model-id glm-local --token-env STRATA_UNUSED_TOKEN)
-    set_tests_properties(strata_secure_server_glm_requires_engine_arg PROPERTIES
-        PASS_REGULAR_EXPRESSION "glm53 requires at least one --engine-arg")
+                --engine engine --model-id glm-local --engine-arg --max-context --engine-arg 32768 --token-env STRATA_UNUSED_TOKEN)
+    set_tests_properties(strata_secure_server_glm_rejects_engine_args PROPERTIES
+        PASS_REGULAR_EXPRESSION "engine.args: engine.profile glm53 takes no engine arguments"
+        FAIL_REGULAR_EXPRESSION "32768")
     # Review Focus 4: a malformed --gpu is a startup error with a fixed message (never the value).
     add_test(NAME strata_secure_server_rejects_malformed_gpu
         COMMAND ${SECURE_FRONTEND_SERVER_CLI_LAUNCH} --models-root models --tokenizer-pack tok --engine engine
@@ -1800,7 +1816,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         PASS_REGULAR_EXPRESSION "engine.gpu: must be a comma-separated list of distinct device indices"
         FAIL_REGULAR_EXPRESSION "0,0")
     if(WIN32)
-        set_tests_properties(strata_secure_server_glm_requires_engine_arg strata_secure_server_rejects_malformed_gpu
+        set_tests_properties(strata_secure_server_glm_rejects_engine_args strata_secure_server_rejects_malformed_gpu
             PROPERTIES LABELS windows-runtime)
     endif()
 endif()

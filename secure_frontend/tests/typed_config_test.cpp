@@ -5,6 +5,7 @@
 #include "secure_frontend/secret_bytes.hpp"
 #include "secure_frontend/secret_source.hpp"
 #include "secure_frontend/token_reader.hpp"
+#include "secure_frontend/vision_supervisor.hpp"
 #include "support/cli_harness.hpp"
 #include "support/config_json.hpp"
 #include "support/process_runner.hpp"
@@ -59,6 +60,12 @@ std::string issues_of(const secure_frontend::ConfigValidationResult& result) {
     for (const auto& issue : *errors) text += secure_frontend::format_issue(issue) + "; ";
   }
   return text;
+}
+
+std::string describe_of(const secure_frontend::ConfigValidationResult& result) {
+  const auto* validated = std::get_if<secure_frontend::ValidatedConfig>(&result);
+  if (validated == nullptr) return {};
+  return secure_frontend::describe(validated->get());
 }
 
 std::string valid_sample(const secure_frontend::ConfigKey& key) {
@@ -284,8 +291,11 @@ void typed_config_cross_field_rules() {
                    ConfigIssueCode::conflicting_values), "body > request - header");
   expect(has_issue(with({{"limits.chat.default_max_tokens", "5000"}}), "limits.chat.default_max_tokens",
                    ConfigIssueCode::conflicting_values), "default_max_tokens > max_completion_tokens");
-  expect(has_issue(with({{"engine.profile", "\"glm53\""}}), "engine.args", ConfigIssueCode::missing_required),
-         "glm53 needs at least one engine argument");
+  expect(has_issue(with({{"engine.profile", "\"glm53\""}, {"engine.args", "[\"--native\",\"x\"]"}}), "engine.args",
+                   ConfigIssueCode::invalid_value),
+         "glm53 refuses engine.args outright (SP5 M2 Task 7 D-8: the launch is composed; the SP1 "
+         "\"at least one argument\" rule is retired — a bare glm53 config is covered by "
+         "glm_max_context_typed_and_glm53_args_refused)");
   expect(has_issue(with({{"engine.args", "[\"--native\",\"x\"]"}}), "engine.args", ConfigIssueCode::invalid_value),
          "the SP0 deny-list applies to engine.args");
   expect(has_issue(with({{"listener.host", "\"192.0.2.10\""}}), "listener.host", ConfigIssueCode::remote_not_enabled),
@@ -969,6 +979,215 @@ void sampling_defaults_cover_the_pinned_validator() {
 // reasoning_loop_recovery false|"stop"|"recover"|true :8129-8136 (the typed row takes the three
 // string words); effort_position start|end :2841-2843; anthropic_thinking model|on_request
 // :8102-8104; fit_max_tokens bool default true :3485-3488 read at :7996.
+// SP5 M2 Task 3: the glm.* surface at Maya's names (C-3), kinds/defaults at
+// the vendored pin (C-1), and the profile gate (Review Focus 5: an explicit
+// qwen profile refuses glm.* by name). Behaviour-only assertions (the M1
+// cfg01_sp3_rows pattern) so the RED lands as failing cases, not a compile error.
+void glm_keys_parse_with_mayas_kinds_and_defaults() {
+  ConfigFixture f;
+  // SP5 M2 Task 7 (D-8): the glm53 launch is composed, so no engine.args row is needed
+  // (and none is accepted — see glm_max_context_typed_and_glm53_args_refused).
+  const auto glm53 = [](std::map<std::string, std::string> extra) {
+    std::map<std::string, std::string> literals{{"engine.profile", "\"glm53\""}};
+    for (auto& [key, value] : extra) literals[key] = value;
+    return literals;
+  };
+  for (const char* path : {"glm.thinking_budget", "glm.reasoning_effort", "glm.fit_max_tokens",
+                           "glm.experimental_speed_projection", "glm.gpu", "glm.layer_split",
+                           "glm.tokenizer", "glm.model_name"}) {
+    expect(secure_frontend::find_config_key(path) != nullptr, std::string{"the schema row exists: "} + path);
+  }
+  const auto accepted = with_literals(f, glm53({
+      {"glm.thinking_budget", "4096"},
+      {"glm.reasoning_effort", "\"max\""},
+      {"glm.fit_max_tokens", "true"},
+      {"glm.experimental_speed_projection", "true"},
+      {"glm.layer_split", "\"18,32\""},
+      {"glm.gpu", "\"0,1\""},
+      {"glm.tokenizer", "\"/opt/tokenizer-pack\""},
+      {"glm.model_name", "\"glm-5.3-flash\""}}));
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(accepted),
+         "the full glm.* block validates on the glm53 profile: " + issues_of(accepted));
+  const std::string described = describe_of(accepted);
+  expect(described.find("glm.thinking_budget = 4096") != std::string::npos, "describe() carries the budget");
+  expect(described.find("glm.reasoning_effort = max") != std::string::npos, "describe() carries the effort");
+  for (const char* v : {"\"none\"", "\"low\"", "\"high\"", "\"max\""}) {
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(
+               with_literals(f, glm53({{"glm.reasoning_effort", v}}))),
+           std::string{"accepts the canonical level "} + v);
+  }
+  const auto rejected = [&](const std::map<std::string, std::string>& row) {
+    const auto result = with_literals(f, glm53(row));
+    expect(std::holds_alternative<secure_frontend::ConfigErrors>(result),
+           "rejects a bad glm row: " + issues_of(result));
+  };
+  // Maya normalizes "medium" away (vendored serve/frontend.py:94: medium maps to
+  // high) — the typed row admits only the four canonical level words.
+  rejected({{"glm.reasoning_effort", "\"medium\""}});
+  rejected({{"glm.reasoning_effort", "\"ultrathink\""}});
+  rejected({{"glm.thinking_budget", "-1"}});
+  rejected({{"glm.thinking_budget", "1000000001"}});  // added bound (C-1)
+  rejected({{"glm.thinking_budget", "\"4096\""}});
+  rejected({{"glm.experimental_speed_projection", "\"true\""}});
+  rejected({{"glm.layer_split", "\"auto;rm\""}});  // closed grammar (SETTINGS.md:31)
+  rejected({{"glm.tokenizer", "\"relative/path\""}});  // absolute like session.slot_save_path
+  const auto bare_result = with_literals(f, glm53({}));
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(bare_result),
+         "a glm53 config without glm rows validates: " + issues_of(bare_result));
+  const std::string bare = describe_of(bare_result);
+  expect(bare.find("glm.layer_split = \"auto\"") != std::string::npos, "layer_split defaults to auto (serve/server.py:1212)");
+}
+
+void glm_keys_rejected_on_strata_profile_by_name() {
+  ConfigFixture f;
+  const auto result = with_literals(f, {{"engine.profile", "\"qwen\""}, {"glm.thinking_budget", "4096"},
+                                        {"glm.model_name", "\"glm\""}});
+  expect(has_issue(result, "glm.thinking_budget", ConfigIssueCode::conflicting_values),
+         "glm.thinking_budget is refused by name on the qwen profile: " + issues_of(result));
+  expect(has_issue(result, "glm.model_name", ConfigIssueCode::conflicting_values),
+         "glm.model_name is refused by name on the qwen profile: " + issues_of(result));
+  // A managed model takes its profile from the SP4 manifest, which the loader
+  // cannot see: the rows validate here and the Task-7 launch refuses them for a
+  // qwen manifest (Ruling T3-a).
+  const auto managed = with_literals(f, {{"glm.thinking_budget", "4096"}});
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(managed),
+         "without an explicit profile the rows validate (the manifest decides at launch): " + issues_of(managed));
+}
+
+void thinking_budget_default_is_mayas_32768() {
+  ConfigFixture f;
+  const auto result = with_literals(f, {{"engine.profile", "\"glm53\""}});
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result),
+         "the bare glm53 config validates: " + issues_of(result));
+  const std::string described = describe_of(result);
+  expect(described.find("glm.thinking_budget = 32768") != std::string::npos,
+         "Maya's thinking_budget default is 32768 (vendored serve/server.py:3440; C-3 keeps Maya's name)");
+  expect(described.find("glm.fit_max_tokens = false") != std::string::npos,
+         "Maya's fit_max_tokens defaults false (serve/server.py:3427 reads `is True`)");
+  expect(described.find("glm.experimental_speed_projection = false") != std::string::npos,
+         "speed projection defaults false (serve/server.py:3255)");
+}
+
+// SP5 M2 Task 7 (D-8, C-5): the GLM launch surface is typed, not passed through.
+// glm.max_context carries Maya's DEFAULT_CONTEXT (maya.py:2524; bound added, C-1)
+// and any engine.args row under glm53 is refused by name at config load.
+void glm_max_context_typed_and_glm53_args_refused() {
+  ConfigFixture f;
+  expect(secure_frontend::find_config_key("glm.max_context") != nullptr, "the schema row glm.max_context exists");
+  const auto accepted = with_literals(f, {{"engine.profile", "\"glm53\""}});
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(accepted),
+         "a glm53 config needs no engine argument any more: " + issues_of(accepted));
+  if (std::holds_alternative<secure_frontend::ValidatedConfig>(accepted)) {
+    const std::string described = describe_of(accepted);
+    expect(described.find("glm.max_context = 32768") != std::string::npos, "Maya's --max-context default is 32768 (maya.py:2524)");
+  }
+  for (const char* args : {"[\"--max-context\", \"32768\"]", "[\"--model\"]", "[\"--gpu\", \"0\"]", "[\"--serve\"]"}) {
+    const auto result = with_literals(f, {{"engine.profile", "\"glm53\""}, {"engine.args", args}});
+    expect(has_issue(result, "engine.args", ConfigIssueCode::invalid_value), "glm53 refuses engine.args: " + std::string{args});
+  }
+  const auto high = with_literals(f, {{"engine.profile", "\"glm53\""}, {"glm.max_context", "1048577"}});
+  expect(has_issue(high, "glm.max_context", ConfigIssueCode::out_of_range), "the added upper bound refuses (C-1)");
+  const auto zero = with_literals(f, {{"engine.profile", "\"glm53\""}, {"glm.max_context", "0"}});
+  expect(has_issue(zero, "glm.max_context", ConfigIssueCode::out_of_range), "a context of 0 tokens is refused");
+}
+
+// SP5 M2 Task 4 (D-7): the config-to-env projection — glm.layer_split moves
+// the STRATA_GLM_SPLIT forced default in the glm child environment
+// (maya-ref docs/SETTINGS.md:31), and glm.gpu renders the family's CUDA
+// selector (serve/server.py:1216-1224); the fixture carries no vision, and
+// Task 8's case pins what a vision turn adds.
+void glm_environment_projection_moves_the_split_default() {
+  ConfigFixture f;
+  const auto result = with_literals(f, {{"engine.profile", "\"glm53\""},
+                                        {"glm.layer_split", "\"7,12\""},
+                                        {"glm.gpu", "\"1\""}});
+  const auto* config = config_of(result);
+  expect(config != nullptr, "the glm53 config validates: " + issues_of(result));
+  if (config == nullptr) return;
+  const auto knobs = secure_frontend::glm_environment_knobs(*config);
+  expect(knobs.size() == 1U && knobs[0].name == "STRATA_GLM_SPLIT" && knobs[0].value == "7,12",
+         "layer_split projects to the SPLIT typed row, and nothing else does today");
+  const secure_frontend::EngineEnvironment environment{
+      .lib_dirs = {},
+      .temp_dir = "/state/engine-tmp/1",
+      .cuda_cache_dir = "/state/cache/cuda",
+      .family = secure_frontend::EngineFamily::glm,
+      .glm_gpus = config->glm.gpus,
+      .glm_knobs = knobs,
+  };
+  const auto block = secure_frontend::render_family_environment(environment);
+  expect(block != std::nullopt && block->at("STRATA_GLM_SPLIT") == "7,12" && block->at("CUDA_VISIBLE_DEVICES") == "1" &&
+             block->at("CUDA_DEVICE_ORDER") == "PCI_BUS_ID" && block->at("STRATA_GLM_SLOTS") == "0",
+         "the rendered glm child environment carries the moved split and the selector");
+}
+
+// SP5 M2 Task 8 (D-8): the GLM vision rows reach BOTH children. On the engine side
+// the VLEND-family row (STRATA_GLM_VISION_LEND_MB, the typed engine_env row at
+// serve/server.py:3396) projects and renders only when a vision turn is configured
+// — vision.enabled and the encoder not resident (the on-demand flow, server.py:3385,
+// where the engine lends the expert-cache tail; resident vision holds its own VRAM
+// and never lends). Without a turn the row never reaches the child, even if the
+// internal knob channel carries one (fail closed). On the encoder side the argv
+// carries Maya's flag form (--no-flash-attn, server.py:991/:1158).
+void glm_vision_flags_reach_both_children() {
+  ConfigFixture f;
+  const auto on_demand = with_literals(f, {{"engine.profile", "\"glm53\""}, {"glm.gpu", "\"1\""},
+                                           {"vision", "{\"enabled\": true, \"resident\": false, \"need_mib\": 12288}"}});
+  const auto* config = config_of(on_demand);
+  expect(config != nullptr, "glm53 with on-demand vision validates: " + issues_of(on_demand));
+  if (config == nullptr) return;
+  const auto has_lend = [](const std::vector<secure_frontend::ForcedEnvironmentValue>& rows) {
+    return std::any_of(rows.begin(), rows.end(),
+                       [](const auto& row) { return row.name == "STRATA_GLM_VISION_LEND_MB"; });
+  };
+  const auto knobs = secure_frontend::glm_environment_knobs(*config);
+  const auto lend = std::find_if(knobs.begin(), knobs.end(), [](const auto& row) {
+    return row.name == "STRATA_GLM_VISION_LEND_MB";
+  });
+  expect(lend != knobs.end() && lend->value == "12288",
+         "the vision turn projects the LEND row from vision.need_mib (server.py:3396, images.py:156)");
+  secure_frontend::EngineEnvironment environment{
+      .lib_dirs = {},
+      .temp_dir = "/state/engine-tmp/1",
+      .cuda_cache_dir = "/state/cache/cuda",
+      .family = secure_frontend::EngineFamily::glm,
+      .glm_gpus = config->glm.gpus,
+      .glm_knobs = knobs,
+      .glm_vision_turn = true,
+  };
+  const auto block = secure_frontend::render_family_environment(environment);
+  const auto in_block = block && block->find("STRATA_GLM_VISION_LEND_MB") != block->end();
+  expect(in_block && block->at("STRATA_GLM_VISION_LEND_MB") == "12288",
+         "the engine child carries the LEND row when a vision turn is configured");
+  // No vision at all: nothing projects, and a smuggled knob row is suppressed.
+  const auto no_vision = with_literals(f, {{"engine.profile", "\"glm53\""}});
+  const auto* plain = config_of(no_vision);
+  expect(plain != nullptr, "the bare glm53 config validates: " + issues_of(no_vision));
+  if (plain != nullptr) expect(!has_lend(secure_frontend::glm_environment_knobs(*plain)), "nothing projects without vision");
+  secure_frontend::EngineEnvironment off = environment;
+  off.glm_knobs.push_back({"STRATA_GLM_VISION_LEND_MB", "12288"});  // the internal channel, smuggled
+  off.glm_vision_turn = false;
+  const auto rendered_off = secure_frontend::render_family_environment(off);
+  expect(rendered_off != std::nullopt && rendered_off->find("STRATA_GLM_VISION_LEND_MB") == rendered_off->end(),
+         "without a vision turn the child never carries the LEND row (fail closed)");
+  // Resident vision holds the encoder's VRAM beside the model (server.py:977's resident
+  // flow): no lending, no row.
+  const auto resident = with_literals(f, {{"engine.profile", "\"glm53\""},
+                                          {"vision", "{\"enabled\": true, \"need_mib\": 12288}"}});
+  const auto* resident_config = config_of(resident);
+  expect(resident_config != nullptr, "glm53 with resident vision validates: " + issues_of(resident));
+  if (resident_config != nullptr)  // vision.resident defaults true (the SP6 shared key, M1 Task 12)
+    expect(!has_lend(secure_frontend::glm_environment_knobs(*resident_config)), "resident vision does not lend (:3385)");
+  // The encoder child: Maya's form (server.py:983-991) — --mmproj/--model first,
+  // the threads/max-tokens pair in the same shape, --no-flash-attn when configured (:991).
+  const secure_frontend::VisionChildSpec spec{
+      .mmproj = "/p/mmproj.gguf", .model = "/p/model.gguf", .threads = 4, .max_tokens = std::nullopt, .min_tokens = std::nullopt, .no_flash_attn = true};
+  expect(secure_frontend::compose_vision_arguments(spec) ==
+             std::vector<std::string>{"--mmproj", "/p/mmproj.gguf", "--model", "/p/model.gguf", "--threads", "4",
+                                      "--no-flash-attn"},
+         "the encoder argv carries Maya's form (--no-flash-attn: server.py:991, :1158)");
+}
+
 void reasoning_rows_match_the_pinned_validator() {
   ConfigFixture f;
   const auto accept = [&](const char* path, const char* value) {
@@ -1492,6 +1711,12 @@ int main(int argc, char** argv) {
       {"each_rejected_upstream_key_errors_at_load_naming_it", each_rejected_upstream_key_errors_at_load_naming_it},
       {"sampling_defaults_cover_the_pinned_validator", sampling_defaults_cover_the_pinned_validator},
       {"reasoning_rows_match_the_pinned_validator", reasoning_rows_match_the_pinned_validator},
+      {"glm_keys_parse_with_mayas_kinds_and_defaults", glm_keys_parse_with_mayas_kinds_and_defaults},
+      {"glm_keys_rejected_on_strata_profile_by_name", glm_keys_rejected_on_strata_profile_by_name},
+      {"thinking_budget_default_is_mayas_32768", thinking_budget_default_is_mayas_32768},
+      {"glm_environment_projection_moves_the_split_default", glm_environment_projection_moves_the_split_default},
+      {"glm_max_context_typed_and_glm53_args_refused", glm_max_context_typed_and_glm53_args_refused},
+      {"glm_vision_flags_reach_both_children", glm_vision_flags_reach_both_children},
       {"lifecycle_rows_match_the_pin", lifecycle_rows_match_the_pin},
       {"vram_family_rows_match_the_pin", vram_family_rows_match_the_pin},
       {"timeout_shape_rows_match_the_pin", timeout_shape_rows_match_the_pin},

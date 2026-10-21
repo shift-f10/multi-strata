@@ -121,6 +121,11 @@ Trust boundaries:
 - (SP3 M2) R4's real numbers are only measurable on the owner's GPU boxes:
   `docs/validation/sp3-api-kit.md` with the `cancel-during-prefill` probe mode
   is a release-record step, not a CI proof (see R4 under residual risks).
+- (SP5 M2) GLM option-surface parity is a config/launch-surface claim and is
+  attested only by the owner-box acceptance run recorded in `docs/PROVENANCE.md`
+  (`docs/validation/sp5-parity-kit.md`, corpus `sp5-parity-corpus.txt`): until
+  that entry exists — command lines, engine versions, pack and results hashes —
+  no GLM parity claim is made anywhere in this repository.
 - (SP5 M1) Image input exists only for a vision-capable model (`vision.enabled`
   plus the manifest `mmproj` artifact): the OpenAI content-parts grammar opens
   only for that model, an image URL must be a `data:` URL — an http(s) image
@@ -205,8 +210,14 @@ Trust boundaries:
   `STRATA_API_KEY` or other `STRATA_*`, `LD_PRELOAD`, `LD_AUDIT`,
   `CUDA_LAUNCH_BLOCKING`, `HOME`/`USERPROFILE`/`APPDATA`, proxies, or
   GPU-selection variables (strata family: GPUs are the typed `--gpu` argv; the
-  SP6 `glm` family will render `CUDA_DEVICE_ORDER`/`CUDA_VISIBLE_DEVICES` from
-  typed configuration, a mechanism that no configuration reaches today). Not
+  `glm` family — SP5 M2, `glm53` manifests — instead renders a **closed typed
+  child environment**: the GLM parity table's typed `engine_env` set is the
+  100-name allowlist `kFamilyForcibleEnvironment`, the two GPU selectors
+  `CUDA_DEVICE_ORDER`/`CUDA_VISIBLE_DEVICES` come from typed `glm.gpu`, the
+  SP6 §4.9 safety values are forced defaults a typed row may move, and no
+  other `STRATA_*`/`MAYA_*` name reaches that child at all
+  (`glm_child_env_is_exactly_the_named_typed_set`); the VLEND row
+  `STRATA_GLM_VISION_LEND_MB` renders only with a configured vision turn). Not
   yet verified with a real CUDA/ROCm engine. The child inherits no listening
   socket, credential descriptor/handle or token. On POSIX it starts with
   default signal dispositions and an empty signal mask; on both platforms its
@@ -218,6 +229,13 @@ Trust boundaries:
 - The child is reached only by private stdio in the current profile; clients
   never receive an engine address. Any future private loopback/IPC bridge must
   be authenticated and blocked from non-frontend peers.
+- (SP5 M2) The engine wire protocol is a recorded per-manifest **dialect**
+  (`strata` or `maya_118`): a `glm53` manifest's child speaks Maya's framing
+  (NOTE/STAT records, 3–6-field PP progress, STOP only when READY advertises
+  it), a qwen manifest's keeps SP2's strict dialect; in either dialect an
+  unknown, out-of-order or unrequested record kills the generation
+  (`fake_maya_dialect_round_trips_only_under_the_maya_dialect`) — a dialect
+  relaxes framing, never what a confused or hostile child may do.
 - PROC-03 on Linux means "other user context": another uid cannot open the
   engine's stdio (`proc03_other_uid_cannot_open_engine_fd`; it runs only in CI,
   which has not yet run SP2 — pending rflores's push). The

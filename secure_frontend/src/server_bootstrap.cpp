@@ -204,8 +204,10 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
   // SP4 §4.9 c: the profile is the composed launch's (a managed model's
   // manifest sets it; engine.profile is --expert only), not the config key.
   supervisor_config.profile = glm ? secure_frontend::NativeChatProfile::glm53 : secure_frontend::NativeChatProfile::qwen;
+  // SP5 M2 Task 7 (R-T5-b): maya_118 is the glm53 dialect (Task 5), same selection as
+  // supervisor_config in subsystem_limits.cpp (pinned by its test).
   supervisor_config.flavor =
-      glm ? secure_frontend::EngineProtocolFlavor::lighttransport_glm53 : secure_frontend::EngineProtocolFlavor::strata_0143;
+      glm ? secure_frontend::EngineProtocolFlavor::maya_118 : secure_frontend::EngineProtocolFlavor::strata_0143;
   const std::filesystem::path& state_dir = *config.roots.state;
   std::vector<std::filesystem::path> lib_dirs = config.engine.lib_dirs;
   if (lib_dirs.empty()) lib_dirs.push_back(config.engine.executable.path().parent_path());
@@ -214,6 +216,16 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
   // Spec §3.9: the engine's whole environment, rendered per generation; nothing
   // is inherited from this server's environment.
   auto environment = secure_frontend::engine_environment_for(state_dir, config.roots.cache, std::move(lib_dirs));
+  // SP5 M2 Tasks 4/8 (D-7, D-8): a composed glm53 launch is a GLM-family child —
+  // the closed typed environment (the §4.9 safety defaults, the projected typed
+  // rows, the CUDA selectors) replaces the strata rendering, and the vision-turn
+  // gate decides whether the VLEND-family row may reach the child at all.
+  if (glm) {
+    environment.family = secure_frontend::EngineFamily::glm;
+    environment.glm_gpus = config.glm.gpus;
+    environment.glm_knobs = secure_frontend::glm_environment_knobs(config);
+    environment.glm_vision_turn = config.vision.enabled && !config.vision.resident;
+  }
   if (!prepare_state_dir(state_dir, environment)) {
     std::cerr << "Unable to prepare the state or cache directory.\n";
     return EXIT_FAILURE;

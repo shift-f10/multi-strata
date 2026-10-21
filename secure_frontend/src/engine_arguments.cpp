@@ -31,13 +31,12 @@ std::optional<EngineArgumentsError> validate_engine_user_arguments(const EngineA
     }
     const auto name = flag_name(argument);
     if (profile == EngineArgumentsProfile::lighttransport_glm53) {
-      // GLM CLI is not characterized: pass through unchanged; only the
-      // launcher-owned --serve and the frontend-owned --gpu (GPUs are chosen
-      // only by the typed list, spec §3.9) are refused.
-      if (name == "--serve" || name == "--gpu") {
-        return EngineArgumentsError{EngineArgumentsErrorCode::owned_flag, "engine argument is owned by the frontend"};
-      }
-      continue;
+      // SP5 M2 Task 7 (D-8, C-5): the pass-through is retired — the GLM engine's whole argv
+      // is composed (build_engine_arguments), so no operator flag may reach it at all.
+      static_cast<void>(name);
+      return EngineArgumentsError{EngineArgumentsErrorCode::not_accepted,
+                                  "engine.profile glm53 takes no engine arguments: the launch is composed from the "
+                                  "model directory and the typed options"};
     }
     for (const auto owned : kOwnedFlags) {
       if (name == owned) {
@@ -85,15 +84,42 @@ void strip_mtp_flags(std::vector<std::string>& arguments, std::vector<std::strin
 EngineArgumentsResult build_engine_arguments(const EngineArgumentsProfile profile, const ModelManifest& selected,
                                              const CanonicalRoot& models_root,
                                              const std::vector<std::string>& user_arguments,
-                                             const std::vector<unsigned>& gpus, bool mtp_on) {
+                                             const std::vector<unsigned>& gpus, bool mtp_on,
+                                             const Glm53LaunchArgs& glm) {
+  static_cast<void>(glm);  // used by the lighttransport_glm53 composition below (Task 7)
   if (auto rejected = validate_engine_user_arguments(profile, user_arguments)) return *rejected;
   std::vector<std::string> arguments = user_arguments;
   if (profile == EngineArgumentsProfile::lighttransport_glm53) {
+    // SP5 M2 Task 7 (D-8): Maya's launcher base (write_config, maya.py:1816-1818) composed
+    // from the inventory model's directory (its pack — Maya keeps the tokenizer at
+    // <pack>/tokenizer, :1817) plus the typed options. --prefill auto and --kv-streaming on
+    // are every Maya config's fixed base; --parallel renders only for 2..8 (set_arg :1875,
+    // choices :2742). --expert-profile needs a manifest role schema 1 does not carry (ruling:
+    // omitted until one exists). GPUs stay out of argv (Task 4 puts the typed glm.gpu list
+    // in the child environment); the bounds are Maya's (max_context C-1 added, parallel :2742).
     if (!gpus.empty()) {
       return EngineArgumentsError{EngineArgumentsErrorCode::unsupported_mode,
                                   "GPU selection is not supported by this engine profile"};
     }
-    return arguments;
+    const auto parsed = parse_relative_path(selected.relative_artifact_path);
+    const auto* relative = std::get_if<RelativePath>(&parsed);
+    if (relative == nullptr) {
+      return EngineArgumentsError{EngineArgumentsErrorCode::invalid_value, "selected model has an invalid artifact path"};
+    }
+    if (glm.max_context < 1 || glm.max_context > 1048576) {
+      return EngineArgumentsError{EngineArgumentsErrorCode::out_of_range, "glm.max_context: 1-1048576"};
+    }
+    if (glm.parallel < 1 || glm.parallel > 8) {
+      return EngineArgumentsError{EngineArgumentsErrorCode::out_of_range, "replicas.parallel: 1-8 with the GLM engine"};
+    }
+    const auto pack = models_root.join(*relative).parent_path();
+    std::vector<std::string> composed{"--glm-pack", path_to_utf8(pack), "--max-context", std::to_string(glm.max_context),
+                                      "--prefill", "auto", "--kv-streaming", "on"};
+    if (glm.parallel > 1) {
+      composed.emplace_back("--parallel");
+      composed.push_back(std::to_string(glm.parallel));
+    }
+    return composed;
   }
   const auto parsed = parse_relative_path(selected.relative_artifact_path);
   // SP5 M1 Task 6 (parity row mtp, runconfig.py:36 + draft_layer.is_off): an explicit

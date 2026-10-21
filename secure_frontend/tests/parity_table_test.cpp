@@ -6,6 +6,7 @@
 // mapped-away rows must cite a governing read site.
 
 #include "parity_keys_upstream.hpp"
+#include "parity_keys_maya.hpp"
 #include "secure_frontend/parity_table.hpp"
 #include "support/test_support.hpp"
 
@@ -17,6 +18,10 @@ namespace {
 
 using secure_frontend::parity::ParityDisposition;
 using secure_frontend::parity::ParityRow;
+using secure_frontend::parity::maya_config_keys;
+using secure_frontend::parity::maya_env_knobs;
+using secure_frontend::parity::maya_parity_row;
+using secure_frontend::parity::maya_parity_rows;
 using secure_frontend::parity::strata_parity_row;
 using secure_frontend::parity::strata_parity_rows;
 using secure_frontend::parity::upstream_config_keys;
@@ -30,6 +35,14 @@ void expect(const bool condition, const std::string& message) {
 std::size_t row_count_named(std::string_view name) {
   std::size_t hits = 0;
   for (const auto& row : strata_parity_rows()) {
+    if (row.key == name) ++hits;
+  }
+  return hits;
+}
+
+std::size_t maya_row_count_named(std::string_view name) {
+  std::size_t hits = 0;
+  for (const auto& row : maya_parity_rows()) {
     if (row.key == name) ++hits;
   }
   return hits;
@@ -87,6 +100,88 @@ void typed_rows_name_a_destination() {
   }
 }
 
+void every_maya_key_has_exactly_one_disposition() {
+  const auto keys = maya_config_keys();
+  expect(keys.size() == 37U, "the generated Maya config-key inventory holds the vendored pin's 37 keys");
+  for (const auto key : keys) {
+    expect(maya_row_count_named(key) == 1U,
+           std::string("Maya config key '") + std::string(key) + "' must have exactly one parity row");
+    const auto* row = maya_parity_row(key);
+    expect(row != nullptr, std::string("maya_parity_row('") + std::string(key) + "') must resolve");
+    if (row == nullptr) continue;
+    expect(!row->citation.empty(),
+           std::string("Maya row '") + std::string(key) + "' must cite the vendored read site");
+    if (row->disposition == ParityDisposition::typed) {
+      expect(row->destination != secure_frontend::parity::ParityDestination::none,
+             std::string("typed Maya row '") + std::string(key) + "' must name a destination");
+    }
+    if (row->disposition == ParityDisposition::rejected) {
+      expect(row->citation.find("spec ") == 0U,
+             std::string("rejected Maya row '") + std::string(key) + "' must cite the excluding rule");
+    }
+  }
+}
+
+void every_maya_env_knob_is_dispositioned() {
+  const auto knobs = maya_env_knobs();
+  expect(knobs.size() == 119U, "the generated Maya env-knob inventory holds the pin's 119 names");
+  for (const auto knob : knobs) {
+    expect(maya_row_count_named(knob) == 1U,
+           std::string("Maya env knob '") + std::string(knob) + "' must have exactly one parity row");
+    const auto* row = maya_parity_row(knob);
+    expect(row != nullptr, std::string("maya_parity_row('") + std::string(knob) + "') must resolve");
+    if (row == nullptr) continue;
+    expect(!row->citation.empty(),
+           std::string("Maya row '") + std::string(knob) + "' must cite the vendored read site");
+    if (row->disposition == ParityDisposition::typed) {
+      expect(row->destination != secure_frontend::parity::ParityDestination::none,
+             std::string("typed Maya row '") + std::string(knob) + "' must name a destination");
+    }
+    if (row->disposition == ParityDisposition::rejected) {
+      expect(row->citation.find("spec ") == 0U,
+             std::string("rejected Maya row '") + std::string(knob) + "' must cite the excluding rule");
+    }
+  }
+  // Nothing may name a row twice in the GLM table (extra rule rows included).
+  for (const auto& row : maya_parity_rows()) {
+    expect(maya_row_count_named(row.key) == 1U,
+           std::string("GLM row name '") + std::string(row.key) + "' must be unique in the table");
+  }
+}
+
+void dflash_is_rejected_on_licence() {
+  // C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence
+  // ground (CC BY-NC-ND weights) even under D-7 — not a knob-visibility call.
+  for (const std::string_view name :
+       {std::string_view("STRATA_GLM_DFLASH"), std::string_view("STRATA_GLM_DFLASH_MIN"),
+        std::string_view("STRATA_GLM_DFLASH_STATS"), std::string_view("STRATA_GLM_DFLASH_PROF"),
+        std::string_view("--dflash")}) {
+    const auto* row = maya_parity_row(name);
+    expect(row != nullptr, std::string("maya_parity_row('") + std::string(name) + "') must resolve");
+    if (row == nullptr) continue;
+    expect(row->disposition == ParityDisposition::rejected,
+           std::string("'") + std::string(name) + "' is rejected on the licence ground (C-5)");
+    expect(row->citation.find("C-5") != std::string_view::npos &&
+               row->citation.find("licence") != std::string_view::npos,
+           std::string("'") + std::string(name) + "' must cite the C-5/A7 licence exclusion");
+  }
+}
+
+void updater_and_installer_rows_are_rejected() {
+  // PRIV-01: no update checks, no self-updater (spec §4 Maya block).
+  for (const std::string_view name :
+       {std::string_view("MAYA_UPDATE_CHECK"), std::string_view("MAYA_RESTART_ON_UPDATE"),
+        std::string_view("installer")}) {
+    const auto* row = maya_parity_row(name);
+    expect(row != nullptr, std::string("maya_parity_row('") + std::string(name) + "') must resolve");
+    if (row == nullptr) continue;
+    expect(row->disposition == ParityDisposition::rejected,
+           std::string("'") + std::string(name) + "' must be rejected (PRIV-01)");
+    expect(row->citation.find("PRIV-01") != std::string_view::npos,
+           std::string("'") + std::string(name) + "' must cite PRIV-01");
+  }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -94,5 +189,9 @@ int main(int argc, char** argv) {
       {"every_upstream_key_has_exactly_one_disposition", every_upstream_key_has_exactly_one_disposition},
       {"every_env_knob_is_dispositioned", every_env_knob_is_dispositioned},
       {"typed_rows_name_a_destination", typed_rows_name_a_destination},
+      {"every_maya_key_has_exactly_one_disposition", every_maya_key_has_exactly_one_disposition},
+      {"every_maya_env_knob_is_dispositioned", every_maya_env_knob_is_dispositioned},
+      {"dflash_is_rejected_on_licence", dflash_is_rejected_on_licence},
+      {"updater_and_installer_rows_are_rejected", updater_and_installer_rows_are_rejected},
   }, failures);
 }

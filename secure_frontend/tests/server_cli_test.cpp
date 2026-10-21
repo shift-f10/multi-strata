@@ -357,7 +357,9 @@ void auth04_no_switch_disables_auth() {
       // SP5 M1 Task 9: session.tool_call_recovery, session.env_to_user, session.codex_thread_titles
       // and session.codex_compaction_cache are the pin's opt-in falses (:8043-:8044, :8106, :8110);
       // SP5 M1 Task 11: vision.enabled/no_flash_attn/resident are the pin's image-INPUT
-      // booleans (serve/server.py:2511, :2930). None touches authentication.
+      // booleans (serve/server.py:2511, :2930). SP5 M2 Task 3: glm.fit_max_tokens and
+      // glm.experimental_speed_projection are Maya's file-only GLM booleans
+      // (serve/server.py:3427, :3255). None touches authentication.
       expect(path == "listener.allow_remote" || path == "listener.allow_wildcard_bind" ||
                  path == "engine.allow_new_privileges" || path == "pull.allow_private_addresses" ||
                  path == "logging.requests" || path == "engine.fit_max_tokens" || path == "reasoning.close_retry" ||
@@ -365,7 +367,8 @@ void auth04_no_switch_disables_auth() {
                  path == "engine.split_skip_if_fits" || path == "engine.elastic" || path == "engine.uma" ||
                  path == "engine.answer_room" || path == "session.tool_call_recovery" || path == "session.env_to_user" ||
                  path == "session.codex_thread_titles" || path == "session.codex_compaction_cache" ||
-                 path == "vision.enabled" || path == "vision.no_flash_attn" || path == "vision.resident",
+                 path == "vision.enabled" || path == "vision.no_flash_attn" || path == "vision.resident" ||
+                 path == "glm.fit_max_tokens" || path == "glm.experimental_speed_projection",
              "the only switches are the two bind opt-ins, the engine's NNP opt-out, the pull address opt-in, "
              "request logging and the SP5 behaviour, lifecycle, vram/turn, answer-room, session and vision "
              "opt-ins: " + path);

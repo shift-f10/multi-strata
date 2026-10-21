@@ -196,6 +196,112 @@ void executes_glm53_only_when_explicitly_selected() {
          "the explicit GLM profile must use the same bounded private engine protocol");
 }
 
+// SP5 M2 Task 6 (D-8): the GLM profile end to end over the maya_118 wire dialect.
+// Identical token payloads yield an identical visible stream under the maya framing
+// (NOTE/STAT/5-field PP — the Task-5 consumed records) as under the strata framing:
+// the framing rides as ProgressEvents and never surfaces, errors, or changes the
+// GEN write or the decoded answer.
+void glm_profile_generation_completes_over_maya_dialect() {
+  const std::string prompt = "[gMASK]<sop><|user|>Hi<|assistant|><think>";
+  const auto tokenizer = glm_tokenizer_for(prompt + "OK");
+  const auto output_o = token_id_for(tokenizer, "O");
+  const auto output_k = token_id_for(tokenizer, "K");
+  // Non-stream: Maya's records around the same T payload (generate.cpp:1245 NOTE,
+  // :5546 PP, :1799 STAT; server.py:439/:636-649 the pump's own reads).
+  FakeTransport transport;
+  transport.reads = {line("READY 512 stop pause"), line("NOTE sessions: 1"),
+                     line("PP 8 16 120 33.3 0"),
+                     line("T " + std::to_string(output_o)),
+                     line("STAT tok_s=42.00 ms_tok=23.81 vram_hit=0.7500 vram_used=8192"),
+                     line("PP 16 16 200 33.3 16"),
+                     line("T " + std::to_string(output_k)),
+                     line("DONE 2 1 1.0 2.0 stop")};
+  secure_frontend::EngineProtocolClient protocol(transport, {}, secure_frontend::EngineProtocolFlavor::maya_118);
+  secure_frontend::ChatExecutionService service(protocol, {}, secure_frontend::NativeChatProfile::glm53);
+  const auto result = service.execute({"glm-local", {{"user", "Hi"}}, 2U}, tokenizer);
+  const auto* completion = std::get_if<secure_frontend::ChatExecutionResult>(&result);
+  expect(completion != nullptr && completion->text == "OK" && completion->generated_tokens == 2U &&
+             transport.writes.size() == 1U && transport.writes.front().rfind("GEN 2 ", 0) == 0,
+         "the maya dialect completes exactly like the pinned glm53 case: same GEN, same text");
+  // Stream: the event pump's visible sequence equals the strata framing's for the
+  // same token payload; the maya-only records appear only as ProgressEvents.
+  const auto pump_events = [&](const secure_frontend::EngineProtocolFlavor flavor,
+                               const std::deque<secure_frontend::EngineReadResult>& reads) {
+    FakeTransport stream;
+    stream.reads = reads;
+    secure_frontend::EngineProtocolClient client(stream, {}, flavor);
+    secure_frontend::EngineReady ready{};
+    expect(!client.await_ready(std::chrono::seconds(1), ready).has_value(), "the stream client starts on READY");
+    expect(!client.begin_generation(4, {1, 2}, secure_frontend::deadline_after(std::chrono::seconds(5))).has_value(),
+           "the stream generation starts");
+    std::vector<std::string> visible;
+    int progress = 0;
+    for (;;) {
+      const auto event = client.next_event(std::chrono::seconds(1));
+      if (const auto* token = std::get_if<secure_frontend::TokenEvent>(&event))
+        visible.push_back("T " + std::to_string(token->id));
+      else if (const auto* done = std::get_if<secure_frontend::DoneEvent>(&event)) {
+        visible.push_back("DONE " + std::string{done->finish} + " " + std::to_string(done->generated));
+        break;
+      } else if (std::holds_alternative<secure_frontend::ProgressEvent>(event))
+        ++progress;
+      else {
+        expect(false, "no protocol error under the stream pump");
+        break;
+      }
+    }
+    return std::pair{visible, progress};
+  };
+  const auto strata = pump_events(secure_frontend::EngineProtocolFlavor::strata_0143,
+                                  {line("READY 64"), line("PP 8 16 120 33.3"), line("T " + std::to_string(output_o)),
+                                   line("T " + std::to_string(output_k)), line("DONE 2 stop")});
+  const auto maya = pump_events(secure_frontend::EngineProtocolFlavor::maya_118,
+                                {line("READY 64 stop pause"), line("NOTE sessions: 1"), line("PP 8 16 120 33.3 0"),
+                                 line("T " + std::to_string(output_o)), line("STAT tok_s=42.00 vram_hit=0.7500"),
+                                 line("T " + std::to_string(output_k)), line("NOTE mid-stream note"), line("DONE 2 stop")});
+  expect(strata.first == maya.first, "identical TokenEvent/DoneEvent stream for identical token payloads");
+  expect(strata.second == 1U && maya.second == 4U, "Maya's extra framing rides as private ProgressEvents only");
+}
+
+// SP5 M2 Task 6: the cancellation round trip is unchanged under the dialect —
+// a timeout writes exactly one STOP, the drain to DONE accepts the maya
+// cadence records, the protocol recovers idle and the next request serves.
+void maya_dialect_cancellation_round_trips() {
+  const std::string prompt = "[gMASK]<sop><|user|>Hi<|assistant|><think>";
+  const auto tokenizer = glm_tokenizer_for(prompt + "OK");
+  const auto output_o = token_id_for(tokenizer, "O");
+  const auto output_k = token_id_for(tokenizer, "K");
+  FakeTransport transport;
+  // The maya engine advertises `READY <ctx> stop pause` (generate.cpp:2750) —
+  // stop support, like the strata engine's READY, is what makes the STOP round
+  // trip legal at all.
+  transport.reads = {line("READY 512 stop pause"), line("NOTE sessions: 1")};
+  for (int i = 0; i < 10; ++i) {
+    transport.reads.push_back(line("T " + std::to_string(output_o)));
+    if (i % 3 == 2) transport.reads.push_back(line("STAT tok_s=40.00 ms_tok=25.00 vram_used=8192"));
+    if (i == 4) transport.reads.push_back(line("NOTE slots: keeping 1 conversation"));
+  }
+  transport.reads.push_back(line("DONE 10 1 1.0 1.0 cancel"));      // the drain after STOP
+  transport.reads.push_back(line("T " + std::to_string(output_k)));  // the next request
+  transport.reads.push_back(line("DONE 1 1 1.0 2.0 stop"));
+  transport.delay_per_read = std::chrono::milliseconds(60);
+  secure_frontend::EngineProtocolClient protocol(transport, {}, secure_frontend::EngineProtocolFlavor::maya_118);
+  secure_frontend::ChatExecutionService service(protocol,
+                                                {.generation_timeout = std::chrono::milliseconds(200),
+                                                 .stop_drain_timeout = std::chrono::seconds(2)},
+                                                secure_frontend::NativeChatProfile::glm53);
+  const auto first = service.execute({"glm-local", {{"user", "Hi"}}, 10U}, tokenizer);
+  const auto* first_error = std::get_if<secure_frontend::ChatExecutionError>(&first);
+  expect(first_error != nullptr && first_error->code == secure_frontend::ChatExecutionErrorCode::generation_timed_out,
+         "a slow maya-dialect generation times out: " + std::to_string(first_error ? static_cast<int>(first_error->code) : -1));
+  expect(std::count(transport.writes.begin(), transport.writes.end(), "STOP") == 1, "exactly one STOP under the dialect");
+  expect(protocol.idle(), "the drain through the cadence records returns the protocol to idle");
+  transport.delay_per_read = std::chrono::milliseconds(0);
+  const auto second = service.execute({"glm-local", {{"user", "Hi"}}, 1U}, tokenizer);
+  const auto* second_completion = std::get_if<secure_frontend::ChatExecutionResult>(&second);
+  expect(second_completion != nullptr && second_completion->text == "K", "the next request serves after recovery");
+}
+
 // R1 (owner ruling 2026-10-14, RF10): the GEN write is bounded by the
 // request's generation deadline, fixed when the generation starts; the read to
 // DONE then has only what the write left of that same deadline.
@@ -694,6 +800,8 @@ int main(int argc, char** argv) {
       {"rejects_context_and_output_limits_before_generation", rejects_context_and_output_limits_before_generation},
       {"fails_closed_on_invalid_engine_output", fails_closed_on_invalid_engine_output},
       {"executes_glm53_only_when_explicitly_selected", executes_glm53_only_when_explicitly_selected},
+      {"glm_profile_generation_completes_over_maya_dialect", glm_profile_generation_completes_over_maya_dialect},
+      {"maya_dialect_cancellation_round_trips", maya_dialect_cancellation_round_trips},
       {"chat_recovers_after_generation_timeout", chat_recovers_after_generation_timeout},
       {"chat_gen_write_bounded_by_generation_deadline", chat_gen_write_bounded_by_generation_deadline},
       {"chat_marks_engine_failed_when_drain_fails", chat_marks_engine_failed_when_drain_fails},

@@ -1,7 +1,9 @@
 // strata-supervision-fake-engine: a test-only stand-in for `strata --serve` (SP2 F1).
 // Never installed. (SP1's tests/fake_engine_main.cpp is a different, simpler fake.) It speaks the solo serve protocol the frontend uses
 // (READY, GEN -> T/DONE, STOP, QUIT) and adds the failure modes the
-// supervision tests need; see the mode list in the SP2 plan header.
+// supervision tests need; see the mode list in the SP2 plan header. SP5 M2
+// Task 6 adds --dialect=maya: the same payloads with Project Maya v1.1.8's
+// engine cadence (NOTE after GEN, 5-field PP, STAT every few tokens).
 // Unknown arguments (--serve, --native PATH, --pack DIR, --gpu LIST, ...) are
 // accepted and ignored, as the real engine accepts them.
 #include <algorithm>
@@ -78,6 +80,11 @@ struct Options final {
   std::optional<unsigned long> err_mid_gen;      // "ERR test" after this many T records, then idle
   unsigned long burst_tokens{0};                 // first n tokens without the token-interval pause
   bool stream_modes{false};
+  // SP5 M2 Task 6: --dialect=maya makes the fake speak Project Maya v1.1.8's engine
+  // framing on top of the same T/DONE payloads — NOTE right after GEN (generate.cpp:1245),
+  // the 5-field PP per prefill chunk (:5546), and a STAT cadence every few tokens
+  // (:1799). maya_118 consumes them (Task 5); the other flavors must fail closed.
+  std::string dialect;
   int fail_first{0};
   std::string counter_file;
   std::string record_file;
@@ -148,6 +155,13 @@ Options parse_options(const int argc, char** argv) {
     else if (value_of(argument, "--crash-mid-gen", value)) { options.crash_mid_gen = std::stoul(value); options.stream_modes = true; }
     else if (value_of(argument, "--err-mid-gen", value)) { options.err_mid_gen = std::stoul(value); options.stream_modes = true; }
     else if (value_of(argument, "--burst-tokens", value)) { options.burst_tokens = std::stoul(value); options.stream_modes = true; }
+    else if (value_of(argument, "--dialect", value)) {
+      options.dialect = value;
+      if (value == "maya") {  // a Maya engine always streams and prints its prefill progress
+        options.stream_modes = true;
+        options.progress_records = true;
+      }
+    }
   }
   return options;
 }
@@ -508,11 +522,17 @@ void run_generation(const Options& options, const std::string& line, StdinReader
   }
   const unsigned long total = options.tokens.value_or(options.token_ids.size());
   bool stopped = false;
+  // The maya dialect's conversation note right after GEN (generate.cpp:1245 prints
+  // "NOTE sessions: ..." in serve mode); NOTE/PP/STAT are cadence records only —
+  // the token payloads stay the strata T/DONE records.
+  const bool maya = options.dialect == "maya";
+  if (maya) std::cout << "NOTE sessions: 1\n" << std::flush;
   if (options.prefill_delay_ms > 0) {
     const int steps = options.progress_records ? std::max(1, options.prefill_delay_ms / 100) : 1;
     for (int step = 1; step <= steps && !stopped; ++step) {
       stopped = sleep_or_stop(reader, options.prefill_delay_ms / steps);
-      if (options.progress_records && !stopped) std::cout << "PP " << step << ' ' << steps << '\n' << std::flush;
+      if (options.progress_records && !stopped)
+        std::cout << "PP " << step << ' ' << steps << (maya ? " 120 33.3 0" : "") << '\n' << std::flush;
     }
   }
   unsigned long generated = 0;
@@ -523,6 +543,10 @@ void run_generation(const Options& options, const std::string& line, StdinReader
     if (options.crash_mid_gen && generated == *options.crash_mid_gen) { std::cout << std::flush; std::_Exit(1); }
     if (options.err_mid_gen && generated == *options.err_mid_gen) { std::cout << "ERR test\n" << std::flush; return; }
     std::cout << "T " << options.token_ids[generated % options.token_ids.size()] << '\n' << std::flush;
+    if (maya && generated % 3U == 2U)  // the expert-tier cadence, every few tokens (generate.cpp:1799)
+      std::cout << "STAT tok_s=40.00 ms_tok=25.00 vram_hit=0.7500 ram_fetch=0.2500 disk=0.000 promo=0.010 "
+                   "vram_used=8192 vram_slots=256 ram_used=4096 ram_slots=1024 ram_gb=8.0 vram_gb=12.0\n"
+                << std::flush;
     if (options.token_interval_ms > 0 && generated + 1 >= options.burst_tokens && sleep_or_stop(reader, options.token_interval_ms)) {
       ++generated;  // the token just written counts
       stopped = true;

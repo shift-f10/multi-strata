@@ -58,8 +58,45 @@ def test_native_only_stage_passes(tmp_path):
 
 
 def test_lookalike_names_pass(tmp_path):
-    files = ["share/doc/upstream-notes.txt", "bin/requirements.txt.sig", "bin/observe/index.html"]
+    files = ["share/doc/upstream-notes.txt", "bin/requirements.txt.sig", "bin/observe/index.html",
+             "share/doc/maya-reference.txt"]
     assert check.inspect(stage(tmp_path, *files), False) == []
+
+
+def test_staged_maya_ref_tree_is_rejected(tmp_path):
+    # SP5 M2 Task 1 (D-10): the vendored Maya reference never ships; the rule
+    # must fire on content no other quarantine rule catches (README.md, .md).
+    files = ["engines/maya-ref/README.md", "engines/maya-ref/docs/SETTINGS.md",
+             "engines/maya-ref/serve/server.py"]
+    errors = check.inspect(stage(tmp_path, *files), False)
+    for relative in files:
+        assert flagged(errors, relative), (relative, errors)
+
+
+def test_no_cmake_file_references_maya_ref():
+    # The Maya submodule is a read-only citation source: no CMake file of ours
+    # may configure, build, or otherwise reference it (plan Global Constraints).
+    skip_components = {"engines", "upstream", "out", "build", ".git", ".venv-dev",
+                       ".toolchains", ".worktrees", ".superpowers"}
+    checked = 0
+    for path in ROOT.rglob("*"):
+        if not path.is_file():
+            continue
+        if skip_components & set(path.relative_to(ROOT).parts[:-1]):
+            continue
+        if path.name not in {"CMakeLists.txt", "CMakePresets.json"} and path.suffix != ".cmake":
+            continue
+        checked += 1
+        assert "maya-ref" not in path.read_text(encoding="utf-8"), path
+    assert checked >= 3, "the walk must see our CMake files (root, secure_frontend, presets)"
+
+
+def test_pytest_never_collects_the_engines_tree():
+    # engines/maya-ref/ carries a conftest-bearing pytest tree of its own.
+    lines = (ROOT / "pytest.ini").read_text(encoding="utf-8").splitlines()
+    norecurse = [line for line in lines if line.split("=")[0].strip() == "norecursedirs"]
+    assert norecurse, "pytest.ini must pin norecursedirs while engines/ is vendored"
+    assert "engines" in norecurse[0].split("=", 1)[1].split(), norecurse[0]
 
 
 def test_hooks_marker_is_rejected_in_every_mode(tmp_path):

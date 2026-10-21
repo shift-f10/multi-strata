@@ -3,6 +3,7 @@
 #include "secure_frontend/acquire_url.hpp"
 #include "secure_frontend/canonical_path.hpp"
 #include "secure_frontend/config.hpp"
+#include "secure_frontend/engine_environment.hpp"
 #include "secure_frontend/sampling_params.hpp"
 #include "secure_frontend/secret_source.hpp"
 
@@ -85,6 +86,11 @@ enum class ConfigIssueCode {
   conflicting_values, remote_not_enabled, wildcard_bind_not_enabled, file_unavailable, file_untrusted,
   excluded_key,
 };
+
+// SP5 M2: Maya's reasoning-effort vocabulary, spelled exactly as Maya spells it
+// (spec §D-2; the vendored validator accepts only these — maya-ref
+// serve/server.py:3234).
+enum class GlmReasoningEffort { none, low, high, max };
 
 // key_path names a key ("limits.http.max_request_bytes") or "config file";
 // reason is fixed text. Neither ever contains a configured value.
@@ -242,6 +248,27 @@ struct VisionConfig final {
   std::int64_t encode_timeout_s{300};        // vision.encode_timeout_s (VISION_ENCODE_S gate, :328; 0: for ever)
 };
 
+// SP5 M2 Task 3 (spec §D-2): the engine-side GLM knobs, kept in Maya's own
+// family so parity is provable by spelling. Kinds, defaults and ranges are
+// Maya v1.1.8's (citations per row in the parity table); the closed
+// vocabularies and caps marked C-1 are ours. They are accepted while
+// engine.profile is absent (a managed model's manifest decides the profile;
+// the launch composition, Task 7, refuses them for a qwen manifest) and
+// refused by name when engine.profile is explicitly "qwen".
+struct GlmSettings final {
+  std::int64_t thinking_budget{32768};              // glm.thinking_budget (server.py:3440 default 32768; cap added, C-1)
+  std::int64_t max_context{32768};                  // glm.max_context (Maya's DEFAULT_CONTEXT, maya.py:2524; bound added, C-1)
+  std::optional<GlmReasoningEffort> reasoning_effort;  // glm.reasoning_effort (unset: the request's; validator server.py:3234)
+  bool fit_max_tokens{false};                       // glm.fit_max_tokens (Maya reads `is True` — server.py:3427; unlike engine's true)
+  bool experimental_speed_projection{false};        // glm.experimental_speed_projection (server.py:3255/3441: truthy or)
+  std::vector<unsigned> gpus{};                     // glm.gpu (parse_gpu_list, same grammar as engine.gpu; :1200/:1216-1224)
+  std::string layer_split{"auto"};                  // glm.layer_split (Maya default "auto"; :1210-1213; closed grammar added, C-1)
+  std::optional<std::string> tokenizer;             // glm.tokenizer (absolute store path, added rule C-1; :3359)
+  std::optional<std::string> model_name;            // glm.model_name (served model id, added bound C-1; :3425)
+  bool rows_present{false};                         // any glm.* row was present in the config (R-T3-a: the launch
+                                                    // refuses the rows when a manifest names the qwen profile)
+};
+
 struct EngineLaunch final {
   std::optional<EngineProfile> profile;  // --expert only; a managed model's manifest sets it (SP4 §4.9 c)
   CanonicalFile executable;
@@ -316,17 +343,18 @@ class FrontendConfig final {
   const SessionPolicy session;      // SP5 M1 Task 9: session.*
   const ReplicasConfig replicas;    // SP5 M1 Task 10: replicas.parallel (the C-4 narrowing)
   const VisionConfig vision;        // SP5 M1 Task 11: vision.* (the D-9 split)
+  const GlmSettings glm;            // SP5 M2 Task 3: glm.* (Maya's names, §D-2)
 
  private:
   friend std::variant<ValidatedConfig, std::vector<ConfigIssue>> validate(const FrontendConfigDraft& draft);
   FrontendConfig(ListenerConfig listener_value, Limits limits_value, Roots roots_value, SecretSource token_value,
                  EngineLaunch engine_value, PullSettings pull_value, LoggingConfig logging_value,
                  SamplingDefaults sampling_value, ReasoningConfig reasoning_value, SessionPolicy session_value,
-                 ReplicasConfig replicas_value, VisionConfig vision_value)
+                 ReplicasConfig replicas_value, VisionConfig vision_value, GlmSettings glm_value)
       : listener(std::move(listener_value)), limits(limits_value), roots(std::move(roots_value)),
         token(std::move(token_value)), engine(std::move(engine_value)), pull(std::move(pull_value)),
         logging(logging_value), sampling(std::move(sampling_value)), reasoning(reasoning_value),
-        session(std::move(session_value)), replicas(replicas_value), vision(vision_value) {}
+        session(std::move(session_value)), replicas(replicas_value), vision(vision_value), glm(std::move(glm_value)) {}
 };
 
 // Immutable after validation; subsystems derive their limits from it once.
@@ -349,6 +377,14 @@ using ConfigValidationResult = std::variant<ValidatedConfig, ConfigErrors>;
 [[nodiscard]] std::string describe(const FrontendConfig& config);
 // The listener primitive HttpSocketServer::bind takes.
 [[nodiscard]] Config listener_config(const FrontendConfig& config);
+
+// SP5 M2 Task 4 (D-7): the typed glm.* config projected onto the glm family's
+// closed typed child environment. Today the split row rides glm.layer_split
+// (the config's layer_split sets the same knob, maya-ref docs/SETTINGS.md:31);
+// the launch composition (Task 7) sets family and glm_gpus, and Task 8 adds
+// the vision rows. Names are checked against the closed allowlist by the
+// merge step; a name's typed row moves that §4.9 forced default.
+[[nodiscard]] std::vector<ForcedEnvironmentValue> glm_environment_knobs(const FrontendConfig& config);
 // The only filesystem side effect of a configuration: creates a missing
 // roots.logs / roots.cache (0700 / private DACL) and checks an existing one.
 // Called by serve and init, never by validate() or --check.

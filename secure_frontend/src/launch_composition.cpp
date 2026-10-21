@@ -41,7 +41,7 @@ std::variant<ComposedLaunch, LaunchFailure> expert_launch(const FrontendConfig& 
   const std::vector<unsigned> gpus =
       profile == EngineProfile::glm53 ? config.engine.gpus : effective_gpu_list(config.engine.gpus, config.engine.hip_ordinal);
   auto args = build_engine_arguments(arguments_profile, *selected, config.roots.models, config.engine.args, gpus,
-                                     config.engine.mtp);
+                                     config.engine.mtp, Glm53LaunchArgs{config.glm.max_context, config.replicas.parallel});
   if (const auto* failure = std::get_if<EngineArgumentsError>(&args)) {
     return config_failure({"Engine arguments rejected: " + failure->message});
   }
@@ -134,6 +134,13 @@ std::variant<ComposedLaunch, LaunchFailure> compose_engine_launch(const Frontend
   const auto& model = std::get<InstalledModel>(loaded);
   const auto& m = model.manifest.manifest;
   if (auto gate = engine_gate(m)) return LaunchFailure{ExitCode::engine, {format_error(*gate)}};
+  // SP5 M2 Task 7 (R-T3-a): the config could not see a managed model's profile (the manifest
+  // decides it), so glm.* rows validated at load; here the manifest's own profile refuses them.
+  if (config.glm.rows_present && m.profile != ManifestProfile::glm53) {
+    return LaunchFailure{ExitCode::usage,
+                         {"glm.*: only a glm53 engine takes these rows; this managed model's manifest profile is " +
+                          std::string{profile_name(m.profile)}}};
+  }
   // SP5 M1 Task 11 (D-9, Ruling T11-aa): vision is fail-closed on the manifest artifact.
   if (config.vision.enabled && !m.launch.mmproj) {
     return LaunchFailure{ExitCode::manifest,

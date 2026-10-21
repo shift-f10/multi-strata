@@ -497,6 +497,117 @@ void next_event_finish_forms_and_nonfinite_stays_idle() {
   expect(finish_of("DONE 1 1 1.0 1.0 bogus") == "closed", "unknown finish in a full record is malformed");
 }
 
+// SP5 M2 Task 5 (D-8): the Maya v1.1.8 wire dialect. The vendored pump
+// consumes NOTE (serve/server.py:787 — it prints the kept-conversation note
+// to its own log), the STAT expert-tier cadence every few tokens
+// (:785, _parse_stat :636-649; the engine's print at src/program/
+// generate.cpp:1799) and the five-field PP that the engine prints per prompt
+// chunk (`PP <done> <total> <ms> <tok/s> <reuse>`, generate.cpp:5546, :6111;
+// the pump's tolerant read at server.py:771-783). All are private: consumed
+// as ProgressEvents, never client output, never a protocol error; anything
+// else stays fail-closed.
+void maya_flavor_consumes_note_and_progress() {
+  FakeTransport transport;
+  transport.reads = {line("READY 8192 stop"),
+                     line("NOTE slots: keeping 2 conversations"),
+                     line("PP 512 4096 120 33.3 0"),
+                     line("STAT tok_s=30.10 ms_tok=33.22 vram_hit=0.5500 promo=1.000"),
+                     line("T 9"),
+                     line("STAT tok_s=31.00 tok_s=31.00"),
+                     line("NOTE mid-stream note"),
+                     line("DONE 1 stop")};
+  EngineProtocolClient client(transport, {}, secure_frontend::EngineProtocolFlavor::maya_118);
+  secure_frontend::EngineReady ready{};
+  expect(!client.await_ready(std::chrono::seconds(1), ready).has_value(), "the maya_118 client starts on READY");
+  expect(!client.begin_generation(4, {1, 2}, secure_frontend::deadline_after(std::chrono::seconds(5))).has_value(),
+         "the maya_118 generation starts");
+  secure_frontend::EngineGeneration generation;
+  const auto error = client.read_generation(std::chrono::seconds(1), generation);
+  expect(!error.has_value() && generation.token_ids == std::vector<std::uint32_t>({9U}) && !client.closed(),
+         "NOTE/STAT/5-field PP are consumed silently: exactly the tokens survive");
+
+  // Through next_event too: each progress record is a ProgressEvent, so the
+  // pump loop sees no protocol error and the caller's output path sees none.
+  FakeTransport event_transport;
+  event_transport.reads = {line("READY 64"), line("NOTE n"), line("STAT a=1"), line("PP 1 2 3 4.0 5"), line("T 4")};
+  EngineProtocolClient event_client(event_transport, {}, secure_frontend::EngineProtocolFlavor::maya_118);
+  (void)event_client.await_ready(std::chrono::seconds(1), ready);
+  (void)event_client.begin_generation(4, {1}, secure_frontend::deadline_after(std::chrono::seconds(5)));
+  int progress_count = 0;
+  int token_count = 0;
+  for (int i = 0; i < 4; ++i) {
+    const auto event = event_client.next_event(std::chrono::seconds(1));
+    if (std::holds_alternative<secure_frontend::ProgressEvent>(event)) ++progress_count;
+    else if (std::holds_alternative<secure_frontend::TokenEvent>(event)) ++token_count;
+    else
+      expect(false, "a maya progress record surfaced as an error or a terminal event");
+  }
+  expect(progress_count == 3 && token_count == 1, "each consumed record surfaces only as a ProgressEvent");
+}
+
+// Cross-flavor strictness unchanged: neither other flavor accepts NOTE or
+// STAT, and the maya flavor still rejects strata-only RESUME/REUSED.
+void strata_flavor_still_fails_closed_on_note() {
+  secure_frontend::EngineReady ready{};
+  for (const auto flavor : {secure_frontend::EngineProtocolFlavor::strata_0143,
+                            secure_frontend::EngineProtocolFlavor::lighttransport_glm53}) {
+    for (const char* record : {"NOTE slots", "STAT tok_s=1"}) {
+      FakeTransport transport;
+      transport.reads = {line("READY 64"), line(record), line("DONE 0")};
+      EngineProtocolClient client(transport, {}, flavor);
+      (void)client.await_ready(std::chrono::seconds(1), ready);
+      (void)client.begin_generation(1, {1}, secure_frontend::deadline_after(std::chrono::seconds(5)));
+      secure_frontend::EngineGeneration generation;
+      const auto error = client.read_generation(std::chrono::seconds(1), generation);
+      expect(error.has_value() && error->code == EngineProtocolErrorCode::unexpected_line && client.closed(),
+             std::string("NOTE/STAT stay unknown to the other flavors: ") + record);
+    }
+  }
+  FakeTransport resume;
+  resume.reads = {line("READY 64"), line("RESUME 0"), line("DONE 0")};
+  EngineProtocolClient maya_client(resume, {}, secure_frontend::EngineProtocolFlavor::maya_118);
+  (void)maya_client.await_ready(std::chrono::seconds(1), ready);
+  (void)maya_client.begin_generation(1, {1}, secure_frontend::deadline_after(std::chrono::seconds(5)));
+  secure_frontend::EngineGeneration generation;
+  const auto error = maya_client.read_generation(std::chrono::seconds(1), generation);
+  expect(error.has_value() && error->code == EngineProtocolErrorCode::unexpected_line && maya_client.closed(),
+         "the maya_118 flavor keeps the strata-only RESUME record unknown (fail closed)");
+}
+
+// The Maya PP grammar, pinned to the vendored reads: the pump accepts any
+// `PP` with digit fields 1-2 and optional float/reuse tails (server.py:771-
+// 783); the engine prints the five-field form (generate.cpp:5546, :6111).
+// Our flavor bounds it like the others: 3 to 6 fields after `PP`, decimal
+// counters, optional non-negative decimal metrics, optional decimal reuse —
+// anything else is unexpected_line and closes the protocol.
+void maya_pp_grammar_is_bounded() {
+  secure_frontend::EngineReady ready{};
+  for (const char* good : {"PP 512 4096 120 33.3 0", "PP 512 4096 120.0 33.3 2048", "PP 16 32",
+                           "PP 16 32 10", "PP 16 32 10 1523.8", "PP 0 0 0.0 0.0 0"}) {
+    FakeTransport transport;
+    transport.reads = {line("READY 64"), line(good), line("T 9"), line("DONE 0")};
+    EngineProtocolClient client(transport, {}, secure_frontend::EngineProtocolFlavor::maya_118);
+    (void)client.await_ready(std::chrono::seconds(1), ready);
+    (void)client.begin_generation(1, {1}, secure_frontend::deadline_after(std::chrono::seconds(5)));
+    secure_frontend::EngineGeneration generation;
+    const auto error = client.read_generation(std::chrono::seconds(1), generation);
+    expect(!error.has_value() && generation.token_ids == std::vector<std::uint32_t>({9U}),
+           std::string("the vendored PP forms are consumed: ") + good);
+  }
+  for (const char* bad : {"PP 16", "PP x 32", "PP 16 32 -1 2.0", "PP 16 32 x 2.0", "PP 16 32 1 nan",
+                          "PP 16 32 1 2.0 -5", "PP 16 32 1 2.0 3 9", "PP 16 32 1 2.0 x"}) {
+    FakeTransport transport;
+    transport.reads = {line("READY 64"), line(bad), line("DONE 0")};
+    EngineProtocolClient client(transport, {}, secure_frontend::EngineProtocolFlavor::maya_118);
+    (void)client.await_ready(std::chrono::seconds(1), ready);
+    (void)client.begin_generation(1, {1}, secure_frontend::deadline_after(std::chrono::seconds(5)));
+    secure_frontend::EngineGeneration generation;
+    const auto error = client.read_generation(std::chrono::seconds(1), generation);
+    expect(error.has_value() && error->code == EngineProtocolErrorCode::unexpected_line && client.closed(),
+           std::string("a malformed PP fails closed under maya_118: ") + bad);
+  }
+}
+
 int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
       {"runs_the_solo_protocol", runs_the_solo_protocol},
@@ -518,5 +629,8 @@ int main(int argc, char** argv) {
       {"next_event_yields_tokens_progress_and_done", next_event_yields_tokens_progress_and_done},
       {"next_event_timeout_keeps_generation_active", next_event_timeout_keeps_generation_active},
       {"next_event_finish_forms_and_nonfinite_stays_idle", next_event_finish_forms_and_nonfinite_stays_idle},
+      {"maya_flavor_consumes_note_and_progress", maya_flavor_consumes_note_and_progress},
+      {"strata_flavor_still_fails_closed_on_note", strata_flavor_still_fails_closed_on_note},
+      {"maya_pp_grammar_is_bounded", maya_pp_grammar_is_bounded},
   }, failures);
 }

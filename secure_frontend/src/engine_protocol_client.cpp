@@ -312,15 +312,58 @@ GenerationEvent EngineProtocolClient::next_event(const std::chrono::milliseconds
     std::uint32_t second = 0;
     const bool metrics_ok = (progress.size() < 4U || nonnegative_decimal_metric(progress[3])) &&
                             (progress.size() < 5U || nonnegative_decimal_metric(progress[4]));
-    const bool counters_ok = progress.size() >= 3U && progress.size() <= 5U &&
+    const bool counters_ok = progress.size() >= 3U &&
                              parse_decimal(progress[1], first) && parse_decimal(progress[2], second);
-    bool accepted = counters_ok && metrics_ok;
-    if (flavor_ == EngineProtocolFlavor::lighttransport_glm53) {
-      accepted = accepted && progress.size() != 4U && second != 0U && first <= second;
+    bool accepted = false;
+    if (flavor_ == EngineProtocolFlavor::maya_118) {
+      // Maya v1.1.8: the engine prints `PP <done> <total> <ms> <tok/s> <reuse>`
+      // per prompt chunk (maya-ref src/program/generate.cpp:5546, :6111) and
+      // its own pump accepts any `PP` with decimal fields 1-2 and an optional
+      // float/reuse tail (serve/server.py:771-783). Bounded like the other
+      // flavors — 3 to 6 fields, decimal counters, optional non-negative
+      // metrics, optional decimal reuse; no ordering between the counters is
+      // assumed (Maya assumes none).
+      std::uint32_t reused = 0;
+      accepted = counters_ok && metrics_ok && progress.size() <= 6U &&
+                 (progress.size() < 6U || parse_decimal(progress[5], reused));
+    } else if (flavor_ == EngineProtocolFlavor::lighttransport_glm53) {
+      accepted = counters_ok && metrics_ok && progress.size() >= 3U && progress.size() <= 5U && progress.size() != 4U &&
+                 second != 0U && first <= second;
+    } else {
+      accepted = counters_ok && metrics_ok && progress.size() <= 5U;
     }
     if (!accepted) {
       return *fail(EngineProtocolErrorCode::unexpected_line,
                    "engine emitted an invalid or unsupported prefill progress line");
+    }
+    return ProgressEvent{};
+  }
+  if (flavor_ == EngineProtocolFlavor::maya_118 && response.line.rfind("NOTE ", 0) == 0) {
+    // Maya prints what happens to the kept conversations as `NOTE <text>`
+    // (maya-ref serve/server.py:787, :439, :537, :964): its own server only
+    // logs the text. We consume it as a ProgressEvent — never client output,
+    // never a protocol error — bounded: a non-empty record after `NOTE `.
+    if (fields(response.line).size() < 2U) {
+      return *fail(EngineProtocolErrorCode::unexpected_line, "engine emitted an empty note record");
+    }
+    return ProgressEvent{};
+  }
+  if (flavor_ == EngineProtocolFlavor::maya_118 && response.line.rfind("STAT ", 0) == 0) {
+    // The GLM engine's live expert-tier counters, `STAT key=value ...` every
+    // few tokens (maya-ref src/program/generate.cpp:1799, :2080; the pump's
+    // parse at serve/server.py:636-649, consumed for the Monitor and never
+    // output). Cadence record: consumed as a ProgressEvent, and fail-closed
+    // on shape — at least one pair, every field carrying a non-empty key
+    // before its `=`.
+    const auto pairs = fields(response.line);
+    if (pairs.size() < 2U) {
+      return *fail(EngineProtocolErrorCode::unexpected_line, "engine emitted an empty stat record");
+    }
+    for (std::size_t i = 1; i < pairs.size(); ++i) {
+      const auto equals = pairs[i].find('=');
+      if (equals == std::string_view::npos || equals == 0U) {
+        return *fail(EngineProtocolErrorCode::unexpected_line, "engine emitted a malformed stat record");
+      }
     }
     return ProgressEvent{};
   }
