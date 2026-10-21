@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 namespace test_support {
 
@@ -33,6 +34,24 @@ inline std::string byte_symbol(const unsigned char byte) {
 // (and a '0' byte is id 239: three decimal digits on the GEN line, used by K2 in Task 22).
 inline unsigned char byte_for_id(const std::size_t id) { return static_cast<unsigned char>((id + 65U) & 0xffU); }
 
+// Inverse of byte_for_id: the byte pack's id for one byte.
+inline std::size_t id_for_byte(const unsigned char byte) { return static_cast<std::size_t>((byte + 256U - 65U) & 0xffU); }
+
+// An ordinary token of kLongTokenBytes 'a' bytes: volume tests reach 1 MiB within
+// limits.chat.max_completion_tokens (spec §9.3 dos02_slow_* cases; plan Controller note 4).
+inline constexpr std::size_t kLongTokenId = 258U;
+inline constexpr std::size_t kLongTokenBytes = 1024U;
+
+// The --token-ids value that makes the fake emit `bytes`, one byte per token.
+inline std::string token_ids_for(const std::string_view bytes) {
+  std::string csv;
+  for (const char character : bytes) {
+    if (!csv.empty()) csv += ',';
+    csv += std::to_string(id_for_byte(static_cast<unsigned char>(character)));
+  }
+  return csv;
+}
+
 // Every byte as an ordinary token (type 1) plus the Qwen framing controls (type 3).
 inline secure_frontend::TokenizerPack byte_tokenizer() {
   secure_frontend::TokenizerPack pack;
@@ -44,6 +63,8 @@ inline secure_frontend::TokenizerPack byte_tokenizer() {
   pack.token_types.push_back(3);
   pack.tokens_by_id.emplace_back("<|im_end|>");
   pack.token_types.push_back(3);
+  pack.tokens_by_id.emplace_back(kLongTokenBytes, 'a');  // id 258 ('a' is its own byte symbol)
+  pack.token_types.push_back(1);
   return pack;
 }
 

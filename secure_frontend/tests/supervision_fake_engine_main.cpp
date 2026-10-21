@@ -72,6 +72,11 @@ struct Options final {
   std::string finish{"stop"};                    // DONE finish field
   int prefill_delay_ms{0};                       // before the first T
   int stop_delay_ms{0};                          // between seeing STOP and the cancel DONE
+  // SP3 M2 Task 2 (spec §9.2, R-F): M2 modes on M1's reader.
+  bool progress_records{false};                  // PP <step> <steps> lines during prefill
+  std::optional<unsigned long> crash_mid_gen;    // exit 1 after this many T records
+  std::optional<unsigned long> err_mid_gen;      // "ERR test" after this many T records, then idle
+  unsigned long burst_tokens{0};                 // first n tokens without the token-interval pause
   bool stream_modes{false};
   int fail_first{0};
   std::string counter_file;
@@ -139,6 +144,10 @@ Options parse_options(const int argc, char** argv) {
     else if (value_of(argument, "--finish", value)) { options.finish = value; options.stream_modes = true; }
     else if (value_of(argument, "--prefill-delay-ms", value)) { options.prefill_delay_ms = std::stoi(value); options.stream_modes = true; }
     else if (value_of(argument, "--stop-delay-ms", value)) { options.stop_delay_ms = std::stoi(value); options.stream_modes = true; }
+    else if (argument == "--progress-records") { options.progress_records = true; options.stream_modes = true; }
+    else if (value_of(argument, "--crash-mid-gen", value)) { options.crash_mid_gen = std::stoul(value); options.stream_modes = true; }
+    else if (value_of(argument, "--err-mid-gen", value)) { options.err_mid_gen = std::stoul(value); options.stream_modes = true; }
+    else if (value_of(argument, "--burst-tokens", value)) { options.burst_tokens = std::stoul(value); options.stream_modes = true; }
   }
   return options;
 }
@@ -472,6 +481,16 @@ class StdinReader final {
   bool eof_{false};
 };
 
+// Sleeps up to `milliseconds` in 1 ms steps; true (and STOP consumed) when STOP arrived meanwhile.
+bool sleep_or_stop(StdinReader& reader, const int milliseconds) {
+  const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(milliseconds);
+  do {
+    if (reader.take_stop()) return true;
+    sleep_ms(1);
+  } while (std::chrono::steady_clock::now() < until);
+  return reader.take_stop();
+}
+
 void run_generation(const Options& options, const std::string& line, StdinReader& reader) {
   // GEN <max_new> [k=v ...] <ids>
   std::istringstream fields(line.substr(4));
@@ -484,16 +503,32 @@ void run_generation(const Options& options, const std::string& line, StdinReader
     prompt = static_cast<std::size_t>(std::count(token.begin(), token.end(), ',')) + 1U;
   }
   const unsigned long total = options.tokens.value_or(options.token_ids.size());
-  if (options.prefill_delay_ms > 0) sleep_ms(options.prefill_delay_ms);
+  bool stopped = false;
+  if (options.prefill_delay_ms > 0) {
+    const int steps = options.progress_records ? std::max(1, options.prefill_delay_ms / 100) : 1;
+    for (int step = 1; step <= steps && !stopped; ++step) {
+      stopped = sleep_or_stop(reader, options.prefill_delay_ms / steps);
+      if (options.progress_records && !stopped) std::cout << "PP " << step << ' ' << steps << '\n' << std::flush;
+    }
+  }
   unsigned long generated = 0;
   std::string finish = options.finish;
-  for (; generated < total; ++generated) {
-    if (reader.take_stop()) { finish = "cancel"; break; }
+  for (; !stopped && generated < total; ++generated) {
+    if (reader.take_stop()) { stopped = true; break; }
     if (generated >= max_new) { finish = "length"; break; }
+    if (options.crash_mid_gen && generated == *options.crash_mid_gen) { std::cout << std::flush; std::_Exit(1); }
+    if (options.err_mid_gen && generated == *options.err_mid_gen) { std::cout << "ERR test\n" << std::flush; return; }
     std::cout << "T " << options.token_ids[generated % options.token_ids.size()] << '\n' << std::flush;
-    if (options.token_interval_ms > 0) sleep_ms(options.token_interval_ms);
+    if (options.token_interval_ms > 0 && generated + 1 >= options.burst_tokens && sleep_or_stop(reader, options.token_interval_ms)) {
+      ++generated;  // the token just written counts
+      stopped = true;
+      break;
+    }
   }
-  if (finish == "cancel" && options.stop_delay_ms > 0) sleep_ms(options.stop_delay_ms);
+  if (stopped) {
+    finish = "cancel";
+    if (options.stop_delay_ms > 0) sleep_ms(options.stop_delay_ms);
+  }
   std::cout << "DONE " << generated << ' ' << prompt << " 0 0 " << finish << '\n' << std::flush;
 }
 
