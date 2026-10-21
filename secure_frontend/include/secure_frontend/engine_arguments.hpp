@@ -108,6 +108,19 @@ void append_vram_gpu_elastic_arguments(std::vector<std::string>& arguments, cons
 [[nodiscard]] std::vector<unsigned> effective_gpu_list(const std::vector<unsigned>& gpus,
                                                        std::optional<std::int64_t> hip_ordinal);
 
+// SP5 M1 Task 9 (parity rows expert_profile_save / expert_profile_save_every;
+// serve/server.py:3000-3005): a configured learned-profile save path composes
+// --expert-profile-save and the every-minutes re-save (the pin's default 10, 0 = at QUIT
+// only, :2996). The pin's own guard is kept: no path, or an operator-owned
+// --expert-profile-save in argv, leaves the arguments unchanged — not even the every (:3001).
+struct ExpertProfileSaveArgs final {
+  std::string path;                 // session.expert_profile_save (empty: no flags)
+  std::int64_t every{10};           // session.expert_profile_save_every (minutes; 0 = at QUIT only)
+};
+
+void append_expert_profile_save_arguments(std::vector<std::string>& arguments, const ExpertProfileSaveArgs& save,
+                                          const std::vector<std::string>& user_arguments);
+
 // Parses the operator's --gpu value: comma-separated decimal device indices
 // 0-255, no sign, spaces or leading zeros, distinct, 1-16 entries.
 [[nodiscard]] std::optional<std::vector<unsigned>> parse_gpu_list(std::string_view value);

@@ -199,6 +199,22 @@ struct ReasoningConfig final {
   AnthropicThinking anthropic_thinking = AnthropicThinking::model;
 };
 
+// SP5 M1 Task 9 (the session family; serve/server.py:8043-8110, :2999-3005, :8092-8100 +
+// slot_save_dir :3469-3481, images.py:188). The four booleans are the pin's opt-in falses:
+// their pin-side consumers (its OutputParser recovery, frontend._env_to_user, the Codex
+// routes) have no counterpart in our stack, so they are stored typed for parity
+// (config_only rows, Rulings T9-d/T9-e).
+struct SessionPolicy final {
+  std::string slot_save_path;                  // session.slot_save_path (absolute, T9-b; the /slots store route is not ours, T9-a)
+  std::string expert_profile_save;             // session.expert_profile_save -> --expert-profile-save (:3002)
+  std::int64_t expert_profile_save_every{10};  // minutes; 0 = at QUIT only (the pin's docstring, :2996)
+  bool tool_call_recovery{false};              // session.tool_call_recovery (:8106, strict bool)
+  bool env_to_user{false};                     // session.env_to_user (:8110, strict bool)
+  bool codex_thread_titles{false};             // session.codex_thread_titles (:8043, `is True`)
+  bool codex_compaction_cache{false};          // session.codex_compaction_cache (:8044, `is True`)
+  std::int64_t keep_files{64};                 // session.keep_files (images.py:188; typed only, T9-e)
+};
+
 struct EngineLaunch final {
   std::optional<EngineProfile> profile;  // --expert only; a managed model's manifest sets it (SP4 §4.9 c)
   CanonicalFile executable;
@@ -270,15 +286,17 @@ class FrontendConfig final {
   const LoggingConfig logging;  // SP3 §8
   const SamplingDefaults sampling;  // SP5 M1 Task 4: defaults.sampling.*
   const ReasoningConfig reasoning;  // SP5 M1 Task 5: reasoning.*
+  const SessionPolicy session;      // SP5 M1 Task 9: session.*
 
  private:
   friend std::variant<ValidatedConfig, std::vector<ConfigIssue>> validate(const FrontendConfigDraft& draft);
   FrontendConfig(ListenerConfig listener_value, Limits limits_value, Roots roots_value, SecretSource token_value,
                  EngineLaunch engine_value, PullSettings pull_value, LoggingConfig logging_value,
-                 SamplingDefaults sampling_value, ReasoningConfig reasoning_value)
+                 SamplingDefaults sampling_value, ReasoningConfig reasoning_value, SessionPolicy session_value)
       : listener(std::move(listener_value)), limits(limits_value), roots(std::move(roots_value)),
         token(std::move(token_value)), engine(std::move(engine_value)), pull(std::move(pull_value)),
-        logging(logging_value), sampling(std::move(sampling_value)), reasoning(reasoning_value) {}
+        logging(logging_value), sampling(std::move(sampling_value)), reasoning(reasoning_value),
+        session(std::move(session_value)) {}
 };
 
 // Immutable after validation; subsystems derive their limits from it once.

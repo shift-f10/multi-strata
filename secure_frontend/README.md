@@ -333,6 +333,14 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `engine.max_tokens` | integer | unset | 1-1048576 | - | Ceiling on a request's output budget (unset: the completion cap; an added frontend bound, C-1). |
 | `engine.min_tokens` | integer | unset | 1-1048576 | - | Floor on a request's output budget (unset: none; an added frontend bound, C-1). |
 | `model.aliases` | string array | `[]` | - | - | Other model names the server lists and answers to (exact match only, like the pin's set_aliases). |
+| `session.slot_save_path` | string | unset | - | - | Directory for engine slot session save/restore files (absolute; the /slots route is not served today). |
+| `session.expert_profile_save` | string | unset | - | - | Where the engine re-saves its learned expert profile (absolute path; --expert-profile-save). |
+| `session.expert_profile_save_every` | integer | `10` | 0-1440 | - | Re-save the learned expert profile every N minutes (pin default 10; 0: at engine exit only). Cap added, C-1. |
+| `session.tool_call_recovery` | boolean | `false` | - | - | Attempt to recover malformed tool-call output (the pin's opt-in; stored for parity today). |
+| `session.env_to_user` | boolean | `false` | - | - | Pass configured environment hints to the user prompt path (the pin's opt-in; stored for parity today). |
+| `session.codex_thread_titles` | boolean | `false` | - | - | Codex thread titles (#923; the pin's opt-in; the route is not served here). |
+| `session.codex_compaction_cache` | boolean | `false` | - | - | Codex compaction cache (#924; the pin's opt-in; the route is not served here). |
+| `session.keep_files` | integer | `64` | 1-1024 | - | How many image-scratch files to retain (pin default 64; bounds added, C-1; the consumer is out per D-9). |
 <!-- config-keys:end -->
 
 `roots.secret` defaults to the config file's directory only for a `file:` token

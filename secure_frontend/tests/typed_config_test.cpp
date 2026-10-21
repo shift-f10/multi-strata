@@ -1235,6 +1235,135 @@ void timeout_shape_rows_at_each_edge() {
   accept("model.aliases", "[\"" + std::string(64, 'a') + "\"]");
   reject("model.aliases", "[\"" + std::string(65, 'a') + "\"]");
 }
+
+// SP5 M1 Task 9 (parity rows slot_save_path / expert_profile_save / expert_profile_save_every /
+// tool_call_recovery / env_to_user / codex_compaction_cache / codex_thread_titles / keep_files).
+// Defaults verbatim from the pin: the four booleans default false (:8043-8044 `is True`,
+// :8106/:8110 strict bool), the expert pair unset with every defaulting to 10 minutes (:2996),
+// keep_files 64 (images.py:188 `or 64`).
+void session_rows_match_the_pin() {
+  ConfigFixture f;
+  const auto bare_result = with_literals(f, {});
+  const auto* bare = config_of(bare_result);
+  expect(bare != nullptr, "a config without the session rows still validates: " + issues_of(bare_result));
+  if (bare != nullptr) {
+    expect(!bare->session.tool_call_recovery && !bare->session.env_to_user && !bare->session.codex_thread_titles &&
+               !bare->session.codex_compaction_cache && bare->session.slot_save_path.empty() &&
+               bare->session.expert_profile_save.empty() && bare->session.expert_profile_save_every == 10 &&
+               bare->session.keep_files == 64,
+           "the pin's defaults: four opt-in falses, unset pair, every 10 (:2996), keep_files 64 (images.py:188)");
+    const std::string described = secure_frontend::describe(*bare);
+    expect(described.find("session.keep_files = 64\n") != std::string::npos &&
+               described.find("session.expert_profile_save_every = 10\n") != std::string::npos &&
+               described.find("session.tool_call_recovery = false\n") != std::string::npos,
+           "describe reports the session family");
+  }
+  const auto accept = [&](const char* path, const std::string& value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result),
+           std::string{"accepts "} + value + " for " + path + ": " + issues_of(result));
+  };
+  const auto reject = [&](const char* path, const std::string& value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ConfigErrors>(result), std::string{"rejects "} + value + " for " + path);
+  };
+  accept("session.tool_call_recovery", "true");
+  accept("session.env_to_user", "false");
+  reject("session.codex_thread_titles", "\"true\"");  // the pin's strict bool, :8043
+  reject("session.codex_compaction_cache", "1");
+  accept("session.slot_save_path", "\"/state/slots\"");
+  accept("session.expert_profile_save", "\"/state/learned.bin\"");
+  const auto set_result = with_literals(f, {{"session.slot_save_path", "\"/state/slots\""},
+                                            {"session.expert_profile_save", "\"/state/learned.bin\""},
+                                            {"session.expert_profile_save_every", "0"},
+                                            {"session.tool_call_recovery", "true"}, {"session.env_to_user", "true"},
+                                            {"session.codex_thread_titles", "true"}, {"session.codex_compaction_cache", "true"},
+                                            {"session.keep_files", "1"}});
+  const auto* set = config_of(set_result);
+  expect(set != nullptr && set->session.slot_save_path == "/state/slots" && set->session.expert_profile_save == "/state/learned.bin" &&
+             set->session.expert_profile_save_every == 0 && set->session.tool_call_recovery && set->session.env_to_user &&
+             set->session.codex_thread_titles && set->session.codex_compaction_cache && set->session.keep_files == 1,
+         "the session family is typed: " + issues_of(set_result));
+}
+
+// SP5 M1 Task 9 (plan test; Ruling T9-b): the slot path keeps the pin's shape (non-empty, no
+// control characters, serve/server.py:3472-3475) and rides our added absolute rule (C-1, like
+// engine.lib_dirs :794-797 — we have no config-cwd to resolve a relative path against).
+void slot_save_path_is_a_bounded_private_path() {
+  ConfigFixture f;
+  const auto accept = [&](const char* path, const std::string& value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result),
+           std::string{"accepts "} + value + " for " + path + ": " + issues_of(result));
+  };
+  const auto reject = [&](const char* path, const std::string& value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ConfigErrors>(result), std::string{"rejects "} + value + " for " + path);
+  };
+  accept("session.slot_save_path", "\"/state/slots\"");
+  reject("session.slot_save_path", "\"slots\"");           // no cwd concept (T9-b)
+  reject("session.slot_save_path", "\"\"");                // the pin's "must be a directory path" (:3472)
+  reject("session.slot_save_path", "\"a\\u0001b\"");       // control characters (:3475)
+  accept("session.expert_profile_save", "\"/state/learned.bin\"");
+  reject("session.expert_profile_save", "\"learned.bin\"");
+  reject("session.expert_profile_save", "\"\"");
+}
+
+// SP5 M1 Task 9 (plan test): the rows match the Task-2 table as re-read — the four booleans and
+// the two file-store rows are typed/config_only (the pin's consumers are its OutputParser, its
+// frontend and the Codex routes, none of which we serve), and the expert pair is typed/engine_arg.
+// slot_save_path sits config_only after Ruling T9-a (no argv append at the pin: every use is
+// svc-side, :8096/:3698-3715); keep_files after T9-e (ImageService is D-9 out).
+void codex_and_tool_call_rows_are_dispositioned() {
+  struct Expected { const char* key; const char* path; };
+  for (const Expected e : {Expected{"slot_save_path", "session.slot_save_path"},
+                           Expected{"expert_profile_save", "session.expert_profile_save"},
+                           Expected{"expert_profile_save_every", "session.expert_profile_save_every"},
+                           Expected{"tool_call_recovery", "session.tool_call_recovery"},
+                           Expected{"env_to_user", "session.env_to_user"},
+                           Expected{"codex_compaction_cache", "session.codex_compaction_cache"},
+                           Expected{"codex_thread_titles", "session.codex_thread_titles"},
+                           Expected{"keep_files", "session.keep_files"}}) {
+    const auto* row = secure_frontend::parity::strata_parity_row(e.key);
+    expect(row != nullptr && row->disposition == secure_frontend::parity::ParityDisposition::typed,
+           std::string{e.key} + " stays a typed row in the table");
+    expect(secure_frontend::find_config_key(e.path) != nullptr, std::string{e.path} + " is a schema row");
+  }
+  using ParityDestination = secure_frontend::parity::ParityDestination;
+  expect(secure_frontend::parity::strata_parity_row("slot_save_path")->destination == ParityDestination::config_only,
+         "slot_save_path: config_only (Ruling T9-a)");
+  expect(secure_frontend::parity::strata_parity_row("keep_files")->destination == ParityDestination::config_only,
+         "keep_files: config_only (Ruling T9-e)");
+  expect(secure_frontend::parity::strata_parity_row("expert_profile_save")->destination == ParityDestination::engine_arg &&
+             secure_frontend::parity::strata_parity_row("expert_profile_save_every")->destination == ParityDestination::engine_arg,
+         "the expert pair reaches the engine argv (:3002-3005)");
+  for (const char* key : {"tool_call_recovery", "env_to_user", "codex_compaction_cache", "codex_thread_titles"})
+    expect(secure_frontend::parity::strata_parity_row(key)->destination == ParityDestination::config_only,
+           std::string{key} + ": typed, stored, no counterpart consumer in our stack");
+}
+
+// SP5 M1 Task 9: edge behaviour — every keeps the pin's >=0 with an added cap (1440 minutes =
+// a day), keep_files gets an added 1..1024 (the pin's falsy 0 == unset is not copied, cf T7-h).
+void session_rows_at_each_edge() {
+  ConfigFixture f;
+  const auto accept = [&](const char* path, const std::string& value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result),
+           std::string{"accepts "} + value + " for " + path + ": " + issues_of(result));
+  };
+  const auto reject = [&](const char* path, const std::string& value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ConfigErrors>(result), std::string{"rejects "} + value + " for " + path);
+  };
+  accept("session.expert_profile_save_every", "0");
+  accept("session.expert_profile_save_every", "1440");
+  reject("session.expert_profile_save_every", "1441");
+  reject("session.expert_profile_save_every", "-1");
+  accept("session.keep_files", "1");
+  accept("session.keep_files", "1024");
+  reject("session.keep_files", "0");
+  reject("session.keep_files", "1025");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1250,6 +1379,10 @@ int main(int argc, char** argv) {
       {"vram_family_rows_match_the_pin", vram_family_rows_match_the_pin},
       {"timeout_shape_rows_match_the_pin", timeout_shape_rows_match_the_pin},
       {"timeout_shape_rows_at_each_edge", timeout_shape_rows_at_each_edge},
+      {"session_rows_match_the_pin", session_rows_match_the_pin},
+      {"slot_save_path_is_a_bounded_private_path", slot_save_path_is_a_bounded_private_path},
+      {"codex_and_tool_call_rows_are_dispositioned", codex_and_tool_call_rows_are_dispositioned},
+      {"session_rows_at_each_edge", session_rows_at_each_edge},
       {"bounds_are_the_pins_at_each_edge", bounds_are_the_pins_at_each_edge},
       {"typed_config_accepts_minimal_file_and_applies_defaults", typed_config_accepts_minimal_file_and_applies_defaults},
       {"cfg01_unknown_key_rejected", cfg01_unknown_key_rejected},

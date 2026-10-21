@@ -339,16 +339,19 @@ void auth04_no_switch_disables_auth() {
       // pin's lifecycle booleans (runconfig.py:36-38); SP5 M1 Task 7: engine.vram_elastic,
       // engine.split_skip_if_fits, engine.elastic and engine.uma are the pin's VRAM/turn
       // booleans (serve/server.py:2945, :2941, :2550; images.py:23); SP5 M1 Task 8:
-      // engine.answer_room is the pin's thinking-room boolean (serve/server.py:8014).
+      // engine.answer_room is the pin's thinking-room boolean (serve/server.py:8014);
+      // SP5 M1 Task 9: session.tool_call_recovery, session.env_to_user, session.codex_thread_titles
+      // and session.codex_compaction_cache are the pin's opt-in falses (:8043-:8044, :8106, :8110).
       // None touches authentication.
       expect(path == "listener.allow_remote" || path == "listener.allow_wildcard_bind" ||
                  path == "engine.allow_new_privileges" || path == "pull.allow_private_addresses" ||
                  path == "logging.requests" || path == "engine.fit_max_tokens" || path == "reasoning.close_retry" ||
                  path == "engine.lazy_load" || path == "engine.mtp" || path == "engine.vram_elastic" ||
                  path == "engine.split_skip_if_fits" || path == "engine.elastic" || path == "engine.uma" ||
-                 path == "engine.answer_room",
+                 path == "engine.answer_room" || path == "session.tool_call_recovery" || path == "session.env_to_user" ||
+                 path == "session.codex_thread_titles" || path == "session.codex_compaction_cache",
              "the only switches are the two bind opt-ins, the engine's NNP opt-out, the pull address opt-in, "
-             "request logging and the SP5 behaviour, lifecycle, vram/turn and answer-room booleans: " + path);
+             "request logging and the SP5 behaviour, lifecycle, vram/turn, answer-room and session opt-ins: " + path);
     }
   }
   expect(flags.count("--allow-remote") == 1U && flags.count("--token-env") == 1U && flags.count("--check") == 1U,

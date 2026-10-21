@@ -175,6 +175,21 @@ void append_vram_gpu_elastic_arguments(std::vector<std::string>& arguments, cons
   }
 }
 
+// SP5 M1 Task 9 (serve/server.py:3000-3005): the pin's guard is literal — a blank path or
+// an operator-owned --expert-profile-save returns the args unchanged, before EITHER flag;
+// so the every rides the save, never stands alone.
+void append_expert_profile_save_arguments(std::vector<std::string>& arguments, const ExpertProfileSaveArgs& save,
+                                          const std::vector<std::string>& user_arguments) {
+  if (save.path.empty() || save.path.find_first_not_of(" \t") == std::string::npos ||
+      owns_flag(user_arguments, "--expert-profile-save")) {
+    return;
+  }
+  arguments.emplace_back("--expert-profile-save");
+  arguments.push_back(save.path);
+  arguments.emplace_back("--expert-profile-save-every");
+  arguments.push_back(std::to_string(save.every));
+}
+
 std::vector<unsigned> effective_gpu_list(const std::vector<unsigned>& gpus, std::optional<std::int64_t> hip_ordinal) {
   // hip_visible (:3025): the ordinal wins only while at most one card is configured.
   if (hip_ordinal.has_value() && gpus.size() <= 1U) return {static_cast<unsigned>(*hip_ordinal)};

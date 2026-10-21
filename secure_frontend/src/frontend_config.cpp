@@ -35,7 +35,7 @@ std::string decimal_text(const double value) {
   return ec == std::errc{} ? std::string{buffer, end} : std::string{"?"};
 }
 
-constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6> kSchema{{
+constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8> kSchema{{
     {"schema_version", T::integer, false, 1, 1, d::kSchemaVersion, false, "", "",
      "Config format version; must be 1. Required in a config file."},
     {"listener.host", T::string, false, 0, 0, 0, false, "127.0.0.1", "--host",
@@ -243,6 +243,31 @@ constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6> kSchema{{
      "Floor on a request's output budget (unset: none; an added frontend bound, C-1)."},
     {"model.aliases", T::string_array, false, 0, 0, 0, false, "", "",
      "Other model names the server lists and answers to (exact match only, like the pin's set_aliases)."},
+    // SP5 M1 Task 9 (the session family). slot_save_path: the pin's /slots file directory
+    // (:8092-8100 + slot_save_dir :3469-3481) — typed with our absolute rule; the route
+    // itself is not in our spec (Rulings T9-a/b). expert_profile_save / -every: the pin
+    // appends both engine flags when the path is set (:3000-3005; docstring default 10
+    // minutes, 0 = at QUIT only, :2996; added cap C-1). The four booleans are the pin's
+    // opt-in falses (:8043-:8044 `is True`, :8106/:8110 strict bool) whose pin-side
+    // consumers (OutputParser recovery, frontend._env_to_user, the Codex routes) we do not
+    // serve (config_only). keep_files: the pin's ImageService scratch retention
+    // (images.py:188 `or 64`); typed with added bounds, D-9 keeps image generation out.
+    {"session.slot_save_path", T::string, false, 0, 0, 0, false, "", "",
+     "Directory for engine slot session save/restore files (absolute; the /slots route is not served today)."},
+    {"session.expert_profile_save", T::string, false, 0, 0, 0, false, "", "",
+     "Where the engine re-saves its learned expert profile (absolute path; --expert-profile-save)."},
+    {"session.expert_profile_save_every", T::integer, false, 0, 1440, 10, false, "", "",
+     "Re-save the learned expert profile every N minutes (pin default 10; 0: at engine exit only). Cap added, C-1."},
+    {"session.tool_call_recovery", T::boolean, false, 0, 0, 0, false, "", "",
+     "Attempt to recover malformed tool-call output (the pin's opt-in; stored for parity today)."},
+    {"session.env_to_user", T::boolean, false, 0, 0, 0, false, "", "",
+     "Pass configured environment hints to the user prompt path (the pin's opt-in; stored for parity today)."},
+    {"session.codex_thread_titles", T::boolean, false, 0, 0, 0, false, "", "",
+     "Codex thread titles (#923; the pin's opt-in; the route is not served here)."},
+    {"session.codex_compaction_cache", T::boolean, false, 0, 0, 0, false, "", "",
+     "Codex compaction cache (#924; the pin's opt-in; the route is not served here)."},
+    {"session.keep_files", T::integer, false, 1, 1024, 64, false, "", "",
+     "How many image-scratch files to retain (pin default 64; bounds added, C-1; the consumer is out per D-9)."},
 }};
 
 void add(ConfigErrors& errors, std::string key, const ConfigIssueCode code, std::string reason) {
@@ -441,6 +466,18 @@ namespace {
 // and duplicates at use; the typed row rejects an empty entry outright.
 bool is_valid_model_alias(const std::string_view value) noexcept {
   return !value.empty() && value.size() <= 64U && std::holds_alternative<std::string>(validate_model_id(value));
+}
+
+// SP5 M1 Task 9 (Ruling T9-b): the pin's slot_save_dir shape — non-empty, no control
+// characters (serve/server.py:3472-3475) — plus our added absolute rule (C-1, like
+// engine.lib_dirs): there is no config-cwd to resolve a relative path against, and
+// validation never touches the filesystem.
+bool is_absolute_store_path(const std::string& text) noexcept {
+  return !text.empty() && text.find('\0') == std::string::npos &&
+         std::none_of(text.begin(), text.end(), [](const char c) {
+           return static_cast<unsigned char>(c) < 0x20U || c == 0x7f;
+         }) &&
+         path_from_utf8(text).is_absolute();
 }
 
 constexpr std::array<ConfigKeyExtension, 5> kSchemaExtensions{{
@@ -885,6 +922,28 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   const auto max_output = read.optional_integer("engine.max_tokens");
   const auto min_output = read.optional_integer("engine.min_tokens");
   const std::vector<std::string> aliases = read_bounded_strings(read, errors, "model.aliases");
+  // SP5 M1 Task 9 (the session family; serve/server.py:2999-3005, :8043-8110, :8092-8100 +
+  // slot_save_dir :3469-3481, images.py:188). Path rows keep the pin's shape (non-empty, no
+  // control characters) and ride our added absolute rule (T9-b, engine.lib_dirs precedent):
+  // there is no config-cwd to resolve a relative path against, and load never touches the
+  // filesystem (the pin's makedirs 0700 is a runtime act).
+  SessionPolicy session;
+  const auto slot_text = read.string("session.slot_save_path");
+  if (slot_text.has_value()) {
+    if (is_absolute_store_path(*slot_text)) session.slot_save_path = *slot_text;
+    else add(errors, "session.slot_save_path", ConfigIssueCode::invalid_value, "must be an absolute path without control characters");
+  }
+  const auto profile_text = read.string("session.expert_profile_save");
+  if (profile_text.has_value()) {
+    if (is_absolute_store_path(*profile_text)) session.expert_profile_save = *profile_text;
+    else add(errors, "session.expert_profile_save", ConfigIssueCode::invalid_value, "must be an absolute path without control characters");
+  }
+  session.expert_profile_save_every = read.integer("session.expert_profile_save_every");
+  session.tool_call_recovery = read.boolean("session.tool_call_recovery");
+  session.env_to_user = read.boolean("session.env_to_user");
+  session.codex_thread_titles = read.boolean("session.codex_thread_titles");
+  session.codex_compaction_cache = read.boolean("session.codex_compaction_cache");
+  session.keep_files = read.integer("session.keep_files");
 
   // pull (SP4 §3.9)
   std::filesystem::path downloader = default_downloader_path();
@@ -958,12 +1017,13 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
                       min_output.has_value() ? std::optional<std::size_t>{static_cast<std::size_t>(*min_output)}
                                              : std::optional<std::size_t>{},
                       std::move(aliases)};
-  return ValidatedConfig{std::shared_ptr<const FrontendConfig>(
+  auto config_ptr = std::shared_ptr<const FrontendConfig>(
       new FrontendConfig(std::move(listener), limits, std::move(roots), std::move(*token), std::move(engine),
                          PullSettings{std::move(downloader), std::move(proxy), allow_private,
                                       static_cast<std::uint64_t>(max_total), std::chrono::seconds(max_duration),
                                       std::chrono::seconds(stall), std::chrono::seconds(connect)},
-                         LoggingConfig{log_requests}, std::move(sampling_defaults), reasoning))};
+                         LoggingConfig{log_requests}, std::move(sampling_defaults), reasoning, std::move(session)));
+  return ValidatedConfig{std::move(config_ptr)};
 }
 
 std::string describe(const FrontendConfig& c) {
@@ -1081,6 +1141,15 @@ std::string describe(const FrontendConfig& c) {
   line("reasoning.effort_position", c.reasoning.effort_position == EffortPosition::start ? "start" : "end");
   line("reasoning.anthropic_thinking",
        c.reasoning.anthropic_thinking == AnthropicThinking::model ? "model" : "on_request");
+  // SP5 M1 Task 9: the session family.
+  line("session.slot_save_path", c.session.slot_save_path.empty() ? std::string{"(unset)"} : json_quoted(c.session.slot_save_path));
+  line("session.expert_profile_save", c.session.expert_profile_save.empty() ? std::string{"(unset)"} : json_quoted(c.session.expert_profile_save));
+  line("session.expert_profile_save_every", std::to_string(c.session.expert_profile_save_every));
+  line("session.tool_call_recovery", c.session.tool_call_recovery ? "true" : "false");
+  line("session.env_to_user", c.session.env_to_user ? "true" : "false");
+  line("session.codex_thread_titles", c.session.codex_thread_titles ? "true" : "false");
+  line("session.codex_compaction_cache", c.session.codex_compaction_cache ? "true" : "false");
+  line("session.keep_files", std::to_string(c.session.keep_files));
   line("engine.fit_max_tokens", c.engine.fit_max_tokens ? "true" : "false");
   // SP5 M1 Task 6: the lifecycle family (runconfig.py:35-38).
   line("engine.lazy_load", c.engine.lazy_load ? "true" : "false");

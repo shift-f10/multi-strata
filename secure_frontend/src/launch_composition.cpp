@@ -53,6 +53,11 @@ std::variant<ComposedLaunch, LaunchFailure> expert_launch(const FrontendConfig& 
                                   .layer_split = config.engine.layer_split,
                                   .split_skip_if_fits = config.engine.split_skip_if_fits};
     append_vram_gpu_elastic_arguments(argv, vram, config.engine.args, gpus);
+    // SP5 M1 Task 9 (serve/server.py:3000-3005): the learned-profile save pair, guarded by
+    // the pin's operator-owns check.
+    append_expert_profile_save_arguments(
+        argv, ExpertProfileSaveArgs{config.session.expert_profile_save, config.session.expert_profile_save_every},
+        config.engine.args);
   }
   std::vector<std::string> served;  // SP1's /v1/models lists the whole inventory; --expert keeps that (SP3 decides later)
   served.reserve(list.size());
@@ -169,6 +174,11 @@ std::variant<ComposedLaunch, LaunchFailure> compose_engine_launch(const Frontend
                                 .layer_split = config.engine.layer_split,
                                 .split_skip_if_fits = config.engine.split_skip_if_fits};
   append_vram_gpu_elastic_arguments(args, vram, config.engine.args, gpus);
+  // SP5 M1 Task 9 (serve/server.py:3000-3005): the learned-profile save pair, guarded by
+  // the pin's operator-owns check.
+  append_expert_profile_save_arguments(
+      args, ExpertProfileSaveArgs{config.session.expert_profile_save, config.session.expert_profile_save_every},
+      config.engine.args);
   // Opened once, on the path (F-7), and only if it stays below roots.models.
   auto opened = open_root(*tokenizer);
   auto* root = std::get_if<CanonicalRoot>(&opened);

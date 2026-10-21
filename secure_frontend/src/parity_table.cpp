@@ -55,8 +55,8 @@ constexpr std::array<ParityRow, 121> kRows{{
     {"env", kRejected, none, "spec §4 raw env dict; serve/server.py:3228"},
     {"env_to_user", kTyped, config_only, "serve/server.py:8110 (M1 Task 9: session.env_to_user)"},
     {"exe", kRejected, none, "spec §4 free-form process control (engine identity comes from the SP4 manifest); serve/server.py:7674"},
-    {"expert_profile_save", kTyped, engine_arg, "serve/server.py:2999 (M1 Task 9: --expert-profile-save)"},
-    {"expert_profile_save_every", kTyped, engine_arg, "serve/server.py:3003 (M1 Task 9: --expert-profile-save-every)"},
+    {"expert_profile_save", kTyped, engine_arg, "serve/server.py:3000-3005 (M1 Task 9: --expert-profile-save; an operator-owned flag wins, :3001)"},
+    {"expert_profile_save_every", kTyped, engine_arg, "serve/server.py:3004-3005, default 10 at :2996 (M1 Task 9: --expert-profile-save-every; rides the save, :3001)"},
     {"fit_max_tokens", kTyped, frontend_behavior, "serve/server.py:7996 (M1 Task 5: engine.fit_max_tokens)"},
     {"gpu", kTyped, engine_arg, "already typed (SP2 engine.gpu; compose renders --gpu); serve/server.py:2815"},
     {"gpu_order", kTyped, engine_arg, "serve/server.py:3112 (M1 Task 7)"},
@@ -66,7 +66,7 @@ constexpr std::array<ParityRow, 121> kRows{{
     {"host", kTyped, frontend_behavior, "already typed (SP1 listen.host); serve/server.py:7862"},
     {"idle_unload_s", kTyped, frontend_behavior, "serve/server.py:4100-4109, :8081 (M1 Task 6: supervisor idle timer)"},
     {"images", kMapped, none, "spec D-9: image generation is out, the route answers 404 like an unknown route; serve/server.py:8016"},
-    {"keep_files", kTyped, frontend_behavior, "serve/images.py:188 (M1 Task 9: session.keep_files, private-scratch retention count)"},
+    {"keep_files", kTyped, config_only, "serve/images.py:188 (`or 64`); typed only: the consumer is the pin's ImageService and D-9 keeps image generation out (Ruling T9-e, M1 Task 9)"},
     {"layer_split", kTyped, engine_arg, "serve/server.py:2877 (M1 Task 7)"},
     // Ruling T6-b (Task 6): the pin skips the child start (lazy :966-993), so no engine
     // argument composes — the deferral is frontend behaviour, like the idle timer.
@@ -106,7 +106,7 @@ constexpr std::array<ParityRow, 121> kRows{{
     {"replicas", kRejected, none, "spec C-4: N-child replica scheduling is the accepted narrowing; serve/replicas.py:44"},
     {"sampling", kTyped, config_only, "serve/server.py:7482 (M1 Task 4: defaults.sampling.*)"},
     {"sigmas", kMapped, none, "spec D-9 image generation is out; serve/images.py:120"},
-    {"slot_save_path", kTyped, engine_arg, "serve/server.py:8094 (M1 Task 9)"},
+    {"slot_save_path", kTyped, config_only, "serve/server.py:8094 + slot_save_dir :3469-3481; the pin uses it FRONTEND-side for its /slots file store (:3698-3715) — no argv append (Ruling T9-a, M1 Task 9)"},
     {"split_skip_if_fits", kTyped, engine_arg, "serve/server.py:2941 (M1 Task 7)"},
     {"steps", kMapped, none, "spec D-9 image generation is out; serve/images.py:104"},
     {"telemetry_read_key", kRejected, none, "spec §4 telemetry endpoints; serve/server.py:8053"},

@@ -457,6 +457,37 @@ void gpu_and_elastic_rows_reach_the_engine_argv() {
   expect(secure_frontend::effective_gpu_list({2, 3}, std::nullopt) == (std::vector<unsigned>{2, 3}), "unset: unchanged");
 }
 
+// SP5 M1 Task 9 (parity rows expert_profile_save / expert_profile_save_every;
+// serve/server.py:3000-3005): a configured learned-profile save path composes
+// --expert-profile-save plus the every-minutes re-save (the pin's default 10, :2996; 0 = at
+// QUIT only). An operator's own --expert-profile-save in argv wins and nothing is appended —
+// not even the every (:3001); no path composes nothing.
+void expert_profile_flags_reach_launch() {
+  secure_frontend::ExpertProfileSaveArgs save;
+  expect(save.every == 10, "the typed default is the pin's 10 minutes (:2996)");
+  const auto compose = [&](const std::vector<std::string>& user) {
+    std::vector<std::string> args = {"--pack", "x"};
+    secure_frontend::append_expert_profile_save_arguments(args, save, user);
+    return args;
+  };
+  expect(compose({}).size() == 2U, "no save path: the args stand unchanged (:3001)");
+  save.path = "/state/learned.bin";
+  const auto learned = compose({});
+  const auto at = std::find(learned.begin(), learned.end(), "--expert-profile-save");
+  expect(at != learned.end() && std::next(at) != learned.end() && *std::next(at) == "/state/learned.bin" &&
+             std::find(learned.begin(), learned.end(), "--expert-profile-save-every") != learned.end(),
+         "the path composes the pair, the default 10 riding along (:3002-3005)");
+  save.every = 0;
+  const auto quit_only = compose({});
+  const auto every = std::find(quit_only.begin(), quit_only.end(), "--expert-profile-save-every");
+  expect(every != quit_only.end() && std::next(every) != quit_only.end() && *std::next(every) == "0",
+         "0 keeps the pin's QUIT-only re-save (:2996)");
+  const auto operator_kept = compose({"--expert-profile-save", "/operator/path.bin"});
+  expect(operator_kept.size() == 2U &&
+             std::find(operator_kept.begin(), operator_kept.end(), "--expert-profile-save") == operator_kept.end(),
+         "an operator --expert-profile-save in argv wins; no doubling, no every (:3001)");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -479,5 +510,6 @@ int main(int argc, char** argv) {
       {"mtp_false_drops_the_mtp_arg", mtp_false_drops_the_mtp_arg},
       {"vram_reserve_mib_becomes_the_pinned_flag", vram_reserve_mib_becomes_the_pinned_flag},
       {"gpu_and_elastic_rows_reach_the_engine_argv", gpu_and_elastic_rows_reach_the_engine_argv},
+      {"expert_profile_flags_reach_launch", expert_profile_flags_reach_launch},
   }, failures);
 }
