@@ -35,7 +35,7 @@ std::string decimal_text(const double value) {
   return ec == std::errc{} ? std::string{buffer, end} : std::string{"?"};
 }
 
-constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3> kSchema{{
+constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13> kSchema{{
     {"schema_version", T::integer, false, 1, 1, d::kSchemaVersion, false, "", "",
      "Config format version; must be 1. Required in a config file."},
     {"listener.host", T::string, false, 0, 0, 0, false, "127.0.0.1", "--host",
@@ -188,6 +188,41 @@ constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3> kSchema{{
      "Seconds without a request before the engine is unloaded (0: never, the pin default); cap added, C-1."},
     {"engine.mtp", T::boolean, false, 0, 0, 0, true, "", "",
      "Draft layer (MTP): on unless explicitly false; false drops --mtp/--spec-min-p/--batch-mtp at every start."},
+    // SP5 M1 Task 7 (the VRAM / GPU / elastic family). Kinds and defaults verbatim from the
+    // pin; caps and closed vocabularies added (C-1). vram_reserve_mib: runconfig.py:42-43
+    // renders --vram-reserve-mib (engine default 700, unset composes nothing). min_free_vram_mib:
+    // int-or 0 svc-side gate (serve/server.py:8083-8084). vram_elastic/vram_segment_mib:
+    // #533 (:2943-2948, engine segment default 512). elastic/elastic_mib/elastic_idle_s:
+    // the vision turn (server.py:2548-2552, defaults 2048 MiB / 120 s; Task 11 consumes them).
+    // gpu_order: only "as_given" is read (:3105-3112). gpu_policy: images.py POLICIES
+    // (:45, :173-175). layer_split: "auto" or rising first-layer numbers (:2870-2894).
+    // split_skip_if_fits: :2940-2942. hip_ordinal: :3016-3030. uma: images.py:23/:334.
+    {"engine.vram_reserve_mib", T::integer, false, 0, 1048576, -1, false, "", "",
+     "VRAM MiB the engine leaves free (renders --vram-reserve-mib; unset: the engine's own 700)."},
+    {"engine.min_free_vram_mib", T::integer, false, 0, 1048576, 0, false, "", "",
+     "Refuse to load when free VRAM is below this (0: never; the driver check runs on the owner's GPU box)."},
+    {"engine.vram_elastic", T::boolean, false, 0, 0, 0, false, "", "",
+     "Segment the expert cache so VRAM can be given back and taken back (renders --vram-elastic, #533)."},
+    {"engine.vram_segment_mib", T::integer, false, 1, 1048576, -1, false, "", "",
+     "Segment size for vram_elastic (renders --vram-segment-mib; unset: the engine's own 512)."},
+    {"engine.elastic", T::boolean, false, 0, 0, 0, false, "", "",
+     "The image encoder starts with the first picture and stops when idle (needs vram_elastic; the vision turn)."},
+    {"engine.elastic_idle_s", T::integer, false, 1, 86400, 120, false, "", "",
+     "Seconds without a picture before the elastic encoder stops (pin default 120); whole seconds, cap added."},
+    {"engine.elastic_mib", T::integer, false, 1, 1048576, 2048, false, "", "",
+     "VRAM MiB the expert cache keeps free while the encoder runs (pin default 2048)."},
+    {"engine.gpu_order", T::string, false, 0, 0, 0, false, "auto", "",
+     "GPU order: auto (reorder by card speed, where the driver can tell) or as_given (keep the configured order)."},
+    {"engine.gpu_policy", T::string, false, 0, 0, 0, false, "auto", "",
+     "GPU turn for a picture: auto, keep, shrink or unload the engine's VRAM first (the POLICIES set)."},
+    {"engine.layer_split", T::string, false, 0, 0, 0, false, "auto", "",
+     "First layer of each later GPU (rising numbers from 2), or auto; renders --layer-split with several GPUs."},
+    {"engine.split_skip_if_fits", T::boolean, false, 0, 0, 0, false, "", "",
+     "Let an auto split run on the first card alone when it holds every expert and the KV (renders --split-skip-if-fits)."},
+    {"engine.hip_ordinal", T::integer, false, 0, 127, -1, false, "", "",
+     "The HIP number of the discrete card (setup-recorded); wins over one (or zero) configured GPUs."},
+    {"engine.uma", T::boolean, false, 0, 0, 0, false, "", "",
+     "An APU: engine and image turn share the RAM either way, so a picture never needs the engine moved."},
 }};
 
 void add(ConfigErrors& errors, std::string key, const ConfigIssueCode code, std::string reason) {
@@ -744,6 +779,69 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
     }
   }
   const bool allow_new_privileges = read.boolean("engine.allow_new_privileges");
+  // SP5 M1 Task 7: the VRAM / GPU / elastic family. Kinds/defaults verbatim from the pin
+  // (runconfig.py:42-43; serve/server.py:2548-2552, 2870-2894, 2947, 8083; images.py:45);
+  // the layer_split grammar is the pin's own (layer_split_value, :2875-2892: blank or
+  // "auto" is the default; otherwise rising integers from >=2, one per GPU after the
+  // first — the count rule applies only with several GPUs, as at :2888).
+  const auto vram_reserve_mib = read.optional_integer("engine.vram_reserve_mib");
+  const std::int64_t min_free_vram = read.integer("engine.min_free_vram_mib");
+  const bool vram_elastic = read.boolean("engine.vram_elastic");
+  const auto vram_segment_mib = read.optional_integer("engine.vram_segment_mib");
+  const bool elastic = read.boolean("engine.elastic");
+  const std::int64_t elastic_idle_s = read.integer("engine.elastic_idle_s");
+  const std::int64_t elastic_mib = read.integer("engine.elastic_mib");
+  GpuOrder gpu_order{GpuOrder::auto_order};
+  if (const auto text = read.string("engine.gpu_order")) {
+    if (*text == "auto") gpu_order = GpuOrder::auto_order;
+    else if (*text == "as_given") gpu_order = GpuOrder::as_given;
+    else add(errors, "engine.gpu_order", ConfigIssueCode::invalid_value, "must be auto or as_given");
+  }
+  GpuTurnPolicy gpu_policy{GpuTurnPolicy::auto_policy};
+  if (const auto text = read.string("engine.gpu_policy")) {
+    if (*text == "auto") gpu_policy = GpuTurnPolicy::auto_policy;
+    else if (*text == "keep") gpu_policy = GpuTurnPolicy::keep;
+    else if (*text == "shrink") gpu_policy = GpuTurnPolicy::shrink;
+    else if (*text == "unload") gpu_policy = GpuTurnPolicy::unload;
+    else add(errors, "engine.gpu_policy", ConfigIssueCode::invalid_value, "must be auto, keep, shrink or unload");
+  }
+  const std::string layer_split = read.string("engine.layer_split").value_or("");
+  if (auto trimmed = layer_split; !(trimmed.empty() || trimmed == "auto")) {
+    std::vector<std::int64_t> layers;
+    bool grammar = true;
+    std::size_t start = 0;
+    while (start <= trimmed.size()) {
+      const auto comma = trimmed.find(',', start);
+      const auto token = trimmed.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+      std::size_t begin = token.find_first_not_of(" \t");
+      std::size_t end = token.find_last_not_of(" \t");
+      if (begin == std::string::npos) {
+        grammar = false;
+        break;
+      }
+      std::int64_t value = 0;
+      const auto [ptr, ec] = std::from_chars(token.data() + begin, token.data() + end + 1, value);
+      if (ec != std::errc{} || ptr != token.data() + end + 1) {
+        grammar = false;
+        break;
+      }
+      layers.push_back(value);
+      if (comma == std::string::npos) break;
+      start = comma + 1;
+    }
+    bool rising = grammar && !layers.empty() && layers.front() >= 2;
+    for (std::size_t i = 1; i < layers.size(); ++i) {
+      if (layers[i] <= layers[i - 1]) rising = false;
+    }
+    const bool count_ok = gpus.size() <= 1 || layers.size() == gpus.size() - 1;
+    if (!grammar || !rising || !count_ok) {
+      add(errors, "engine.layer_split", ConfigIssueCode::invalid_value,
+          "must be auto, or the first layer of each later GPU: rising numbers from 2, one per GPU after the first (for example \"24,36,42\" for 4 GPUs), not a count per card");
+    }
+  }
+  const bool split_skip_if_fits = read.boolean("engine.split_skip_if_fits");
+  const auto hip_ordinal = read.optional_integer("engine.hip_ordinal");
+  const bool uma = read.boolean("engine.uma");
 
   // pull (SP4 §3.9)
   std::filesystem::path downloader = default_downloader_path();
@@ -785,8 +883,30 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
       ConcurrencyLimits{u32(concurrent), u32(queued), std::chrono::milliseconds(queue_timeout_ms), u32(remote_cap), !queue_set,
                         !cap_set}};
   Roots roots{*models, tokenizer, secret, logs, cache, state};
-  EngineLaunch engine{profile, *executable, std::move(*model_id), args, std::move(lib_dirs), std::move(gpus), allow_new_privileges,
-                      fit_max_tokens, lazy_load, std::chrono::seconds(idle_unload_s), mtp};
+  EngineLaunch engine{profile,
+                      *executable,
+                      std::move(*model_id),
+                      args,
+                      std::move(lib_dirs),
+                      std::move(gpus),
+                      allow_new_privileges,
+                      fit_max_tokens,
+                      lazy_load,
+                      std::chrono::seconds(idle_unload_s),
+                      mtp,
+                      vram_reserve_mib,
+                      min_free_vram,
+                      vram_elastic,
+                      vram_segment_mib,
+                      elastic,
+                      std::chrono::seconds(elastic_idle_s),
+                      elastic_mib,
+                      gpu_order,
+                      gpu_policy,
+                      layer_split.empty() ? std::string{"auto"} : layer_split,
+                      split_skip_if_fits,
+                      hip_ordinal,
+                      uma};
   return ValidatedConfig{std::shared_ptr<const FrontendConfig>(
       new FrontendConfig(std::move(listener), limits, std::move(roots), std::move(*token), std::move(engine),
                          PullSettings{std::move(downloader), std::move(proxy), allow_private,
@@ -915,6 +1035,24 @@ std::string describe(const FrontendConfig& c) {
   line("engine.lazy_load", c.engine.lazy_load ? "true" : "false");
   line("engine.idle_unload_s", std::to_string(c.engine.idle_unload.count()));
   line("engine.mtp", c.engine.mtp ? "true" : "false");
+  // SP5 M1 Task 7: the VRAM / GPU / elastic family.
+  line("engine.vram_reserve_mib", integer_or_unset(c.engine.vram_reserve_mib));
+  line("engine.min_free_vram_mib", std::to_string(c.engine.min_free_vram));
+  line("engine.vram_elastic", c.engine.vram_elastic ? "true" : "false");
+  line("engine.vram_segment_mib", integer_or_unset(c.engine.vram_segment_mib));
+  line("engine.elastic", c.engine.elastic ? "true" : "false");
+  line("engine.elastic_idle_s", std::to_string(c.engine.elastic_idle.count()));
+  line("engine.elastic_mib", std::to_string(c.engine.elastic_mib));
+  line("engine.gpu_order", c.engine.gpu_order == GpuOrder::as_given ? "as_given" : "auto");
+  line("engine.gpu_policy",
+       c.engine.gpu_policy == GpuTurnPolicy::keep    ? "keep"
+       : c.engine.gpu_policy == GpuTurnPolicy::shrink ? "shrink"
+       : c.engine.gpu_policy == GpuTurnPolicy::unload ? "unload"
+                                                      : "auto");
+  line("engine.layer_split", c.engine.layer_split);
+  line("engine.split_skip_if_fits", c.engine.split_skip_if_fits ? "true" : "false");
+  line("engine.hip_ordinal", integer_or_unset(c.engine.hip_ordinal));
+  line("engine.uma", c.engine.uma ? "true" : "false");
   return out;
 }
 

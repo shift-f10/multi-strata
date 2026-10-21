@@ -1132,6 +1132,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         glm_profile_passes_arguments_through_without_native engine_args_render_typed_gpu_and_deny_gpu_passthrough
         reasoning_config_reaches_engine_launch_and_env
         mtp_false_drops_the_mtp_arg
+        vram_reserve_mib_becomes_the_pinned_flag
+        gpu_and_elastic_rows_reach_the_engine_argv
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     # Pure parsing, no canonical root: runs under wine too.
     secure_frontend_add_cases(secure_frontend_engine_arguments_tests gpu_list_rejects_malformed_values)
@@ -1198,7 +1200,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_typed_config_tests each_rejected_upstream_key_errors_at_load_naming_it
         sampling_defaults_cover_the_pinned_validator
         reasoning_rows_match_the_pinned_validator
-        lifecycle_rows_match_the_pin)
+        lifecycle_rows_match_the_pin
+        vram_family_rows_match_the_pin
+        bounds_are_the_pins_at_each_edge)
     # SP4 Task 24b (spec §4.9 c/d; F-8): managed-model config errors, also through strata-secure-server --check.
     target_link_libraries(secure_frontend_typed_config_tests PRIVATE secure_frontend_launch secure_frontend_strata_cli)
     add_dependencies(secure_frontend_typed_config_tests strata-secure-server)

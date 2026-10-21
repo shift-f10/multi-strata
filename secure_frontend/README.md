@@ -314,6 +314,19 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `engine.lazy_load` | boolean | `false` | - | - | Start with the engine unloaded; the first request loads it (the pin's lazy_load, text only). |
 | `engine.idle_unload_s` | integer | `0` | 0-86400 | - | Seconds without a request before the engine is unloaded (0: never, the pin default); cap added, C-1. |
 | `engine.mtp` | boolean | `true` | - | - | Draft layer (MTP): on unless explicitly false; false drops --mtp/--spec-min-p/--batch-mtp at every start. |
+| `engine.vram_reserve_mib` | integer | unset | 0-1048576 | - | VRAM MiB the engine leaves free (renders --vram-reserve-mib; unset: the engine's own 700). |
+| `engine.min_free_vram_mib` | integer | `0` | 0-1048576 | - | Refuse to load when free VRAM is below this (0: never; the driver check runs on the owner's GPU box). |
+| `engine.vram_elastic` | boolean | `false` | - | - | Segment the expert cache so VRAM can be given back and taken back (renders --vram-elastic, #533). |
+| `engine.vram_segment_mib` | integer | unset | 1-1048576 | - | Segment size for vram_elastic (renders --vram-segment-mib; unset: the engine's own 512). |
+| `engine.elastic` | boolean | `false` | - | - | The image encoder starts with the first picture and stops when idle (needs vram_elastic; the vision turn). |
+| `engine.elastic_idle_s` | integer | `120` | 1-86400 | - | Seconds without a picture before the elastic encoder stops (pin default 120); whole seconds, cap added. |
+| `engine.elastic_mib` | integer | `2048` | 1-1048576 | - | VRAM MiB the expert cache keeps free while the encoder runs (pin default 2048). |
+| `engine.gpu_order` | string | `auto` | - | - | GPU order: auto (reorder by card speed, where the driver can tell) or as_given (keep the configured order). |
+| `engine.gpu_policy` | string | `auto` | - | - | GPU turn for a picture: auto, keep, shrink or unload the engine's VRAM first (the POLICIES set). |
+| `engine.layer_split` | string | `auto` | - | - | First layer of each later GPU (rising numbers from 2), or auto; renders --layer-split with several GPUs. |
+| `engine.split_skip_if_fits` | boolean | `false` | - | - | Let an auto split run on the first card alone when it holds every expert and the KV (renders --split-skip-if-fits). |
+| `engine.hip_ordinal` | integer | unset | 0-127 | - | The HIP number of the discrete card (setup-recorded); wins over one (or zero) configured GPUs. |
+| `engine.uma` | boolean | `false` | - | - | An APU: engine and image turn share the RAM either way, so a picture never needs the engine moved. |
 <!-- config-keys:end -->
 
 `roots.secret` defaults to the config file's directory only for a `file:` token

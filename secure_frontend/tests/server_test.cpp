@@ -90,9 +90,11 @@ void proc01_server_passes_literal_argv() {
   if (dump) {
     auto model = server->root() / "models" / "fake-model.gguf";
     model.make_preferred();
+    // SP5 M1 Task 7: two GPUs compose the pin's layer split (serve/server.py:2896-2899,
+    // :2938 --layer-split auto unless the args put the later card to another use).
     const std::vector<std::string> expected{test_support::utf8_path(server->engine_path()), "--serve",
                                             "--dump-file=" + test_support::utf8_path(dump_file), weird, "--max-context", "8192",
-                                            "--gpu", "0,1", "--native", test_support::utf8_path(model)};
+                                            "--gpu", "0,1", "--native", test_support::utf8_path(model), "--layer-split", "auto"};
     std::string seen;
     for (const auto& entry : dump->argv) seen += "\n  [" + entry + "]";
     std::string wanted;

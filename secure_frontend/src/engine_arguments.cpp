@@ -139,6 +139,48 @@ std::vector<std::string> draft_layer_removed(const std::vector<std::string>& arg
   return strip_draft_layer_arguments(copy);
 }
 
+namespace {
+
+bool owns_flag(const std::vector<std::string>& user_arguments, const std::string_view flag) {
+  return std::find(user_arguments.begin(), user_arguments.end(), flag) != user_arguments.end();
+}
+
+}  // namespace
+
+// SP5 M1 Task 7. Each rendering mirrors the pin branch exactly: the reserve flag unless
+// the operator put one in the args; the elastic branch nests the segment size (and is
+// skipped whole when the operator owns --vram-elastic, :2945-2948); the layer-split
+// pair is gated on several GPUs without --peer-device (layer_split_of, :2896-2899) and
+// skips flags the operator already spelled (:2938, :2942).
+void append_vram_gpu_elastic_arguments(std::vector<std::string>& arguments, const VramGpuElasticArgs& vram,
+                                       const std::vector<std::string>& user_arguments, const std::vector<unsigned>& gpus) {
+  if (vram.vram_reserve_mib.has_value() && !owns_flag(user_arguments, "--vram-reserve-mib")) {
+    arguments.emplace_back("--vram-reserve-mib");
+    arguments.push_back(std::to_string(*vram.vram_reserve_mib));
+  }
+  if (vram.vram_elastic && !owns_flag(user_arguments, "--vram-elastic")) {
+    arguments.emplace_back("--vram-elastic");
+    if (vram.vram_segment_mib.has_value() && *vram.vram_segment_mib > 0 && !owns_flag(user_arguments, "--vram-segment-mib")) {
+      arguments.emplace_back("--vram-segment-mib");
+      arguments.push_back(std::to_string(*vram.vram_segment_mib));
+    }
+  }
+  const bool split_gate = gpus.size() > 1 && !owns_flag(user_arguments, "--peer-device");
+  if (split_gate && !owns_flag(user_arguments, "--layer-split")) {
+    arguments.emplace_back("--layer-split");
+    arguments.push_back(vram.layer_split.empty() ? "auto" : vram.layer_split);
+  }
+  if (vram.split_skip_if_fits && split_gate && !owns_flag(user_arguments, "--split-skip-if-fits")) {
+    arguments.emplace_back("--split-skip-if-fits");
+  }
+}
+
+std::vector<unsigned> effective_gpu_list(const std::vector<unsigned>& gpus, std::optional<std::int64_t> hip_ordinal) {
+  // hip_visible (:3025): the ordinal wins only while at most one card is configured.
+  if (hip_ordinal.has_value() && gpus.size() <= 1U) return {static_cast<unsigned>(*hip_ordinal)};
+  return gpus;
+}
+
 EffortEndArguments compose_effort_end_arguments(const std::filesystem::path& engine_binary, const TokenizerPack& tokenizer) {
   // The pin greps the engine binary for the flag literal (:2849) and encodes "system" expecting a
   // single token (:2850); either failure means the pin's one fixed fallback line and no argument.

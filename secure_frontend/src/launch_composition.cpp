@@ -35,10 +35,24 @@ std::variant<ComposedLaunch, LaunchFailure> expert_launch(const FrontendConfig& 
   if (selected == list.end()) return config_failure({"Selected model is not present in roots.models."});
   const auto arguments_profile =
       profile == EngineProfile::glm53 ? EngineArgumentsProfile::lighttransport_glm53 : EngineArgumentsProfile::strata_0143;
-  auto args = build_engine_arguments(arguments_profile, *selected, config.roots.models, config.engine.args,
-                                     config.engine.gpus, config.engine.mtp);
+  // SP5 M1 Task 7 (engine.hip_ordinal, serve/server.py:3023-3029): the recorded HIP number
+  // wins over a single (or absent) card — for the strata profile; the GLM runner takes no
+  // --gpu at all. Same rule at the managed path.
+  const std::vector<unsigned> gpus =
+      profile == EngineProfile::glm53 ? config.engine.gpus : effective_gpu_list(config.engine.gpus, config.engine.hip_ordinal);
+  auto args = build_engine_arguments(arguments_profile, *selected, config.roots.models, config.engine.args, gpus,
+                                     config.engine.mtp);
   if (const auto* failure = std::get_if<EngineArgumentsError>(&args)) {
     return config_failure({"Engine arguments rejected: " + failure->message});
+  }
+  auto argv = std::get<std::vector<std::string>>(std::move(args));
+  if (profile != EngineProfile::glm53) {  // Ruling T7-a: this family reaches the engine through argv only
+    const VramGpuElasticArgs vram{.vram_reserve_mib = config.engine.vram_reserve_mib,
+                                  .vram_elastic = config.engine.vram_elastic,
+                                  .vram_segment_mib = config.engine.vram_segment_mib,
+                                  .layer_split = config.engine.layer_split,
+                                  .split_skip_if_fits = config.engine.split_skip_if_fits};
+    append_vram_gpu_elastic_arguments(argv, vram, config.engine.args, gpus);
   }
   std::vector<std::string> served;  // SP1's /v1/models lists the whole inventory; --expert keeps that (SP3 decides later)
   served.reserve(list.size());
@@ -47,8 +61,8 @@ std::variant<ComposedLaunch, LaunchFailure> expert_launch(const FrontendConfig& 
   // The GLM profile keeps its arguments verbatim (its runner does not speak these flags).
   std::vector<std::string> mtp_removed;
   if (!config.engine.mtp && profile != EngineProfile::glm53) mtp_removed = draft_layer_removed(config.engine.args);
-  return ComposedLaunch{profile, std::get<std::vector<std::string>>(std::move(args)), *config.roots.tokenizer_pack, id,
-                        std::move(served), false, std::move(mtp_removed)};
+  return ComposedLaunch{profile, std::move(argv), *config.roots.tokenizer_pack, id, std::move(served), false,
+                        std::move(mtp_removed)};
 }
 
 // <models>/<version_dir>/<relative> through the P1 grammar; nullopt if the joined path is not P1-valid.
@@ -135,15 +149,26 @@ std::variant<ComposedLaunch, LaunchFailure> compose_engine_launch(const Frontend
   if (!config.engine.mtp) mtp_removed = strip_draft_layer_arguments(args);
   // SP2 spec §3.9: GPUs come only from the typed engine.gpu list (--gpu is
   // frontend-owned, so validate_engine_user_arguments refused it in engine.args).
-  if (!config.engine.gpus.empty()) {
+  // SP5 M1 Task 7: engine.hip_ordinal wins over a single (or absent) card (:3025).
+  const std::vector<unsigned> gpus = effective_gpu_list(config.engine.gpus, config.engine.hip_ordinal);
+  if (!gpus.empty()) {
     std::string list;
-    for (const unsigned device : config.engine.gpus) {
+    for (const unsigned device : gpus) {
       if (!list.empty()) list += ',';
       list += std::to_string(device);
     }
     args.emplace_back("--gpu");
     args.push_back(std::move(list));
   }
+  // SP5 M1 Task 7 (parity rows vram_reserve_mib / vram_elastic / vram_segment_mib /
+  // layer_split / split_skip_if_fits): the family renders after the composed tail, gated
+  // per the pin (several GPUs for the split pair, the elastic branch nesting the size).
+  const VramGpuElasticArgs vram{.vram_reserve_mib = config.engine.vram_reserve_mib,
+                                .vram_elastic = config.engine.vram_elastic,
+                                .vram_segment_mib = config.engine.vram_segment_mib,
+                                .layer_split = config.engine.layer_split,
+                                .split_skip_if_fits = config.engine.split_skip_if_fits};
+  append_vram_gpu_elastic_arguments(args, vram, config.engine.args, gpus);
   // Opened once, on the path (F-7), and only if it stays below roots.models.
   auto opened = open_root(*tokenizer);
   auto* root = std::get_if<CanonicalRoot>(&opened);

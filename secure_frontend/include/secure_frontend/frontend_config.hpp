@@ -184,6 +184,12 @@ enum class ReasoningEffort { none, low, medium, high };      // clean_shared_def
 enum class LoopRecovery { off, stop, recover };              // :8129-8136 (false | "stop" | "recover")
 enum class EffortPosition { start, end };                    // :2841-2843
 enum class AnthropicThinking { model, on_request };          // :8102-8104
+// SP5 M1 Task 7 (parity rows gpu_order / gpu_policy). The pin reorders GPUs for any value
+// but the string "as_given" (serve/server.py:3112); the typed row closes the vocabulary and
+// names the reordering "auto" (Ruling T7-b: the reorder needs driver scores, owner-box only).
+// GpuTurnPolicy is images.py's POLICIES tuple (images.py:45) re-scoped to the vision turn.
+enum class GpuOrder { auto_order, as_given };
+enum class GpuTurnPolicy { auto_policy, keep, shrink, unload };
 struct ReasoningConfig final {
   std::optional<ReasoningEffort> effort;                     // unset: no config-level level (pin None)
   std::int64_t budget_tokens = 0;                            // 0 = no budget (pin default)
@@ -207,6 +213,22 @@ struct EngineLaunch final {
   bool lazy_load{false};                          // engine.lazy_load: the first request loads the engine
   std::chrono::seconds idle_unload{0};            // engine.idle_unload_s (0: never, the pin default)
   bool mtp{true};                                 // engine.mtp: false strips the draft layer at every start
+  // SP5 M1 Task 7 (the VRAM / GPU / elastic family). Kinds and defaults verbatim from the
+  // pin (runconfig.py:42; serve/server.py:2550-2552, 2870-2948, 3023, 3112, 8083;
+  // serve/images.py:23/45/173); the caps and closed vocabularies are added (C-1).
+  std::optional<std::int64_t> vram_reserve_mib;   // engine.vram_reserve_mib -> --vram-reserve-mib (unset: engine's 700)
+  std::int64_t min_free_vram{0};                  // engine.min_free_vram_mib (svc-side pre-load gate; :8083, default 0)
+  bool vram_elastic{false};                       // engine.vram_elastic -> --vram-elastic (#533, :2945)
+  std::optional<std::int64_t> vram_segment_mib;   // engine.vram_segment_mib -> --vram-segment-mib (unset: engine's 512)
+  bool elastic{false};                            // engine.elastic: the elastic vision turn (Task 11 consumer, :2550)
+  std::chrono::seconds elastic_idle{120};         // engine.elastic_idle_s (pin float-or 120; integer seconds, T7-h)
+  std::int64_t elastic_mib{2048};                 // engine.elastic_mib (pin int-or 2048; /v1/vram headroom, Task 11)
+  GpuOrder gpu_order{GpuOrder::auto_order};       // engine.gpu_order (only "as_given" changes anything; :3112)
+  GpuTurnPolicy gpu_policy{GpuTurnPolicy::auto_policy};  // engine.gpu_policy (POLICIES, images.py:45; vision turn)
+  std::string layer_split{"auto"};                // engine.layer_split -> --layer-split when several GPUs (:2870-2894)
+  bool split_skip_if_fits{false};                 // engine.split_skip_if_fits -> --split-skip-if-fits (:2941)
+  std::optional<std::int64_t> hip_ordinal;        // engine.hip_ordinal: wins over one (or zero) GPUs (:3023-3029)
+  bool uma{false};                                // engine.uma: an APU shares RAM either way (images.py:23/334)
 };
 
 // SP4 §3.9. pull.downloader is only a syntactically absolute path here; the

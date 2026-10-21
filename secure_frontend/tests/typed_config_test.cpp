@@ -1063,6 +1063,99 @@ void lifecycle_rows_match_the_pin() {
   expect(set != nullptr && set->engine.lazy_load && set->engine.idle_unload == std::chrono::seconds(600) && !set->engine.mtp,
          "lifecycle rows are typed: " + issues_of(set_result));
 }
+
+// SP5 M1 Task 7 (parity rows vram_reserve_mib / min_free_vram_mib / vram_elastic /
+// vram_segment_mib / elastic / elastic_idle_s / elastic_mib / gpu_order / gpu_policy /
+// layer_split / split_skip_if_fits / hip_ordinal / uma): kinds and defaults verbatim from
+// the pin — runconfig.py:42, serve/server.py:2550-2552/2870-2948/3023/3112/8083,
+// serve/images.py:23/45/173 — the caps and the enum vocabularies' closed sets are added (C-1).
+void vram_family_rows_match_the_pin() {
+  ConfigFixture f;
+  const auto bare_result = with_literals(f, {});
+  const auto* bare = config_of(bare_result);
+  expect(bare != nullptr, "a config without the vram family still validates: " + issues_of(bare_result));
+  if (bare != nullptr) {
+    expect(!bare->engine.vram_reserve_mib.has_value() && bare->engine.min_free_vram == 0 && !bare->engine.vram_elastic &&
+               !bare->engine.vram_segment_mib.has_value() && !bare->engine.elastic &&
+               bare->engine.elastic_idle == std::chrono::seconds(120) && bare->engine.elastic_mib == 2048 &&
+               bare->engine.gpu_order == secure_frontend::GpuOrder::auto_order &&
+               bare->engine.gpu_policy == secure_frontend::GpuTurnPolicy::auto_policy &&
+               bare->engine.layer_split == "auto" && !bare->engine.split_skip_if_fits && !bare->engine.hip_ordinal.has_value() &&
+               !bare->engine.uma,
+           "the pin's defaults: unset MiB rows, elastic 2048 MiB / 120 s, auto vocabularies, uma false");
+    const std::string described = secure_frontend::describe(*bare);
+    expect(described.find("engine.layer_split = auto\n") != std::string::npos &&
+               described.find("engine.elastic_mib = 2048\n") != std::string::npos &&
+               described.find("engine.min_free_vram_mib = 0\n") != std::string::npos &&
+               described.find("engine.uma = false\n") != std::string::npos,
+           "describe reports the vram family");
+  }
+  const auto accept = [&](const char* path, const char* value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result),
+           std::string{"accepts "} + value + " for " + path + ": " + issues_of(result));
+  };
+  const auto reject = [&](const char* path, const char* value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ConfigErrors>(result), std::string{"rejects "} + value + " for " + path);
+  };
+  accept("engine.vram_elastic", "true");
+  reject("engine.vram_elastic", "\"true\"");
+  accept("engine.split_skip_if_fits", "false");
+  accept("engine.elastic", "true");
+  accept("engine.uma", "true");
+  accept("engine.gpu_order", "\"as_given\"");
+  reject("engine.gpu_order", "\"faster\"");   // the pin reorders for anything but "as_given"; the typed row closes the set
+  accept("engine.gpu_order", "\"auto\"");
+  accept("engine.gpu_policy", "\"shrink\"");
+  reject("engine.gpu_policy", "\"release\"");  // POLICIES is (auto, keep, shrink, unload) (images.py:45)
+  accept("engine.layer_split", "\"24,36,42\"");
+  reject("engine.layer_split", "\"24,16,12,12\"");  // the pin's per-card-counts error (:2888-2892)
+  reject("engine.layer_split", "1.5");
+}
+
+// SP5 M1 Task 7: each MiB row accepts 0 / its minimum and the row's max, and rejects one
+// past the cap — the caps are added bounds (C-1); the pin's floors are kept (segment > 0,
+// :2947). hip_ordinal mirrors hip_visible's number space with an added cap.
+void bounds_are_the_pins_at_each_edge() {
+  ConfigFixture f;
+  const auto accept = [&](const char* path, const char* value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result),
+           std::string{"accepts "} + value + " for " + path + ": " + issues_of(result));
+  };
+  const auto reject = [&](const char* path, const char* value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ConfigErrors>(result), std::string{"rejects "} + value + " for " + path);
+  };
+  accept("engine.vram_reserve_mib", "0");
+  accept("engine.vram_reserve_mib", "1048576");
+  reject("engine.vram_reserve_mib", "1048577");
+  accept("engine.min_free_vram_mib", "0");
+  accept("engine.min_free_vram_mib", "1048576");
+  reject("engine.min_free_vram_mib", "1048577");
+  accept("engine.vram_segment_mib", "1");  // the pin: isinstance int and > 0 (:2947)
+  reject("engine.vram_segment_mib", "0");
+  reject("engine.vram_segment_mib", "-1");
+  accept("engine.elastic_mib", "1");
+  accept("engine.elastic_mib", "1048576");
+  reject("engine.elastic_mib", "1048577");
+  accept("engine.elastic_idle_s", "1");
+  accept("engine.elastic_idle_s", "86400");
+  reject("engine.elastic_idle_s", "86401");
+  reject("engine.elastic_idle_s", "0");  // the pin's "0 == empty: 120" falsy quirk is not copied (Ruling T7-h)
+  accept("engine.hip_ordinal", "0");
+  accept("engine.hip_ordinal", "127");
+  reject("engine.hip_ordinal", "128");
+  reject("engine.hip_ordinal", "-1");
+  const auto set_result = with_literals(f, {{"engine.vram_reserve_mib", "900"}, {"engine.hip_ordinal", "1"},
+                                            {"engine.layer_split", "\"18\""}, {"engine.vram_elastic", "true"}});
+  const auto* set = config_of(set_result);
+  expect(set != nullptr && set->engine.vram_reserve_mib.has_value() && *set->engine.vram_reserve_mib == 900 &&
+             set->engine.hip_ordinal.has_value() && *set->engine.hip_ordinal == 1 && set->engine.layer_split == "18" &&
+             set->engine.vram_elastic,
+         "the vram family is typed: " + issues_of(set_result));
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1075,6 +1168,8 @@ int main(int argc, char** argv) {
       {"sampling_defaults_cover_the_pinned_validator", sampling_defaults_cover_the_pinned_validator},
       {"reasoning_rows_match_the_pinned_validator", reasoning_rows_match_the_pinned_validator},
       {"lifecycle_rows_match_the_pin", lifecycle_rows_match_the_pin},
+      {"vram_family_rows_match_the_pin", vram_family_rows_match_the_pin},
+      {"bounds_are_the_pins_at_each_edge", bounds_are_the_pins_at_each_edge},
       {"typed_config_accepts_minimal_file_and_applies_defaults", typed_config_accepts_minimal_file_and_applies_defaults},
       {"cfg01_unknown_key_rejected", cfg01_unknown_key_rejected},
       {"cfg01_duplicate_key_rejected", cfg01_duplicate_key_rejected},

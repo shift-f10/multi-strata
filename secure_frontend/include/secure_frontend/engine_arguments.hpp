@@ -4,6 +4,7 @@
 #include "secure_frontend/model_inventory.hpp"
 #include "secure_frontend/tokenizer_pack.hpp"
 
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -82,6 +83,30 @@ struct EffortEndArguments final {
 // The same strip applied in place; returns the flags removed. The managed composition
 // uses this directly (its argv tail is composed, not passed through build_engine_arguments).
 [[nodiscard]] std::vector<std::string> strip_draft_layer_arguments(std::vector<std::string>& arguments);
+
+// SP5 M1 Task 7 (parity rows vram_reserve_mib / vram_elastic / vram_segment_mib /
+// layer_split / split_skip_if_fits): the typed values the pin renders into the engine's
+// argv (runconfig.py:42-43; serve/server.py:2938-2948, 2896-2899). `user_arguments` is
+// the operator's args: every rendered flag is skipped when the operator already owns it
+// (the pin's "not in args" guards), and the layer-split gate needs the typed GPU count.
+// Ruling T7-a: this family reaches the engine through argv only — no GPU/elastic
+// environment variables (SP2 §3.9; the engine renders CUDA/HIP from --gpu itself).
+struct VramGpuElasticArgs final {
+  std::optional<std::int64_t> vram_reserve_mib;  // unset: the engine's own 700 stays
+  bool vram_elastic{false};
+  std::optional<std::int64_t> vram_segment_mib;  // unset: the engine's own 512 stays
+  std::string layer_split{"auto"};               // already validated (layer_split_value grammar)
+  bool split_skip_if_fits{false};
+};
+
+void append_vram_gpu_elastic_arguments(std::vector<std::string>& arguments, const VramGpuElasticArgs& vram,
+                                       const std::vector<std::string>& user_arguments, const std::vector<unsigned>& gpus);
+
+// engine.hip_ordinal (serve/server.py:3016-3030): the recorded HIP number wins over one
+// (or zero) configured GPUs, never over several; it reaches the engine through --gpu
+// (Ruling T7-f — our design owns the device list, the engine renders HIP from it).
+[[nodiscard]] std::vector<unsigned> effective_gpu_list(const std::vector<unsigned>& gpus,
+                                                       std::optional<std::int64_t> hip_ordinal);
 
 // Parses the operator's --gpu value: comma-separated decimal device indices
 // 0-255, no sign, spaces or leading zeros, distinct, 1-16 entries.

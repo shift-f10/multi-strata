@@ -290,7 +290,7 @@ void managed_launch_renders_typed_gpu_list() {
   expect(launch != nullptr, "managed launch with engine.gpu");
   if (launch == nullptr) return;
   auto expected = managed_argv(h, entry);
-  expected.insert(expected.end(), {"--gpu", "0,2"});
+  expected.insert(expected.end(), {"--gpu", "0,2", "--layer-split", "auto"});  // two GPUs compose the split (:2938)
   expect(launch->engine_args == expected, "the typed engine.gpu list becomes the engine's own --gpu");
 }
 // SP5 M1 Task 5 (parity rows reasoning_* / fit_max_tokens). Only ONE of the pin's reasoning values
@@ -377,6 +377,86 @@ void mtp_false_drops_the_mtp_arg() {
   expect(removed == std::vector<std::string>{"--mtp", "--spec-min-p", "--batch-mtp"}, "the removed list names the flags in order");
 }
 
+// SP5 M1 Task 7 (parity row vram_reserve_mib; runconfig.py:42-43 renders --vram-reserve-mib
+// from the config unless the args already carry it). Unset composes nothing; the engine's
+// own default (700) then applies.
+void vram_reserve_mib_becomes_the_pinned_flag() {
+  secure_frontend::VramGpuElasticArgs vram;
+  std::vector<std::string> user;
+  std::vector<std::string> args;
+  secure_frontend::append_vram_gpu_elastic_arguments(args, vram, user, {});
+  expect(std::find(args.begin(), args.end(), "--vram-reserve-mib") == args.end(), "unset: no flag is composed");
+  vram.vram_reserve_mib = 700;
+  secure_frontend::append_vram_gpu_elastic_arguments(args, vram, user, {});
+  const auto flag = std::find(args.begin(), args.end(), "--vram-reserve-mib");
+  expect(flag != args.end() && std::next(flag) != args.end() && *std::next(flag) == "700", "set: --vram-reserve-mib 700");
+  user.emplace_back("--vram-reserve-mib");  // the pin's "not in args" guard (:2930 for vision, same shape)
+  user.emplace_back("900");
+  std::vector<std::string> kept;
+  secure_frontend::append_vram_gpu_elastic_arguments(kept, vram, user, {});
+  expect(std::count(kept.begin(), kept.end(), "--vram-reserve-mib") == 0, "the operator's own flag is never doubled");
+}
+
+// SP5 M1 Task 7 (parity rows vram_elastic/vram_segment_mib/layer_split/split_skip_if_fits/
+// hip_ordinal; serve/server.py:2943-2948, :2938-2942, :3016-3030): every value reaches the
+// engine through argv only (Ruling T7-a — no GPU/elastic engine-env variables, SP2 §3.9).
+void gpu_and_elastic_rows_reach_the_engine_argv() {
+  secure_frontend::VramGpuElasticArgs vram;
+  std::vector<std::string> user;
+  const auto compose = [&](const std::vector<unsigned>& gpus) {
+    std::vector<std::string> args;
+    secure_frontend::append_vram_gpu_elastic_arguments(args, vram, user, gpus);
+    return args;
+  };
+  vram.vram_segment_mib = 512;
+  const auto segment_alone = compose({});
+  expect(std::find(segment_alone.begin(), segment_alone.end(), "--vram-segment-mib") == segment_alone.end(),
+         "a segment size without vram_elastic composes nothing (the pin nests it in the elastic branch)");
+  vram.vram_elastic = true;
+  const auto elastic = compose({});
+  const auto segment = std::find(elastic.begin(), elastic.end(), "--vram-segment-mib");
+  expect(std::find(elastic.begin(), elastic.end(), "--vram-elastic") != elastic.end() && segment != elastic.end() &&
+             std::next(segment) != elastic.end() && *std::next(segment) == "512",
+         "vram_elastic renders --vram-elastic and the segment size beside it");
+  vram.vram_segment_mib = std::nullopt;
+  const auto bare_elastic = compose({});
+  expect(std::find(bare_elastic.begin(), bare_elastic.end(), "--vram-elastic") != bare_elastic.end() &&
+             std::find(bare_elastic.begin(), bare_elastic.end(), "--vram-segment-mib") == bare_elastic.end(),
+         "the engine's own 512 default applies when the size is unset");
+  const auto single = compose({});
+  expect(std::find(single.begin(), single.end(), "--layer-split") == single.end(),
+         "one GPU (or none): no layer split — the pin gates it on several GPUs (:2896-2899)");
+  const auto split = compose({0, 1});
+  const auto split_flag = std::find(split.begin(), split.end(), "--layer-split");
+  expect(split_flag != split.end() && std::next(split_flag) != split.end() && *std::next(split_flag) == "auto",
+         "several GPUs compose --layer-split auto (the pin default)");
+  vram.layer_split = "24";
+  const auto manual = compose({0, 1});
+  const auto manual_flag = std::find(manual.begin(), manual.end(), "--layer-split");
+  expect(manual_flag != manual.end() && std::next(manual_flag) != manual.end() && *std::next(manual_flag) == "24",
+         "the manual first-layer list renders verbatim");
+  user = {"--peer-device", "1"};
+  const auto peer = compose({0, 1});
+  expect(std::find(peer.begin(), peer.end(), "--layer-split") == peer.end(),
+         "--peer-device in the args means the later card is an expert tier, not a split (:2898)");
+  user = {"--layer-split", "18"};
+  const auto owned = compose({0, 1});
+  expect(std::count(owned.begin(), owned.end(), "--layer-split") == 0, "the operator's --layer-split is never doubled");
+  user.clear();
+  vram.split_skip_if_fits = true;
+  const auto one_gpu = compose({0});
+  const auto two_gpus = compose({0, 1});
+  expect(std::find(one_gpu.begin(), one_gpu.end(), "--split-skip-if-fits") == one_gpu.end() &&
+             std::find(two_gpus.begin(), two_gpus.end(), "--split-skip-if-fits") != two_gpus.end(),
+         "split_skip_if_fits rides the same layer-split gate (:2941)");
+  // hip_visible (:3023-3029): the recorded ordinal wins over one (or zero) configured GPUs,
+  // never over several; it reaches the engine through --gpu (Ruling T7-f).
+  expect(secure_frontend::effective_gpu_list({5}, 1) == std::vector<unsigned>{1}, "one card: the ordinal wins");
+  expect(secure_frontend::effective_gpu_list({}, 1) == std::vector<unsigned>{1}, "no card: the ordinal selects it");
+  expect(secure_frontend::effective_gpu_list({0, 1}, 1) == (std::vector<unsigned>{0, 1}), "several cards: the list stands");
+  expect(secure_frontend::effective_gpu_list({2, 3}, std::nullopt) == (std::vector<unsigned>{2, 3}), "unset: unchanged");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -397,5 +477,7 @@ int main(int argc, char** argv) {
       {"managed_launch_renders_typed_gpu_list", managed_launch_renders_typed_gpu_list},
       {"reasoning_config_reaches_engine_launch_and_env", reasoning_config_reaches_engine_launch_and_env},
       {"mtp_false_drops_the_mtp_arg", mtp_false_drops_the_mtp_arg},
+      {"vram_reserve_mib_becomes_the_pinned_flag", vram_reserve_mib_becomes_the_pinned_flag},
+      {"gpu_and_elastic_rows_reach_the_engine_argv", gpu_and_elastic_rows_reach_the_engine_argv},
   }, failures);
 }

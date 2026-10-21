@@ -46,9 +46,11 @@ constexpr std::array<ParityRow, 121> kRows{{
     {"cors_origins", kTyped, frontend_behavior, "already typed (SP3 B12: listener.cors_origins); serve/server.py:8063"},
     {"cwd", kRejected, none, "spec §4 free-form process control; serve/mcp.py:106"},
     {"effort_position", kTyped, engine_arg, "serve/server.py:2836 (M1 Task 5: reasoning.effort_position composes the engine's --tail-role-token)"},
-    {"elastic", kTyped, engine_arg, "serve/server.py:2550 (M1 Task 7: engine.elastic)"},
-    {"elastic_idle_s", kTyped, engine_arg, "serve/server.py:2552 (M1 Task 7: engine.elastic_idle_s)"},
-    {"elastic_mib", kTyped, engine_arg, "serve/server.py:2551 (M1 Task 7: engine.elastic_mib)"},
+    // Ruling T7-d (Task 7): the elastic trio gates the frontend's vision turn and the
+    // /v1/vram headroom — no argv composes for it (the consumer arrives with Task 11).
+    {"elastic", kTyped, frontend_behavior, "serve/server.py:2550, :7927 (M1 Task 7: engine.elastic; Tasks 11-12 consume it)"},
+    {"elastic_idle_s", kTyped, frontend_behavior, "serve/server.py:2552, :3854 (M1 Task 7: engine.elastic_idle_s)"},
+    {"elastic_mib", kTyped, frontend_behavior, "serve/server.py:2551, :3832 (M1 Task 7: engine.elastic_mib; /v1/vram headroom)"},
     {"engine_silence_s", kTyped, frontend_behavior, "serve/server.py:941, default 300.0 at serve/server.py:276 (M1 Task 8)"},
     {"env", kRejected, none, "spec §4 raw env dict; serve/server.py:3228"},
     {"env_to_user", kTyped, config_only, "serve/server.py:8110 (M1 Task 9: session.env_to_user)"},
@@ -77,7 +79,9 @@ constexpr std::array<ParityRow, 121> kRows{{
     {"max_tokens", kTyped, request_rule, "serve/server.py:2564 (vision block at the pin); engine.max_tokens is the added frontend bound per C-1 (M1 Task 8)"},
     {"mcp", kRejected, none, "spec §4 MCP; serve/mcp.py:632"},
     {"mcp_servers", kRejected, none, "spec §4 MCP; serve/mcp.py:651"},
-    {"min_free_vram_mib", kTyped, engine_arg, "serve/server.py:8083 (M1 Task 7)"},
+    // Ruling T7-c (Task 7): the svc-side pre-load gate (no argv; the driver check runs
+    // only where a GPU box can answer it).
+    {"min_free_vram_mib", kTyped, frontend_behavior, "serve/server.py:8083 (M1 Task 7: engine.min_free_vram_mib)"},
     {"min_tokens", kTyped, request_rule, "serve/server.py:2566 (vision block at the pin); engine.min_tokens is the added frontend bound per C-1 (M1 Task 8)"},
     {"model_name", kMapped, none, "served-model identity comes from the SP4 manifest; serve/images.py:183"},
     // The pin reads this one through strata_control/draft_layer.is_off, which the Task-2
@@ -112,7 +116,9 @@ constexpr std::array<ParityRow, 121> kRows{{
     {"tool_call_recovery", kTyped, config_only, "serve/server.py:8106 (M1 Task 9: session.tool_call_recovery)"},
     {"trusted_origins", kTyped, frontend_behavior, "already typed (SP3 origins family); serve/server.py:8064"},
     {"type", kRejected, none, "spec §4 MCP entry type; serve/mcp.py:604"},
-    {"uma", kTyped, engine_arg, "serve/images.py:334 (M1 Task 7: engine.uma)"},
+    // Ruling T7-d (Task 7): the APU hint arbitrates the frontend's image/vision turn —
+    // no argv composes for it.
+    {"uma", kTyped, frontend_behavior, "serve/images.py:23, :334 (M1 Task 7: engine.uma; Tasks 11-12 consume it)"},
     {"url", kRejected, none, "spec §4 MCP url; serve/mcp.py:384"},
     {"user_args", kRejected, none, "spec §4 free-form process control; serve/server.py:2918"},
     {"vision", kTyped, config_only, "serve/server.py:2930 (M1 Task 11: the vision.* block)"},

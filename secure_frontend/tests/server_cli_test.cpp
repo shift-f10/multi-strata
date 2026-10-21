@@ -336,13 +336,16 @@ void auth04_no_switch_disables_auth() {
       // per-request stderr line; SP5 M1 Task 5 (ruling T5-d): engine.fit_max_tokens and
       // reasoning.close_retry are file-only behaviour booleans (the pin's JSON knobs);
       // SP5 M1 Task 6 (same ruling pattern): engine.lazy_load and engine.mtp are the
-      // pin's lifecycle booleans (runconfig.py:36-38). None of them touches authentication.
+      // pin's lifecycle booleans (runconfig.py:36-38); SP5 M1 Task 7: engine.vram_elastic,
+      // engine.split_skip_if_fits, engine.elastic and engine.uma are the pin's VRAM/turn
+      // booleans (serve/server.py:2945, :2941, :2550; images.py:23). None touches authentication.
       expect(path == "listener.allow_remote" || path == "listener.allow_wildcard_bind" ||
                  path == "engine.allow_new_privileges" || path == "pull.allow_private_addresses" ||
                  path == "logging.requests" || path == "engine.fit_max_tokens" || path == "reasoning.close_retry" ||
-                 path == "engine.lazy_load" || path == "engine.mtp",
-             "the only switches are the two bind opt-ins, the engine's NNP opt-out, the pull address opt-in and "
-             "request logging and the SP5 behaviour and lifecycle booleans: " + path);
+                 path == "engine.lazy_load" || path == "engine.mtp" || path == "engine.vram_elastic" ||
+                 path == "engine.split_skip_if_fits" || path == "engine.elastic" || path == "engine.uma",
+             "the only switches are the two bind opt-ins, the engine's NNP opt-out, the pull address opt-in, "
+             "request logging and the SP5 behaviour, lifecycle and vram/turn booleans: " + path);
     }
   }
   expect(flags.count("--allow-remote") == 1U && flags.count("--token-env") == 1U && flags.count("--check") == 1U,
