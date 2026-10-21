@@ -281,6 +281,18 @@ Anthropic-compatible server, and its own quantization tooling. Its
 it, this section records the exact files or contracts used, as the sections
 above do, and the README sources table is updated in the same commit.
 
+**Vendored 2026-10-22 (SP5 M2, owner decision D-10):** the pinned source is
+now the git submodule `engines/maya-ref/` at gitlink
+`5c970a863ce2fdd87b6e23ffb4822f6d76522b1c` (tag `v1.1.8`), a **read-only
+reference**: the GLM parity table cites it by `file:line` so a reviewer can
+open the exact read site locally. It is never compiled, linked, or configured
+by any CMake preset (a pytest guard checks that no CMake file mentions it);
+`secure_distribution_check.py` rejects any staged path with a `maya-ref`
+component; `pytest.ini` keeps its own test tree out of collection. This
+vendoring pulls forward only the reference-source piece of SP6 — no SP6
+engine work happens in SP5, and nothing here comes out of this submodule
+into our binaries.
+
 License: the GitHub API (`gh api repos/mw00/project-maya`, queried 2026-10-14,
 default branch) returns SPDX id `MIT`. Its `LICENSE` file carries the copyright
 line "Copyright (c) 2026 Niko1221 and the Strata contributors". It bundles

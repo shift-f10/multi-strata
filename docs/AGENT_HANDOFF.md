@@ -148,6 +148,11 @@ Approved by rflores during the upstream update; binding.
 - Upstream baseline: the `upstream` submodule gitlink, `Niko1221/Strata` tag
   `v0.2.1.3`, commit `cbfd5b926b794b356195d3cb600191b0c3567540`
   (`git submodule status`).
+- Vendored read-only reference (SP5 M2, D-10): the `engines/maya-ref` submodule
+  gitlink, `mw00/project-maya` tag `v1.1.8`, commit
+  `5c970a863ce2fdd87b6e23ffb4822f6d76522b1c`; never built by any preset,
+  never packaged (`secure_distribution_check.py` rejects a `maya-ref`
+  component), never collected by pytest; cited by `file:line` only.
 - Git remotes: `origin` is the owner's repository. Only the owner pushes. The
   older `upstream` remote of this repository is no longer used for tracking;
   the submodule has its own `origin`.

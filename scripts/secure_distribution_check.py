@@ -3,8 +3,9 @@
 
 This is a packaging gate, not a malware scanner.  It checks the selected
 staging directory; it intentionally does *not* scan this source checkout,
-which holds upstream Strata as the git submodule `upstream/` for provenance.
-Any staged path with an `upstream` component is rejected, and the quarantined
+which holds upstream Strata as the git submodule `upstream/` for provenance
+(and Project Maya as `engines/maya-ref/`, SP5 M2 D-10).  Any staged path with
+an `upstream` or `maya-ref` component is rejected, and the quarantined
 names below are matched at any depth, not only at the staging root.
 """
 
@@ -64,6 +65,8 @@ def forbidden_reason(relative: str) -> str | None:
     parts = relative.split("/")
     if "upstream" in parts:
         return "upstream source tree (the git submodule upstream/) is never part of a secure-native package"
+    if "maya-ref" in parts:
+        return "vendored Project Maya reference (engines/maya-ref/) is never part of a secure-native package (docs/PROVENANCE.md)"
     if any(parts[-len(p.split("/")):] == p.split("/") for p in FORBIDDEN_PATHS):
         return "quarantined legacy installer, updater, dependency bootstrap, or MCP documentation"
     if any(_contains_components(parts, directory.split("/")) for directory in FORBIDDEN_DIRECTORIES):
