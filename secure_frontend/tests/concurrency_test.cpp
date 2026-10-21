@@ -2,6 +2,7 @@
 #include "secure_frontend/connection_pool.hpp"
 #include "secure_frontend/generation_gate.hpp"
 #include "secure_frontend/http_socket_server.hpp"
+#include "secure_frontend/request_log.hpp"
 #include "secure_frontend/socket_io.hpp"
 #include "support/fake_supervised_process.hpp"
 #include "support/raw_http.hpp"
@@ -324,6 +325,30 @@ void gate_shutdown_refuses_waiters() {
   auto late = gate.admit(f.port, deadline_in(1s), kStaying);
   expect(std::holds_alternative<secure_frontend::GateRefusal>(late), "nothing is admitted after shutdown");
 }
+// SP3 Task 21 (spec §8): the request log is fixed-field, rate-limited, and off by default.
+void request_log_format_and_token_bucket() {
+  using secure_frontend::RequestLogger;
+  const secure_frontend::RequestLogRecord rec{secure_frontend::RouteId::chat, 200, "", std::chrono::milliseconds(12), 345U,
+                                              secure_frontend::AddressScope::loopback};
+  expect(secure_frontend::format_request_line(7, rec) == "req 7 chat 200 - 12 345 loopback", "line format");
+  const secure_frontend::RequestLogRecord gone{secure_frontend::RouteId::health, 0, "client_gone", std::chrono::milliseconds(1), 0U,
+                                               secure_frontend::AddressScope::remote};
+  expect(secure_frontend::format_request_line(8, gone) == "req 8 health 0 client_gone 1 0 remote", "log-only code");
+  auto now = RequestLogger::Clock::time_point{} + std::chrono::seconds(10);
+  std::vector<std::string> lines;
+  RequestLogger logger(true, [&lines](std::string_view line) { lines.emplace_back(line); }, [&now] { return now; });
+  for (int i = 0; i < 300; ++i) logger.record(rec);
+  expect(lines.size() == 100U, "a burst of 100 lines");
+  now += std::chrono::seconds(1);
+  for (int i = 0; i < 300; ++i) logger.record(rec);
+  const auto suppressed = std::count_if(lines.begin(), lines.end(), [](const std::string& l) { return l.rfind("log: ", 0) == 0; });
+  expect(suppressed == 1 && lines[100] == "log: 200 request lines suppressed", "one suppression line with the drop count");
+  expect(lines.size() == 100U + 1U + 20U, "20 more lines after one second of refill");
+  RequestLogger off(false, [&lines](std::string_view line) { lines.emplace_back(line); }, [&now] { return now; });
+  const auto before = lines.size();
+  off.record(rec);
+  expect(lines.size() == before, "logging.requests=false writes nothing per request");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -337,6 +362,7 @@ int main(int argc, char** argv) {
       {"gate_first_request_gets_the_slot", gate_first_request_gets_the_slot},
       {"gate_queue_full_is_busy", gate_queue_full_is_busy},
       {"gate_zero_queue_admits_one_at_a_time", gate_zero_queue_admits_one_at_a_time},
+      {"request_log_format_and_token_bucket", request_log_format_and_token_bucket},
       {"gate_fifo_order", gate_fifo_order},
       {"gate_timeout_returns_timeout", gate_timeout_returns_timeout},
       {"gate_cancelled_waiter_leaves_queue", gate_cancelled_waiter_leaves_queue},

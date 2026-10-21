@@ -289,6 +289,10 @@ secure_frontend_add_library(secure_frontend_chat_route
     LINKS secure_frontend_generation_gate secure_frontend_chat_execution secure_frontend_chat_schema
           secure_frontend_chat_generation_plan secure_frontend_secrets secure_frontend_api_core)
 
+secure_frontend_add_library(secure_frontend_request_log
+    SOURCES src/request_log.cpp
+    LINKS secure_frontend_connection_pool)
+
 target_compile_features(secure_frontend_api_router PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_api_router
     PUBLIC
@@ -407,7 +411,7 @@ target_link_libraries(strata-secure-server PRIVATE secure_frontend_config secure
 target_link_libraries(strata-secure-server PRIVATE secure_frontend_server_cli secure_frontend_typed_config)
 target_link_libraries(strata-secure-server PRIVATE secure_frontend_subsystem_limits secure_frontend_engine_supervisor)
 target_link_libraries(strata-secure-server PRIVATE secure_frontend_socket_io secure_frontend_api_core)
-target_link_libraries(strata-secure-server PRIVATE secure_frontend_connection_pool secure_frontend_chat_route)
+target_link_libraries(strata-secure-server PRIVATE secure_frontend_connection_pool secure_frontend_chat_route secure_frontend_request_log)
 target_compile_features(strata-secure-server PRIVATE cxx_std_20)
 # Spec A2: UTF-8 argv from the wide command line on Windows, shared by
 # strata-secure-server and strata (CommandLineToArgvW: shell32).
@@ -833,7 +837,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         dos02_queued_client_disconnect_leaves_queue dos02_non_stream_disconnect_cancels
         dos02_resources_return_to_idle shutdown_errors_never_report_fatal
         dos01_service_healthy_after_each_attack
-        ext01_upstream_control_routes_are_404_after_auth ext02_http_headers_cannot_enable_extensions)
+        ext01_upstream_control_routes_are_404_after_auth ext02_http_headers_cannot_enable_extensions
+        log_line_format_and_rate_limit err_no_token_prompt_or_path_in_any_body_or_log)
     # Ruling R-J: these cases start the real server over sockets; wine excludes them, MSYS2 is authoritative.
     secure_frontend_add_cases(secure_frontend_api_server_tests ${SECURE_FRONTEND_API_SERVER_CASES}
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
@@ -981,12 +986,13 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     endif()
 
     secure_frontend_add_test_executable(secure_frontend_concurrency_tests tests/concurrency_test.cpp
-        secure_frontend_connection_pool secure_frontend_generation_gate)
+        secure_frontend_connection_pool secure_frontend_generation_gate secure_frontend_request_log)
     secure_frontend_test_paths(secure_frontend_concurrency_tests)
     # Portable and unlabeled: these also run under wine.
     set(SECURE_FRONTEND_CONCURRENCY_CASES dos01_oldest_header_phase_connection_is_evicted dos01_remote_address_cap
         dos01_linger_list_overflow_closes_oldest dos01_linger_closes_on_peer_eof refusal_response_is_fixed_and_small
         gate_first_request_gets_the_slot gate_queue_full_is_busy gate_zero_queue_admits_one_at_a_time gate_fifo_order gate_timeout_returns_timeout
+        request_log_format_and_token_bucket
         gate_cancelled_waiter_leaves_queue gate_fast_fails_when_engine_not_ready gate_shutdown_refuses_waiters)
     secure_frontend_add_cases(secure_frontend_concurrency_tests ${SECURE_FRONTEND_CONCURRENCY_CASES} TIMEOUT 120)
 

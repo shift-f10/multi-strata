@@ -16,6 +16,7 @@
 #include "secure_frontend/launch_composition.hpp"
 #include "secure_frontend/privilege_check.hpp"
 #include "secure_frontend/process_defaults.hpp"
+#include "secure_frontend/request_log.hpp"
 #include "secure_frontend/server_cli.hpp"
 #include "secure_frontend/shutdown_signal.hpp"
 #include "secure_frontend/subsystem_limits.hpp"
@@ -242,6 +243,10 @@ int run(const FrontendConfig& config, const bool expert) {
   // which wakes the accept() below. Signals route to the supervisor's wake.
   supervisor.set_on_stopped([&server] { server->shutdown_listener(); });
   secure_frontend::install_shutdown_signals(supervisor.wake());
+  // Spec §8: the operator-facing startup summary — the process's own settings
+  // only (stderr, once; like --check prints them). Never any secret or path.
+  std::cerr << "strata: listening " << authority << ", workers " << config.limits.concurrency.max_concurrent_requests
+            << ", queued generations " << config.limits.concurrency.max_queued_generations << '\n' << std::flush;
   if (!supervisor.start()) { std::cerr << "Unable to start the engine supervisor.\n"; return EXIT_FAILURE; }
   // Every way out of this scope, an exception included, stops the supervisor
   // while the listener its on-stopped hook uses still exists.
@@ -255,12 +260,15 @@ int run(const FrontendConfig& config, const bool expert) {
   // thread; the workers exist for the life of the pool, which is constructed
   // after supervisor.start() and destroyed (already joined) before the
   // supervisor shutdown below.
+  secure_frontend::RequestLogger request_log(config.logging.requests, secure_frontend::stderr_sink());
   secure_frontend::ConnectionPool pool(
       *server,
       secure_frontend::PoolLimits{.workers = config.limits.concurrency.max_concurrent_requests,
                                   .per_remote_cap = config.limits.concurrency.max_connections_per_remote_address,
                                   .connection = connection_bounds},
-      router);
+      router,
+      // Spec §8: one fixed-field line per finished connection when logging.requests is on.
+      [&request_log](const secure_frontend::FinishedConnection& finished) { request_log.record(secure_frontend::log_record_for(finished)); });
   // Pre-flight P33 (kept per ruling T16-pool: shutdown_signalled() alone would
   // miss the recovery-exhausted exit): the supervisor's stop request ends the
   // accept loop; the on-stopped hook closing the listener is the second exit

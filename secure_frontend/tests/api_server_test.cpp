@@ -947,6 +947,72 @@ void ext02_http_headers_cannot_enable_extensions() {
   expect(count_of(record_of(dir / "record.txt"), "GEN ") == 1U, "only the ordinary chat reached the engine");
   expect(server->active_processes() == before, "no process started");
 }
+
+// SP3 Task 21 (spec §8): fixed-field request lines under a token bucket, the
+// startup summary, and nothing secret anywhere (PRIV-02 frontend part).
+void log_line_format_and_rate_limit() {
+  auto server = start_server({{"logging.requests", "true"}});
+  if (!server) return;
+  const auto started = std::chrono::steady_clock::now();
+  std::vector<std::thread> clients;
+  for (int t = 0; t < 6; ++t) {
+    clients.emplace_back([&] { for (int i = 0; i < 50; ++i) (void)raw(*server, raw_http::request("GET", "/health", authority(*server), {raw_http::bearer(token())})); });
+  }
+  for (auto& c : clients) c.join();
+  const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+  std::this_thread::sleep_for(1100ms);
+  (void)raw(*server, raw_http::request("GET", "/health", authority(*server), {raw_http::bearer(token())}));   // lets a suppression line out
+  const std::string log = server->stderr_text();
+  std::istringstream in(log);
+  std::size_t requests = 0, suppressions = 0;
+  for (std::string line; std::getline(in, line);) {
+    if (line.rfind("req ", 0) == 0) {
+      ++requests;
+      std::istringstream f(line);
+      std::string req, seq, route, status, code, ms, bytes, peer, extra;
+      f >> req >> seq >> route >> status >> code >> ms >> bytes >> peer;
+      expect(route == "health" && status == "200" && code == "-" && peer == "loopback" && !(f >> extra), "fixed fields only: " + line);
+    }
+    if (line.rfind("log: ", 0) == 0 && line.find(" request lines suppressed") != std::string::npos) ++suppressions;
+  }
+  const auto bound = 100.0 + 20.0 * (seconds + 1.2) + 1.0;
+  expect(static_cast<double>(requests) <= bound, "rate-limited: " + std::to_string(requests) + " <= " + std::to_string(bound));
+  expect(requests >= 100U && suppressions >= 1U && static_cast<double>(suppressions) <= seconds + 2.0, "burst then counted drops");
+  expect(log.find("strata: listening 127.0.0.1:") != std::string::npos && log.find("workers 8, queued generations 4") != std::string::npos,
+         "startup summary");
+}
+
+void err_no_token_prompt_or_path_in_any_body_or_log() {
+  const std::string marker = "ZZPROMPTMARKERZZ";
+  auto server = start_server({{"logging.requests", "true"}});
+  if (!server) return;
+  const std::string a = authority(*server);
+  const std::string root = test_support::utf8_path(server->root());
+  std::vector<std::string> bodies;
+  const auto send = [&](const std::string& request) {
+    if (auto c = raw_http::Connection::open("127.0.0.1", server->port()); c && c->send(request)) bodies.push_back(c->read_until_close(10s));
+  };
+  send(chat_request(*server, chat_body(R"("max_tokens":2)", marker)));
+  send(chat_request(*server, chat_body(R"("max_tokens":2,"tools":[")" + marker + "\"]")));
+  send(chat_request(*server, "{\"" + marker + "\":1}"));
+  send(chat_request(*server, R"({"model":")" + marker + R"(","messages":[{"role":"user","content":"Hi"}]})"));
+  send(raw_http::request("GET", "/" + marker, a, {raw_http::bearer(token())}));
+  send(raw_http::request("GET", "/health", a, {"Authorization: Bearer " + marker + "-0123456789abcdefghijk"}));
+  send(raw_http::request("GET", "/health", a, {raw_http::bearer(token()), "X-Marker: " + marker}));
+  send(raw_http::request("GET", "/health", marker + ":1", {raw_http::bearer(token())}));
+  send(raw_http::request("GET", "/health", a, {raw_http::bearer(token()), "Origin: http://" + marker}));
+  send(chat_request(*server, chat_body(R"("max_tokens":2,"temperature":9.5)", marker)));
+  std::this_thread::sleep_for(200ms);
+  const std::string log = server->stderr_text();
+  for (std::size_t i = 0; i < bodies.size(); ++i) {
+    // The 200 chat legitimately echoes generated text, never the prompt; the fake emits token 7, not the marker.
+    expect(bodies[i].find(marker) == std::string::npos, "response " + std::to_string(i) + " never reflects the marker");
+    expect(bodies[i].find(token()) == std::string::npos, "response " + std::to_string(i) + " never contains the token");
+    expect(bodies[i].find(root) == std::string::npos, "response " + std::to_string(i) + " never contains a configured path");
+  }
+  expect(log.find(marker) == std::string::npos && log.find(token()) == std::string::npos && log.find(root) == std::string::npos,
+         "stderr (with logging.requests=true) has no marker, token or path");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -993,6 +1059,8 @@ int main(int argc, char** argv) {
       {"dos01_service_healthy_after_each_attack", dos01_service_healthy_after_each_attack},
       {"ext01_upstream_control_routes_are_404_after_auth", ext01_upstream_control_routes_are_404_after_auth},
       {"ext02_http_headers_cannot_enable_extensions", ext02_http_headers_cannot_enable_extensions},
+      {"log_line_format_and_rate_limit", log_line_format_and_rate_limit},
+      {"err_no_token_prompt_or_path_in_any_body_or_log", err_no_token_prompt_or_path_in_any_body_or_log},
       {"dos01_slowloris_cannot_starve_a_real_client", dos01_slowloris_cannot_starve_a_real_client},
       {"dos01_slow_body_clients_cannot_starve_a_real_client", dos01_slow_body_clients_cannot_starve_a_real_client},
       {"net01_workers_add_no_listener", net01_workers_add_no_listener},
