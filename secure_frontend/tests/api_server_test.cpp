@@ -913,6 +913,40 @@ void dos01_service_healthy_after_each_attack() {
     expect(health && health->status == 200 && chat && chat->status == 200, "healthy and serving after: " + name);
   }
 }
+
+// SP3 Task 20 (EXT-01/EXT-02 amendments, spec §6.4): the upstream product's
+// control surface never exists here, and HTTP headers cannot switch extensions on.
+void ext01_upstream_control_routes_are_404_after_auth() {
+  auto server = start_server();
+  if (!server) return;
+  for (const std::string target : {"/v1/load", "/settings", "/config", "/slots", "/metrics", "/props", "/mcp", "/v1/completions",
+                                   "/v1/messages", "/v1/responses", "/v1/embeddings", "/api/chat", "/api/generate", "/api/tags",
+                                   "/api/pull", "/v1/tools", "/v1/mcp"}) {
+    for (const std::string method : {"GET", "POST"}) {
+      std::vector<std::string> lines{raw_http::bearer(token())};
+      if (method == "POST") lines.push_back("Content-Type: application/json");
+      const auto r = raw(*server, raw_http::request(method, target, authority(*server), lines, method == "POST" ? "{}" : ""));
+      expect(r && r->status == 404 && r->body == secure_frontend::render_error_body(secure_frontend::ApiError::not_found),
+             method + " " + target + " is 404 after authentication");
+    }
+  }
+}
+
+void ext02_http_headers_cannot_enable_extensions() {
+  const auto dir = test_support::make_temp_dir("ext02h");
+  auto server = start_server({}, {"--record-file=" + test_support::utf8_path(dir / "record.txt")});
+  if (!server) return;
+  const auto before = server->active_processes();
+  const std::vector<std::string> switches{"X-Strata-Enable-Tools: 1", "X-Strata-Mcp: on", "X-Strata-Extensions: all",
+                                          "X-Stainless-Helper-Method: tools"};
+  const auto r = raw(*server, chat_request(*server, chat_body(R"("max_tokens":2,"tools":[{"type":"function","function":{"name":"x"}}])"), switches));
+  expect(r && r->status == 400 && r->body == secure_frontend::render_error_body(secure_frontend::ApiError::extension_disabled, "tools"),
+         "header switches change nothing: tools stay disabled");
+  const auto plain = raw(*server, chat_request(*server, chat_body(), switches));
+  expect(plain && plain->status == 200 && plain->body.find("tool") == std::string::npos, "an ordinary chat is unaffected");
+  expect(count_of(record_of(dir / "record.txt"), "GEN ") == 1U, "only the ordinary chat reached the engine");
+  expect(server->active_processes() == before, "no process started");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -957,6 +991,8 @@ int main(int argc, char** argv) {
       {"dos02_resources_return_to_idle", dos02_resources_return_to_idle},
       {"shutdown_errors_never_report_fatal", shutdown_errors_never_report_fatal},
       {"dos01_service_healthy_after_each_attack", dos01_service_healthy_after_each_attack},
+      {"ext01_upstream_control_routes_are_404_after_auth", ext01_upstream_control_routes_are_404_after_auth},
+      {"ext02_http_headers_cannot_enable_extensions", ext02_http_headers_cannot_enable_extensions},
       {"dos01_slowloris_cannot_starve_a_real_client", dos01_slowloris_cannot_starve_a_real_client},
       {"dos01_slow_body_clients_cannot_starve_a_real_client", dos01_slow_body_clients_cannot_starve_a_real_client},
       {"net01_workers_add_no_listener", net01_workers_add_no_listener},

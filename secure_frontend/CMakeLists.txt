@@ -807,6 +807,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     endif()
     secure_frontend_add_cases(secure_frontend_server_tests ${SECURE_FRONTEND_SERVER_CASES}
         TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    if(WIN32)
+        target_link_libraries(secure_frontend_server_tests PRIVATE iphlpapi)  # SP3 Task 20: SocketScan reads the iphlpapi tables
+    endif()
 
     secure_frontend_add_test_executable(secure_frontend_api_server_tests tests/api_server_test.cpp
         secure_frontend_test_support secure_frontend_api_core secure_frontend_socket_io)
@@ -829,7 +832,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         dos02_serial_mode_one_worker
         dos02_queued_client_disconnect_leaves_queue dos02_non_stream_disconnect_cancels
         dos02_resources_return_to_idle shutdown_errors_never_report_fatal
-        dos01_service_healthy_after_each_attack)
+        dos01_service_healthy_after_each_attack
+        ext01_upstream_control_routes_are_404_after_auth ext02_http_headers_cannot_enable_extensions)
     # Ruling R-J: these cases start the real server over sockets; wine excludes them, MSYS2 is authoritative.
     secure_frontend_add_cases(secure_frontend_api_server_tests ${SECURE_FRONTEND_API_SERVER_CASES}
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
