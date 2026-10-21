@@ -4,6 +4,7 @@
 #include "secure_frontend/catalog.hpp"
 #include "secure_frontend/config_file.hpp"
 #include "secure_frontend/engine_gate.hpp"
+#include "secure_frontend/server_bootstrap.hpp"
 #include "secure_frontend/test_hooks.hpp"
 #include "strata_cli_internal.hpp"
 
@@ -26,6 +27,7 @@ const std::string_view kUsage =
     "       [--yes] [--bundle <dir>] [--allow-downgrade] [--verify] [--discard-partial]\n"
     "  update --models [<name:tag> ...] [--yes]\n"
     "  run <name[:tag]> [--yes]\n"
+    "  serve                        (foreground serve of the installed managed model)\n"
     "  doctor [--downloader]\n"
     "strata update        (program update: not available until SP7, exit 12)";
 
@@ -288,6 +290,19 @@ int verb_rm(const FrontendConfig& config, const Args& args, CliStreams& io, CliS
   return 0;
 }
 
+// SP5 M1 Task 13 (plan :240): `strata serve` — the SAME supervised path as
+// strata-secure-server (server_bootstrap), in the FOREGROUND, for the managed
+// model. Ruling T13-a: no --expert here (that flag stays with strata-secure-server;
+// the manifest carries profile and pack); no options, no operands. The plan's
+// "minus daemonization/server.json/lock" is what the boot already is — the pin
+// (upstream/serve/server.py) has no daemon, no server.json, no lock file, and the
+// PX server.json writer has never existed (SP3 M2 note). The config validation is
+// the same validator every verb here uses (load_config above).
+int verb_serve(const FrontendConfig& config, const Args& args, CliStreams& io) {
+  if (!args.flags.empty() || !args.positional.empty()) return usage(io, "serve takes no options or operands");
+  return secure_frontend::server_run(config, false);
+}
+
 std::variant<ValidatedConfig, int> load_config(const std::string& file, CliStreams& io) {
   auto draft = read_config_file(path_from_utf8(file));
   if (auto* issues = std::get_if<ConfigErrors>(&draft)) {
@@ -447,11 +462,13 @@ int run_strata(const std::span<const std::string> all_args, CliStreams& io, CliS
       {"list", {{"--all", "--outdated"}, {}}},
       {"show", {{"--digests"}, {}}},
       {"rm", {{"--force", "--retired"}, {"--partials"}}},
+      {"serve", {{}, {}}},
   };
   const auto it = grammar.find(verb);
   if (it == grammar.end()) return usage(io, "unknown verb");
   const auto parsed = parse_args(rest, it->second.flags, it->second.options);
   if (!parsed) return usage(io, "unknown or incomplete option");
+  if (verb == "serve") return verb_serve(config, *parsed, io);
   if (verb == "import") return verb_import(config, *parsed, io, services);
   if (verb == "verify") return verb_verify(config, *parsed, io);
   if (verb == "export") return verb_export(config, *parsed, io, services);

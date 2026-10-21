@@ -1,6 +1,7 @@
 #include "secure_frontend/frontend_config.hpp"
 #include "secure_frontend/server_cli.hpp"
 #include "secure_frontend/token_reader.hpp"
+#include "support/acquire_fixtures.hpp"  // SP5 M1 Task 13: the managed model for `strata serve`
 #include "support/server_fixture.hpp"
 #include "support/test_support.hpp"
 
@@ -8,12 +9,19 @@
 #include <array>
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
+#include <map>
 #include <set>
 #include <string>
 #include <string_view>
 #include <variant>
 #include <vector>
+
+#if !defined(_WIN32)
+#include <csignal>
+#include <sys/types.h>
+#endif
 
 namespace {
 int failures = 0;
@@ -22,6 +30,12 @@ void expect(const bool condition, const std::string& message) {
 }
 using secure_frontend_test::contains;
 using secure_frontend_test::ServerFixture;
+// SP5 M1 Task 13 (the serve cases): the fixture vocabulary this file did not need before.
+using secure_frontend_test::ChildProcess;
+using secure_frontend_test::json_literal;
+using secure_frontend_test::kTestTokenVariable;
+using secure_frontend_test::render_config_json;
+using secure_frontend_test::write_file;
 
 std::vector<std::string> with(std::vector<std::string> base, const std::vector<std::string>& extra) {
   base.insert(base.end(), extra.begin(), extra.end());
@@ -404,6 +418,87 @@ void cli_expert_flag_parsing() {
   const auto* invocation = std::get_if<secure_frontend::ServerInvocation>(&plain);
   expect(invocation != nullptr && !invocation->expert, "--expert is off by default");
 }
+
+// --- SP5 M1 Task 13: `strata serve` (foreground) -------------------------------------
+// The managed model m:t installed with the acquire fixtures (real byte-tokenizer trio,
+// Ruling T13-g) and managed config literals: roots.tokenizer_pack belongs to --expert,
+// and a managed bundle carries its own pack (Ruling T13-a).
+void install_fx_model(ServerFixture& f) {
+  namespace fx = secure_frontend_test::acquire;
+  const auto root = fx::models_root(f.models);
+  const auto payload = fx::qwen_payload_pack();
+  const auto manifest = fx::trusted(fx::manifest_text("m", "t", 1U, payload), secure_frontend::ModelOrigin::third_party);
+  fx::stage(root, manifest, payload);
+  fx::FakeLoaded nobody;
+  const secure_frontend::StoreEnvironment env;
+  const auto published =
+      secure_frontend::publish_staged(root, secure_frontend::staging_key(manifest.parsed.sha256), manifest, nobody, env, true);
+  expect(std::holds_alternative<secure_frontend::PublishResult>(published), "managed model m:t is installed for serve");
+}
+
+std::map<std::string, std::string> managed_serve_literals(const ServerFixture& f) {
+  auto literals = f.base_literals();
+  literals.erase("roots.tokenizer_pack");            // expert-only; the bundle carries the pack
+  literals["engine.model_id"] = json_literal("m:t");  // the served id is name:tag
+  return literals;
+}
+
+void serve_prints_ready_then_serves() {
+  ServerFixture f;
+  install_fx_model(f);
+  // Ruling T13-h: the same config validation as the run verbs — a broken file answers
+  // before anything is bound or spawned.
+  write_file(f.dir / "broken.json",
+             render_config_json({{"schema_version", "1"},
+                                 {"listener.port", "0"},
+                                 {"roots.models", json_literal(f.models.string())},
+                                 {"roots.state", json_literal(f.state.string())},
+                                 {"engine.executable", json_literal(f.engine.string())},
+                                 {"engine.model_id", json_literal("m")},
+                                 {"token.source", json_literal(std::string{"env:"} + kTestTokenVariable)}}));
+  const auto broken = f.run_cli({"--config", (f.dir / "broken.json").string(), "serve"});
+  expect(broken.exit_code != 0 && contains(broken.err, "listener.port: must be between 1 and 65535"),
+         "serve validates the config like the other verbs: " + broken.err);
+  f.write_config(managed_serve_literals(f));
+  ChildProcess cli;
+  expect(f.start_cli(cli, {"--config", f.config.string(), "serve"}), "strata serve runs in the foreground and the port answers");
+  expect(f.wait_engine_ready(), "the managed model reaches READY under strata serve");
+  const std::string reply = f.request("POST", "/v1/chat/completions", f.bearer(),
+                                      R"({"model":"m:t","messages":[{"role":"user","content":"Hi"}],"max_tokens":2})");
+  expect(contains(reply, "200 OK") && contains(reply, "\"choices\""), "a chat against the CLI-served model answers: " + reply.substr(0, 200));
+  // Ruling T13-d: the boot's own ready literals — stdout's human line and stderr's
+  // structured line, both with the served authority.
+  expect(contains(cli.stdout_text(), "Secure server listening on http://127.0.0.1:" + std::to_string(f.port)),
+         "the stdout ready line: " + cli.stdout_text().substr(0, 300));
+  expect(contains(cli.stderr_text(), "strata: listening 127.0.0.1:" + std::to_string(f.port)),
+         "the stderr structured ready line: " + cli.stderr_text().substr(0, 300));
+}
+
+void serve_runs_foreground_and_shuts_clean_on_sigterm() {
+  ServerFixture f;
+  install_fx_model(f);
+  f.write_config(managed_serve_literals(f));
+  ChildProcess cli;
+  expect(f.start_cli(cli, {"--config", f.config.string(), "serve"}), "the CLI process itself listens (no daemonization)");
+#if !defined(_WIN32)
+  const bool running = !cli.wait_for(std::chrono::milliseconds(0)).has_value();
+  (void)kill(static_cast<pid_t>(cli.pid()), SIGTERM);
+  const auto code = cli.wait_for(std::chrono::seconds(5));
+  expect(running && code.has_value() && *code == 0,
+         "SIGTERM: exit 0 within 5 s (the SP3 I1 shutdown path), code=" + std::to_string(code.value_or(-9)) +
+             " err=" + cli.stderr_text().substr(0, 300));
+#endif
+  // No lifecycle files (Ruling T13-f): the PX server.json writer does not exist, and
+  // no lock is taken — the whole scratch tree stays free of both.
+  std::error_code ec;
+  bool lifecycle_file = false;
+  for (auto it = std::filesystem::recursive_directory_iterator(f.dir, ec);
+       !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+    const std::string name = it->path().filename().string();
+    if (name == "server.json" || (name.size() > 5 && name.compare(name.size() - 5, 5, ".lock") == 0)) lifecycle_file = true;
+  }
+  expect(!lifecycle_file, "serve writes no server.json, no lock, nothing for a lifecycle");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -423,5 +518,7 @@ int main(int argc, char** argv) {
       {"auth04_no_switch_disables_auth", auth04_no_switch_disables_auth},
       {"serve_requires_state_root", serve_requires_state_root},
       {"cli_sp2_flags_map_to_schema_keys", cli_sp2_flags_map_to_schema_keys},
+      {"serve_prints_ready_then_serves", serve_prints_ready_then_serves},
+      {"serve_runs_foreground_and_shuts_clean_on_sigterm", serve_runs_foreground_and_shuts_clean_on_sigterm},
   }, failures);
 }

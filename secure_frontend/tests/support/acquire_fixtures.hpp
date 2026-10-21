@@ -75,8 +75,7 @@ inline std::vector<PayloadFile> qwen_payload_vision(const std::string_view salt 
 // tokenizer pack (test_tokenizer.hpp): a chat server must encode prompts, and the toy
 // 3-token vocab cannot resolve the ChatML markers. merges.txt is one newline (the pack
 // loader skips blank lines; manifest entries must not be size 0).
-inline std::vector<PayloadFile> qwen_payload_vision_pack(const std::string_view salt = "") {
-  auto files = qwen_payload_vision(salt);
+inline void use_real_tokenizer_trio(std::vector<PayloadFile>& files, const secure_frontend::TokenizerPack& pack) {
   // Replace the three files load_local_tokenizer_pack reads; tokenizer.json stays as
   // the bundle validator requires it (load ignores its contents, like the trio proof).
   files.erase(std::remove_if(files.begin(), files.end(),
@@ -85,12 +84,25 @@ inline std::vector<PayloadFile> qwen_payload_vision_pack(const std::string_view 
                                       f.path == "pack/tokenizer/token_type.json";
                              }),
               files.end());
-  for (const auto& [name, bytes] : test_support::tokenizer_pack_files(test_support::vision_byte_tokenizer())) {
+  for (const auto& [name, bytes] : test_support::tokenizer_pack_files(pack)) {
     // Manifest entries must not be size 0; the loader skips blank merge lines, so a single
     // newline stands in for the empty merges list.
     files.push_back(PayloadFile{"pack/tokenizer/" + name, secure_frontend::FileRole::tokenizer,
                                 bytes.empty() ? std::string{"\n"} : bytes});
   }
+}
+
+// SP5 M1 Task 13: the MANAGED model a chat server can boot without images — qwen_payload
+// with the real byte_tokenizer() pack (no vision markers, no mmproj).
+inline std::vector<PayloadFile> qwen_payload_pack(const std::string_view salt = "") {
+  auto files = qwen_payload(salt);
+  use_real_tokenizer_trio(files, test_support::byte_tokenizer());
+  return files;
+}
+
+inline std::vector<PayloadFile> qwen_payload_vision_pack(const std::string_view salt = "") {
+  auto files = qwen_payload_vision(salt);
+  use_real_tokenizer_trio(files, test_support::vision_byte_tokenizer());
   return files;
 }
 

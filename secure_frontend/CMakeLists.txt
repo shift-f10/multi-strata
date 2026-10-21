@@ -620,12 +620,27 @@ target_link_libraries(secure_frontend_launch PUBLIC secure_frontend_model_store 
 secure_frontend_set_warnings(secure_frontend_launch)
 target_link_libraries(strata-secure-server PRIVATE secure_frontend_launch)
 
+# SP5 M1 Task 13 (Ruling T13-b): the supervised serve path as a library — the one
+# boot `strata-secure-server` and `strata serve` share (server_bootstrap.hpp).
+secure_frontend_add_library(secure_frontend_server_bootstrap
+    SOURCES src/server_bootstrap.cpp
+    LINKS secure_frontend_config secure_frontend_token_reader secure_frontend_secrets
+          secure_frontend_http_policy secure_frontend_http_request_handler secure_frontend_http_socket_server
+          secure_frontend_api_router secure_frontend_model_inventory secure_frontend_tokenizer_pack
+          secure_frontend_engine_protocol_client secure_frontend_engine_stdio_process secure_frontend_chat_schema
+          secure_frontend_chat_generation_plan secure_frontend_chat_execution secure_frontend_engine_arguments
+          secure_frontend_typed_config secure_frontend_subsystem_limits secure_frontend_engine_supervisor
+          secure_frontend_socket_io secure_frontend_api_core secure_frontend_connection_pool
+          secure_frontend_chat_route secure_frontend_request_log secure_frontend_launch)
+target_link_libraries(strata-secure-server PRIVATE secure_frontend_server_bootstrap)
+
 # SP4 Task 23 (spec §1.5): the strata CLI's verbs.
 add_library(secure_frontend_strata_cli src/strata_cli.cpp)
 target_compile_features(secure_frontend_strata_cli PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_strata_cli PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
-target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_acquire secure_frontend_typed_config)
+target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_acquire secure_frontend_typed_config
+    secure_frontend_server_bootstrap)  # SP5 M1 Task 13: `strata serve` runs the shared boot
 target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_launch)
 # SP4 Task 27: pull, run, update --models and doctor drive the confined downloader.
 target_sources(secure_frontend_strata_cli PRIVATE src/strata_cli_network.cpp)
@@ -1344,11 +1359,12 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     add_executable(secure_frontend_fake_engine tests/fake_engine_main.cpp)
     target_compile_features(secure_frontend_fake_engine PRIVATE cxx_std_20)
     secure_frontend_set_warnings(secure_frontend_fake_engine)
-    set(SECURE_FRONTEND_SERVER_ARGS ARGS $<TARGET_FILE:strata-secure-server> $<TARGET_FILE:secure_frontend_fake_engine>)
+    set(SECURE_FRONTEND_SERVER_ARGS ARGS $<TARGET_FILE:strata-secure-server> $<TARGET_FILE:secure_frontend_fake_engine>
+        $<TARGET_FILE:strata>)  # SP5 M1 Task 13: ARGS[2] is the `strata` CLI (strata serve cases)
 
     secure_frontend_add_test_executable(secure_frontend_server_cli_tests tests/server_cli_test.cpp
         secure_frontend_typed_config)
-    add_dependencies(secure_frontend_server_cli_tests strata-secure-server secure_frontend_fake_engine)
+    add_dependencies(secure_frontend_server_cli_tests strata-secure-server secure_frontend_fake_engine strata)
     secure_frontend_add_cases(secure_frontend_server_cli_tests
         cli_config_file_and_flags_share_validator cli_flag_overrides_file_and_is_reported cli_check_prints_no_token
         cli_check_unreadable_token_is_not_reported_valid
@@ -1357,7 +1373,12 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
     secure_frontend_add_cases(secure_frontend_server_cli_tests cli_check_has_no_side_effects
         ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
-    target_link_libraries(secure_frontend_server_cli_tests PRIVATE secure_frontend_token_reader secure_frontend_server_cli)
+    # SP5 M1 Task 13: `strata serve` (foreground) — the CLI binary boots the same supervised path.
+    secure_frontend_add_cases(secure_frontend_server_cli_tests
+        serve_prints_ready_then_serves serve_runs_foreground_and_shuts_clean_on_sigterm
+        ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+    target_link_libraries(secure_frontend_server_cli_tests PRIVATE secure_frontend_token_reader secure_frontend_server_cli
+        secure_frontend_acquire)
     # Unit case (parse + validate in process, no child): unlabeled, so it also runs under wine.
     secure_frontend_add_cases(secure_frontend_server_cli_tests cli_sp2_flags_map_to_schema_keys TIMEOUT 120)
     # SP4 §4.9 d: pure argv parsing, so wine runs it too.
