@@ -677,6 +677,16 @@ endif()
 # needs, both following the secure_frontend_sha256 precedent.
 secure_frontend_add_library(secure_frontend_ed25519 SOURCES src/ed25519_verify.cpp src/sha512.cpp)
 
+# SP7 M2 Task 2 (spec D-2/D-3): signed release envelope. The pinned release key
+# is a build-time decision (owner's keygen output); default empty = every
+# pinned-path verification refuses with "no release key pinned".
+set(STRATA_RELEASE_PUBKEY_HEX "" CACHE STRING
+    "Lowercase 64-hex Ed25519 release public key pinned into the build (SP7 M2 D-2); empty refuses updates")
+secure_frontend_add_library(secure_frontend_release_manifest SOURCES src/release_manifest.cpp
+    LINKS secure_frontend_ed25519 secure_frontend_json)
+target_compile_definitions(secure_frontend_release_manifest PRIVATE
+    "STRATA_RELEASE_PUBKEY_HEX=\"${STRATA_RELEASE_PUBKEY_HEX}\"")
+
 # PX §2: the one user-facing binary. SP4 provides only its acquisition verbs (Controller note 1);
 # strata-secure-server never links secure_frontend_acquire or secure_frontend_strata_cli (§7.1).
 add_executable(strata src/strata_main.cpp)
@@ -1449,6 +1459,16 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         rfc8032_ed25519_official_vectors ed25519_rejects_tampered_message
         ed25519_rejects_tampered_signature ed25519_rejects_swapped_pubkey
         ed25519_rejects_noncanonical_signature ed25519_rejects_invalid_encodings
+        LABELS release-also TIMEOUT 120)
+
+    # SP7 M2 Task 2: the D-3 envelope happy path, forgeries and malformed input.
+    # Fixtures are RFC 8032 section-6 reference signatures (generated file).
+    secure_frontend_add_test_executable(secure_frontend_release_manifest_tests tests/release_manifest_test.cpp
+        secure_frontend_release_manifest)
+    target_include_directories(secure_frontend_release_manifest_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    secure_frontend_add_cases(secure_frontend_release_manifest_tests good_envelope_verifies
+        tampered_manifest_rejected tampered_signature_rejected wrong_pinned_key_rejected
+        no_pinned_key_refuses_exact_line malformed_envelopes_rejected schema_violations_rejected
         LABELS release-also TIMEOUT 120)
 
     # SP7 M1 Task 3: the D-7 doctor checks, all driven by fake ProbeBundles.
