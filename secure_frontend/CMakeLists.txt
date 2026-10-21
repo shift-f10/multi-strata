@@ -672,6 +672,11 @@ if(WIN32)
     target_link_libraries(secure_frontend_uninstall PUBLIC ws2_32)
 endif()
 
+# SP7 M2 Task 1 (spec D-2): dependency-free Ed25519 verification (RFC 8032
+# verify path only — no signing in C++) and the self-contained SHA-512 it
+# needs, both following the secure_frontend_sha256 precedent.
+secure_frontend_add_library(secure_frontend_ed25519 SOURCES src/ed25519_verify.cpp src/sha512.cpp)
+
 # PX §2: the one user-facing binary. SP4 provides only its acquisition verbs (Controller note 1);
 # strata-secure-server never links secure_frontend_acquire or secure_frontend_strata_cli (§7.1).
 add_executable(strata src/strata_main.cpp)
@@ -1432,6 +1437,19 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         render_systemd_unit_rejects_relative_or_empty render_schtasks_create_exact_golden
         render_schtasks_create_rejects_unsafe_paths)
     secure_frontend_add_cases(secure_frontend_service_ops_tests ${SECURE_FRONTEND_SERVICE_OPS_CASES})
+
+    # SP7 M2 Task 1: SHA-512 FIPS example digests and the RFC 8032 §7.1
+    # Ed25519 vectors plus the forged/tamper/encoding negatives. Pure CPU,
+    # so the whole battery is release-also like the SHA-256 vectors.
+    secure_frontend_add_test_executable(secure_frontend_ed25519_tests tests/ed25519_test.cpp
+        secure_frontend_ed25519)
+    target_include_directories(secure_frontend_ed25519_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    secure_frontend_add_cases(secure_frontend_ed25519_tests sha512_fips_example_digests
+        sha512_million_a_streaming sha512_chunk_boundaries_do_not_change_digest
+        rfc8032_ed25519_official_vectors ed25519_rejects_tampered_message
+        ed25519_rejects_tampered_signature ed25519_rejects_swapped_pubkey
+        ed25519_rejects_noncanonical_signature ed25519_rejects_invalid_encodings
+        LABELS release-also TIMEOUT 120)
 
     # SP7 M1 Task 3: the D-7 doctor checks, all driven by fake ProbeBundles.
     secure_frontend_add_test_executable(secure_frontend_doctor_tests tests/doctor_checks_test.cpp
