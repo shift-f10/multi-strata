@@ -631,8 +631,8 @@ secure_frontend_add_library(secure_frontend_sse SOURCES src/sse_encoder.cpp src/
 secure_frontend_add_library(secure_frontend_chat_stream SOURCES src/chat_stream.cpp src/lease_hold.cpp
     LINKS secure_frontend_sse secure_frontend_generation_run secure_frontend_engine_supervisor secure_frontend_generation_gate secure_frontend_chat_execution)
 # SP3 M2 (R-B): loopback-only client for strata run, the tests and strata-api-probe. Never linked into the serve path.
-secure_frontend_add_library(secure_frontend_api_client SOURCES src/loopback_address.cpp src/api_client.cpp
-    LINKS secure_frontend_config secure_frontend_socket_io secure_frontend_api_core)
+secure_frontend_add_library(secure_frontend_api_client SOURCES src/loopback_address.cpp src/api_client.cpp src/run_target.cpp
+    LINKS secure_frontend_config secure_frontend_socket_io secure_frontend_api_core secure_frontend_json)
 
 if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     enable_testing()
@@ -657,7 +657,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     endif()
     # Real loopback sockets: windows-runtime on Windows.
     set(SECURE_FRONTEND_API_CLIENT_CASES client_reads_chunked_stream_and_requires_done_and_terminal_chunk client_rejects_event_over_cap
-        client_accepts_only_loopback_address)
+        client_accepts_only_loopback_address run_refuses_non_loopback_server_json)
     secure_frontend_add_cases(secure_frontend_api_client_tests ${SECURE_FRONTEND_API_CLIENT_CASES} TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     secure_frontend_add_test_executable(secure_frontend_paths_tests tests/paths_test.cpp secure_frontend_paths)

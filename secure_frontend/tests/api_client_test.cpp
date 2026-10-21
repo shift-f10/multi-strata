@@ -1,5 +1,6 @@
 #include "secure_frontend/api_client.hpp"
 #include "secure_frontend/config.hpp"
+#include "secure_frontend/run_target.hpp"
 #include "support/test_support.hpp"
 
 #include <atomic>
@@ -9,6 +10,7 @@
 #include <string>
 #include <thread>
 #include <type_traits>
+#include <variant>
 
 #if defined(_WIN32)
 #include "secure_frontend/win32_prelude.hpp"
@@ -155,6 +157,28 @@ void client_accepts_only_loopback_address() {
                 "a plain IpAddress is a compile error at the call site");
 }
 
+void run_refuses_non_loopback_server_json() {
+  using secure_frontend::RunTarget;
+  using secure_frontend::RunTargetError;
+  const auto message = [](const std::string& json) -> std::string {
+    const auto target = secure_frontend::run_target_from_server_json(json);
+    return std::holds_alternative<RunTargetError>(target) ? std::string(std::get<RunTargetError>(target).message) : "ok";
+  };
+  expect(message(R"({"pid":12,"host":"127.0.0.1","port":8080,"version":"0.1"})") == "ok", "loopback IPv4");
+  expect(message(R"({"host":"::1","port":8080})") == "ok", "loopback IPv6");
+  const auto lan = message(R"({"host":"192.168.1.5","port":8080})");
+  expect(lan == secure_frontend::kRunNeedsLoopbackMessage, "a LAN-only server is refused with the fixed message");
+  expect(lan.find("listener.host") != std::string::npos && lan.find("192.168") == std::string::npos, "names the key, never the value");
+  expect(message(R"({"host":"0.0.0.0","port":8080})") == secure_frontend::kRunNeedsLoopbackMessage, "the wildcard is not loopback");
+  expect(message(R"({"host":"localhost","port":8080})") == "ok", "localhost maps to 127.0.0.1 without a resolver (SP1)");
+  for (const std::string bad : {R"({"port":8080})", R"({"host":"127.0.0.1"})", R"({"host":"127.0.0.1","port":0})",
+                                R"({"host":"127.0.0.1","port":70000})", R"({"host":"example.com","port":8080})", "not json", "[]"}) {
+    expect(message(bad) == secure_frontend::kRunServerFileInvalidMessage, "invalid server file: " + bad);
+  }
+  const auto target = secure_frontend::run_target_from_server_json(R"({"host":"127.0.0.1","port":8080})");
+  expect(std::holds_alternative<RunTarget>(target) && std::get<RunTarget>(target).port == 8080U, "port carried");
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -167,6 +191,7 @@ int main(int argc, char* argv[]) {
                                              {"client_reads_chunked_stream_and_requires_done_and_terminal_chunk", client_reads_chunked_stream_and_requires_done_and_terminal_chunk},
                                              {"client_rejects_event_over_cap", client_rejects_event_over_cap},
                                              {"client_accepts_only_loopback_address", client_accepts_only_loopback_address},
+                                             {"run_refuses_non_loopback_server_json", run_refuses_non_loopback_server_json},
                                          },
                                          failures);
 }
