@@ -43,8 +43,11 @@ void add_optional(EnvironmentBlock& block, const EngineEnvironment& environment)
 
 // The constant part of each family's rows, validated at compile time. strata
 // forces and suppresses nothing: its rendering is exactly the §3.9 allowlist.
-// glm currently renders strata rows; not reachable from config; SP6 fills its
-// table (§4.9 safety constants) and derives CUDA_VISIBLE_DEVICES in its hook.
+// The glm family's constant rows (SP5 M2 Task 4, D-7 superseding A10's bound
+// on SP6 §4.9): the §4.9 safety values as forced defaults — a typed
+// environment.glm_knobs row of the same name replaces one (the hook below) —
+// and the two rows the vendored MAYA v1.1.8 has no literal for (SP6 §4.9:
+// WATCHDOG_IO absent, HIPBLASLT tuning A4), suppressed.
 struct ConstantForcedValue final {
   std::string_view name;
   std::string_view value;
@@ -53,8 +56,16 @@ struct ConstantFamilyRows final {
   std::span<const ConstantForcedValue> forced;
   std::span<const std::string_view> suppressed;
 };
+constexpr std::array<ConstantForcedValue, 5> kGlmSafetyDefaults{{
+    {"STRATA_GLM_SLOTS", "0"},        // SP6 §4.9 A10: conversation slots off (generate.cpp:1174, 1252-1256)
+    {"STRATA_GLM_LOOP_THINK", "0"},   // SP6 §4.9 A11: loop guard off while thinking (generate.cpp:1724-1727)
+    {"STRATA_GLM_LOOP_ANSWER", "0"},  // SP6 §4.9 A11: loop guard off in the answer (same lines)
+    {"STRATA_GLM_SPLIT", "0"},        // SP6 §4.9: one device even if a driver exposes more (glm_model.cu:1717-1735)
+    {"STRATA_WATCHDOG_S", "0"},       // SP6 §4.9 §9/M5: the engine's own watchdog off (generate.cpp:727)
+}};
+constexpr std::array<std::string_view, 2> kGlmSuppressed{{"STRATA_HIPBLASLT_TUNING", "STRATA_WATCHDOG_IO_S"}};
 constexpr ConstantFamilyRows kStrataRows{};
-constexpr ConstantFamilyRows kGlmRows{};
+constexpr ConstantFamilyRows kGlmRows{kGlmSafetyDefaults, kGlmSuppressed};
 
 constexpr bool contains(const std::span<const std::string_view> names, const std::string_view name) noexcept {
   for (const auto candidate : names) {
@@ -104,13 +115,24 @@ FamilyEnvironmentRows owned(const ConstantFamilyRows& rows) {
 }  // namespace
 
 FamilyEnvironmentRows family_environment_rows(const EngineEnvironment& environment) {
-  switch (environment.family) {
-    case EngineFamily::strata:
-      return owned(kStrataRows);
-    case EngineFamily::glm:
-      return owned(kGlmRows);
+  if (environment.family == EngineFamily::strata) return owned(kStrataRows);
+  // glm (SP5 M2 Task 4, D-7): the §4.9 safety defaults, each moved by a typed
+  // row of the same name; the typed knob rows themselves; and the CUDA
+  // selectors — GPU selection is environment for this family only
+  // (maya-ref serve/server.py:1216-1224, SP6 §4.9 A8). A name off the closed
+  // allowlist, or a name both forced and suppressed, fails the merge and the
+  // spawn is refused: the table bounds what can ever reach the child.
+  FamilyEnvironmentRows rows = owned(kGlmRows);
+  for (const auto& knob : environment.glm_knobs) {
+    std::erase_if(rows.forced, [&knob](const ForcedEnvironmentValue& forced) { return forced.name == knob.name; });
+    rows.forced.push_back({knob.name, knob.value});
   }
-  return {};
+  std::string devices;
+  for (const unsigned gpu : environment.glm_gpus) devices += (devices.empty() ? "" : ",") + std::to_string(gpu);
+  if (devices.empty()) devices = "0";  // SP6 §4.9: an absent list renders device 0.
+  rows.forced.push_back({"CUDA_DEVICE_ORDER", "PCI_BUS_ID"});
+  rows.forced.push_back({"CUDA_VISIBLE_DEVICES", std::move(devices)});
+  return rows;
 }
 
 bool merge_forced_environment(EnvironmentBlock& block, const FamilyEnvironmentRows& rows) {

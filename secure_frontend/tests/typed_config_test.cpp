@@ -1066,6 +1066,36 @@ void thinking_budget_default_is_mayas_32768() {
          "speed projection defaults false (serve/server.py:3255)");
 }
 
+// SP5 M2 Task 4 (D-7): the config-to-env projection — glm.layer_split moves
+// the STRATA_GLM_SPLIT forced default in the glm child environment
+// (maya-ref docs/SETTINGS.md:31), and glm.gpu renders the family's CUDA
+// selector (serve/server.py:1216-1224); nothing else is projected today.
+void glm_environment_projection_moves_the_split_default() {
+  ConfigFixture f;
+  const auto result = with_literals(f, {{"engine.args", "[\"--max-context\", \"32768\"]"},
+                                        {"engine.profile", "\"glm53\""},
+                                        {"glm.layer_split", "\"7,12\""},
+                                        {"glm.gpu", "\"1\""}});
+  const auto* config = config_of(result);
+  expect(config != nullptr, "the glm53 config validates: " + issues_of(result));
+  if (config == nullptr) return;
+  const auto knobs = secure_frontend::glm_environment_knobs(*config);
+  expect(knobs.size() == 1U && knobs[0].name == "STRATA_GLM_SPLIT" && knobs[0].value == "7,12",
+         "layer_split projects to the SPLIT typed row, and nothing else does today");
+  const secure_frontend::EngineEnvironment environment{
+      .lib_dirs = {},
+      .temp_dir = "/state/engine-tmp/1",
+      .cuda_cache_dir = "/state/cache/cuda",
+      .family = secure_frontend::EngineFamily::glm,
+      .glm_gpus = config->glm.gpus,
+      .glm_knobs = knobs,
+  };
+  const auto block = secure_frontend::render_family_environment(environment);
+  expect(block != std::nullopt && block->at("STRATA_GLM_SPLIT") == "7,12" && block->at("CUDA_VISIBLE_DEVICES") == "1" &&
+             block->at("CUDA_DEVICE_ORDER") == "PCI_BUS_ID" && block->at("STRATA_GLM_SLOTS") == "0",
+         "the rendered glm child environment carries the moved split and the selector");
+}
+
 void reasoning_rows_match_the_pinned_validator() {
   ConfigFixture f;
   const auto accept = [&](const char* path, const char* value) {
@@ -1592,6 +1622,7 @@ int main(int argc, char** argv) {
       {"glm_keys_parse_with_mayas_kinds_and_defaults", glm_keys_parse_with_mayas_kinds_and_defaults},
       {"glm_keys_rejected_on_strata_profile_by_name", glm_keys_rejected_on_strata_profile_by_name},
       {"thinking_budget_default_is_mayas_32768", thinking_budget_default_is_mayas_32768},
+      {"glm_environment_projection_moves_the_split_default", glm_environment_projection_moves_the_split_default},
       {"lifecycle_rows_match_the_pin", lifecycle_rows_match_the_pin},
       {"vram_family_rows_match_the_pin", vram_family_rows_match_the_pin},
       {"timeout_shape_rows_match_the_pin", timeout_shape_rows_match_the_pin},

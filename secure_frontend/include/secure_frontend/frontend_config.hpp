@@ -3,6 +3,7 @@
 #include "secure_frontend/acquire_url.hpp"
 #include "secure_frontend/canonical_path.hpp"
 #include "secure_frontend/config.hpp"
+#include "secure_frontend/engine_environment.hpp"
 #include "secure_frontend/sampling_params.hpp"
 #include "secure_frontend/secret_source.hpp"
 
@@ -373,6 +374,14 @@ using ConfigValidationResult = std::variant<ValidatedConfig, ConfigErrors>;
 [[nodiscard]] std::string describe(const FrontendConfig& config);
 // The listener primitive HttpSocketServer::bind takes.
 [[nodiscard]] Config listener_config(const FrontendConfig& config);
+
+// SP5 M2 Task 4 (D-7): the typed glm.* config projected onto the glm family's
+// closed typed child environment. Today the split row rides glm.layer_split
+// (the config's layer_split sets the same knob, maya-ref docs/SETTINGS.md:31);
+// the launch composition (Task 7) sets family and glm_gpus, and Task 8 adds
+// the vision rows. Names are checked against the closed allowlist by the
+// merge step; a name's typed row moves that §4.9 forced default.
+[[nodiscard]] std::vector<ForcedEnvironmentValue> glm_environment_knobs(const FrontendConfig& config);
 // The only filesystem side effect of a configuration: creates a missing
 // roots.logs / roots.cache (0700 / private DACL) and checks an existing one.
 // Called by serve and init, never by validate() or --check.

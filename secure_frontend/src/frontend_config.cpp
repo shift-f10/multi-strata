@@ -1370,6 +1370,16 @@ std::string describe(const FrontendConfig& c) {
   return out;
 }
 
+std::vector<ForcedEnvironmentValue> glm_environment_knobs(const FrontendConfig& config) {
+  std::vector<ForcedEnvironmentValue> knobs;
+  // maya-ref docs/SETTINGS.md:31: the config's "layer_split" sets STRATA_GLM_SPLIT
+  // the same way; "auto" (Maya's own default, serve/server.py:1212) leaves the
+  // §4.9 forced single-device default in place — Task 7 renders the split argv
+  // and checks the count against the cards.
+  if (config.glm.layer_split != "auto") knobs.push_back({std::string{"STRATA_GLM_SPLIT"}, config.glm.layer_split});
+  return knobs;
+}
+
 Config listener_config(const FrontendConfig& c) {
   return Config{c.listener.host.canonical_text(), c.listener.port, true,
                 c.listener.host.scope() == AddressScope::loopback, c.listener.allow_remote,

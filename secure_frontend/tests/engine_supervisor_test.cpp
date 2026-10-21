@@ -1,6 +1,7 @@
 #include "secure_frontend/engine_supervisor.hpp"
 #include "secure_frontend/cgroup_scope.hpp"
 #include "secure_frontend/engine_environment.hpp"
+#include "secure_frontend/parity_table.hpp"
 #include "secure_frontend/engine_stdio_process.hpp"
 #include "secure_frontend/privilege_check.hpp"
 #include "secure_frontend/shutdown_signal.hpp"
@@ -1706,14 +1707,17 @@ void sp6_env_strata_family_renders_unchanged() {
   strata_posix.family = EngineFamily::strata;
   expect(secure_frontend::render_family_environment(strata_posix) == kPinnedPosixBlock, "strata through the family step: POSIX pin");
 #endif
-  // glm currently renders strata rows: not reachable from config; SP6 fills its table.
+  // SP5 M2 Task 4 (D-7): the glm hook is no longer empty — it carries the
+  // §4.9 safety defaults and the CUDA selectors; the exact block is pinned by
+  // glm_child_env_is_exactly_the_named_typed_set. The strata pins above stay
+  // byte-identical.
   auto glm_windows = representative_windows_environment();
   glm_windows.family = EngineFamily::glm;
   const auto glm_rows = secure_frontend::family_environment_rows(glm_windows);
-  expect(glm_rows.forced.empty() && glm_rows.suppressed.empty(), "the glm hook is empty until SP6");
-  expect(secure_frontend::apply_family_environment(secure_frontend::render_windows_environment(glm_windows, kPinnedSystem), glm_windows) ==
+  expect(!glm_rows.forced.empty() && !glm_rows.suppressed.empty(), "the glm hook now forces and suppresses its rows (D-7)");
+  expect(secure_frontend::apply_family_environment(secure_frontend::render_windows_environment(glm_windows, kPinnedSystem), glm_windows) !=
              kPinnedWindowsBlock,
-         "glm renders no GLM value yet");
+         "glm no longer renders the strata pin: it renders the GLM family's rows");
   // The config path builds the strata family.
   expect(secure_frontend::engine_environment_for("/srv/state", std::nullopt, {}).family == EngineFamily::strata,
          "engine_environment_for builds the strata family");
@@ -1765,13 +1769,32 @@ void sp6_env_forced_values_override_and_add() {
 
 // Fix round 1, item 1: the controller-ruled forcible set, each name on its own.
 void sp6_env_forcible_names_are_the_ruled_set() {
-  const std::array<std::string_view, 7> ruled{"STRATA_GLM_SLOTS", "STRATA_GLM_LOOP_THINK", "STRATA_GLM_LOOP_ANSWER", "STRATA_GLM_SPLIT",
-                                               "STRATA_WATCHDOG_S", "CUDA_DEVICE_ORDER", "CUDA_VISIBLE_DEVICES"};
+  namespace parity = secure_frontend::parity;
+  // SP6 §4.9's ruling, as amended by D-7 (2026-10-21): the safety constants,
+  // the two GPU selectors, and every typed engine_env name of the GLM parity
+  // table — the table is the allowlist (one source of truth). Rejected names
+  // stay out; every other STRATA_*/MAYA_* name stays out.
+  std::vector<std::string> ruled{"STRATA_GLM_SLOTS", "STRATA_GLM_LOOP_THINK", "STRATA_GLM_LOOP_ANSWER",
+                                 "STRATA_GLM_SPLIT", "STRATA_WATCHDOG_S", "CUDA_DEVICE_ORDER", "CUDA_VISIBLE_DEVICES"};
+  for (const auto name : parity::maya_env_knobs()) {
+    const auto* row = parity::maya_parity_row(name);
+    if (row == nullptr) continue;
+    const bool forced = row->disposition == parity::ParityDisposition::typed &&
+                        row->destination == parity::ParityDestination::engine_env;
+    const bool listed = std::find(ruled.begin(), ruled.end(), std::string{name}) != ruled.end();
+    if (forced && !listed) ruled.emplace_back(name);
+    if (!forced && listed)
+      expect(false, "a rejected or non-engine_env inventory name is on the ruled seed: " + std::string{name});
+  }
   expect(secure_frontend::kFamilyForcibleEnvironment.size() == ruled.size(), "the forcible list is exactly the ruled set");
-  for (const auto name : ruled) {
+  for (const auto& name : ruled) {
+    const bool listed = std::find(secure_frontend::kFamilyForcibleEnvironment.begin(),
+                                  secure_frontend::kFamilyForcibleEnvironment.end(), std::string_view{name}) !=
+                        secure_frontend::kFamilyForcibleEnvironment.end();
+    expect(listed, "forcible: " + name);
     auto block = kPinnedWindowsBlock;
-    FamilyEnvironmentRows rows{.forced = {{std::string(name), "0"}}};
-    expect(secure_frontend::merge_forced_environment(block, rows) && block.at(std::string(name)) == "0", "forcible: " + std::string(name));
+    FamilyEnvironmentRows rows{.forced = {{name, "0"}}};
+    expect(secure_frontend::merge_forced_environment(block, rows) && block.at(name) == "0", "forcible renders: " + name);
   }
 }
 
@@ -1876,6 +1899,124 @@ void sp6_env_refused_family_is_spawn_failure() {
   }
 }
 
+// SP5 M2 Task 4 (spec D-7, superseding A10's bound on SP6 §4.9): the glm family
+// renders the closed typed child environment. The allowlist is the GLM parity
+// table's typed engine_env set plus the SP6 safety constants and the two GPU
+// selectors; the §4.9 safety values are forced defaults a typed row can move;
+// unknown names never appear and the rejected DFLASH row never reaches the
+// child (C-5). The exact-block assertions stand in for an env-echo child: the
+// sp6 process case already proved hook rows reach a real child's environment.
+void glm_child_env_is_exactly_the_named_typed_set() {
+  namespace parity = secure_frontend::parity;
+  const secure_frontend::EngineEnvironment environment{
+      .lib_dirs = {std::filesystem::path{"/opt/cuda/lib"}},
+      .temp_dir = std::filesystem::path{"/state/engine-tmp/1"},
+      .cuda_cache_dir = std::filesystem::path{"/state/cache/cuda"},
+      .family = secure_frontend::EngineFamily::glm,
+  };
+  const auto block = secure_frontend::render_family_environment(environment);
+  expect(block.has_value(), "the glm family renders");
+  if (!block) return;
+  // The forced safety defaults (SP6 §4.9 as amended by D-7) arrive with forced values.
+  for (const std::string_view name : {"STRATA_GLM_SLOTS", "STRATA_GLM_LOOP_THINK", "STRATA_GLM_LOOP_ANSWER",
+                                      "STRATA_GLM_SPLIT", "STRATA_WATCHDOG_S"}) {
+    const auto found = block->find(std::string{name});
+    expect(found != block->end() && found->second == "0", "forced default: " + std::string{name});
+  }
+  // GPU selection is environment for this family only (serve/server.py:1216-1224,
+  // SP6 §4.9 A8): no card named renders device 0.
+  expect(block->count("CUDA_DEVICE_ORDER") == 1U && block->at("CUDA_DEVICE_ORDER") == "PCI_BUS_ID" &&
+             block->count("CUDA_VISIBLE_DEVICES") == 1U && block->at("CUDA_VISIBLE_DEVICES") == "0",
+         "the glm family renders the CUDA selectors");
+  // Every typed engine_env name of the table is forceable: the table is the allowlist.
+  for (const auto name : parity::maya_env_knobs()) {
+    const auto* row = parity::maya_parity_row(name);
+    if (row == nullptr || row->disposition != parity::ParityDisposition::typed ||
+        row->destination != parity::ParityDestination::engine_env)
+      continue;
+    auto probe = *block;
+    const secure_frontend::FamilyEnvironmentRows rows{.forced = {{std::string{name}, "7"}}};
+    expect(secure_frontend::merge_forced_environment(probe, rows) && probe.at(std::string{name}) == "7",
+           "the table's typed engine_env name is on the allowlist: " + std::string{name});
+  }
+  // Nothing else named STRATA_*/MAYA_* reaches the child.
+  for (const auto& [name, value] : *block) {
+    static_cast<void>(value);
+    if (name.rfind("STRATA_", 0) == 0 || name.rfind("MAYA_", 0) == 0) {
+      const auto* row = parity::maya_parity_row(name);
+      expect(row != nullptr && row->disposition == parity::ParityDisposition::typed &&
+                 row->destination == parity::ParityDestination::engine_env,
+             "no non-table STRATA_*/MAYA_* name reaches the child: " + name);
+    }
+  }
+}
+
+// SP6 §4.9's safety values stay forced unless a typed row moves them; the
+// glm family omits the rows MAYA v1.1.8 has no literal for (SP6 §4.9).
+void forced_defaults_stay_forced_unless_the_table_moves_them() {
+  auto environment = secure_frontend::EngineEnvironment{
+      .lib_dirs = {},
+      .temp_dir = std::filesystem::path{"/state/engine-tmp/1"},
+      .cuda_cache_dir = std::filesystem::path{"/state/cache/cuda"},
+      .watchdog_s = 180U,
+      .watchdog_io_s = 5U,
+      .family = secure_frontend::EngineFamily::glm,
+  };
+  const auto block = secure_frontend::render_family_environment(environment);
+  expect(block.has_value(), "the glm family renders");
+  if (!block) return;
+  expect(block->count("STRATA_WATCHDOG_IO_S") == 0U, "the glm family suppresses the watchdog-IO row (SP6 §4.9: MAYA v1.1.8 has no such literal)");
+  expect(block->at("STRATA_WATCHDOG_S") == "0", "the engine watchdog stays off (the M5 forced default overrides the generic row)");
+  expect(block->at("STRATA_GLM_SLOTS") == "0" && block->at("STRATA_GLM_LOOP_THINK") == "0" &&
+             block->at("STRATA_GLM_LOOP_ANSWER") == "0" && block->at("STRATA_GLM_SPLIT") == "0",
+         "the §4.9 safety defaults stand when nothing moves them");
+  // A typed row moves a forced default: replace, never duplicate (the same
+  // merge gate the family hook renders through).
+  auto probe = *block;
+  const secure_frontend::FamilyEnvironmentRows rows{.forced = {{"STRATA_GLM_SLOTS", "2"}, {"STRATA_GLM_SPLIT", "7,12"}}};
+  expect(secure_frontend::merge_forced_environment(probe, rows) && probe.at("STRATA_GLM_SLOTS") == "2" &&
+             probe.at("STRATA_GLM_SPLIT") == "7,12",
+         "a typed row moves a forced default");
+  // An unknown name fails closed: the merge refuses, the block stays as it was.
+  auto guarded = *block;
+  const secure_frontend::FamilyEnvironmentRows sneaky{.forced = {{"STRATA_GLM_MADE_UP", "1"}}};
+  expect(!secure_frontend::merge_forced_environment(guarded, sneaky) && guarded.count("STRATA_GLM_MADE_UP") == 0U,
+         "an unknown name is refused (the closed list)");
+  // Through the family step too: the whole environment is lost, never a partial one.
+  const auto refused = secure_frontend::apply_family_environment(
+      secure_frontend::render_engine_environment(environment), environment,
+      [](const secure_frontend::EngineEnvironment&) {
+        return secure_frontend::FamilyEnvironmentRows{.forced = {{"STRATA_GLM_MADE_UP", "1"}}};
+      });
+  expect(!refused.has_value(), "an unknown name through the family step refuses the whole environment (never a partial spawn)");
+}
+
+// C-5: STRATA_GLM_DFLASH stays a rejected row on the A7 licence ground: the
+// allowlist keeps it out even though the table now opens every other documented
+// knob (the config surface has no dflash key to set — the typed_config unknown-
+// key rule and the parity meta-test dflash_is_rejected_on_licence cover that).
+void dflash_never_reaches_the_child() {
+  namespace parity = secure_frontend::parity;
+  const auto* row = parity::maya_parity_row("STRATA_GLM_DFLASH");
+  expect(row != nullptr && row->disposition == parity::ParityDisposition::rejected, "the DFLASH row is rejected (C-5)");
+  const auto& forcible = secure_frontend::kFamilyForcibleEnvironment;
+  expect(std::find(forcible.begin(), forcible.end(), std::string_view{"STRATA_GLM_DFLASH"}) == forcible.end(),
+         "DFLASH is not on the forcible list (the closed list keeps the table's rejection)");
+  const secure_frontend::EngineEnvironment environment{
+      .lib_dirs = {},
+      .temp_dir = std::filesystem::path{"/state/engine-tmp/1"},
+      .cuda_cache_dir = std::filesystem::path{"/state/cache/cuda"},
+      .family = secure_frontend::EngineFamily::glm,
+  };
+  const auto block = secure_frontend::render_family_environment(environment);
+  expect(block.has_value(), "the glm family renders");
+  if (!block) return;
+  expect(block->count("STRATA_GLM_DFLASH") == 0U, "the rendered glm environment never carries DFLASH");
+  auto probe = *block;
+  const secure_frontend::FamilyEnvironmentRows rows{.forced = {{"STRATA_GLM_DFLASH", "1"}}};
+  expect(!secure_frontend::merge_forced_environment(probe, rows), "forcing DFLASH is refused: not on the allowlist");
+}
+
 // Fix round 1, item 2: the derived value reaches a real child through the spawn path.
 void sp6_env_derived_value_reaches_child() {
   const auto state = test_support::make_temp_dir("sp6-derived");
@@ -1940,6 +2081,10 @@ int main(int argc, char* argv[]) {
                                                 {"sp6_env_forced_values_override_and_add", sp6_env_forced_values_override_and_add},
                                                 {"sp6_env_forced_values_reject_never_list", sp6_env_forced_values_reject_never_list},
                                                 {"sp6_env_forcible_names_are_the_ruled_set", sp6_env_forcible_names_are_the_ruled_set},
+                                                {"glm_child_env_is_exactly_the_named_typed_set", glm_child_env_is_exactly_the_named_typed_set},
+                                                {"forced_defaults_stay_forced_unless_the_table_moves_them",
+                                                 forced_defaults_stay_forced_unless_the_table_moves_them},
+                                                {"dflash_never_reaches_the_child", dflash_never_reaches_the_child},
                                                 {"sp6_env_hook_derives_values_from_environment", sp6_env_hook_derives_values_from_environment},
                                                 {"sp6_env_hook_suppresses_only_optional_rows", sp6_env_hook_suppresses_only_optional_rows},
                                                 {"sp6_env_refused_family_is_spawn_failure", sp6_env_refused_family_is_spawn_failure},
