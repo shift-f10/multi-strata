@@ -162,6 +162,9 @@ add_library(secure_frontend_json
     src/json.cpp
 )
 
+secure_frontend_add_library(secure_frontend_parity
+    SOURCES src/parity_table.cpp)
+
 add_library(secure_frontend_typed_config src/frontend_config.cpp src/config_file.cpp)
 target_compile_features(secure_frontend_typed_config PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_typed_config PUBLIC
@@ -1165,6 +1168,12 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         json_accepts_strict_document json_rejects_duplicate_keys json_rejects_depth_over_limit
         json_rejects_non_integer_numbers json_rejects_bom_trailing_data_and_comments
         json_enforces_size_entry_and_string_limits json_string_escaper_round_trips json_decimals_only_when_enabled)
+
+    secure_frontend_add_test_executable(secure_frontend_parity_table_tests tests/parity_table_test.cpp
+        secure_frontend_parity)
+    secure_frontend_add_cases(secure_frontend_parity_table_tests
+        every_upstream_key_has_exactly_one_disposition every_env_knob_is_dispositioned
+        typed_rows_name_a_destination)
 
     secure_frontend_add_test_executable(secure_frontend_typed_config_tests tests/typed_config_test.cpp
         secure_frontend_typed_config)
