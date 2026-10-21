@@ -1143,7 +1143,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         generation_total_deadline_is_enforced
         gen_line_fits_max_prompt_tokens derived_line_cap_is_clamped_to_protocol_max stop_cause_and_completed_generations
         next_event_yields_tokens_progress_and_done next_event_timeout_keeps_generation_active
-        next_event_finish_forms_and_nonfinite_stays_idle)
+        next_event_finish_forms_and_nonfinite_stays_idle
+        maya_flavor_consumes_note_and_progress strata_flavor_still_fails_closed_on_note maya_pp_grammar_is_bounded)
 
     secure_frontend_add_test_executable(secure_frontend_model_inventory_tests tests/model_inventory_test.cpp
         secure_frontend_model_inventory)
