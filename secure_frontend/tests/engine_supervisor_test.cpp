@@ -4,6 +4,7 @@
 #include "secure_frontend/engine_stdio_process.hpp"
 #include "secure_frontend/privilege_check.hpp"
 #include "secure_frontend/shutdown_signal.hpp"
+#include "secure_frontend/vision_supervisor.hpp"
 
 #include "support/fake_engine_dump.hpp"
 #include "support/fake_supervised_process.hpp"
@@ -20,6 +21,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <new>
 #include <iostream>
 #include <map>
@@ -70,6 +73,9 @@ void supervisor_health_literals_per_state() {
       {SupervisorState::generating, true, "generating", ""},  {SupervisorState::stopping, false, "failed", "restarting"},
       {SupervisorState::backoff, false, "failed", "restarting"}, {SupervisorState::circuit_open, false, "failed", "exhausted"},
       {SupervisorState::shutting_down, false, "failed", ""},  {SupervisorState::stopped, false, "failed", ""},
+      // SP5 M1 Task 6: unloaded is served-from-cold: healthy, and /health keeps the closed
+      // literal set — "starting" names the load that the next request triggers (Ruling T6-e).
+      {SupervisorState::unloaded, true, "starting", ""},
   };
   for (const auto& row : rows) {
     const auto health = secure_frontend::health_for(row.state);
@@ -131,6 +137,77 @@ void proc04_healthy_window_resets_failure_count() {
   expect(test_support::wait_generation_ready(supervisor, 4U, 5s), "generation 4 ready: the circuit stayed closed");
   expect(clock->delays() == std::vector<std::chrono::milliseconds>{1000ms, 2000ms, 1000ms},
          "1 s, 2 s, then 1 s again after a healthy window reset the count");
+  supervisor.shutdown(5s);
+}
+
+// SP5 M1 Task 6 (parity row idle_unload_s; pin serve/server.py:8081 and the idle thread
+// :4100-4109 — unload is process teardown, and the next request restarts it). The supervisor
+// tears the idle engine down (orderly: stdin EOF first, the fake exits 0 like the real engine),
+// parks unloaded without counting a failure, and wakes for the request path with the same
+// composed launch (no config reload).
+void idle_unload_tears_down_then_respawns_on_next_request() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.push_line("READY 4096 stop"); });
+  auto clock = std::make_shared<test_support::ManualClock>();
+  secure_frontend::SupervisorConfig config;
+  config.idle_unload = std::chrono::seconds(60);
+  config.monitor_poll = 20ms;  // fake children have no pidfd: deadline checks ride the poll slices
+  secure_frontend::EngineSupervisor supervisor(config, fakes.factory(), clock);
+  expect(supervisor.start(), "the supervisor starts");
+  expect(test_support::wait_generation_ready(supervisor, 1U, 5s), "generation 1 ready");
+  {
+    const auto lease = supervisor.acquire();
+    expect(lease.has_value(), "a lease serves a request");
+  }  // releasing the Lease re-arms the idle deadline at now + 60 s
+  expect(supervisor.idle_unload_deadline().has_value(), "the idle deadline is armed after the request");
+  clock->advance(61s);
+  expect(supervisor.wait_for_state(SupervisorState::unloaded, 5s), "the idle deadline tears the engine down");
+  expect(fakes.spawned() == 1U, "the unload does not respawn by itself");
+  expect(!supervisor.acquire().has_value(), "no lease while unloaded");
+  supervisor.wake_for_request();  // the GenerationGate does this for a request that finds the engine unloaded
+  expect(test_support::wait_generation_ready(supervisor, 2U, 5s), "the request path gets generation 2 on the same composed launch");
+  expect(supervisor.snapshot().state == SupervisorState::ready, "ready again");
+  supervisor.shutdown(5s);
+}
+
+// SP5 M1 Task 6: the timer never fires while a generation is running or a request is in
+// flight (the pin's idle thread only acts "without requests").
+void idle_unload_never_fires_during_a_generation() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.push_line("READY 4096 stop"); });
+  auto clock = std::make_shared<test_support::ManualClock>();
+  secure_frontend::SupervisorConfig config;
+  config.idle_unload = std::chrono::seconds(60);
+  config.monitor_poll = 20ms;
+  secure_frontend::EngineSupervisor supervisor(config, fakes.factory(), clock);
+  expect(supervisor.start(), "the supervisor starts");
+  expect(test_support::wait_generation_ready(supervisor, 1U, 5s), "generation 1 ready");
+  auto lease = supervisor.acquire();
+  expect(lease.has_value(), "the lease is held across the deadline");
+  supervisor.note_request_started();  // a serving thread mid-request
+  clock->advance(61s);
+  expect(!supervisor.wait_for_state(SupervisorState::unloaded, 250ms),
+         "the timer never fires while a generation runs or a request is in flight");
+  supervisor.note_request_finished();
+  lease.reset();  // the generation ends; the idle window restarts from here
+  clock->advance(61s);
+  expect(supervisor.wait_for_state(SupervisorState::unloaded, 5s), "it fires once the request and the generation are over");
+  expect(fakes.spawned() == 1U, "still one generation until a request wakes it");
+  supervisor.shutdown(5s);
+}
+
+// SP5 M1 Task 6 (parity row lazy_load; pin :7925 -> StrataEngine(lazy=True) :966-993: the child
+// is NOT started; the first request path starts it — no engine argument composes for it,
+// which is why this asserts the deferral, not argv (Ruling T6-b)).
+void lazy_load_defers_the_first_spawn() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.push_line("READY 4096 stop"); });
+  secure_frontend::SupervisorConfig config;
+  config.lazy_start = true;  // engine.lazy_load
+  secure_frontend::EngineSupervisor supervisor(config, fakes.factory());
+  expect(supervisor.start(), "the supervisor starts");
+  expect(supervisor.wait_for_state(SupervisorState::unloaded, 5s), "a lazy start is unloaded, not starting");
+  expect(fakes.spawned() == 0U, "no engine process until the first request");
+  expect(!supervisor.acquire().has_value(), "no lease while unloaded");
+  supervisor.wake_for_request();
+  expect(test_support::wait_generation_ready(supervisor, 1U, 5s), "the first request's path spawns and gets READY");
   supervisor.shutdown(5s);
 }
 
@@ -998,6 +1075,178 @@ void proc04_slow_stdin_write_bounded_by_request_deadline() {
   supervisor.shutdown(5s);
 }
 
+// SP5 M1 Task 11 (D-9, rulings T11-w/x): the supervised vision role with the pin's child.
+// The fake (tests/fake_vision_child_main.cpp) records its argv and answers READY; these
+// cases prove the launch shape and the SP2-style resource policy (oversize line -> kill,
+// restart once, then circuit).
+
+namespace {
+
+std::string read_whole_file(const std::filesystem::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  return std::string{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
+}
+
+secure_frontend::ProcessFactory vision_factory(const std::filesystem::path& record, const std::vector<std::string>& args,
+                                               const std::filesystem::path& cwd = {}) {
+  // Value captures: the caller's temporaries (the argument list) die at the end of the
+  // full expression that stores this factory; the factory runs later, on start().
+  return [record, args, cwd](std::uint64_t) -> secure_frontend::SpawnResult {
+    auto child = std::make_unique<secure_frontend::EngineStdioProcess>();
+    std::vector<std::string> argv{"--record-file=" + test_support::utf8_path(record)};
+    argv.insert(argv.end(), args.begin(), args.end());
+    secure_frontend::EngineCommand command{.executable = test_support::fake_vision_child_path(),
+                                           .arguments = std::move(argv),
+                                           .environment = {},
+                                           .working_directory = cwd};
+    if (const auto error = child->start(command)) {
+      return secure_frontend::SpawnFailure{error->message};
+    }
+    return child;
+  };
+}
+
+int spawns_in(const std::string& record_text) {
+  int count = 0;
+  for (std::size_t at = record_text.find("SPAWN\n"); at != std::string::npos; at = record_text.find("SPAWN\n", at + 1U)) {
+    ++count;
+  }
+  return count;
+}
+
+}  // namespace
+
+// The pin's vision block form (serve/server.py:2556-2568): --mmproj, --model, then the
+// optional --threads / --max-tokens / --min-tokens; our added --no-flash-attn rides last.
+// The role opens on the child's READY line and QUITs it down.
+void vision_child_launches_with_pinned_args_when_enabled() {
+  const auto dir = test_support::make_temp_dir("vision-launch");
+  const auto record = dir / "record.txt";
+  const auto argv = secure_frontend::compose_vision_arguments({
+      .mmproj = test_support::utf8_path(dir / "mmproj.gguf"), .model = test_support::utf8_path(dir / "native.gguf"),
+      .threads = 4, .max_tokens = 2048, .min_tokens = 16, .no_flash_attn = true});
+  expect((argv == std::vector<std::string>{"--mmproj", test_support::utf8_path(dir / "mmproj.gguf"), "--model",
+                                           test_support::utf8_path(dir / "native.gguf"), "--threads", "4", "--max-tokens",
+                                           "2048", "--min-tokens", "16", "--no-flash-attn"}),
+         "compose_vision_arguments renders the pin's argv shape (:2556-2568; the added flag last)");
+  secure_frontend::VisionLimits limits;
+  limits.policy.backoff_initial = std::chrono::milliseconds{10};
+  secure_frontend::VisionSupervisor supervisor(vision_factory(record, argv), limits);
+  supervisor.start();
+  expect(supervisor.state() == secure_frontend::VisionState::up, "the READY gate opens the role");
+  supervisor.stop();
+  expect(supervisor.state() == secure_frontend::VisionState::stopped, "QUIT closes the role (pin :2792)");
+  const std::string text = read_whole_file(record);
+  expect(spawns_in(text) == 1, "exactly one spawn: " + text);
+  expect(text.find("ARG --mmproj\nARG " + test_support::utf8_path(dir / "mmproj.gguf") + "\nARG --model\nARG " +
+                         test_support::utf8_path(dir / "native.gguf") + "\n") != std::string::npos,
+         "the child received the mmproj/model pair first, like the pin");
+  expect(text.find("ARG --threads\nARG 4\nARG --max-tokens\nARG 2048\nARG --min-tokens\nARG 16\nARG --no-flash-attn\n") !=
+             std::string::npos,
+         "threads and the token bounds ride the pin's flag names (:2562-2567; Ruling T11-dd)");
+}
+
+// SP2 policy on this role (plan): an oversize stdout line is a failure (the shared
+// 8192-byte line bound), the child is killed, restart happens ONCE, then the circuit.
+void vision_child_respects_resource_limits() {
+  const auto dir = test_support::make_temp_dir("vision-limits");
+  const auto record = dir / "record.txt";
+  secure_frontend::VisionLimits limits;
+  limits.policy.max_consecutive_failures = 2U;
+  limits.policy.backoff_initial = std::chrono::milliseconds{10};
+  secure_frontend::VisionSupervisor supervisor(
+      vision_factory(record, {"--mode=oversize", "--mmproj", "m", "--model", "n"}), limits);
+  supervisor.start();
+  expect(supervisor.state() == secure_frontend::VisionState::circuit_open,
+         "the oversize line kills; one restart; then the circuit (SP2 policy, PROC/DOS rows)");
+  expect(spawns_in(read_whole_file(record)) == 2, "restart once then circuit (spawn count)");
+  supervisor.stop();
+}
+
+// SP5 M1 Task 12 (C-9, Ruling T12-e): the pin's ENC round trip (serve/server.py:2752-2780).
+// "ENC <img> <out>" is answered "OK <n>" — n is the image-token count that sizes the
+// prompt's pad run — the .sve lands in the child's cwd, and the child stays up for the
+// next image. After an explicit stop() the role does NOT wake (that stop is shutdown;
+// only a never-started lazy role wakes, the pin's _vision_up at :2646).
+void vision_encode_round_trip_at_the_pin() {
+  const auto dir = test_support::make_temp_dir("vision-enc");
+  const auto record = dir / "record.txt";
+  secure_frontend_test::write_file(dir / "a.img", "imgbytes");
+  secure_frontend::VisionLimits limits;
+  limits.policy.backoff_initial = std::chrono::milliseconds{10};
+  secure_frontend::VisionSupervisor supervisor(vision_factory(record, {"--mmproj", "m", "--model", "n"}, dir), limits);
+  supervisor.start();
+  expect(supervisor.up(), "the role is up");
+  const auto first = supervisor.encode("a.img", "a.sve");
+  const auto* encoded = std::get_if<secure_frontend::VisionEncoded>(&first);
+  expect(encoded != nullptr && encoded->image_tokens == 5U, "the OK line's count is the image-token count (:2778)");
+  expect(secure_frontend_test::read_file(dir / "a.sve") == std::string("\x00sve0", 5U),
+         "the embedding file lands in the child's cwd under the requested name (#480)");
+  const auto second = supervisor.encode("a.img", "b.sve");
+  expect(std::holds_alternative<secure_frontend::VisionEncoded>(second), "the child stays up for the next ENC");
+  expect(spawns_in(read_whole_file(record)) == 1, "one generation serves every ENC");
+  supervisor.stop();
+  const auto after = supervisor.encode("a.img", "c.sve");
+  const auto* error = std::get_if<secure_frontend::VisionEncodeError>(&after);
+  expect(error != nullptr && error->kind == secure_frontend::VisionEncodeError::Kind::not_running &&
+             spawns_in(read_whole_file(record)) == 1,
+         "an explicit stop() is shutdown: encode refuses, it does not wake the role");
+}
+
+// The failure paths at the pin: ERR -> the request fails, the child lives (the pin raises
+// and returns the encoder to the pool); a silent child is killed within the encode timeout
+// (VISION_ENCODE_S, :328) and the role goes stopped so the NEXT request wakes it (:2646);
+// a child that dies after answering is detected on the next attempt and woken.
+void vision_encode_failures_take_the_pinned_paths() {
+  {
+    const auto dir = test_support::make_temp_dir("vision-badenc");
+    const auto record = dir / "record.txt";
+    secure_frontend::VisionSupervisor supervisor(vision_factory(record, {"--mode=badenc"}, dir), secure_frontend::VisionLimits{});
+    supervisor.start();
+    const auto result = supervisor.encode("x.img", "x.sve");
+    const auto* error = std::get_if<secure_frontend::VisionEncodeError>(&result);
+    expect(error != nullptr && error->kind == secure_frontend::VisionEncodeError::Kind::encoder_rejected,
+           "ERR answers close the image, not the role (:2774)");
+    expect(supervisor.up(), "the child stays up after an ERR line");
+    supervisor.stop();
+  }
+  {
+    const auto dir = test_support::make_temp_dir("vision-silent");
+    const auto record = dir / "record.txt";
+    secure_frontend::VisionLimits limits;
+    limits.encode_timeout = std::chrono::milliseconds{200};
+    secure_frontend::VisionSupervisor supervisor(vision_factory(record, {"--mode=silentenc"}, dir), limits);
+    supervisor.start();
+    const auto started = std::chrono::steady_clock::now();
+    const auto first = supervisor.encode("x.img", "x.sve");
+    const auto* error = std::get_if<secure_frontend::VisionEncodeError>(&first);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+    expect(error != nullptr && error->kind == secure_frontend::VisionEncodeError::Kind::no_reply,
+           "a silent encoder is a failed image (:1317 family)");
+    expect(elapsed < std::chrono::seconds{2}, "the encode timeout bounds the wait (200 ms + slack)");
+    expect(!supervisor.up(), "the silent child was killed and reaped: the role is stopped for the next request");
+    const auto second = supervisor.encode("x.img", "x.sve");  // wakes, times out again
+    expect(std::holds_alternative<secure_frontend::VisionEncodeError>(second) && spawns_in(read_whole_file(record)) == 2,
+           "the next request starts the encoder again (pin _vision_up :2646)");
+    supervisor.stop();
+  }
+  {
+    const auto dir = test_support::make_temp_dir("vision-dieenc");
+    const auto record = dir / "record.txt";
+    secure_frontend::VisionSupervisor supervisor(vision_factory(record, {"--mode=dieenc"}, dir), secure_frontend::VisionLimits{});
+    supervisor.start();
+    expect(std::holds_alternative<secure_frontend::VisionEncoded>(supervisor.encode("x.img", "x.sve")),
+           "the first ENC is answered");
+    const auto second = supervisor.encode("x.img", "y.sve");  // the child exited after answering
+    expect(std::holds_alternative<secure_frontend::VisionEncodeError>(second), "a closed child fails the image");
+    expect(!supervisor.up(), "the dead role is stopped, not silently kept 'up'");
+    const auto third = supervisor.encode("x.img", "z.sve");  // wake
+    expect(std::holds_alternative<secure_frontend::VisionEncoded>(third) && spawns_in(read_whole_file(record)) == 2,
+           "the next request wakes a fresh encoder");
+    supervisor.stop();
+  }
+}
+
 // RF4: an exception that escapes the supervisor thread (the factory, the log
 // sink, the clock) opens the circuit instead of reaching std::terminate, and
 // a generation still alive at that point is killed and reaped first.
@@ -1694,6 +1943,9 @@ int main(int argc, char* argv[]) {
                                                 {"sp6_env_hook_derives_values_from_environment", sp6_env_hook_derives_values_from_environment},
                                                 {"sp6_env_hook_suppresses_only_optional_rows", sp6_env_hook_suppresses_only_optional_rows},
                                                 {"sp6_env_refused_family_is_spawn_failure", sp6_env_refused_family_is_spawn_failure},
+                                                {"idle_unload_tears_down_then_respawns_on_next_request", idle_unload_tears_down_then_respawns_on_next_request},
+                                                {"idle_unload_never_fires_during_a_generation", idle_unload_never_fires_during_a_generation},
+                                                {"lazy_load_defers_the_first_spawn", lazy_load_defers_the_first_spawn},
                                                 {"sp6_env_derived_value_reaches_child", sp6_env_derived_value_reaches_child},
                                                 {"proc02_child_env_is_exact_allowlist", proc02_child_env_is_exact_allowlist},
 #if !defined(_WIN32)
@@ -1709,5 +1961,9 @@ int main(int argc, char* argv[]) {
                                                 {"proc04_windows_write_timeout_kills_engine", proc04_windows_write_timeout_kills_engine},
 #endif
                                                 {"proc04_slow_stdin_write_bounded_by_request_deadline", proc04_slow_stdin_write_bounded_by_request_deadline},
+                                                {"vision_child_launches_with_pinned_args_when_enabled", vision_child_launches_with_pinned_args_when_enabled},
+                                                {"vision_child_respects_resource_limits", vision_child_respects_resource_limits},
+                                                {"vision_encode_round_trip_at_the_pin", vision_encode_round_trip_at_the_pin},
+                                                {"vision_encode_failures_take_the_pinned_paths", vision_encode_failures_take_the_pinned_paths},
                                                }, failures);
 }

@@ -366,6 +366,42 @@ void resolve_max_tokens_follows_decisions_1_and_2() {
   expect(resolve_max_tokens(5U, 100000U, 0U, 4096U, 0U) == std::optional<std::size_t>{5U}, "unknown context: no context clamp");
 }
 
+// SP5 M1 Task 5 (parity row fit_max_tokens): the pin's two behaviours (serve/server.py:4526-4544).
+// fit_max_tokens=false turns an EXPLICIT max_tokens over the room into a refusal instead of a
+// shortening (:4536-4543); an auto request still takes the room (:4526-4540) and the engine-internal
+// max_completion cap still clamps (B2 is not the pin's room rule; C-8 keeps it).
+void resolve_max_tokens_fit_false_refuses_like_the_pin() {
+  using secure_frontend::resolve_max_tokens;
+  expect(resolve_max_tokens(1000U, 50U, 100U, 4096U, 0U, false) == std::nullopt,
+         "fit false: an explicit request over the room is refused, never shortened (:4536)");
+  expect(resolve_max_tokens(std::nullopt, 50U, 100U, 4096U, 0U, false) == std::optional<std::size_t>{42U},
+         "fit false: an auto request still fits the room (:4526)");
+  expect(resolve_max_tokens(16384U, 10U, 100000U, 4096U, 0U, false) == std::optional<std::size_t>{4096U},
+         "fit false: the max_completion cap still clamps (B2)");
+  expect(resolve_max_tokens(1000U, 50U, 100U, 4096U, 0U, true) == std::optional<std::size_t>{42U},
+         "fit true keeps the shortening, today's behaviour (:4545)");
+}
+
+// SP5 M1 Task 8 (parity rows engine.min_tokens / engine.max_tokens, Task-2 rows "added
+// frontend bound per C-1"): the resolved output budget rides the pin's §7.2 room rules —
+// the floor lifts a tiny request first, the ceiling caps below the completion ceiling
+// last, and neither ever rescues a fit=false room refusal.
+void min_and_max_tokens_bounds_clamp_at_resolve() {
+  using secure_frontend::resolve_max_tokens;
+  expect(resolve_max_tokens(5U, 10U, 100000U, 4096U, 0U, true, 64U, 0U) == std::optional<std::size_t>{64U},
+         "engine.min_tokens lifts a tiny explicit request");
+  expect(resolve_max_tokens(std::nullopt, 10U, 100000U, 4096U, 0U, true, 64U, 0U) == std::optional<std::size_t>{4096U},
+         "the max_completion cap still wins over the floor");
+  expect(resolve_max_tokens(4000U, 10U, 100000U, 4096U, 0U, true, 0U, 512U) == std::optional<std::size_t>{512U},
+         "engine.max_tokens caps below the completion ceiling");
+  expect(resolve_max_tokens(4000U, 50U, 100U, 4096U, 0U, false, 0U, 512U) == std::nullopt,
+         "the ceiling never rescues a fit=false room refusal (:4536 stays)");
+  expect(resolve_max_tokens(5U, 50U, 100U, 4096U, 0U, true, 0U, 0U) == std::optional<std::size_t>{5U},
+         "unset bounds change nothing");
+  expect(resolve_max_tokens(5U, 80U, 100U, 4096U, 0U, true, 64U, 0U) == std::optional<std::size_t>{12U},
+         "the context room still caps a lifted floor");
+}
+
 // SP3 Task 15 (run_generation, spec §2.6 P6): a transport that answers STOP
 // with a cancel DONE the next time it is read. Adapted to the re-anchored
 // write_line(line, deadline, error) signature; assertions as planned.
@@ -443,6 +479,50 @@ void run_generation_timeout_stops_and_reports_timed_out() {
          "a timeout returns the text so far with length (B4), flagged timed_out for the log");
   expect(std::chrono::steady_clock::now() - started < std::chrono::seconds(1), "bounded by generation_timeout + drain");
   expect(f.protocol.idle(), "STOP drained");
+}
+
+// SP5 M1 Task 8 (parity row engine_silence_s; runconfig.py:39, serve/server.py:274-276):
+// the stall watchdog fires at the configured silence window — an engine that says nothing
+// valid reaches the SP3 stall path (STOP, drain, timed-out length) at silence_s, not at
+// the full generation deadline.
+void engine_silence_s_sets_the_stall_watchdog() {
+  const auto tokenizer = tokenizer_for("O");
+  ReadyService f({.generation_timeout = std::chrono::milliseconds(3000), .stop_drain_timeout = std::chrono::milliseconds(500),
+                  .silence_timeout = std::chrono::milliseconds(100)});
+  const auto started = std::chrono::steady_clock::now();
+  const auto outcome = f.service.run_generation({1U}, {.max_tokens = 100U}, {}, tokenizer);
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  const auto* result = std::get_if<secure_frontend::GenerationResult>(&outcome);
+  expect(result != nullptr && result->timed_out && result->finish == secure_frontend::FinishReason::length,
+         "the silence window takes the same stall path as generation_timeout (B4)");
+  expect(elapsed < std::chrono::seconds(1), "the watchdog fires at the silence bound, not the 3 s deadline");
+  expect(std::count(f.transport.writes.begin(), f.transport.writes.end(), "STOP") == 1, "the stalled generation is stopped");
+  expect(f.protocol.idle(), "STOP drained to DONE");
+}
+
+// SP5 M1 Task 8 (parity row repeat_stop_tokens; serve/server.py:197/:4908, notice :5088):
+// N equal tokens in a row end a reply as "length" — the pin's detector is the frontend's,
+// so nothing reaches the engine beyond the usual STOP. The run is kept; everything after
+// it is dropped. 0 keeps the old behaviour (the pin's opt-out, :8115).
+void repeat_stop_tokens_ends_a_runaway_reply() {
+  const auto tokenizer = tokenizer_for("O");
+  const auto o = token_id_for(tokenizer, "O");
+  ReadyService f({.generation_timeout = std::chrono::seconds(5), .stop_drain_timeout = std::chrono::milliseconds(500),
+                  .repeat_stop_tokens = 4U});
+  for (int i = 0; i < 40; ++i) f.transport.reads.push_back("T " + std::to_string(o));
+  const auto outcome = f.service.run_generation({1U}, {.max_tokens = 100U}, {}, tokenizer);
+  const auto* result = std::get_if<secure_frontend::GenerationResult>(&outcome);
+  expect(result != nullptr && result->text == "OOOO" && result->finish == secure_frontend::FinishReason::length,
+         "the run of four identical tokens ends the reply as length (the pin's word, :5088)");
+  expect(std::count(f.transport.writes.begin(), f.transport.writes.end(), "STOP") == 1, "the runaway reply is stopped once");
+  expect(f.protocol.idle(), "drained to DONE: the engine is idle for the next request");
+  ReadyService off({.generation_timeout = std::chrono::seconds(5)});
+  for (int i = 0; i < 40; ++i) off.transport.reads.push_back("T " + std::to_string(o));
+  off.transport.reads.push_back("DONE 40");
+  const auto open = off.service.run_generation({1U}, {.max_tokens = 100U}, {}, tokenizer);
+  expect(std::holds_alternative<secure_frontend::GenerationResult>(open) &&
+             std::get<secure_frontend::GenerationResult>(open).text.size() == 40U,
+         "repeat_stop_tokens 0: no stop rule (the pin's opt-out)");
 }
 
 void run_generation_drain_failure_abandons() {
@@ -624,6 +704,10 @@ int main(int argc, char** argv) {
       {"chat_applies_engine_context_rule_with_eight_token_margin", chat_applies_engine_context_rule_with_eight_token_margin},
       {"chat_uses_adopted_ready_without_waiting", chat_uses_adopted_ready_without_waiting},
       {"resolve_max_tokens_follows_decisions_1_and_2", resolve_max_tokens_follows_decisions_1_and_2},
+      {"resolve_max_tokens_fit_false_refuses_like_the_pin", resolve_max_tokens_fit_false_refuses_like_the_pin},
+      {"min_and_max_tokens_bounds_clamp_at_resolve", min_and_max_tokens_bounds_clamp_at_resolve},
+      {"engine_silence_s_sets_the_stall_watchdog", engine_silence_s_sets_the_stall_watchdog},
+      {"repeat_stop_tokens_ends_a_runaway_reply", repeat_stop_tokens_ends_a_runaway_reply},
       {"run_generation_reports_finish_usage_and_context", run_generation_reports_finish_usage_and_context},
       {"run_generation_cancel_sends_stop_and_drains", run_generation_cancel_sends_stop_and_drains},
       {"run_generation_timeout_stops_and_reports_timed_out", run_generation_timeout_stops_and_reports_timed_out},

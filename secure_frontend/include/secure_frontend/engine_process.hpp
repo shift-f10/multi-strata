@@ -1,6 +1,9 @@
 #pragma once
 
+#include "secure_frontend/exit_status.hpp"
+
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <map>
 #include <optional>
@@ -26,6 +29,15 @@ struct EngineCommand final {
   // on by default (owner decision 2026-10-13); --allow-new-privileges turns it off.
   // `{false}`: existing designated initializers that omit it keep compiling (-Werror).
   bool no_new_privileges{false};
+  // SP5 M1 Task 11 (Ruling T11-x): the Windows TerminateJobObject code a supervisor
+  // kill leaves on this child — kSupervisorKillExitCode for an engine, kVisionKillExitCode
+  // for the vision role (distinct exit-code space). `{}`-default pattern as above.
+  std::uint32_t kill_exit_code{kSupervisorKillExitCode};
+  // SP5 M1 Task 11 (Ruling T11-ff): start() inserts the literal --serve unless this is
+  // false. The pin's vision child takes no --serve (reader_args, serve/server.py:2556-2568),
+  // so the vision role starts with false. `{true}`: existing designated initializers
+  // that omit it keep compiling (-Werror).
+  bool insert_serve{true};
 };
 
 enum class ProcessErrorCode {

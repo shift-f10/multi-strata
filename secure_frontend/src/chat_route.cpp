@@ -7,6 +7,7 @@
 #include "secure_frontend/shutdown_signal.hpp"
 #include "secure_frontend/token_generator.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <limits>
@@ -48,28 +49,85 @@ HttpResponse ChatRoute::refusal(const GateRefusal refusal) {
 }
 
 RouteResult ChatRoute::handle(const std::string_view body, const RequestContext& context) {
+  // SP5 M1 Task 6 (parity row idle_unload_s, pin :4100-4109 "without requests"): bracket
+  // the request for the idle timer; both ends are no-ops when idle_unload is 0.
+  port_.note_request_started();
+  const struct RequestBracer {
+    SupervisorPort& port;
+    ~RequestBracer() { port.note_request_finished(); }
+  } bracer{port_};
   // P4: schema, tokenization, budget (spec §5.4) - before any queue place is taken.
   const ChatRequestResult parsed = parse_chat_request(body, config_.schema);
   if (const auto* error = std::get_if<ChatRequestError>(&parsed)) return make_error_response(error->error, {.param = error->param});
   const ChatCompletionRequest& request = std::get<ChatCompletionRequest>(parsed);
-  if (request.model != config_.model_id) return make_error_response(ApiError::model_not_found);
-  const auto plan_result = config_.profile == NativeChatProfile::qwen
-                               ? make_qwen_chat_generation_plan(request, tokenizer_, config_.max_prompt_tokens, 1U)
-                               : make_glm53_chat_generation_plan(request, tokenizer_, config_.max_prompt_tokens, 1U);
-  if (const auto* plan_error = std::get_if<ChatGenerationPlanError>(&plan_result)) {
-    return make_error_response(plan_error->code == ChatGenerationPlanErrorCode::prompt_too_large ? ApiError::context_length_exceeded
-                                                                                                  : ApiError::invalid_request);
+  // SP5 M1 Task 8 (model.aliases; set_aliases :3764-3777): the served id plus the
+  // configured aliases answer; matching is exact (§4: an empty or partial name never
+  // matches — an empty request.model is refused by the schema before this line).
+  if (request.model != config_.model_id &&
+      std::find(config_.model_aliases.begin(), config_.model_aliases.end(), request.model) == config_.model_aliases.end())
+    return make_error_response(ApiError::model_not_found);
+  // SP5 M1 Task 12 (C-9): the image half of P4/P6, in the pinned order.
+  // image_urls is empty on every text request; then everything below it is inert and
+  // the text path runs exactly as before.
+  std::vector<std::string_view> image_urls;
+  for (const auto& message : request.messages) {
+    for (const auto& part : message.parts) {
+      if (!part.image_data_url.empty()) image_urls.emplace_back(part.image_data_url);
+    }
   }
-  const ChatGenerationPlan& plan = std::get<ChatGenerationPlan>(plan_result);
+  const bool vision_request = !image_urls.empty();
+  // The schema gate (vision_capable) and this pointer are one boot-time decision
+  // (Ruling T12-b); a mismatch is a wiring bug — closed, not served.
+  if (vision_request && config_.vision == nullptr) return make_error_response(ApiError::invalid_request);
+  // Every scratch file the request wrote is deleted before handle() returns: no LRU in
+  // M1 (Ruling T12-d). The combined GENI file excepted — it follows the generation
+  // itself, because the engine consumes it at generation start (streamed or not).
+  std::vector<std::filesystem::path> scratch_files;
+  const struct ScratchCleaner {
+    VisionService* vision;
+    const std::vector<std::filesystem::path>* files;
+    ~ScratchCleaner() {
+      if (vision == nullptr) return;
+      for (const auto& file : *files) vision->discard(file);
+    }
+  } cleaner{config_.vision, &scratch_files};
+  // T12-e: decoding, caps and staging happen BEFORE the queue place — a shape refusal
+  // must not consume one. The ENC round trips wait for the lease, so encodes enter the
+  // same FIFO as generations (the pin's single queue, serve/server.py:4489).
+  std::vector<VisionService::Staged> staged_images;
+  staged_images.reserve(image_urls.size());
+  for (const std::string_view url : image_urls) {
+    auto staged = config_.vision->stage(url);
+    if (std::holds_alternative<ImagePayloadReason>(staged))
+      return make_error_response(ApiError::unsupported_parameter, {.param = "image_url"});
+    auto& entry = staged_images.emplace_back(std::get<VisionService::Staged>(std::move(staged)));
+    scratch_files.push_back(entry.path);
+  }
+
+  // P4 again: a text plan is complete before the gate; an image plan needs the
+  // encoder's per-image token counts, so only its budget pre-check waits (T12-e).
+  std::optional<ChatGenerationPlan> plan;
   std::vector<std::uint32_t> prompt_ids;
-  prompt_ids.reserve(plan.prompt_token_ids.size());
-  for (const std::size_t id : plan.prompt_token_ids) {
-    if (id > std::numeric_limits<std::uint32_t>::max()) return make_error_response(ApiError::invalid_request);
-    prompt_ids.push_back(static_cast<std::uint32_t>(id));
-  }
-  if (!resolve_max_tokens(request.max_tokens, prompt_ids.size(), last_context_.load(), config_.max_completion_tokens,
-                          config_.default_max_tokens)) {
-    return make_error_response(ApiError::context_length_exceeded);
+  if (!vision_request) {
+    const auto plan_result = config_.profile == NativeChatProfile::qwen
+                                 ? make_qwen_chat_generation_plan(request, tokenizer_, config_.max_prompt_tokens, 1U,
+                                                                  config_.sampling_default)
+                                 : make_glm53_chat_generation_plan(request, tokenizer_, config_.max_prompt_tokens, 1U,
+                                                                  config_.sampling_default);
+    if (const auto* plan_error = std::get_if<ChatGenerationPlanError>(&plan_result)) {
+      return make_error_response(plan_error->code == ChatGenerationPlanErrorCode::prompt_too_large ? ApiError::context_length_exceeded
+                                                                                                   : ApiError::invalid_request);
+    }
+    plan = std::get<ChatGenerationPlan>(std::move(plan_result));
+    prompt_ids.reserve(plan->prompt_token_ids.size());
+    for (const std::size_t id : plan->prompt_token_ids) {
+      if (id > std::numeric_limits<std::uint32_t>::max()) return make_error_response(ApiError::invalid_request);
+      prompt_ids.push_back(static_cast<std::uint32_t>(id));
+    }
+    if (!resolve_max_tokens(request.max_tokens, prompt_ids.size(), last_context_.load(), config_.max_completion_tokens,
+                            config_.default_max_tokens, config_.fit_max_tokens)) {
+      return make_error_response(ApiError::context_length_exceeded);
+    }
   }
 
   // P5: the gate.
@@ -78,27 +136,88 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
   std::optional<Lease> lease;
   lease.emplace(std::get<Lease>(std::move(admitted)));
 
+  // The image plan, inside the lease and BEFORE the GENI write: encoder answers in part
+  // order, the request's .sve files combine into one file (combined_embeddings_path
+  // family, pin :158/:175), and the prompt gains one vision-marker run per image.
+  std::string embeddings;
+  std::optional<std::filesystem::path> combined_file;
+  if (vision_request) {
+    std::vector<VisionService::Encoded> encoded;
+    encoded.reserve(staged_images.size());
+    for (const auto& staged : staged_images) {
+      auto answer = config_.vision->encode(staged);
+      if (const auto* failure = std::get_if<VisionService::EncodeFailure>(&answer)) {
+        lease.reset();
+        gate_.release();
+        // Ruling T12-h: a dead or un-wakeable encoder fails THIS request 503 (text
+        // serving is untouched); an ERR answer is the image itself — the fixed 400.
+        if (failure->kind == VisionEncodeError::Kind::not_running || failure->kind == VisionEncodeError::Kind::wake_failed ||
+            failure->kind == VisionEncodeError::Kind::no_reply)
+          return engine_unavailable();
+        return make_error_response(ApiError::unsupported_parameter, {.param = "image_url"});
+      }
+      auto& entry = encoded.emplace_back(std::get<VisionService::Encoded>(std::move(answer)));
+      scratch_files.push_back(entry.path);  // combine() removes these; the cleaner catches a combine failure
+    }
+    const auto combined = config_.vision->combine(encoded);
+    if (!combined.has_value()) {
+      lease.reset();
+      gate_.release();
+      return make_error_response(ApiError::internal_error);
+    }
+    combined_file = *combined;
+    embeddings = combined->string();  // absolute, and the boot guard (T12-j) keeps it space-free (#480)
+    std::vector<std::size_t> image_counts;
+    image_counts.reserve(encoded.size());
+    for (const auto& entry : encoded) image_counts.push_back(entry.image_tokens);
+    const auto plan_result = make_qwen_chat_generation_plan(request, tokenizer_, config_.max_prompt_tokens, 1U,
+                                                            config_.sampling_default, image_counts);
+    if (const auto* plan_error = std::get_if<ChatGenerationPlanError>(&plan_result)) {
+      config_.vision->discard(*combined_file);
+      lease.reset();
+      gate_.release();
+      return make_error_response(plan_error->code == ChatGenerationPlanErrorCode::prompt_too_large ? ApiError::context_length_exceeded
+                                                                                                   : ApiError::invalid_request);
+    }
+    plan = std::get<ChatGenerationPlan>(std::move(plan_result));
+    prompt_ids.reserve(plan->prompt_token_ids.size());
+    for (const std::size_t id : plan->prompt_token_ids) {
+      if (id > std::numeric_limits<std::uint32_t>::max()) {
+        config_.vision->discard(*combined_file);
+        lease.reset();
+        gate_.release();
+        return make_error_response(ApiError::invalid_request);
+      }
+      prompt_ids.push_back(static_cast<std::uint32_t>(id));
+    }
+  }
+
   // P6 through the lease; the context rule is re-checked against this generation's READY.
   GenerationOutcome outcome = GenerationFailure::engine_unavailable;
   bool context_refused = false;
   const std::size_t context_tokens = lease->chat().context_tokens();
   last_context_ = context_tokens;
   const auto budget = resolve_max_tokens(request.max_tokens, prompt_ids.size(), context_tokens, config_.max_completion_tokens,
-                                         config_.default_max_tokens);
-  if (budget && request.stream) return stream_response(lease, prompt_ids, *budget, request, context);
+                                         config_.default_max_tokens, config_.fit_max_tokens, config_.minimum_output_tokens,
+                                         config_.maximum_output_tokens);
+  if (budget && request.stream)
+    return stream_response(lease, prompt_ids, *budget, plan->sampling, request.include_usage, context,
+                           std::move(embeddings), combined_file);
   if (!budget) {
     context_refused = true;
   } else {
-    outcome = lease->chat().run_generation(prompt_ids, {.max_tokens = *budget, .sampling = request.sampling},
-                                           {.cancelled = context.client_gone, .shutting_down = context.shutting_down,
-                                            .shutdown_requested = [] { return shutdown_signalled(); }},
-                                           tokenizer_);
+    outcome = lease->chat().run_generation(
+        prompt_ids, {.max_tokens = *budget, .sampling = plan->sampling, .embeddings = embeddings},
+        {.cancelled = context.client_gone, .shutting_down = context.shutting_down,
+         .shutdown_requested = [] { return shutdown_signalled(); }},
+        tokenizer_);
     // Ruling R-H: never report_fatal once shutdown has begun (pool flag or SP2 signal).
     const bool shutting = (context.shutting_down != nullptr && context.shutting_down->load()) || shutdown_signalled();
     if (lease->protocol().closed() && !shutting) port_.report_fatal(*lease, kill_reason_for(lease->protocol()));
   }
   lease.reset();     // SP2: generating -> ready
   gate_.release();   // only now may the next head proceed
+  if (combined_file.has_value()) config_.vision->discard(*combined_file);  // DONE returned: the engine has read it
 
   if (context_refused) return make_error_response(ApiError::context_length_exceeded);
   if (const auto* failure = std::get_if<GenerationFailure>(&outcome)) {
@@ -125,7 +244,8 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
 }
 
 RouteResult ChatRoute::stream_response(std::optional<Lease>& lease, const std::vector<std::uint32_t>& prompt_ids, const std::size_t max_tokens,
-                                       const ChatCompletionRequest& request, const RequestContext& context) {
+                                       const SamplingParams& sampling, const bool include_usage, const RequestContext& context,
+                                       std::string embeddings, std::optional<std::filesystem::path> combined_file) {
   const std::atomic<bool>* flag = context.shutting_down;
   std::function<bool()> shutting_down = [flag] { return (flag != nullptr && flag->load()) || shutdown_signalled(); };  // R-H
   auto hold = std::make_shared<LeaseHold>(std::move(*lease), gate_, port_, shutting_down);
@@ -135,8 +255,10 @@ RouteResult ChatRoute::stream_response(std::optional<Lease>& lease, const std::v
     hold->end_generation();
     return make_error_response(ApiError::internal_error);
   }
-  if (const auto failure = hold->lease().chat().begin(prompt_ids, {.max_tokens = max_tokens, .sampling = request.sampling})) {
+  if (const auto failure =
+          hold->lease().chat().begin(prompt_ids, {.max_tokens = max_tokens, .sampling = sampling, .embeddings = embeddings})) {
     hold->end_generation();  // reports a closed protocol through the port
+    if (combined_file.has_value()) config_.vision->discard(*combined_file);
     return *failure == GenerationFailure::engine_error ? make_error_response(ApiError::engine_error) : engine_unavailable();
   }
   const auto created = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
@@ -146,10 +268,18 @@ RouteResult ChatRoute::stream_response(std::optional<Lease>& lease, const std::v
   settings.write_stall = config_.write_stall;
   settings.tail_deadline = config_.response_write_deadline;
   settings.keepalive = config_.stream_keepalive;
-  settings.include_usage = request.include_usage;
+  settings.include_usage = include_usage;
   settings.prompt_tokens = prompt_ids.size();
   const TokenizerPack* tokenizer = &tokenizer_;
-  return StreamHandler{[hold, identity = std::move(identity), settings, tokenizer, shutting_down](StreamSink& sink) {
+  return StreamHandler{[hold, identity = std::move(identity), settings, tokenizer, shutting_down, vision = config_.vision,
+                      combined_file](StreamSink& sink) {
+    // The engine consumed the GENI file at generation start; if it never began, the
+    // begin() failure above already removed it. Either way it must not outlive the stream.
+    const struct FileGuard {
+      VisionService* vision;
+      std::optional<std::filesystem::path> file;
+      ~FileGuard() { if (vision != nullptr && file.has_value()) vision->discard(*file); }
+    } file_guard{vision, combined_file};
     const TokenByteDecoder decoder(*tokenizer);
     const ChatStreamOutcome outcome = run_chat_stream(sink, hold->lease().protocol(), decoder, identity, settings, shutting_down,
                                                       [&hold](const GenerationRunResult&) { hold->end_generation(); });

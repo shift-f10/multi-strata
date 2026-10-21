@@ -77,10 +77,22 @@ bool contains_remote_scheme(std::string_view value) {
 
 bool valid_model(std::string_view value) {
   if (value.empty() || value.size() > kMaximumModelBytes || contains_remote_scheme(value)) return false;
-  for (const unsigned char byte : value) {
-    if (!(std::isalnum(byte) || byte == '.' || byte == '_' || byte == '-')) return false;
-  }
-  return true;
+  // Ruling T12-l (SP5 M1 Task 12): a managed model's served id is name[:tag] — the
+  // exact ModelId config grammar (make_model_id/validate_model_id) — so the chat
+  // field must be able to address it, or the served model would be unaddressable.
+  // At most one colon; both segments non-empty, [A-Za-z0-9._-], starting with a
+  // letter or digit; the total bound and the remote-scheme guard are unchanged.
+  const auto colon = value.find(':');
+  if (colon != std::string_view::npos && value.find(':', colon + 1U) != std::string_view::npos) return false;
+  const auto valid_segment = [](const std::string_view segment) {
+    if (segment.empty() || !std::isalnum(static_cast<unsigned char>(segment.front()))) return false;
+    for (const unsigned char byte : segment) {
+      if (!(std::isalnum(byte) || byte == '.' || byte == '_' || byte == '-')) return false;
+    }
+    return true;
+  };
+  return valid_segment(value.substr(0, colon)) &&
+         (colon == std::string_view::npos || valid_segment(value.substr(colon + 1U)));
 }
 
 bool valid_content(std::string_view value, const std::size_t max_message_bytes) {
@@ -89,6 +101,17 @@ bool valid_content(std::string_view value, const std::size_t max_message_bytes) 
     if (byte < 0x20U && byte != '\n' && byte != '\r' && byte != '\t') return false;
   }
   return true;
+}
+
+// SP5 M1 Task 12 (Ruling T12-a/T12-c): the schema half of the image_url gate. Only a
+// data URL with a media type and an explicit ;base64, reaches the decoder, and its
+// base64 LENGTH is bounded before ANY decode (the pin's 32 MiB cap on fetched image
+// URLs, serve/server.py:2474 — an http(s) image URL is not fetched in M1 at all).
+bool image_data_url_shape(const std::string_view url, const std::size_t max_b64_chars) {
+  if (url.rfind("data:", 0) != 0) return false;
+  const auto semicolon = url.find(";base64,");
+  if (semicolon == std::string_view::npos || semicolon <= std::string_view{"data:"}.size()) return false;
+  return url.size() - semicolon - std::string_view{";base64,"}.size() <= max_b64_chars;
 }
 
 }  // namespace
@@ -118,7 +141,9 @@ ChatRequestError refuse(const ApiError error, const std::string_view param = {})
 }  // namespace
 
 ChatRequestResult parse_chat_request(const std::string_view json, const ChatSchemaLimits& limits) {
-  // Depth 4 (kChatMaxJsonDepth): request -> messages -> message -> one more
+  // Depth (kChatMaxJsonDepth, 6 since C-9): request -> messages -> message ->
+  // content array -> part -> image_url object. Without the parts form the old
+  // ceiling of 4 stands; entry and size limits are unchanged either way.
   // level, so `content` arrays and small extension objects reach the schema
   // and get their own error; deeper input is invalid_json at the reader.
   const JsonLimits json_limits{.max_bytes = limits.max_body_bytes, .max_depth = api_constants::kChatMaxJsonDepth,
@@ -167,6 +192,7 @@ ChatRequestResult parse_chat_request(const std::string_view json, const ChatSche
     } else if (key == "messages") {
       const auto* items = value.if_array();
       if (items == nullptr || items->empty() || items->size() > limits.max_messages) return refuse(ApiError::invalid_request);
+      std::size_t image_count = 0;  // vision.max_n counts the WHOLE request (the pin reads one request's images at a time)
       for (const auto& item : *items) {
         const auto* fields = item.if_object();
         if (fields == nullptr) return refuse(ApiError::invalid_request);
@@ -175,7 +201,58 @@ ChatRequestResult parse_chat_request(const std::string_view json, const ChatSche
         bool content_seen = false;
         for (const auto& field : *fields) {
           if (field.key == "content" && field.value.kind() == JsonKind::array) {
-            return refuse(ApiError::unsupported_parameter, "content");
+            // C-9 carve-out (Ruling T12-b): the parts array is a MODEL capability decided by
+            // the composed launch (vision_capable), never a request option. Without it the
+            // 400 unsupported_parameter "content" stands verbatim.
+            if (!limits.vision_capable) return refuse(ApiError::unsupported_parameter, "content");
+            const auto* parts = field.value.if_array();
+            if (parts->empty() || parts->size() > limits.max_messages) return refuse(ApiError::invalid_request);
+            for (const auto& part : *parts) {
+              const auto* part_fields = part.if_object();
+              if (part_fields == nullptr) return refuse(ApiError::invalid_request);
+              ChatMessagePart parsed_part;
+              std::string_view type;
+              bool type_seen = false;
+              for (const auto& member : *part_fields) {
+                if (member.key == "type") {
+                  const auto* name = member.value.if_string();
+                  if (name == nullptr) return refuse(ApiError::invalid_request);
+                  type = *name;
+                  type_seen = true;
+                } else if (type == "text" && member.key == "text") {
+                  const auto* value_of_text = member.value.if_string();
+                  if (value_of_text == nullptr) return refuse(ApiError::invalid_request);
+                  parsed_part.text = *value_of_text;
+                } else if (type == "image_url" && member.key == "image_url") {
+                  const auto* url_object = member.value.if_object();
+                  if (url_object == nullptr) return refuse(ApiError::invalid_request);
+                  const std::string* url = nullptr;
+                  for (const auto& url_member : *url_object) {
+                    if (url_member.key != "url" || url != nullptr) return refuse(ApiError::invalid_request);
+                    url = url_member.value.if_string();
+                    if (url == nullptr) return refuse(ApiError::invalid_request);
+                  }
+                  if (url == nullptr || url->empty()) return refuse(ApiError::invalid_request);
+                  parsed_part.image_data_url = *url;
+                } else {
+                  return refuse(ApiError::invalid_request);  // closed part vocabulary, "type" first
+                }
+              }
+              if (!type_seen) return refuse(ApiError::invalid_request);
+              if (type == "text") {
+                if (!valid_content(parsed_part.text, limits.max_message_bytes)) return refuse(ApiError::invalid_request);
+                message.content += parsed_part.text;
+              } else if (type == "image_url") {
+                if (++image_count > limits.max_images) return refuse(ApiError::unsupported_parameter, "image_url");
+                if (!image_data_url_shape(parsed_part.image_data_url, limits.max_image_b64_chars))
+                  return refuse(ApiError::unsupported_parameter, "image_url");  // length cap BEFORE any decode
+              } else {
+                return refuse(ApiError::invalid_request);
+              }
+              message.parts.push_back(std::move(parsed_part));
+            }
+            content_seen = true;
+            continue;
           }
           const auto* text = field.value.if_string();
           if (text == nullptr) return refuse(ApiError::invalid_request);

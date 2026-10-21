@@ -1,6 +1,7 @@
 #include "secure_frontend/config_file.hpp"
 #include "secure_frontend/frontend_config.hpp"
 #include "secure_frontend/launch_composition.hpp"
+#include "secure_frontend/parity_table.hpp"
 #include "secure_frontend/secret_bytes.hpp"
 #include "secure_frontend/secret_source.hpp"
 #include "secure_frontend/token_reader.hpp"
@@ -10,6 +11,7 @@
 #include "support/test_support.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -62,6 +64,14 @@ std::string issues_of(const secure_frontend::ConfigValidationResult& result) {
 std::string valid_sample(const secure_frontend::ConfigKey& key) {
   switch (key.type) {
     case ConfigValueType::integer: return std::to_string(key.minimum);
+    case ConfigValueType::decimal: {
+      // The midpoint is inside every decimal bound pair this schema uses,
+      // including the pin's open bounds.
+      const double mid = (key.minimum_decimal + key.maximum_decimal) / 2.0;
+      char buffer[32];
+      const auto [end, ec] = std::to_chars(buffer, buffer + sizeof(buffer), mid);
+      return ec == std::errc{} ? std::string{buffer, end} : std::string{"0.5"};
+    }
     case ConfigValueType::boolean: return "false";
     case ConfigValueType::string_array: return "[]";
     case ConfigValueType::string: return key.default_string.empty() ? "\"x\"" : "\"" + std::string{key.default_string} + "\"";
@@ -72,6 +82,7 @@ std::string valid_sample(const secure_frontend::ConfigKey& key) {
 std::vector<std::string> wrong_type_samples(const ConfigValueType type) {
   switch (type) {
     case ConfigValueType::integer: return {"\"8080\"", "true", "[1]", "null"};
+    case ConfigValueType::decimal: return {"\"1.5\"", "true", "[1]", "null"};
     case ConfigValueType::boolean: return {"1", "\"true\"", "null"};
     case ConfigValueType::string: return {"1", "true", "[\"x\"]", "{}"};
     case ConfigValueType::string_array: return {"\"x\"", "[1]", "{}", "true"};
@@ -111,6 +122,15 @@ void cfg01_unknown_key_rejected() {
     auto literals = f.literals;
     literals[path] = "1";
     const auto result = validate_text(render_config_json(literals), f.dir);
+    // SP5 M1 Task 10 (Ruling T10-b): `replicas` is BOTH our typed section (replicas.parallel)
+    // and a rejected pinned name (the N-child scheduler dict, serve/replicas.py:44). An object
+    // under it that uses none of the typed children IS the pinned dict — it still fails at load
+    // by name, with the C-4 rule (excluded_key), not the generic unknown-key code.
+    if (path.rfind("replicas.", 0) == 0) {
+      expect(has_issue(result, "replicas", ConfigIssueCode::excluded_key),
+             "a typo under the shared name replicas fails with its narrowing rule: " + path);
+      continue;
+    }
     expect(has_issue(result, path, ConfigIssueCode::unknown_key), "unknown key must be rejected by name: " + path);
   }
 }
@@ -876,6 +896,591 @@ void cfg01_explicit_values_are_not_adjusted() {
   expect(c != nullptr && c->limits.concurrency.max_queued_generations == 2U && !c->limits.concurrency.queue_derived,
          "an explicit valid value is kept as written");
 }
+// SP5 M1 Task 3 (spec D-3): every rejected parity row fails at load, naming
+// the key and (via the fixed reason) its rule — before unknown-key detection.
+void each_rejected_upstream_key_errors_at_load_naming_it() {
+  ConfigFixture f;
+  for (const auto& row : secure_frontend::parity::strata_parity_rows()) {
+    if (row.disposition != secure_frontend::parity::ParityDisposition::rejected) continue;
+    const auto result = with_literals(f, {{std::string{row.key}, "1"}});
+    expect(has_issue(result, std::string{row.key}, ConfigIssueCode::excluded_key),
+           "config with excluded key '" + std::string{row.key} + "' must fail at load naming the key: " + issues_of(result));
+  }
+  const auto nested = with_literals(f, {{"engine.mcp", "1"}});
+  expect(has_issue(nested, "engine.mcp", ConfigIssueCode::excluded_key),
+         "a nested excluded member names its full path: " + issues_of(nested));
+  // A schema-typed path that shares a rejected flat name stays valid (typed wins).
+  const auto typed = with_literals(f, {{"engine.lib_dirs", "[\"/opt/lib\"]"}});
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(typed),
+         "engine.lib_dirs remains a typed key: " + issues_of(typed));
+}
+// SP5 M1 Task 4: config defaults.sampling.* carry the pin's kinds and bounds.
+// Wire form / clamps: serve/server.py:1360-1394 (sampling_keys). Config bounds
+// copied from clean_shared_defaults serve/server.py:7331-7367 (temperature
+// 0..2, top_p 0<x<=1, top_k int 1..64, seed a positive integer); min_p
+// (0,1] from the wire condition at :1372-1374; the caps on presence/frequency
+// (2) and penalty_last_n (8192) and the 32-bit seed cap are ADDED security
+// bounds (C-1) — the pin validates none.
+void sampling_defaults_cover_the_pinned_validator() {
+  ConfigFixture f;
+  struct Row { const char* path; const char* low_ok; const char* high_ok; const char* below; const char* above; };
+  const Row rows[] = {
+      {"defaults.sampling.temperature", "0", "2", "-0.1", "2.1"},
+      {"defaults.sampling.top_p", "0.5", "1", "0", "1.5"},
+      {"defaults.sampling.top_k", "1", "64", "0", "65"},
+      {"defaults.sampling.min_p", "0", "1", "-0.1", "1.1"},
+      {"defaults.sampling.presence_penalty", "0", "2", "-0.1", "2.1"},
+      {"defaults.sampling.repetition_penalty", "0.5", "2", "0", "2.1"},
+      {"defaults.sampling.frequency_penalty", "0", "2", "-0.1", "2.1"},
+      {"defaults.sampling.penalty_last_n", "0", "8192", "-1", "8193"},
+      {"defaults.sampling.seed", "1", "4294967295", "0", "4294967296"},
+  };
+  for (const auto& row : rows) {
+    const auto* key = secure_frontend::find_config_key(row.path);
+    expect(key != nullptr, std::string{"schema row exists: "} + row.path);
+    for (const char* accept : {row.low_ok, row.high_ok}) {
+      const auto* c = config_of(with_literals(f, {{row.path, accept}}));
+      expect(c != nullptr, std::string{"accepts "} + accept + " for " + row.path + ": " + issues_of(with_literals(f, {{row.path, accept}})));
+    }
+    for (const char* reject : {row.below, row.above}) {
+      const auto result = with_literals(f, {{row.path, reject}});
+      expect(std::holds_alternative<secure_frontend::ConfigErrors>(result),
+             std::string{"rejects "} + reject + " for " + row.path);
+    }
+  }
+  // Absent sampling rows stay UNSET (never a sent key), and a set row lands in
+  // the typed config. (config_of views into its argument: keep the result alive
+  // for the whole read-back — a dangling view here was a latent UAF.)
+  const auto bare_result = with_literals(f, {});
+  const auto* bare = config_of(bare_result);
+  expect(bare != nullptr, "a config without sampling rows still validates");
+  const auto set_result = with_literals(f, {{"defaults.sampling.min_p", "0.1"}});
+  const auto* set = config_of(set_result);
+  expect(set != nullptr && set->sampling.min_p.has_value() && *set->sampling.min_p == 0.1,
+         "defaults.sampling.min_p is typed: " + issues_of(set_result));
+  expect(!set->sampling.temperature.has_value() && !set->sampling.seed.has_value(),
+         "unset rows stay unset");
+}
+
+// SP5 M1 Task 5 (parity rows reasoning_* / fit_max_tokens): kinds, bounds and defaults copied from
+// the pin — clean_shared_defaults serve/server.py:7341-7343 (effort none|low|medium|high);
+// reasoning_budget_tokens :8120-8127 with reasoning_budget :3794-3807 ("a whole number", 0: none;
+// the 0..4294967295 bounds are ADDED security bounds, C-1); reasoning_close_retry bool :8015;
+// reasoning_loop_recovery false|"stop"|"recover"|true :8129-8136 (the typed row takes the three
+// string words); effort_position start|end :2841-2843; anthropic_thinking model|on_request
+// :8102-8104; fit_max_tokens bool default true :3485-3488 read at :7996.
+void reasoning_rows_match_the_pinned_validator() {
+  ConfigFixture f;
+  const auto accept = [&](const char* path, const char* value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result),
+           std::string{"accepts "} + value + " for " + path + ": " + issues_of(result));
+  };
+  const auto reject = [&](const char* path, const char* value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ConfigErrors>(result),
+           std::string{"rejects "} + value + " for " + path);
+  };
+  for (const char* v : {"\"none\"", "\"low\"", "\"medium\"", "\"high\""}) accept("reasoning.effort", v);
+  reject("reasoning.effort", "\"max\"");  // not one of the pin's levels (:7342)
+  reject("reasoning.effort", "1");
+  accept("reasoning.budget_tokens", "0");
+  accept("reasoning.budget_tokens", "4294967295");
+  reject("reasoning.budget_tokens", "-1");       // added bound (C-1): the pin treats <= 0 as no budget
+  reject("reasoning.budget_tokens", "4294967296");  // added 32-bit cap (C-1)
+  accept("reasoning.close_retry", "true");
+  accept("reasoning.close_retry", "false");
+  reject("reasoning.close_retry", "1");
+  for (const char* v : {"\"off\"", "\"stop\"", "\"recover\""}) accept("reasoning.loop_recovery", v);
+  reject("reasoning.loop_recovery", "\"retry\"");  // not one of the pin's words (:8134)
+  reject("reasoning.loop_recovery", "true");       // the pin's bool form: the typed row names the strings
+  for (const char* v : {"\"start\"", "\"end\""}) accept("reasoning.effort_position", v);
+  reject("reasoning.effort_position", "\"middle\"");
+  for (const char* v : {"\"model\"", "\"on_request\""}) accept("reasoning.anthropic_thinking", v);
+  reject("reasoning.anthropic_thinking", "\"on\"");
+  accept("engine.fit_max_tokens", "false");
+  reject("engine.fit_max_tokens", "\"false\"");
+  // The typed defaults follow the pin; an unset effort row stays unset. (config_of views into its
+  // argument: the validation result stays alive for the whole read-back.)
+  const auto bare_result = with_literals(f, {});
+  const auto* bare = config_of(bare_result);
+  expect(bare != nullptr, "a config without reasoning rows still validates: " + issues_of(bare_result));
+  if (bare != nullptr) {
+    using namespace secure_frontend;
+    expect(!bare->reasoning.effort.has_value() && bare->reasoning.budget_tokens == 0 && !bare->reasoning.close_retry &&
+               bare->reasoning.loop_recovery == LoopRecovery::off &&
+               bare->reasoning.effort_position == EffortPosition::start &&
+               bare->reasoning.anthropic_thinking == AnthropicThinking::model && bare->engine.fit_max_tokens,
+           "the pin's defaults: budget 0, close_retry false, recovery off, position start, thinking model, fit true");
+    const std::string described = describe(*bare);
+    expect(described.find("reasoning.effort = (unset)") != std::string::npos &&
+               described.find("reasoning.effort_position = start") != std::string::npos &&
+               described.find("engine.fit_max_tokens = true") != std::string::npos,
+           "describe reports the reasoning family");
+  }
+  const auto set_result = with_literals(f, {{"reasoning.effort", "\"low\""},
+                                            {"reasoning.budget_tokens", "2048"},
+                                            {"reasoning.effort_position", "\"end\""}});
+  const auto* set = config_of(set_result);
+  expect(set != nullptr && set->reasoning.effort.has_value() &&
+             *set->reasoning.effort == secure_frontend::ReasoningEffort::low &&
+             set->reasoning.budget_tokens == 2048 &&
+             set->reasoning.effort_position == secure_frontend::EffortPosition::end,
+         "reasoning rows are typed: " + issues_of(set_result));
+}
+
+// SP5 M1 Task 6 (parity rows lazy_load / idle_unload_s / mtp): runconfig.py:35-38 —
+// lazy_load bool "Start without loading the model; the first request loads it (text only)";
+// idle_unload_s num>=0, "0 or empty: never" (typed whole seconds; the 86400 cap is ADDED, C-1);
+// mtp bool, and draft_layer.is_off demands an explicit false (absent or true: on).
+void lifecycle_rows_match_the_pin() {
+  ConfigFixture f;
+  const auto accept = [&](const char* path, const char* value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result),
+           std::string{"accepts "} + value + " for " + path + ": " + issues_of(result));
+  };
+  const auto reject = [&](const char* path, const char* value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ConfigErrors>(result), std::string{"rejects "} + value + " for " + path);
+  };
+  accept("engine.lazy_load", "true");
+  accept("engine.lazy_load", "false");
+  reject("engine.lazy_load", "1");
+  accept("engine.idle_unload_s", "0");
+  accept("engine.idle_unload_s", "86400");
+  reject("engine.idle_unload_s", "-1");      // the pin: num>=0 (:35 "0 or empty: never")
+  reject("engine.idle_unload_s", "86401");   // added cap (C-1)
+  reject("engine.idle_unload_s", "\"60\"");
+  accept("engine.mtp", "false");
+  accept("engine.mtp", "true");
+  reject("engine.mtp", "\"false\"");
+  const auto bare_result = with_literals(f, {});
+  const auto* bare = config_of(bare_result);
+  expect(bare != nullptr, "a config without lifecycle rows still validates: " + issues_of(bare_result));
+  if (bare != nullptr) {
+    expect(!bare->engine.lazy_load && bare->engine.idle_unload == std::chrono::seconds(0) && bare->engine.mtp,
+           "the pin's defaults: lazy false, idle 0 (never), mtp on unless explicitly false");
+    const std::string described = secure_frontend::describe(*bare);
+    expect(described.find("engine.lazy_load = false") != std::string::npos &&
+               described.find("engine.idle_unload_s = 0") != std::string::npos &&
+               described.find("engine.mtp = true") != std::string::npos,
+           "describe reports the lifecycle family");
+  }
+  const auto set_result = with_literals(f, {{"engine.lazy_load", "true"}, {"engine.idle_unload_s", "600"}, {"engine.mtp", "false"}});
+  const auto* set = config_of(set_result);
+  expect(set != nullptr && set->engine.lazy_load && set->engine.idle_unload == std::chrono::seconds(600) && !set->engine.mtp,
+         "lifecycle rows are typed: " + issues_of(set_result));
+}
+
+// SP5 M1 Task 7 (parity rows vram_reserve_mib / min_free_vram_mib / vram_elastic /
+// vram_segment_mib / elastic / elastic_idle_s / elastic_mib / gpu_order / gpu_policy /
+// layer_split / split_skip_if_fits / hip_ordinal / uma): kinds and defaults verbatim from
+// the pin — runconfig.py:42, serve/server.py:2550-2552/2870-2948/3023/3112/8083,
+// serve/images.py:23/45/173 — the caps and the enum vocabularies' closed sets are added (C-1).
+void vram_family_rows_match_the_pin() {
+  ConfigFixture f;
+  const auto bare_result = with_literals(f, {});
+  const auto* bare = config_of(bare_result);
+  expect(bare != nullptr, "a config without the vram family still validates: " + issues_of(bare_result));
+  if (bare != nullptr) {
+    expect(!bare->engine.vram_reserve_mib.has_value() && bare->engine.min_free_vram == 0 && !bare->engine.vram_elastic &&
+               !bare->engine.vram_segment_mib.has_value() && !bare->engine.elastic &&
+               bare->engine.elastic_idle == std::chrono::seconds(120) && bare->engine.elastic_mib == 2048 &&
+               bare->engine.gpu_order == secure_frontend::GpuOrder::auto_order &&
+               bare->engine.gpu_policy == secure_frontend::GpuTurnPolicy::auto_policy &&
+               bare->engine.layer_split == "auto" && !bare->engine.split_skip_if_fits && !bare->engine.hip_ordinal.has_value() &&
+               !bare->engine.uma,
+           "the pin's defaults: unset MiB rows, elastic 2048 MiB / 120 s, auto vocabularies, uma false");
+    const std::string described = secure_frontend::describe(*bare);
+    expect(described.find("engine.layer_split = auto\n") != std::string::npos &&
+               described.find("engine.elastic_mib = 2048\n") != std::string::npos &&
+               described.find("engine.min_free_vram_mib = 0\n") != std::string::npos &&
+               described.find("engine.uma = false\n") != std::string::npos,
+           "describe reports the vram family");
+  }
+  const auto accept = [&](const char* path, const char* value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result),
+           std::string{"accepts "} + value + " for " + path + ": " + issues_of(result));
+  };
+  const auto reject = [&](const char* path, const char* value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ConfigErrors>(result), std::string{"rejects "} + value + " for " + path);
+  };
+  accept("engine.vram_elastic", "true");
+  reject("engine.vram_elastic", "\"true\"");
+  accept("engine.split_skip_if_fits", "false");
+  accept("engine.elastic", "true");
+  accept("engine.uma", "true");
+  accept("engine.gpu_order", "\"as_given\"");
+  reject("engine.gpu_order", "\"faster\"");   // the pin reorders for anything but "as_given"; the typed row closes the set
+  accept("engine.gpu_order", "\"auto\"");
+  accept("engine.gpu_policy", "\"shrink\"");
+  reject("engine.gpu_policy", "\"release\"");  // POLICIES is (auto, keep, shrink, unload) (images.py:45)
+  accept("engine.layer_split", "\"24,36,42\"");
+  reject("engine.layer_split", "\"24,16,12,12\"");  // the pin's per-card-counts error (:2888-2892)
+  reject("engine.layer_split", "1.5");
+}
+
+// SP5 M1 Task 7: each MiB row accepts 0 / its minimum and the row's max, and rejects one
+// past the cap — the caps are added bounds (C-1); the pin's floors are kept (segment > 0,
+// :2947). hip_ordinal mirrors hip_visible's number space with an added cap.
+void bounds_are_the_pins_at_each_edge() {
+  ConfigFixture f;
+  const auto accept = [&](const char* path, const char* value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result),
+           std::string{"accepts "} + value + " for " + path + ": " + issues_of(result));
+  };
+  const auto reject = [&](const char* path, const char* value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ConfigErrors>(result), std::string{"rejects "} + value + " for " + path);
+  };
+  accept("engine.vram_reserve_mib", "0");
+  accept("engine.vram_reserve_mib", "1048576");
+  reject("engine.vram_reserve_mib", "1048577");
+  accept("engine.min_free_vram_mib", "0");
+  accept("engine.min_free_vram_mib", "1048576");
+  reject("engine.min_free_vram_mib", "1048577");
+  accept("engine.vram_segment_mib", "1");  // the pin: isinstance int and > 0 (:2947)
+  reject("engine.vram_segment_mib", "0");
+  reject("engine.vram_segment_mib", "-1");
+  accept("engine.elastic_mib", "1");
+  accept("engine.elastic_mib", "1048576");
+  reject("engine.elastic_mib", "1048577");
+  accept("engine.elastic_idle_s", "1");
+  accept("engine.elastic_idle_s", "86400");
+  reject("engine.elastic_idle_s", "86401");
+  reject("engine.elastic_idle_s", "0");  // the pin's "0 == empty: 120" falsy quirk is not copied (Ruling T7-h)
+  accept("engine.hip_ordinal", "0");
+  accept("engine.hip_ordinal", "127");
+  reject("engine.hip_ordinal", "128");
+  reject("engine.hip_ordinal", "-1");
+  const auto set_result = with_literals(f, {{"engine.vram_reserve_mib", "900"}, {"engine.hip_ordinal", "1"},
+                                            {"engine.layer_split", "\"18\""}, {"engine.vram_elastic", "true"}});
+  const auto* set = config_of(set_result);
+  expect(set != nullptr && set->engine.vram_reserve_mib.has_value() && *set->engine.vram_reserve_mib == 900 &&
+             set->engine.hip_ordinal.has_value() && *set->engine.hip_ordinal == 1 && set->engine.layer_split == "18" &&
+             set->engine.vram_elastic,
+         "the vram family is typed: " + issues_of(set_result));
+}
+
+// SP5 M1 Task 8 (parity rows engine_silence_s / answer_room / repeat_stop_tokens /
+// max_tokens / min_tokens / model.aliases). Defaults verbatim from the pin: silence 300 s
+// (runconfig.py:39), answer_room true (serve/server.py:8014 `is not False`), repeat 256
+// (REPEAT_STOP_TOKENS :197, :8115), the MiB-style token bounds unset (added rows, C-1),
+// aliases empty; model.aliases grammar is set_aliases' name rule (:3764-3777).
+void timeout_shape_rows_match_the_pin() {
+  ConfigFixture f;
+  const auto bare_result = with_literals(f, {});
+  const auto* bare = config_of(bare_result);
+  expect(bare != nullptr, "a config without the timeout/shape rows still validates: " + issues_of(bare_result));
+  if (bare != nullptr) {
+    expect(bare->engine.silence == std::chrono::seconds(300) && bare->engine.answer_room &&
+               bare->engine.repeat_stop_tokens == 256U && !bare->engine.max_tokens.has_value() &&
+               !bare->engine.min_tokens.has_value() && bare->engine.aliases.empty(),
+           "the pin's defaults: silence 300 s, answer_room on, repeat_stop_tokens 256, unset token bounds");
+    const std::string described = secure_frontend::describe(*bare);
+    expect(described.find("engine.silence_s = 300\n") != std::string::npos &&
+               described.find("engine.answer_room = true\n") != std::string::npos &&
+               described.find("engine.repeat_stop_tokens = 256\n") != std::string::npos,
+           "describe reports the timeout/shape family");
+  }
+  const auto accept = [&](const char* path, const char* value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result),
+           std::string{"accepts "} + value + " for " + path + ": " + issues_of(result));
+  };
+  const auto reject = [&](const char* path, const char* value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ConfigErrors>(result), std::string{"rejects "} + value + " for " + path);
+  };
+  accept("engine.answer_room", "false");
+  reject("engine.answer_room", "\"true\"");
+  accept("model.aliases", R"(["Alt.Model","secondary"])");
+  reject("model.aliases", "[1]");
+  reject("model.aliases", R"([""])");        // set_aliases drops empties; the typed row rejects them outright
+  reject("model.aliases", R"(["bad name"])");  // a name is [A-Za-z0-9._-], like model ids
+  reject("model.aliases", R"(["a:b"])");       // aliases are plain names, not name:tag references
+  reject("model.aliases", R"(["dup","dup"])");  // like every SP3/SP4 list row: no repeats (the pin dedups at :3774; Ruling T8-h)
+  const auto set_result = with_literals(f, {{"engine.silence_s", "0"}, {"engine.repeat_stop_tokens", "0"},
+                                            {"engine.max_tokens", "2048"}, {"engine.min_tokens", "16"},
+                                            {"model.aliases", R"(["Alt.Model","secondary"])"}});
+  const auto* set = config_of(set_result);
+  expect(set != nullptr && set->engine.silence == std::chrono::seconds(0) && set->engine.repeat_stop_tokens == 0U &&
+             set->engine.max_tokens.has_value() && *set->engine.max_tokens == 2048 && set->engine.min_tokens.has_value() &&
+             *set->engine.min_tokens == 16 && set->engine.aliases.size() == 2U,
+         "0 = off for silence/repeat (the pin's), token bounds and aliases typed: " + issues_of(set_result));
+}
+
+// SP5 M1 Task 8: edge behaviour of the new rows — the added caps (C-1) accept their max
+// and reject one past it; the silence row keeps the pin's num>=0 shape with an added cap.
+void timeout_shape_rows_at_each_edge() {
+  ConfigFixture f;
+  const auto accept = [&](const char* path, const std::string& value) {
+    const auto result = with_literals(f, {{path, value.c_str()}});
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result),
+           std::string{"accepts "} + value + " for " + path + ": " + issues_of(result));
+  };
+  const auto reject = [&](const char* path, const std::string& value) {
+    const auto result = with_literals(f, {{path, value.c_str()}});
+    expect(std::holds_alternative<secure_frontend::ConfigErrors>(result), std::string{"rejects "} + value + " for " + path);
+  };
+  accept("engine.silence_s", "0");
+  accept("engine.silence_s", "86400");
+  reject("engine.silence_s", "86401");
+  reject("engine.silence_s", "-1");  // the pin rejects negatives too (engine_silence_s() :2864)
+  accept("engine.repeat_stop_tokens", "0");
+  accept("engine.repeat_stop_tokens", "65536");
+  reject("engine.repeat_stop_tokens", "65537");
+  reject("engine.repeat_stop_tokens", "-1");
+  accept("engine.max_tokens", "1");
+  accept("engine.max_tokens", "1048576");
+  reject("engine.max_tokens", "1048577");
+  reject("engine.max_tokens", "0");
+  accept("engine.min_tokens", "1");
+  reject("engine.min_tokens", "0");
+  accept("model.aliases", "[\"" + std::string(64, 'a') + "\"]");
+  reject("model.aliases", "[\"" + std::string(65, 'a') + "\"]");
+}
+
+// SP5 M1 Task 9 (parity rows slot_save_path / expert_profile_save / expert_profile_save_every /
+// tool_call_recovery / env_to_user / codex_compaction_cache / codex_thread_titles / keep_files).
+// Defaults verbatim from the pin: the four booleans default false (:8043-8044 `is True`,
+// :8106/:8110 strict bool), the expert pair unset with every defaulting to 10 minutes (:2996),
+// keep_files 64 (images.py:188 `or 64`).
+void session_rows_match_the_pin() {
+  ConfigFixture f;
+  const auto bare_result = with_literals(f, {});
+  const auto* bare = config_of(bare_result);
+  expect(bare != nullptr, "a config without the session rows still validates: " + issues_of(bare_result));
+  if (bare != nullptr) {
+    expect(!bare->session.tool_call_recovery && !bare->session.env_to_user && !bare->session.codex_thread_titles &&
+               !bare->session.codex_compaction_cache && bare->session.slot_save_path.empty() &&
+               bare->session.expert_profile_save.empty() && bare->session.expert_profile_save_every == 10 &&
+               bare->session.keep_files == 64,
+           "the pin's defaults: four opt-in falses, unset pair, every 10 (:2996), keep_files 64 (images.py:188)");
+    const std::string described = secure_frontend::describe(*bare);
+    expect(described.find("session.keep_files = 64\n") != std::string::npos &&
+               described.find("session.expert_profile_save_every = 10\n") != std::string::npos &&
+               described.find("session.tool_call_recovery = false\n") != std::string::npos,
+           "describe reports the session family");
+  }
+  const auto accept = [&](const char* path, const std::string& value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result),
+           std::string{"accepts "} + value + " for " + path + ": " + issues_of(result));
+  };
+  const auto reject = [&](const char* path, const std::string& value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ConfigErrors>(result), std::string{"rejects "} + value + " for " + path);
+  };
+  accept("session.tool_call_recovery", "true");
+  accept("session.env_to_user", "false");
+  reject("session.codex_thread_titles", "\"true\"");  // the pin's strict bool, :8043
+  reject("session.codex_compaction_cache", "1");
+  accept("session.slot_save_path", "\"/state/slots\"");
+  accept("session.expert_profile_save", "\"/state/learned.bin\"");
+  const auto set_result = with_literals(f, {{"session.slot_save_path", "\"/state/slots\""},
+                                            {"session.expert_profile_save", "\"/state/learned.bin\""},
+                                            {"session.expert_profile_save_every", "0"},
+                                            {"session.tool_call_recovery", "true"}, {"session.env_to_user", "true"},
+                                            {"session.codex_thread_titles", "true"}, {"session.codex_compaction_cache", "true"},
+                                            {"session.keep_files", "1"}});
+  const auto* set = config_of(set_result);
+  expect(set != nullptr && set->session.slot_save_path == "/state/slots" && set->session.expert_profile_save == "/state/learned.bin" &&
+             set->session.expert_profile_save_every == 0 && set->session.tool_call_recovery && set->session.env_to_user &&
+             set->session.codex_thread_titles && set->session.codex_compaction_cache && set->session.keep_files == 1,
+         "the session family is typed: " + issues_of(set_result));
+}
+
+// SP5 M1 Task 9 (plan test; Ruling T9-b): the slot path keeps the pin's shape (non-empty, no
+// control characters, serve/server.py:3472-3475) and rides our added absolute rule (C-1, like
+// engine.lib_dirs :794-797 — we have no config-cwd to resolve a relative path against).
+void slot_save_path_is_a_bounded_private_path() {
+  ConfigFixture f;
+  const auto accept = [&](const char* path, const std::string& value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result),
+           std::string{"accepts "} + value + " for " + path + ": " + issues_of(result));
+  };
+  const auto reject = [&](const char* path, const std::string& value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ConfigErrors>(result), std::string{"rejects "} + value + " for " + path);
+  };
+  accept("session.slot_save_path", "\"/state/slots\"");
+  reject("session.slot_save_path", "\"slots\"");           // no cwd concept (T9-b)
+  reject("session.slot_save_path", "\"\"");                // the pin's "must be a directory path" (:3472)
+  reject("session.slot_save_path", "\"a\\u0001b\"");       // control characters (:3475)
+  accept("session.expert_profile_save", "\"/state/learned.bin\"");
+  reject("session.expert_profile_save", "\"learned.bin\"");
+  reject("session.expert_profile_save", "\"\"");
+}
+
+// SP5 M1 Task 9 (plan test): the rows match the Task-2 table as re-read — the four booleans and
+// the two file-store rows are typed/config_only (the pin's consumers are its OutputParser, its
+// frontend and the Codex routes, none of which we serve), and the expert pair is typed/engine_arg.
+// slot_save_path sits config_only after Ruling T9-a (no argv append at the pin: every use is
+// svc-side, :8096/:3698-3715); keep_files after T9-e (ImageService is D-9 out).
+void codex_and_tool_call_rows_are_dispositioned() {
+  struct Expected { const char* key; const char* path; };
+  for (const Expected e : {Expected{"slot_save_path", "session.slot_save_path"},
+                           Expected{"expert_profile_save", "session.expert_profile_save"},
+                           Expected{"expert_profile_save_every", "session.expert_profile_save_every"},
+                           Expected{"tool_call_recovery", "session.tool_call_recovery"},
+                           Expected{"env_to_user", "session.env_to_user"},
+                           Expected{"codex_compaction_cache", "session.codex_compaction_cache"},
+                           Expected{"codex_thread_titles", "session.codex_thread_titles"},
+                           Expected{"keep_files", "session.keep_files"}}) {
+    const auto* row = secure_frontend::parity::strata_parity_row(e.key);
+    expect(row != nullptr && row->disposition == secure_frontend::parity::ParityDisposition::typed,
+           std::string{e.key} + " stays a typed row in the table");
+    expect(secure_frontend::find_config_key(e.path) != nullptr, std::string{e.path} + " is a schema row");
+  }
+  using ParityDestination = secure_frontend::parity::ParityDestination;
+  expect(secure_frontend::parity::strata_parity_row("slot_save_path")->destination == ParityDestination::config_only,
+         "slot_save_path: config_only (Ruling T9-a)");
+  expect(secure_frontend::parity::strata_parity_row("keep_files")->destination == ParityDestination::config_only,
+         "keep_files: config_only (Ruling T9-e)");
+  expect(secure_frontend::parity::strata_parity_row("expert_profile_save")->destination == ParityDestination::engine_arg &&
+             secure_frontend::parity::strata_parity_row("expert_profile_save_every")->destination == ParityDestination::engine_arg,
+         "the expert pair reaches the engine argv (:3002-3005)");
+  for (const char* key : {"tool_call_recovery", "env_to_user", "codex_compaction_cache", "codex_thread_titles"})
+    expect(secure_frontend::parity::strata_parity_row(key)->destination == ParityDestination::config_only,
+           std::string{key} + ": typed, stored, no counterpart consumer in our stack");
+}
+
+// SP5 M1 Task 9: edge behaviour — every keeps the pin's >=0 with an added cap (1440 minutes =
+// a day), keep_files gets an added 1..1024 (the pin's falsy 0 == unset is not copied, cf T7-h).
+void session_rows_at_each_edge() {
+  ConfigFixture f;
+  const auto accept = [&](const char* path, const std::string& value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result),
+           std::string{"accepts "} + value + " for " + path + ": " + issues_of(result));
+  };
+  const auto reject = [&](const char* path, const std::string& value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ConfigErrors>(result), std::string{"rejects "} + value + " for " + path);
+  };
+  accept("session.expert_profile_save_every", "0");
+  accept("session.expert_profile_save_every", "1440");
+  reject("session.expert_profile_save_every", "1441");
+  reject("session.expert_profile_save_every", "-1");
+  accept("session.keep_files", "1");
+  accept("session.keep_files", "1024");
+  reject("session.keep_files", "0");
+  reject("session.keep_files", "1025");
+}
+
+// SP5 M1 Task 10 (parity row parallel; serve/server.py:2955-2975): the typed half of the
+// C-4 narrowing. replicas.parallel defaults to 1 — one request at a time (the pin's
+// docstring, :2957-2958) — with the added 1..1024 cap taken from the pin's OWN --parallel
+// bound (:7845; C-1). 2..8 is the engine's full batch window (PARALLEL_MAX :2954); 9..1024
+// stay pin-valid: the pin forwards them and the engine warns and adjusts (:2969-2974).
+void replicas_parallel_row_at_the_pin() {
+  ConfigFixture f;
+  const auto bare_result = with_literals(f, {});
+  const auto* bare = config_of(bare_result);
+  expect(bare != nullptr, "a config without the parallel row still validates: " + issues_of(bare_result));
+  if (bare != nullptr) {
+    expect(bare->replicas.parallel == 1, "default 1: one request at a time, like the pin (:2957)");
+    expect(secure_frontend::describe(*bare).find("replicas.parallel = 1\n") != std::string::npos, "describe reports it");
+  }
+  const auto accept = [&](const char* path, const std::string& value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result),
+           std::string{"accepts "} + value + " for " + path + ": " + issues_of(result));
+  };
+  const auto reject = [&](const char* path, const std::string& value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ConfigErrors>(result), std::string{"rejects "} + value + " for " + path);
+  };
+  accept("replicas.parallel", "2");
+  accept("replicas.parallel", "8");   // PARALLEL_MAX: the full engine window (:2954)
+  accept("replicas.parallel", "1024");
+  reject("replicas.parallel", "1025");
+  reject("replicas.parallel", "0");   // one-at-a-time is 1/absent (the pin's), not a typed zero
+  reject("replicas.parallel", "-1");
+}
+
+// SP5 M1 Task 10 (plan test): the N-child half — the replicas dict (serve/replicas.py:44)
+// and its replica_* members fail at load BY NAME (Task 3's rule-first scan already covers
+// every rejected row; this names the replicas family and checks the fixed reason points at
+// the README's narrowing sentence, per the plan's step 2).
+void multi_child_replicas_reject_with_the_ruling() {
+  ConfigFixture f;
+  const auto dict = with_literals(f, {{"replicas", R"({"count":4})"}});
+  expect(has_issue(dict, "replicas", secure_frontend::ConfigIssueCode::excluded_key),
+         "the replicas dict fails at load naming the key: " + issues_of(dict));
+  expect(issues_of(dict).find("README") != std::string::npos,
+         "the rejection reason cites README where C-4 is written down: " + issues_of(dict));
+  for (const char* key : {"replica_cpus", "replica_load_tokens"}) {
+    const auto result = with_literals(f, {{key, "2"}});
+    expect(has_issue(result, std::string{key}, secure_frontend::ConfigIssueCode::excluded_key),
+           std::string{key} + " is rejected by name (the C-4 narrowing): " + issues_of(result));
+  }
+}
+
+// SP5 M1 Task 11 (D-9): the seven vision rows at the pin — enabled gates the whole family;
+// max_side/max_n default at the images-block values (serve/images.py:102-103 `or 2048`/`or 4`,
+// caps added C-1); need_mib unset (images.py:156 override; the VRAM gate is owner-box, cf
+// T7-c); no_flash_attn/resident per the spec family list (resident = the pin's eager encoder,
+// server.py:2511/:2552); threads 0 = the pin's unset (truthy -> --threads, :2562).
+void vision_rows_match_the_pin() {
+  ConfigFixture f;
+  const auto bare_result = with_literals(f, {});
+  const auto* bare = config_of(bare_result);
+  expect(bare != nullptr, "a config without the vision rows still validates: " + issues_of(bare_result));
+  if (bare != nullptr) {
+    expect(!bare->vision.enabled && bare->vision.max_side == 2048 && bare->vision.max_n == 4 &&
+               !bare->vision.need_mib.has_value() && !bare->vision.no_flash_attn && bare->vision.resident &&
+               bare->vision.threads == 0 && bare->vision.ready_timeout_s == 300,
+           "defaults at the pin: off, 2048, 4, unset, off, resident, unset, 300 s (:2511-2562, :327; images.py:102-103,156)");
+    const std::string described = secure_frontend::describe(*bare);
+    expect(described.find("vision.enabled = false\n") != std::string::npos &&
+               described.find("vision.max_side = 2048\n") != std::string::npos &&
+               described.find("vision.resident = true\n") != std::string::npos,
+           "describe reports the vision family");
+  }
+  const auto accept = [&](const char* path, const std::string& value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result),
+           std::string{"accepts "} + value + " for " + path + ": " + issues_of(result));
+  };
+  const auto reject = [&](const char* path, const std::string& value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ConfigErrors>(result), std::string{"rejects "} + value + " for " + path);
+  };
+  accept("vision.enabled", "true");
+  reject("vision.enabled", "\"true\"");   // strict booleans, like every boolean row
+  accept("vision.max_side", "1");
+  accept("vision.max_side", "16384");     // added cap (C-1)
+  reject("vision.max_side", "16385");
+  reject("vision.max_side", "0");
+  accept("vision.max_n", "1");
+  accept("vision.max_n", "64");           // added cap (C-1)
+  reject("vision.max_n", "65");
+  accept("vision.need_mib", "1048576");
+  reject("vision.need_mib", "0");
+  reject("vision.need_mib", "-1");
+  accept("vision.threads", "0");
+  accept("vision.threads", "256");        // added cap (C-1)
+  reject("vision.threads", "257");
+  accept("vision.ready_timeout_s", "0");     // 0: wait for ever — the pin's :291 rule
+  accept("vision.ready_timeout_s", "86400"); // added cap (C-1)
+  reject("vision.ready_timeout_s", "86401");
+  const auto set_result = with_literals(f, {{"vision.enabled", "true"}, {"vision.max_side", "1024"}, {"vision.max_n", "2"},
+                                            {"vision.need_mib", "1126"}, {"vision.no_flash_attn", "true"},
+                                            {"vision.resident", "false"}, {"vision.threads", "8"},
+                                            {"vision.ready_timeout_s", "45"}});
+  const auto* set = config_of(set_result);
+  expect(set != nullptr && set->vision.enabled && set->vision.max_side == 1024 && set->vision.max_n == 2 &&
+             set->vision.need_mib == 1126 && set->vision.no_flash_attn && !set->vision.resident && set->vision.threads == 8 &&
+             set->vision.ready_timeout_s == 45,
+         "the vision family is typed: " + issues_of(set_result));
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -884,6 +1489,21 @@ int main(int argc, char** argv) {
       {"cfg01_tokenizer_pack_root_rejected_for_managed_model", cfg01_tokenizer_pack_root_rejected_for_managed_model},
       {"cfg01_model_reference_rejected_for_managed_model", cfg01_model_reference_rejected_for_managed_model},
       {"describe_reports_unset_expert_keys", describe_reports_unset_expert_keys},
+      {"each_rejected_upstream_key_errors_at_load_naming_it", each_rejected_upstream_key_errors_at_load_naming_it},
+      {"sampling_defaults_cover_the_pinned_validator", sampling_defaults_cover_the_pinned_validator},
+      {"reasoning_rows_match_the_pinned_validator", reasoning_rows_match_the_pinned_validator},
+      {"lifecycle_rows_match_the_pin", lifecycle_rows_match_the_pin},
+      {"vram_family_rows_match_the_pin", vram_family_rows_match_the_pin},
+      {"timeout_shape_rows_match_the_pin", timeout_shape_rows_match_the_pin},
+      {"timeout_shape_rows_at_each_edge", timeout_shape_rows_at_each_edge},
+      {"session_rows_match_the_pin", session_rows_match_the_pin},
+      {"slot_save_path_is_a_bounded_private_path", slot_save_path_is_a_bounded_private_path},
+      {"codex_and_tool_call_rows_are_dispositioned", codex_and_tool_call_rows_are_dispositioned},
+      {"session_rows_at_each_edge", session_rows_at_each_edge},
+      {"replicas_parallel_row_at_the_pin", replicas_parallel_row_at_the_pin},
+      {"multi_child_replicas_reject_with_the_ruling", multi_child_replicas_reject_with_the_ruling},
+      {"vision_rows_match_the_pin", vision_rows_match_the_pin},
+      {"bounds_are_the_pins_at_each_edge", bounds_are_the_pins_at_each_edge},
       {"typed_config_accepts_minimal_file_and_applies_defaults", typed_config_accepts_minimal_file_and_applies_defaults},
       {"cfg01_unknown_key_rejected", cfg01_unknown_key_rejected},
       {"cfg01_duplicate_key_rejected", cfg01_duplicate_key_rejected},

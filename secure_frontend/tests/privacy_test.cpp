@@ -514,6 +514,22 @@ void doctor_proxy_hint_is_presence_only() {
   expect(!contains(result.out + result.err, "SENTINEL-PROXY-VALUE"), "the value is never printed");
 }
 
+// SP5 M1 Task 3 (spec §4): raw STRATA_*/MAYA_* env knobs change nothing;
+// doctor says so once, with a fixed literal line, and never echoes values.
+void doctor_warns_on_strata_env_knob() {
+  const auto& args = secure_frontend_test::extra_arguments();
+  secure_frontend_test::cli::CliHarness h;
+  const auto result = secure_frontend_test::run_to_completion(secure_frontend_test::ProcessSpec{
+      args.at(0), {"--config", h.config.string(), "doctor"},
+      {{"STRATA_HTTP_BACKLOG", "SENTINEL-BACKLOG-VALUE"}, {"MAYA_UPDATE_CHECK", "SENTINEL-MAYA-VALUE"}}});
+  expect(result.exit_code == 0, "doctor still succeeds: " + result.err);
+  const std::string line = "doctor: ignoring STRATA_*/MAYA_* environment; configure server.json instead";
+  std::size_t count = 0;
+  for (std::size_t at = 0; (at = result.out.find(line, at)) != std::string::npos; at += line.size()) ++count;
+  expect(count == 1U, "exactly one fixed env-knob line, got " + std::to_string(count) + ": " + result.out);
+  expect(!contains(result.out + result.err, "SENTINEL"), "env knob values are never printed");
+}
+
 void release_binary_lacks_hook_marker() {
   expect(!secure_frontend::kTestHooksEnabled, "runs only hooks-OFF");
   for (const auto& binary : secure_frontend_test::extra_arguments()) {  // strata and strata-secure-server
@@ -547,6 +563,7 @@ int main(int argc, char** argv) {
       {"priv03_api_payloads_resembling_pull_trigger_nothing", priv03_api_payloads_resembling_pull_trigger_nothing},
       {"priv04_secure_server_does_not_link_acquisition", priv04_secure_server_does_not_link_acquisition},
       {"doctor_proxy_hint_is_presence_only", doctor_proxy_hint_is_presence_only},
+      {"doctor_warns_on_strata_env_knob", doctor_warns_on_strata_env_knob},
       {"release_binary_lacks_hook_marker", release_binary_lacks_hook_marker},
       {"hooks_build_announces_marker", hooks_build_announces_marker},
   }, secure_frontend_test::failures);

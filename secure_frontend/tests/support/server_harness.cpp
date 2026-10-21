@@ -6,6 +6,7 @@
 #include "windows_command_line.hpp"
 #include "test_paths.hpp"
 #include "test_tokenizer.hpp"
+#include "acquire_fixtures.hpp"
 
 #include <algorithm>
 #include <array>
@@ -277,8 +278,29 @@ std::unique_ptr<ServerProcess> ServerProcess::start(const ServerOptions& options
   const auto tokenizer = server->root_ / "tokenizer";
   secure_frontend_test::make_private_directory(models);     // 0700
   secure_frontend_test::make_private_directory(tokenizer);  // 0700
-  secure_frontend_test::write_file(models / "fake-model.gguf", "GGUF", 0600);
-  write_tokenizer_pack(tokenizer);                           // 0600 files
+  if (options.managed_vision) {
+    // SP5 M1 Task 12: the managed path. Install fx m:t straight into models/ (the same
+    // publish_staged sequence as cli::install), and skip the expert fixture files.
+    namespace fx = secure_frontend_test::acquire;
+    const auto store_root = fx::models_root(models);
+    const auto payload = fx::qwen_payload_vision_pack();
+    const auto manifest = fx::trusted(
+        fx::manifest_text("m", "t", 1U, payload, true, true, "fixture.example", "mmproj/mmproj.gguf"),
+        secure_frontend::ModelOrigin::third_party);
+    fx::stage(store_root, manifest, payload);
+    fx::FakeLoaded nobody;
+    const secure_frontend::StoreEnvironment env;
+    const auto published =
+        secure_frontend::publish_staged(store_root, secure_frontend::staging_key(manifest.parsed.sha256), manifest, nobody, env, true);
+    if (const auto* publish_error = std::get_if<secure_frontend::AcquireError>(&published)) {
+      std::cerr << "harness: managed vision install failed: reason=" << static_cast<int>(publish_error->reason)
+                << " detail=" << publish_error->detail << "\n";
+      return nullptr;
+    }
+  } else {
+    secure_frontend_test::write_file(models / "fake-model.gguf", "GGUF", 0600);
+    write_tokenizer_pack(tokenizer);  // 0600 files
+  }
   // SP1's open_executable refuses an engine file or folder writable by group or
   // others; the build tree is 0775 under umask 0002. Copy the engine into a
   // private <root>/bin exactly as SP1's ServerFixture does.
@@ -303,12 +325,52 @@ std::unique_ptr<ServerProcess> ServerProcess::start(const ServerOptions& options
   server->engine_path_ = std::filesystem::canonical(server->engine_path_);
 #endif
   server->port_ = secure_frontend_test::pick_free_port();  // SP1's helper (support/http_client.hpp)
+  if (options.managed_vision) {
+    // Ruling T11-y: the encoder exe is OUR distribution's — strata-vision beside the
+    // engine executable. The fake child stands in, copied under that exact name.
+    const auto vision_source = fake_vision_child_path();
+    const auto vision_exe = bin / "strata-vision";
+    std::error_code vision_error;
+    std::filesystem::copy_file(vision_source, vision_exe, std::filesystem::copy_options::overwrite_existing, vision_error);
+    if (vision_error) {
+      std::cerr << "harness: could not copy strata-vision into " << utf8_path(bin) << ": " << vision_error.message() << '\n';
+      return nullptr;
+    }
+#if defined(_WIN32)
+    // The server looks for strata-vision.exe; Windows execution needs the suffix.
+    std::error_code rename_error;
+    std::filesystem::rename(vision_exe, vision_exe.string() + ".exe", rename_error);
+    if (rename_error) {
+      std::cerr << "harness: could not name strata-vision.exe\n";
+      return nullptr;
+    }
+#else
+    if (chmod(vision_exe.c_str(), 0700) != 0) {
+      std::cerr << "harness: chmod 0700 failed on the strata-vision copy\n";
+      return nullptr;
+    }
+#endif
+  }
   const std::filesystem::path state_dir = options.state_dir.value_or(server->root_ / "state");
   if (!options.state_dir) secure_frontend_test::make_owner_private_directory(state_dir);  // 0700; Windows owner = the user
-  std::vector<std::string> arguments{utf8_path(server_path()), "--expert", "--models-root", utf8_path(models), "--tokenizer-pack",
-                                     utf8_path(tokenizer), "--engine", utf8_path(server->engine_path_),
-                                     "--model-id", "fake-model", "--token-env", std::string(kHarnessTokenEnv), "--port",
-                                     std::to_string(server->port_), "--state-dir", utf8_path(state_dir)};
+  std::vector<std::string> arguments{utf8_path(server_path())};
+  if (!options.managed_vision) arguments.emplace_back("--expert");  // the managed path launches from the manifest
+  arguments.push_back("--models-root");
+  arguments.push_back(utf8_path(models));
+  if (!options.managed_vision) {
+    arguments.push_back("--tokenizer-pack");
+    arguments.push_back(utf8_path(tokenizer));
+  }
+  arguments.push_back("--engine");
+  arguments.push_back(utf8_path(server->engine_path_));
+  arguments.push_back("--model-id");
+  arguments.push_back(options.managed_vision ? "m:t" : "fake-model");
+  arguments.push_back("--token-env");
+  arguments.push_back(std::string(kHarnessTokenEnv));
+  arguments.push_back("--port");
+  arguments.push_back(std::to_string(server->port_));
+  arguments.push_back("--state-dir");
+  arguments.push_back(utf8_path(state_dir));
   for (const auto& argument : options.engine_args) {
     arguments.emplace_back("--engine-arg");
     arguments.push_back(argument);

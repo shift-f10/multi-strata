@@ -166,7 +166,15 @@ For direct wine calls (not the test preset, which sets it) prefix
    `upstream/CMakeLists.txt` line numbers below — not found by the grep:
    re-derive them with `grep -n FetchContent_Declare -A3
    upstream/CMakeLists.txt`), and the `docs/security/` pages that name the
-   baseline version. Changing the version on a `docs/security/` page asserts
+   baseline version. The SP5 M1 parity artifacts are line-number pin sites as
+   well: `secure_frontend/tests/parity_keys_upstream.hpp` (its header comment
+   carries the pin commit and tag, and its two grep commands must be re-run at
+   the new pin), `secure_frontend/src/parity_table.cpp` (every row cites
+   `serve/<file>.py:<line>` at the pin — re-pin each citation, then the
+   parity meta-tests and the README mirror), and the `secure_frontend/README.md`
+   parity section (regenerated from that table;
+   `tools/secure/test_parity_readme_coverage.py` guards the mirror).
+   Changing the version on a `docs/security/` page asserts
    its facts hold for the new tag: re-check each row against the new source
    first and add rows for new behavior.
    `upstream.version` (repository root, one line: the tag itself, today

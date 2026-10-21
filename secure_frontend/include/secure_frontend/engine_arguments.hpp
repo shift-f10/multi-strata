@@ -2,7 +2,9 @@
 
 #include "secure_frontend/canonical_path.hpp"
 #include "secure_frontend/model_inventory.hpp"
+#include "secure_frontend/tokenizer_pack.hpp"
 
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -24,6 +26,21 @@ struct EngineArgumentsError final {
 };
 
 using EngineArgumentsResult = std::variant<std::vector<std::string>, EngineArgumentsError>;
+
+// SP5 M1 Task 5 (parity row `effort_position`): reasoning.effort_position "end" composes the
+// engine's --tail-role-token flag with the tokenizer's single "system" token id
+// (effort_end_args serve/server.py:2836-2856, appended to the engine argv at :7966/:7977). The
+// probe rules are the pin's: the engine binary must contain the flag literal, and the tokenizer's
+// plain encoding of "system" must be exactly one token; otherwise nothing composes and `notice`
+// carries the pin's fixed fallback line (:2853). A composed pair comes with the pin's fixed
+// success line (:2856). Neither notice names a path.
+struct EffortEndArguments final {
+  std::vector<std::string> arguments;
+  std::string_view notice;
+};
+
+[[nodiscard]] EffortEndArguments compose_effort_end_arguments(const std::filesystem::path& engine_binary,
+                                                              const TokenizerPack& tokenizer);
 
 // Builds the engine argv tail (everything after `--serve`).
 //
@@ -53,7 +70,69 @@ using EngineArgumentsResult = std::variant<std::vector<std::string>, EngineArgum
                                                            const ModelManifest& selected,
                                                            const CanonicalRoot& models_root,
                                                            const std::vector<std::string>& user_arguments,
-                                                           const std::vector<unsigned>& gpus = {});
+                                                           const std::vector<unsigned>& gpus = {},
+                                                           bool mtp_on = true);
+
+// SP5 M1 Task 6 (parity row mtp; strata_control/draft_layer.py): MTP_FLAGS verbatim —
+// {"--mtp": value, "--spec-min-p": value, "--batch-mtp": no value} — and the pin's
+// strip() rule: a value is consumed only when the next token is not another flag.
+// Returns the draft layer's own flags the composition dropped (in order), for the pin's
+// fixed startup line (serve/server.py:2925). `--spec` (prompt lookup) stays.
+[[nodiscard]] std::vector<std::string> draft_layer_removed(const std::vector<std::string>& arguments);
+
+// The same strip applied in place; returns the flags removed. The managed composition
+// uses this directly (its argv tail is composed, not passed through build_engine_arguments).
+[[nodiscard]] std::vector<std::string> strip_draft_layer_arguments(std::vector<std::string>& arguments);
+
+// SP5 M1 Task 7 (parity rows vram_reserve_mib / vram_elastic / vram_segment_mib /
+// layer_split / split_skip_if_fits): the typed values the pin renders into the engine's
+// argv (runconfig.py:42-43; serve/server.py:2938-2948, 2896-2899). `user_arguments` is
+// the operator's args: every rendered flag is skipped when the operator already owns it
+// (the pin's "not in args" guards), and the layer-split gate needs the typed GPU count.
+// Ruling T7-a: this family reaches the engine through argv only — no GPU/elastic
+// environment variables (SP2 §3.9; the engine renders CUDA/HIP from --gpu itself).
+struct VramGpuElasticArgs final {
+  std::optional<std::int64_t> vram_reserve_mib;  // unset: the engine's own 700 stays
+  bool vram_elastic{false};
+  std::optional<std::int64_t> vram_segment_mib;  // unset: the engine's own 512 stays
+  std::string layer_split{"auto"};               // already validated (layer_split_value grammar)
+  bool split_skip_if_fits{false};
+};
+
+void append_vram_gpu_elastic_arguments(std::vector<std::string>& arguments, const VramGpuElasticArgs& vram,
+                                       const std::vector<std::string>& user_arguments, const std::vector<unsigned>& gpus);
+
+// engine.hip_ordinal (serve/server.py:3016-3030): the recorded HIP number wins over one
+// (or zero) configured GPUs, never over several; it reaches the engine through --gpu
+// (Ruling T7-f — our design owns the device list, the engine renders HIP from it).
+[[nodiscard]] std::vector<unsigned> effective_gpu_list(const std::vector<unsigned>& gpus,
+                                                       std::optional<std::int64_t> hip_ordinal);
+
+// SP5 M1 Task 9 (parity rows expert_profile_save / expert_profile_save_every;
+// serve/server.py:3000-3005): a configured learned-profile save path composes
+// --expert-profile-save and the every-minutes re-save (the pin's default 10, 0 = at QUIT
+// only, :2996). The pin's own guard is kept: no path, or an operator-owned
+// --expert-profile-save in argv, leaves the arguments unchanged — not even the every (:3001).
+struct ExpertProfileSaveArgs final {
+  std::string path;                 // session.expert_profile_save (empty: no flags)
+  std::int64_t every{10};           // session.expert_profile_save_every (minutes; 0 = at QUIT only)
+};
+
+void append_expert_profile_save_arguments(std::vector<std::string>& arguments, const ExpertProfileSaveArgs& save,
+                                          const std::vector<std::string>& user_arguments);
+
+// SP5 M1 Task 10 (parity row parallel; serve/replicas.py + serve/server.py:2955-2975, the
+// C-4 narrowing): replicas.parallel 2..N decodes together INSIDE the one engine child —
+// the pin renders it as --batch N (llama.cpp's historical name, :2975). <=1: nothing (the
+// pin's "1 or absent: one at a time"); an operator --batch or --slots wins (:2961). The
+// value is forwarded even past PARALLEL_MAX 8 (:2954): the engine warns and adjusts,
+// recommend never force (:2969-2974).
+struct ParallelBatchArgs final {
+  std::int64_t parallel{1};  // replicas.parallel (1: one request at a time)
+};
+
+void append_parallel_batch_arguments(std::vector<std::string>& arguments, const ParallelBatchArgs& parallel,
+                                     const std::vector<std::string>& user_arguments);
 
 // Parses the operator's --gpu value: comma-separated decimal device indices
 // 0-255, no sign, spaces or leading zeros, distinct, 1-16 entries.

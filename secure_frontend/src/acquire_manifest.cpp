@@ -211,6 +211,7 @@ std::string_view role_name(const FileRole role) noexcept {
     case FileRole::weights: return "weights";
     case FileRole::pack: return "pack";
     case FileRole::tokenizer: return "tokenizer";
+    case FileRole::mmproj: return "mmproj";
   }
   return "unknown";
 }
@@ -327,6 +328,12 @@ std::optional<ManifestIssue> validate_manifest(const AcquireManifest& m, const M
       }
     }
   }
+  // SP5 M1 Task 11 (D-9, Ruling T11-bb): schema 1 lists at most one mmproj artifact.
+  unsigned mmproj_entries = 0;
+  for (const auto& f : m.files) {
+    if (f.role == FileRole::mmproj) ++mmproj_entries;
+  }
+  if (mmproj_entries > 1U) return bad("files", "at most one mmproj entry");
   const auto& launch = m.launch;
   const auto weights_file = [&](const std::optional<std::string>& value) {
     const auto* f = value ? find_file(m, *value) : nullptr;
@@ -338,11 +345,14 @@ std::optional<ManifestIssue> validate_manifest(const AcquireManifest& m, const M
       if (launch.ple_gguf) return bad("launch.ple_gguf", "raw has no launch keys");
       if (launch.pack) return bad("launch.pack", "raw has no launch keys");
       if (launch.tokenizer_pack) return bad("launch.tokenizer_pack", "raw has no launch keys");
+      if (launch.mmproj) return bad("launch.mmproj", "raw has no launch keys");
       break;
     case ManifestProfile::glm53:
       if (launch.ple_gguf) return bad("launch.ple_gguf", "glm53 has only launch.native in schema 1");
       if (launch.pack) return bad("launch.pack", "glm53 has only launch.native in schema 1");
       if (launch.tokenizer_pack) return bad("launch.tokenizer_pack", "glm53 has only launch.native in schema 1");
+      // SP5 M1 Task 11: the GLM/Maya encoder is the M2 acceptance-kit piece (D-9/D-10).
+      if (launch.mmproj) return bad("launch.mmproj", "glm53 has only launch.native in schema 1");
       [[fallthrough]];
     case ManifestProfile::qwen: {
       if (!weights_file(launch.native)) return bad("launch.native", "must name a listed weights file");
@@ -351,6 +361,10 @@ std::optional<ManifestIssue> validate_manifest(const AcquireManifest& m, const M
       }
       if (m.profile == ManifestProfile::glm53) break;
       if (launch.ple_gguf && !weights_file(launch.ple_gguf)) return bad("launch.ple_gguf", "must name a listed weights file");
+      if (launch.mmproj) {  // SP5 M1 Task 11 (D-9): the encoder reference names a listed mmproj file.
+        const auto* encoder = find_file(m, *launch.mmproj);
+        if (encoder == nullptr || encoder->role != FileRole::mmproj) return bad("launch.mmproj", "must name a listed mmproj file");
+      }
       if (!launch.pack || !is_directory_prefix(m, *launch.pack)) return bad("launch.pack", "must name a directory of listed files");
       if (!launch.tokenizer_pack || *launch.tokenizer_pack != *launch.pack + "/tokenizer" ||
           !is_directory_prefix(m, *launch.tokenizer_pack)) {

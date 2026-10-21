@@ -80,6 +80,7 @@ class ServerFixture final {
   std::filesystem::path engine;
   std::filesystem::path config = dir / "config.json";
   std::filesystem::path server_executable;
+  std::filesystem::path cli_executable;  // SP5 M1 Task 13: ARGS[2], the `strata` binary
   std::uint16_t port = pick_free_port();
 
   ServerFixture() {
@@ -89,6 +90,7 @@ class ServerFixture final {
       std::exit(EXIT_FAILURE);
     }
     server_executable = args[0];
+    if (args.size() > 2U) cli_executable = args[2];
     for (const auto& directory : {models, tokenizer, secret, dir / "bin"}) make_private_directory(directory);
     make_owner_private_directory(state);  // --state-dir: Windows owner must be the user, not Administrators
     write_file(models / "qwen-local.gguf", "GGUF");
@@ -130,6 +132,20 @@ class ServerFixture final {
   }
   bool start(ChildProcess& child, const std::vector<std::string>& arguments) const {
     if (!child.start(ProcessSpec{server_executable, arguments, environment()})) return false;
+    return wait_until_listening(child);
+  }
+  // SP5 M1 Task 13: the same for the `strata` CLI (`strata --config … serve`):
+  // foreground serve listens on this fixture's port through the CLI's own process.
+  bool start_cli(ChildProcess& child, const std::vector<std::string>& arguments) const {
+    if (!child.start(ProcessSpec{cli_executable, arguments, environment()})) return false;
+    return wait_until_listening(child);
+  }
+  [[nodiscard]] ProcessResult run_cli(const std::vector<std::string>& arguments) const {
+    return run_to_completion(ProcessSpec{cli_executable, arguments, environment()});
+  }
+  // Shared by start()/start_cli(): alive-and-listening, false if the child died
+  // first (30 s bound — generous on slow runners, loud on failure).
+  bool wait_until_listening(ChildProcess& child) const {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     while (std::chrono::steady_clock::now() < deadline) {
       if (child.wait_for(std::chrono::milliseconds(0)).has_value()) return false;
@@ -138,6 +154,7 @@ class ServerFixture final {
     }
     return false;
   }
+
   [[nodiscard]] std::string request(const std::string& method, const std::string& target,
                                     const std::string& authorization, const std::string& body = {}) const {
     std::string text = method + " " + target + " HTTP/1.1\r\nHost: 127.0.0.1:" + std::to_string(port) + "\r\n";

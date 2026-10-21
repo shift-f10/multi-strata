@@ -11,7 +11,12 @@ inline constexpr std::chrono::milliseconds kStreamPollSlice{20};
 inline constexpr std::chrono::milliseconds kAcceptBackoff{50};
 inline constexpr std::size_t kLingerListMax = 64U;
 inline constexpr std::chrono::milliseconds kLingerBudget{100};
-inline constexpr std::size_t kChatMaxJsonDepth = 4U;
+// SP5 M1 Task 12 (C-9, Ruling T12-k): the content parts grammar the plan opens for the
+// vision model nests two more containers (parts form: request -> messages -> message ->
+// content array -> part object -> image_url object = 6). 6 is exactly that depth; every
+// entry/size bound is unchanged. The pre-C-9 value was 4 (spec §3.1); the C-9 carve-out
+// supersedes it, and the server keeps its 400-before-anything property at the schema.
+inline constexpr std::size_t kChatMaxJsonDepth = 6U;
 inline constexpr std::size_t kMaxDeltaTextBytes = 16U * 1024U;     // M2
 inline constexpr std::size_t kMaxSseEventBytes = 128U * 1024U;     // M2
 inline constexpr std::size_t kMaxSendChunk = 64U * 1024U;

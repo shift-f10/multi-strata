@@ -16,7 +16,9 @@ namespace secure_frontend {
 
 enum class ManifestProfile { qwen, glm53, raw };  // raw: SECURE_FRONTEND_TEST_HOOKS builds only
 enum class ManifestFamily { strata, glm, none };
-enum class FileRole { weights, pack, tokenizer };
+// SP5 M1 Task 11 (D-9): FileRole gains mmproj — the vision encoder artifact, listed like
+// any other file, AT MOST ONE entry, named by the optional launch.mmproj (Ruling T11-bb).
+enum class FileRole { weights, pack, tokenizer, mmproj };
 
 struct ManifestLicense final {
   std::string id;
@@ -39,6 +41,7 @@ struct ManifestLaunch final {
   std::optional<std::string> ple_gguf;
   std::optional<std::string> pack;
   std::optional<std::string> tokenizer_pack;
+  std::optional<std::string> mmproj;  // SP5 M1 Task 11 (D-9): the vision encoder artifact (Ruling T11-bb)
 };
 
 // Schema version 1 (spec §2.2). Identity is the SHA-256 of the exact bytes (Task 14).

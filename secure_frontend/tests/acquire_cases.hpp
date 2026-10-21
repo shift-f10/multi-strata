@@ -83,6 +83,9 @@ void list_all_reports_retired_orphaned_and_staging();
 void rm_refuses_loaded_model();
 void rm_retired_deletes_unheld_versions();
 void rm_partials_deletes_other_staging();
+// SP5 M1 Task 14 (D-4): strata version / strata key show|rotate.
+void version_names_frontend_and_engine_versions();
+void key_show_requires_local_token_and_never_logs();
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
 void list_outdated_uses_catalog_sequence();
 #endif

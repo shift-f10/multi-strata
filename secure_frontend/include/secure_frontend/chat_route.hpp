@@ -3,6 +3,7 @@
 #include "secure_frontend/chat_execution.hpp"
 #include "secure_frontend/chat_schema.hpp"
 #include "secure_frontend/generation_gate.hpp"
+#include "secure_frontend/image_payload.hpp"
 #include "secure_frontend/request_router.hpp"
 #include "secure_frontend/tokenizer_pack.hpp"
 
@@ -10,6 +11,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -24,10 +26,23 @@ struct ChatRouteConfig final {
   std::size_t max_prompt_tokens;
   std::size_t max_completion_tokens;
   std::size_t default_max_tokens;   // 0 = auto (B1)
+  SamplingDefaults sampling_default;  // SP5 M1 Task 4: defaults.sampling.* (request fields win)
+  bool fit_max_tokens = true;         // SP5 M1 Task 5: engine.fit_max_tokens (false: over-room 400, pin :4536)
+  // SP5 M1 Task 8: engine.min_tokens / engine.max_tokens — added frontend bounds on the
+  // request output budget (0: unset; Ruling T8-e) — and model.aliases: extra exact model
+  // names the chat route answers to (set_aliases :3764-3777; §4: never empty or partial).
+  std::size_t minimum_output_tokens{0};
+  std::size_t maximum_output_tokens{0};
+  std::vector<std::string> model_aliases{};
   std::chrono::milliseconds queue_timeout;
   std::chrono::milliseconds write_stall;
   std::chrono::milliseconds response_write_deadline;
   std::chrono::milliseconds stream_keepalive;
+  // SP5 M1 Task 12 (C-9, Ruling T12-b): the encoder path for the managed model that
+  // reads images; nullptr whenever the schema's vision_capable gate is closed (the two
+  // are one decision made by secure_server_main), so a content array never reaches a
+  // route without a service.
+  VisionService* vision{nullptr};
 };
 
 [[nodiscard]] std::optional<std::string> make_completion_id();
@@ -41,8 +56,13 @@ class ChatRoute final {
  private:
   [[nodiscard]] HttpResponse refusal(GateRefusal refusal);
   [[nodiscard]] HttpResponse engine_unavailable();
+  // SP5 M1 Task 12 (T12-i): `embeddings` non-empty begins a GENI generation; the
+  // combined file it names must outlive the stream until the engine has run, so its
+  // removal belongs to this closure, not the handle() cleaner.
   [[nodiscard]] RouteResult stream_response(std::optional<Lease>& lease, const std::vector<std::uint32_t>& prompt_ids,
-                                            std::size_t max_tokens, const ChatCompletionRequest& request, const RequestContext& context);
+                                            std::size_t max_tokens, const SamplingParams& sampling, bool include_usage,
+                                            const RequestContext& context, std::string embeddings = {},
+                                            std::optional<std::filesystem::path> combined_file = std::nullopt);
   ChatRouteConfig config_;
   SupervisorPort& port_;
   GenerationGate& gate_;

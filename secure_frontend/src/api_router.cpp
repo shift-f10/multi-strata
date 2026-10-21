@@ -153,15 +153,24 @@ RouteResult ApiRouter::handle(const RequestHead& head, const std::string_view bo
       }
       case RouteId::models:
         if (!valid_field(config_.model_id) || !valid_field(config_.owned_by)) break;   // internal_error
-        response = json_response(200, "{\"object\":\"list\",\"data\":[" + model_object(config_.model_id, config_.owned_by) + "]}\n");
+        if (!std::all_of(config_.aliases.begin(), config_.aliases.end(), [](const std::string& alias) { return valid_field(alias); }))
+          break;  // internal_error: an alias is schema-checked; a router fed a bad one is a bug
+        {
+          std::string data = model_object(config_.model_id, config_.owned_by);
+          for (const auto& alias : config_.aliases) data += "," + model_object(alias, config_.owned_by);
+          response = json_response(200, "{\"object\":\"list\",\"data\":[" + std::move(data) + "]}\n");
+        }
         break;
       case RouteId::model: {
         constexpr std::string_view kPrefix = "/v1/models/";
         const std::string_view target = head.target;
         if (!valid_field(config_.model_id) || !valid_field(config_.owned_by) || target.size() <= kPrefix.size()) break;
-        response = target.substr(kPrefix.size()) == config_.model_id
-                       ? json_response(200, model_object(config_.model_id, config_.owned_by) + "\n")
-                       : make_error_response(ApiError::model_not_found);
+        const std::string_view wanted = target.substr(kPrefix.size());
+        // SP5 M1 Task 8: an alias names the same model.
+        const bool named = wanted == config_.model_id ||
+                           std::find(config_.aliases.begin(), config_.aliases.end(), std::string{wanted}) != config_.aliases.end();
+        response = named ? json_response(200, model_object(config_.model_id, config_.owned_by) + "\n")
+                         : make_error_response(ApiError::model_not_found);
         break;
       }
       case RouteId::chat: {

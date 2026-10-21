@@ -58,6 +58,48 @@ void runs_the_solo_protocol() {
   expect(generation.done_line == "DONE 2 3 1.0 2.0 length" && client.ready(), "DONE should restore idle state");
 }
 
+// SP5 M1 Task 12 (Ruling T12-i): the pin's GENI variant — the same head and ids, with the
+// request's combined embeddings file at the END of the line (serve/server.py:1778). With no
+// embeddings the GEN line stays byte-for-byte today's (text requests see no change).
+void gen_line_unchanged_without_embeddings_geni_with_them() {
+  {
+    FakeTransport transport;
+    transport.reads = {line("READY 8192 stop")};
+    EngineProtocolClient client(transport);
+    secure_frontend::EngineReady ready{};
+    expect(!client.await_ready(std::chrono::seconds(1), ready).has_value(), "READY");
+    expect(!client.begin_generation(4, {1, 2, 3}, secure_frontend::deadline_after(std::chrono::seconds(5))).has_value(),
+           "GEN (no embeddings) is emitted exactly as today");
+    expect(transport.writes == std::vector<std::string>({"GEN 4 1,2,3"}), "GEN unchanged");
+  }
+  {
+    FakeTransport transport;
+    transport.reads = {line("READY 8192 stop")};
+    EngineProtocolClient client(transport);
+    secure_frontend::EngineReady ready{};
+    expect(!client.await_ready(std::chrono::seconds(1), ready).has_value(), "READY");
+    expect(!client.begin_generation(4, {1, 2, 3}, secure_frontend::deadline_after(std::chrono::seconds(5)), {},
+                                    "vision/req-0123456789ab.sve")
+                .has_value(),
+           "GENI with an embeddings path is accepted");
+    expect(transport.writes == std::vector<std::string>({"GENI 4 1,2,3 vision/req-0123456789ab.sve"}),
+           "GENI renders the pin's tail (:1778): head, ids, then the path");
+  }
+  {
+    // The path rides the same line cap: a line that would overrun the cap is refused
+    // before anything is written (SP3 DOS rule extended to the new tail).
+    FakeTransport transport;
+    transport.reads = {line("READY 1 stop")};  // tiny context -> tiny effective cap
+    EngineProtocolClient client(transport);
+    secure_frontend::EngineReady ready{};
+    expect(!client.await_ready(std::chrono::seconds(1), ready).has_value(), "READY");
+    const auto oversize_path = "v/" + std::string(200U, 'x') + ".sve";
+    const auto result = client.begin_generation(4, {1}, secure_frontend::deadline_after(std::chrono::seconds(5)), {},
+                                                oversize_path);
+    expect(result.has_value() && transport.writes.empty(), "an over-long GENI line is refused, nothing written");
+  }
+}
+
 void stop_and_quit_are_explicit() {
   FakeTransport transport;
   transport.reads = {line("READY 1024 stop"), line("T 7"), line("DONE 1 1 1 1 stop")};
@@ -326,10 +368,46 @@ void gen_carries_bounded_sampling_keys() {
   secure_frontend::SamplingParams ints;
   ints.temperature = 1.0;
   ints.top_p = 1.0;
-  expect(secure_frontend::render_sampling_keys(ints) == " temperature=1 top_p=1", "shortest round-trip form, never request bytes");
+  expect(secure_frontend::render_sampling_keys(ints) == " temperature=1", "shortest round-trip form; the pin omits top_p=1 (the engine default)");
   secure_frontend::SamplingParams big;
   big.seed = 9223372036854775807ULL;
   expect(secure_frontend::render_sampling_keys(big) == " seed=9223372036854775807", "full seed range");
+}
+
+// SP5 M1 Task 4: the full pin wire shape (serve/server.py:1360-1394) —
+// temperature only >0, top_p only <1, top_k clamped to 1..64, min_p,
+// penalty_repeat/freq/present when != 1/0/0, penalty_last_n default 64 when
+// any penalty is on, seed only >0.
+void sampling_defaults_reach_gen_request() {
+  FakeTransport transport;
+  transport.reads = {line("READY 4096 stop")};
+  secure_frontend::EngineProtocolClient client(transport);
+  secure_frontend::EngineReady ready{};
+  expect(!client.await_ready(std::chrono::seconds(1), ready).has_value(), "ready");
+  secure_frontend::SamplingParams p;
+  p.temperature = 0.0;   // the pin omits it: the engine default is greedy
+  p.top_p = 1.0;         // the pin omits it: 1 is the engine default
+  p.top_k = 10;
+  p.min_p = 0.1;
+  p.presence_penalty = 0.5;
+  p.repetition_penalty = 1.0;  // the pin omits the neutral value
+  p.frequency_penalty = 0.0;   // the pin omits the neutral value
+  expect(!client.begin_generation(16U, {1U, 2U, 3U}, secure_frontend::deadline_after(std::chrono::seconds(5)), p).has_value(),
+         "GEN written");
+  expect(transport.writes.back() == "GEN 16 top_k=10 min_p=0.1 penalty_present=0.5 penalty_last_n=64 1,2,3",
+         "the pin's key names and default window: " + transport.writes.back());
+  secure_frontend::SamplingParams clamp;
+  clamp.top_k = 100;  // the pin clamps wide lists to the engine's 64 candidates
+  expect(secure_frontend::render_sampling_keys(clamp) == " top_k=64", "top_k clamp: " + secure_frontend::render_sampling_keys(clamp));
+  secure_frontend::SamplingParams rep;
+  rep.repetition_penalty = 1.2;
+  expect(secure_frontend::render_sampling_keys(rep) == " penalty_repeat=1.2 penalty_last_n=64",
+         "penalty alias + default window: " + secure_frontend::render_sampling_keys(rep));
+  secure_frontend::SamplingParams window;
+  window.presence_penalty = 0.2;
+  window.penalty_last_n = 8;
+  expect(secure_frontend::render_sampling_keys(window) == " penalty_present=0.2 penalty_last_n=8",
+         "explicit window: " + secure_frontend::render_sampling_keys(window));
 }
 
 }  // namespace
@@ -422,6 +500,7 @@ void next_event_finish_forms_and_nonfinite_stays_idle() {
 int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
       {"runs_the_solo_protocol", runs_the_solo_protocol},
+      {"gen_line_unchanged_without_embeddings_geni_with_them", gen_line_unchanged_without_embeddings_geni_with_them},
       {"stop_and_quit_are_explicit", stop_and_quit_are_explicit},
       {"write_deadlines_reach_the_transport", write_deadlines_reach_the_transport},
       {"refuses_stop_when_not_advertised", refuses_stop_when_not_advertised},
@@ -435,6 +514,7 @@ int main(int argc, char** argv) {
       {"derived_line_cap_is_clamped_to_protocol_max", derived_line_cap_is_clamped_to_protocol_max},
       {"stop_cause_and_completed_generations", stop_cause_and_completed_generations},
       {"gen_carries_bounded_sampling_keys", gen_carries_bounded_sampling_keys},
+      {"sampling_defaults_reach_gen_request", sampling_defaults_reach_gen_request},
       {"next_event_yields_tokens_progress_and_done", next_event_yields_tokens_progress_and_done},
       {"next_event_timeout_keeps_generation_active", next_event_timeout_keeps_generation_active},
       {"next_event_finish_forms_and_nonfinite_stays_idle", next_event_finish_forms_and_nonfinite_stays_idle},

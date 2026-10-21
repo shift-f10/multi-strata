@@ -198,8 +198,9 @@ ManifestParseResult parse_manifest(const std::string_view bytes, const ManifestR
     if (role == "weights") file.role = FileRole::weights;
     else if (role == "pack") file.role = FileRole::pack;
     else if (role == "tokenizer") file.role = FileRole::tokenizer;
+    else if (role == "mmproj") file.role = FileRole::mmproj;  // SP5 M1 Task 11 (D-9, Ruling T11-bb)
     else r.fail(at + ".role", role == "vision" || role == "draft" ? "is reserved and rejected in schema 1"
-                                                                  : "must be weights, pack or tokenizer");
+                                                                  : "must be weights, pack, tokenizer or mmproj");
     const auto size = r.integer(*f, "size", at);
     file.size = size > 0 ? static_cast<std::uint64_t>(size) : 0U;
     file.sha256 = r.text(*f, "sha256", at, 64).value_or("");
@@ -210,11 +211,14 @@ ManifestParseResult parse_manifest(const std::string_view bytes, const ManifestR
     m.files.push_back(std::move(file));
   }
   if (const auto* launch = r.object(Reader::find(*top, "launch"), "launch", false)) {
-    r.only(*launch, {"native", "ple_gguf", "pack", "tokenizer_pack"}, "launch");
+    r.only(*launch, {"native", "ple_gguf", "pack", "tokenizer_pack", "mmproj"}, "launch");
     m.launch.native = r.text(*launch, "native", "launch", kManifestMaxStringBytes, false);
     m.launch.ple_gguf = r.text(*launch, "ple_gguf", "launch", kManifestMaxStringBytes, false);
     m.launch.pack = r.text(*launch, "pack", "launch", kManifestMaxStringBytes, false);
     m.launch.tokenizer_pack = r.text(*launch, "tokenizer_pack", "launch", kManifestMaxStringBytes, false);
+    // SP5 M1 Task 11 (D-9): the optional vision encoder reference; the profile rules in
+    // validate_manifest require it to name a listed mmproj file.
+    m.launch.mmproj = r.text(*launch, "mmproj", "launch", kManifestMaxStringBytes, false);
   }
   if (r.issue) return *r.issue;
   // validate_manifest() owns every struct-level rule, including the P1 path grammar.

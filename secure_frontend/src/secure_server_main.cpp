@@ -7,17 +7,20 @@
 #include "secure_frontend/connection_pool.hpp"
 #include "secure_frontend/engine_arguments.hpp"
 #include "secure_frontend/engine_environment.hpp"
+#include "secure_frontend/engine_stdio_process.hpp"
 #include "secure_frontend/engine_supervisor.hpp"
 #include "secure_frontend/frontend_config.hpp"
 #include "secure_frontend/frontend_init.hpp"
 #include "secure_frontend/generation_gate.hpp"
 #include "secure_frontend/http_policy.hpp"
 #include "secure_frontend/http_socket_server.hpp"
+#include "secure_frontend/image_payload.hpp"
 #include "secure_frontend/launch_composition.hpp"
 #include "secure_frontend/privilege_check.hpp"
 #include "secure_frontend/process_defaults.hpp"
 #include "secure_frontend/request_log.hpp"
 #include "secure_frontend/server_cli.hpp"
+#include "secure_frontend/server_bootstrap.hpp"
 #include "secure_frontend/shutdown_signal.hpp"
 #include "secure_frontend/subsystem_limits.hpp"
 #include "secure_frontend/test_hooks.hpp"
@@ -25,7 +28,9 @@
 #include "secure_frontend/token_verifier.hpp"
 #include "secure_frontend/tokenizer_pack.hpp"
 #include "secure_frontend/utf8_argv.hpp"
+#include "secure_frontend/vision_supervisor.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -37,260 +42,7 @@
 #include <variant>
 #include <vector>
 
-namespace {
 
-using secure_frontend::EngineProfile;
-using secure_frontend::FrontendConfig;
-
-std::string host_header(const secure_frontend::Config& config) {
-  const bool ipv6 = config.host.find(':') != std::string::npos;
-  return (ipv6 ? "[" + config.host + "]" : config.host) + ":" + std::to_string(config.port);
-}
-
-secure_frontend::TokenReadResult read_configured_token(const FrontendConfig& config) {
-  if (config.roots.secret.has_value()) return secure_frontend::read_token(config.token, *config.roots.secret);
-  return secure_frontend::read_token(config.token, std::filesystem::path{"."});
-}
-
-int check(const FrontendConfig& config, const std::vector<std::string>& overridden, const bool expert) {
-  std::cout << secure_frontend::describe(config);
-  for (const auto& key : overridden) std::cout << key << ": the command line overrides the config file\n";
-  std::cout.flush();
-  // SP4 §4.9 c/d (F-8): the launch-related config errors serve would refuse, for
-  // the same mode (managed, or --expert). Pure: roots.models is not read.
-  if (const auto issues = secure_frontend::launch_config_issues(config, expert); !issues.empty()) {
-    for (const auto& issue : issues) std::cerr << "Configuration error: " << issue << '\n';
-    return EXIT_FAILURE;
-  }
-  // The verdict follows the token read: a configuration whose token cannot be
-  // read is not reported valid first.
-  const auto token = read_configured_token(config);
-  if (const auto* error = std::get_if<secure_frontend::TokenReadError>(&token)) {
-    std::cerr << "token: unavailable: " << error->message << '\n'
-              << "Configuration is not usable: the API token cannot be read.\n";
-    return EXIT_FAILURE;
-  }
-  std::cout << "token: available (value not shown)\nConfiguration is valid.\n";
-  return EXIT_SUCCESS;
-}
-
-// roots.state (--state-dir) holds the engine's cwd, temp and CUDA cache (spec
-// §3.9, §3.12). validate() only checked that it is absolute (--check stays
-// side-effect free); serve refuses, before anything is created, bound or
-// spawned, unless it is an existing owner-only directory.
-bool state_dir_is_usable(const FrontendConfig& config) {
-  if (!config.roots.state) {
-    std::cerr << "roots.state (--state-dir) is required to serve.\n";
-    return false;
-  }
-  // POSIX: lstat -- a real directory, not a symlink, owned by the effective
-  // uid, no group/other bits. Windows: opened without following a junction or
-  // symlink (refused), owner the current user, protected DACL with allow-ACEs
-  // only for the user, SYSTEM and Administrators (is_private_state_root).
-  const bool owner_only = secure_frontend::is_private_state_root(*config.roots.state);
-  if (!owner_only) {
-    std::cerr << "--state-dir must be an existing owner-only directory.\n";
-    return false;
-  }
-  return true;
-}
-
-// Creates <state>/engine, the temp root and the CUDA cache owner-only and
-// clears the temp root: no engine runs yet, so temp directories a previous
-// frontend left behind are stale. Where the CUDA cache lives is
-// engine_environment_for()'s decision: <roots.cache>/cuda (that root was
-// already created 0700 by create_runtime_roots() and is left as it is) or
-// <state>/cache/cuda, whose parent below the state dir is created owner-only too.
-bool prepare_state_dir(const std::filesystem::path& state_dir, const secure_frontend::EngineEnvironment& environment) {
-  std::vector<std::filesystem::path> directories{state_dir / "engine", environment.temp_dir};
-  const auto below_state = [&state_dir](const std::filesystem::path& path) {
-    const auto relative = path.lexically_relative(state_dir);
-    return !relative.empty() && relative != "." && *relative.begin() != "..";
-  };
-  if (below_state(environment.cuda_cache_dir.parent_path())) directories.push_back(environment.cuda_cache_dir.parent_path());
-  directories.push_back(environment.cuda_cache_dir);
-  for (const auto& directory : directories) {
-    if (!secure_frontend::create_owner_only_directory(directory)) return false;
-  }
-  return secure_frontend::clear_directory_contents(environment.temp_dir);
-}
-
-int run(const FrontendConfig& config, const bool expert) {
-  if (!state_dir_is_usable(config)) return EXIT_FAILURE;
-  // roots.logs / roots.cache: validate() only checked them, so --check stays
-  // side-effect free; serve creates a missing one here, before bind or spawn.
-  if (const auto issues = secure_frontend::create_runtime_roots(config); !issues.empty()) {
-    for (const auto& issue : issues) std::cerr << "Configuration error: " << secure_frontend::format_issue(issue) << '\n';
-    return EXIT_FAILURE;
-  }
-  // Every reason below is fixed text (plus, for the inventory, an entry name
-  // below roots.models, spec §6.1): never a token or a configured value.
-  auto token_result = read_configured_token(config);
-  auto* token = std::get_if<secure_frontend::SecretBytes>(&token_result);
-  if (token == nullptr) {
-    std::cerr << "Unable to read API token: " << std::get<secure_frontend::TokenReadError>(token_result).message << '\n';
-    return EXIT_FAILURE;
-  }
-  auto verifier = std::make_shared<const secure_frontend::TokenVerifier>(std::move(*token));
-
-  const secure_frontend::Config listener = secure_frontend::listener_config(config);
-  // Derived once, before bind/spawn; each subsystem keeps its own const copy.
-  const auto schema_limits = secure_frontend::chat_schema_limits(config);
-  // SP4 §2.3/§4.9 (Task 24b): managed models launch from the installed manifest;
-  // --expert keeps SP1's operator path (inventory, roots.tokenizer_pack).
-  auto composed = secure_frontend::compose_engine_launch(config, expert);
-  if (const auto* failure = std::get_if<secure_frontend::LaunchFailure>(&composed)) {
-    for (const auto& message : failure->messages) std::cerr << message << '\n';
-    return failure->exit == secure_frontend::ExitCode::usage ? EXIT_FAILURE : secure_frontend::exit_code_value(failure->exit);
-  }
-  auto& launch = std::get<secure_frontend::ComposedLaunch>(composed);
-  const auto tokenizer_result = secure_frontend::load_local_tokenizer_pack(*launch.tokenizer_root);
-  const auto* tokenizer = std::get_if<secure_frontend::TokenizerPack>(&tokenizer_result);
-  if (tokenizer == nullptr) {
-    std::cerr << "Unable to load local tokenizer pack (" << (launch.managed ? "the model's tokenizer" : "roots.tokenizer_pack")
-              << "): " << std::get<secure_frontend::TokenizerPackError>(tokenizer_result).message << '\n';
-    return EXIT_FAILURE;
-  }
-  const std::string& model_id = launch.model_id;
-  const bool glm = launch.profile == EngineProfile::glm53;
-  auto* engine_arguments = &launch.engine_args;
-
-  // Profile, protocol flavor, chat limits and the READY deadline all come from
-  // the validated config (limits.engine.ready_timeout_s drives the policy).
-  secure_frontend::SupervisorConfig supervisor_config = secure_frontend::supervisor_config(config);
-  // SP4 §4.9 c: the profile is the composed launch's (a managed model's
-  // manifest sets it; engine.profile is --expert only), not the config key.
-  supervisor_config.profile = glm ? secure_frontend::NativeChatProfile::glm53 : secure_frontend::NativeChatProfile::qwen;
-  supervisor_config.flavor =
-      glm ? secure_frontend::EngineProtocolFlavor::lighttransport_glm53 : secure_frontend::EngineProtocolFlavor::strata_0143;
-  const std::filesystem::path& state_dir = *config.roots.state;
-  std::vector<std::filesystem::path> lib_dirs = config.engine.lib_dirs;
-  if (lib_dirs.empty()) lib_dirs.push_back(config.engine.executable.path().parent_path());
-  secure_frontend::EngineLaunchPlan plan{.command = {.executable = config.engine.executable.path(),
-                                                     .arguments = std::move(*engine_arguments), .environment = {}}};
-  // Spec §3.9: the engine's whole environment, rendered per generation; nothing
-  // is inherited from this server's environment.
-  auto environment = secure_frontend::engine_environment_for(state_dir, config.roots.cache, std::move(lib_dirs));
-  if (!prepare_state_dir(state_dir, environment)) {
-    std::cerr << "Unable to prepare the state or cache directory.\n";
-    return EXIT_FAILURE;
-  }
-  plan.environment = std::move(environment);
-  // Spec §3.12: the engine's cwd-relative files (`pack/full`, stall dumps)
-  // land in <state_dir>/engine, created by prepare_state_dir() above.
-  plan.command.working_directory = state_dir / "engine";
-  // Spec §3.7(d): detected, never configured; off unless this process runs in
-  // a writable delegated cgroup v2.
-  plan.use_delegated_cgroup = true;
-  // Spec §3.12 (G2): PR_SET_NO_NEW_PRIVS on the engine unless
-  // engine.allow_new_privileges (--allow-new-privileges); when it is set, an
-  // engine that dies before READY gets the one-time /dev/nvidia-uvm hint.
-  plan.command.no_new_privileges =
-      secure_frontend::config_defaults::kNoNewPrivilegesDefault && !config.engine.allow_new_privileges;
-#if defined(__linux__)
-  supervisor_config.no_new_privileges_hint = plan.command.no_new_privileges;
-#endif
-  // The supervisor thread spawns, watches and restarts the engine (spec §3.1).
-  // Declared before the listener and the router, so it outlives both; a Lease
-  // lives only inside one ChatRoute::handle call.
-  secure_frontend::EngineSupervisor supervisor(supervisor_config, secure_frontend::make_stdio_process_factory(std::move(plan)));
-
-  const std::string authority = host_header(listener);  // the startup line only
-  // SP3 Task 16 (spec §2.2, §2.5): SupervisorPort serializes the frontend's
-  // snapshot/acquire/report_fatal into SP2 (D-1); GenerationGate holds the
-  // single generation slot with a FIFO queue; ChatRoute validates (P4) before a
-  // queue place is taken and runs the generation through the lease (P6).
-  // Declaration order here — supervisor, port, gate, chat route, then router,
-  // server, pool — keeps every object a pool worker touches alive until the
-  // pool is joined.
-  secure_frontend::SupervisorPort port(supervisor);
-  secure_frontend::GenerationGate gate({.max_queued = config.limits.concurrency.max_queued_generations,
-                                        .queue_timeout = config.limits.concurrency.queue_timeout});
-  secure_frontend::ChatRoute chat_route(
-      secure_frontend::ChatRouteConfig{.schema = schema_limits, .model_id = model_id, .profile = supervisor_config.profile,
-                                       .max_prompt_tokens = config.limits.chat.max_prompt_tokens,
-                                       .max_completion_tokens = config.limits.chat.max_completion_tokens,
-                                       .default_max_tokens = config.limits.chat.default_max_tokens,
-                                       .queue_timeout = config.limits.concurrency.queue_timeout,
-                                       .write_stall = config.limits.http.write_stall,
-                                       .response_write_deadline = config.limits.http.response_write_deadline,
-                                       .stream_keepalive = config.limits.http.stream_keepalive},
-      port, gate, *tokenizer);
-  // Spec §4.1: every request goes through the header-first router (Host,
-  // Origin, preflight, bearer token, route table, Content-Type, body limit)
-  // before a body byte is read. Spec §3.6 (E9, re-anchor 4 / P26): /v1/models
-  // lists only the served model, launch.model_id, owned by "local".
-  secure_frontend::ApiRouter router(secure_frontend::ApiRouterConfig{
-      .policy = secure_frontend::make_http_policy(config.listener.host, config.listener.port, config.listener.host_aliases,
-                                                  config.listener.cors_origins),
-      .validator = secure_frontend::make_bearer_validator(verifier),
-      .model_id = model_id,
-      .owned_by = "local",
-      .chat_body_limit = config.limits.chat.max_body_bytes,
-      .health = [&port] {
-        const auto s = port.snapshot();
-        return secure_frontend::HealthView{s.healthy, s.engine, s.recovery};
-      },
-      // ChatRoute: P4 validation, then the gate, then P6 through the lease
-      // (spec §2.2). The route answers its own refusals.
-      .chat = [&chat_route](const std::string_view body, const secure_frontend::RequestContext& context) -> secure_frontend::RouteResult {
-        return chat_route.handle(body, context);
-      }});
-  const secure_frontend::ConnectionLimits connection_bounds = secure_frontend::connection_limits(config);
-  std::string bind_error;
-  auto server = secure_frontend::HttpSocketServer::bind(listener, static_cast<int>(config.listener.backlog), &bind_error);
-  if (!server) { std::cerr << "Unable to bind secure listener.\n"; return EXIT_FAILURE; }
-  // Bound first, spawned second: a listener that cannot bind never leaves an
-  // engine child behind (CFG-01). The token was read above, before any spawn.
-  // Spec §3.7: once every engine is gone the supervisor shuts the listener,
-  // which wakes the accept() below. Signals route to the supervisor's wake.
-  supervisor.set_on_stopped([&server] { server->shutdown_listener(); });
-  secure_frontend::install_shutdown_signals(supervisor.wake());
-  // Spec §8: the operator-facing startup summary — the process's own settings
-  // only (stderr, once; like --check prints them). Never any secret or path.
-  std::cerr << "strata: listening " << authority << ", workers " << config.limits.concurrency.max_concurrent_requests
-            << ", queued generations " << config.limits.concurrency.max_queued_generations << '\n' << std::flush;
-  if (!supervisor.start()) { std::cerr << "Unable to start the engine supervisor.\n"; return EXIT_FAILURE; }
-  // Every way out of this scope, an exception included, stops the supervisor
-  // while the listener its on-stopped hook uses still exists.
-  struct StopSupervisor final {
-    secure_frontend::EngineSupervisor& supervisor;
-    ~StopSupervisor() { supervisor.shutdown(secure_frontend::config_defaults::kShutdownBound); }
-  } stop_supervisor{supervisor};
-  std::cout << "Secure server listening on http://" << authority << " (authenticated; Ctrl-C to stop)\n";
-  std::cout.flush();
-  // Task 12: the server is concurrent (spec §2.1). The accept loop runs on this
-  // thread; the workers exist for the life of the pool, which is constructed
-  // after supervisor.start() and destroyed (already joined) before the
-  // supervisor shutdown below.
-  secure_frontend::RequestLogger request_log(config.logging.requests, secure_frontend::stderr_sink());
-  secure_frontend::ConnectionPool pool(
-      *server,
-      secure_frontend::PoolLimits{.workers = config.limits.concurrency.max_concurrent_requests,
-                                  .per_remote_cap = config.limits.concurrency.max_connections_per_remote_address,
-                                  .connection = connection_bounds},
-      router,
-      // Spec §8: one fixed-field line per finished connection when logging.requests is on.
-      [&request_log](const secure_frontend::FinishedConnection& finished) { request_log.record(secure_frontend::log_record_for(finished)); });
-  // Pre-flight P33 (kept per ruling T16-pool: shutdown_signalled() alone would
-  // miss the recovery-exhausted exit): the supervisor's stop request ends the
-  // accept loop; the on-stopped hook closing the listener is the second exit
-  // path. T12b: a dead listener ends the loop with PoolExit::listener_failed,
-  // handled exactly as SP2's loop handled it: orderly supervisor shutdown, exit
-  // non-zero. The on-shutdown hook (Task 16) wakes gate waiters as
-  // shutting_down before the workers are joined.
-  const auto pool_exit = pool.run_until([&supervisor] { return supervisor.stop_requested(); }, [&gate] { gate.shutdown(); });
-  if (pool_exit == secure_frontend::PoolExit::listener_failed) {
-    std::cerr << "listener stopped\n";
-    supervisor.shutdown(secure_frontend::config_defaults::kShutdownBound);
-    return EXIT_FAILURE;
-  }
-  supervisor.shutdown(secure_frontend::config_defaults::kShutdownBound);
-  // Spec C4: exit 0 means no engine is left; an unreaped one was logged.
-  return supervisor.engine_left_unreaped() ? EXIT_FAILURE : EXIT_SUCCESS;
-}
-
-}  // namespace
 
 int main(int argc, char* argv[]) {
   // Spec §10: Winsock is initialized once per process (bind() no longer calls WSAStartup).
@@ -345,6 +97,6 @@ int main(int argc, char* argv[]) {
     return EXIT_FAILURE;
   }
   const auto config = std::get<secure_frontend::ValidatedConfig>(loaded).shared();
-  if (invocation.command == secure_frontend::ServerCommand::check) return check(*config, overridden, invocation.expert);
-  return run(*config, invocation.expert);
+  if (invocation.command == secure_frontend::ServerCommand::check) return secure_frontend::server_check(*config, overridden, invocation.expert);
+  return secure_frontend::server_run(*config, invocation.expert);
 }

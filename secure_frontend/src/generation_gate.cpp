@@ -20,6 +20,9 @@ std::optional<GateRefusal> refusal_for(const SupervisorState state) {
     case SupervisorState::stopped: return GateRefusal::shutting_down;
     case SupervisorState::ready:
     case SupervisorState::generating: return std::nullopt;
+    // SP5 M1 Task 6 (pin :6252 "loads on use", StrataEngine.start on the request path):
+    // an unloaded engine is queueable, not a refusal — the driver loop wakes it.
+    case SupervisorState::unloaded: return std::nullopt;
   }
   return GateRefusal::engine_unavailable;   // unreachable: the enum is exhausted
 }
@@ -56,6 +59,7 @@ std::variant<Lease, GateRefusal> GenerationGate::admit(SupervisorPort& port, con
   running_ = true;   // this thread now owns the single running slot
   lock.unlock();
   // The head drives SP2 to a lease (spec §2.5 "Granting the slot").
+  bool woke_cold = false;  // SP5 M1 Task 6: this request woke (or is waiting on) a cold engine
   for (;;) {
     const auto snapshot = port.snapshot();
     if (snapshot.state == SupervisorState::ready) {
@@ -66,6 +70,17 @@ std::variant<Lease, GateRefusal> GenerationGate::admit(SupervisorPort& port, con
     if (snapshot.state == SupervisorState::generating) {
       if (now_() >= deadline) { release(); return GateRefusal::timeout; }
       std::this_thread::sleep_for(api_constants::kStreamPollSlice);   // re-check; the slot stays ours
+      continue;
+    }
+    // SP5 M1 Task 6 (parity rows lazy_load / idle_unload_s): the head of the queue wakes a
+    // cold engine (pin: the request path restarts it, :6252) and stays queued through the
+    // spawn — but only a spawn it woke itself; a crash-recovery `starting` still refuses
+    // fast, as SP2 established.
+    if (snapshot.state == SupervisorState::unloaded || (woke_cold && snapshot.state == SupervisorState::starting)) {
+      port.wake_for_request();
+      woke_cold = true;
+      if (now_() >= deadline) { release(); return GateRefusal::timeout; }
+      std::this_thread::sleep_for(api_constants::kStreamPollSlice);
       continue;
     }
     release();

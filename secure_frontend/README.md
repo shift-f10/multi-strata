@@ -295,6 +295,62 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `pull.stall_timeout_s` | integer | `120` | 10-3600 | - | Abort a transfer slower than 1024 B/s for this long. |
 | `pull.connect_timeout_s` | integer | `30` | 1-300 | - | TCP/TLS connect timeout per request. |
 | `logging.requests` | boolean | `false` | - | - | One line per request to stderr: route, status, code, time, bytes, loopback or remote; never paths, headers, tokens or text. |
+| `defaults.sampling.temperature` | number | unset | 0-2 | - | Request default temperature (pin: 0..2); unset keeps the engine default. |
+| `defaults.sampling.top_p` | number | unset | >0-1 | - | Request default top_p (pin: 0 < top_p <= 1); unset keeps the engine default. |
+| `defaults.sampling.top_k` | integer | unset | 1-64 | - | Request default top_k candidates (pin: an integer 1..64); unset keeps the engine default. |
+| `defaults.sampling.min_p` | number | unset | 0-1 | - | Request default min_p (pin wire: only 0 < min_p <= 1 is sent; 0 stays off). |
+| `defaults.sampling.presence_penalty` | number | unset | 0-2 | - | Request default presence penalty (0 off; cap 2 added, C-1). |
+| `defaults.sampling.repetition_penalty` | number | unset | >0-2 | - | Request default repetition penalty (pin wire: only != 1.0 is sent; cap 2 added, C-1). |
+| `defaults.sampling.frequency_penalty` | number | unset | 0-2 | - | Request default frequency penalty (0 off; cap 2 added, C-1). |
+| `defaults.sampling.penalty_last_n` | integer | unset | 0-8192 | - | Penalty window; unset means the pin default of 64 when any penalty is on (cap added, C-1). |
+| `defaults.sampling.seed` | integer | unset | 1-4294967295 | - | Request default sampling seed (pin: a positive integer; 32-bit cap added, C-1). |
+| `reasoning.effort` | string | unset | - | - | Thinking level for requests that name none: none, low, medium or high (pin levels); unset names none. |
+| `reasoning.budget_tokens` | integer | `0` | 0-4294967295 | - | Default thinking budget in tokens (0 = none, the pin default); bounds added, C-1. |
+| `reasoning.close_retry` | boolean | `false` | - | - | Close an unfinished thinking block once when the reply ends inside it (pin opt-in, off). |
+| `reasoning.loop_recovery` | string | `off` | - | - | A reasoning loop ends the reply (off, the pin default), stops (stop) or continues once (recover). |
+| `reasoning.effort_position` | string | `start` | - | - | Where a non-default effort sits in the prompt: start (the pin default) or end; end adds the engine's --tail-role-token. |
+| `reasoning.anthropic_thinking` | string | `model` | - | - | Thinking default for /v1/messages-shaped clients: model (the pin default) or on_request. |
+| `engine.fit_max_tokens` | boolean | `true` | - | - | Fit an over-room max_tokens to the context room (true, the pin default); false answers the §7.2 400 instead. |
+| `engine.lazy_load` | boolean | `false` | - | - | Start with the engine unloaded; the first request loads it (the pin's lazy_load, text only). |
+| `engine.idle_unload_s` | integer | `0` | 0-86400 | - | Seconds without a request before the engine is unloaded (0: never, the pin default); cap added, C-1. |
+| `engine.mtp` | boolean | `true` | - | - | Draft layer (MTP): on unless explicitly false; false drops --mtp/--spec-min-p/--batch-mtp at every start. |
+| `engine.vram_reserve_mib` | integer | unset | 0-1048576 | - | VRAM MiB the engine leaves free (renders --vram-reserve-mib; unset: the engine's own 700). |
+| `engine.min_free_vram_mib` | integer | `0` | 0-1048576 | - | Refuse to load when free VRAM is below this (0: never; the driver check runs on the owner's GPU box). |
+| `engine.vram_elastic` | boolean | `false` | - | - | Segment the expert cache so VRAM can be given back and taken back (renders --vram-elastic, #533). |
+| `engine.vram_segment_mib` | integer | unset | 1-1048576 | - | Segment size for vram_elastic (renders --vram-segment-mib; unset: the engine's own 512). |
+| `engine.elastic` | boolean | `false` | - | - | The image encoder starts with the first picture and stops when idle (needs vram_elastic; the vision turn). |
+| `engine.elastic_idle_s` | integer | `120` | 1-86400 | - | Seconds without a picture before the elastic encoder stops (pin default 120); whole seconds, cap added. |
+| `engine.elastic_mib` | integer | `2048` | 1-1048576 | - | VRAM MiB the expert cache keeps free while the encoder runs (pin default 2048). |
+| `engine.gpu_order` | string | `auto` | - | - | GPU order: auto (reorder by card speed, where the driver can tell) or as_given (keep the configured order). |
+| `engine.gpu_policy` | string | `auto` | - | - | GPU turn for a picture: auto, keep, shrink or unload the engine's VRAM first (the POLICIES set). |
+| `engine.layer_split` | string | `auto` | - | - | First layer of each later GPU (rising numbers from 2), or auto; renders --layer-split with several GPUs. |
+| `engine.split_skip_if_fits` | boolean | `false` | - | - | Let an auto split run on the first card alone when it holds every expert and the KV (renders --split-skip-if-fits). |
+| `engine.hip_ordinal` | integer | unset | 0-127 | - | The HIP number of the discrete card (setup-recorded); wins over one (or zero) configured GPUs. |
+| `engine.uma` | boolean | `false` | - | - | An APU: engine and image turn share the RAM either way, so a picture never needs the engine moved. |
+| `engine.silence_s` | integer | `300` | 0-86400 | - | End a request when the engine says nothing valid for this long (pin default 300 s; 0: wait, still bounded by the total generation timeout). |
+| `engine.answer_room` | boolean | `true` | - | - | Close a long un-budgeted thinking reply early enough to leave the answer room (true, the pin default). |
+| `engine.repeat_stop_tokens` | integer | `256` | 0-65536 | - | One token this many times in a row ends a reply as length (pin default 256; 0: off). Cap added, C-1. |
+| `engine.max_tokens` | integer | unset | 1-1048576 | - | Ceiling on a request's output budget (unset: the completion cap; an added frontend bound, C-1). |
+| `engine.min_tokens` | integer | unset | 1-1048576 | - | Floor on a request's output budget (unset: none; an added frontend bound, C-1). |
+| `model.aliases` | string array | `[]` | - | - | Other model names the server lists and answers to (exact match only, like the pin's set_aliases). |
+| `session.slot_save_path` | string | unset | - | - | Directory for engine slot session save/restore files (absolute; the /slots route is not served today). |
+| `session.expert_profile_save` | string | unset | - | - | Where the engine re-saves its learned expert profile (absolute path; --expert-profile-save). |
+| `session.expert_profile_save_every` | integer | `10` | 0-1440 | - | Re-save the learned expert profile every N minutes (pin default 10; 0: at engine exit only). Cap added, C-1. |
+| `session.tool_call_recovery` | boolean | `false` | - | - | Attempt to recover malformed tool-call output (the pin's opt-in; stored for parity today). |
+| `session.env_to_user` | boolean | `false` | - | - | Pass configured environment hints to the user prompt path (the pin's opt-in; stored for parity today). |
+| `session.codex_thread_titles` | boolean | `false` | - | - | Codex thread titles (#923; the pin's opt-in; the route is not served here). |
+| `session.codex_compaction_cache` | boolean | `false` | - | - | Codex compaction cache (#924; the pin's opt-in; the route is not served here). |
+| `session.keep_files` | integer | `64` | 1-1024 | - | How many image-scratch files to retain (pin default 64; bounds added, C-1; the consumer is out per D-9). |
+| `replicas.parallel` | integer | `1` | 1-1024 | - | Decode up to N requests together inside the one engine (1: one at a time; the N-child scheduler is not implemented). |
+| `vision.enabled` | boolean | `false` | - | - | Read images: a supervised strata-vision child encodes image_url parts for the engine. |
+| `vision.max_side` | integer | `2048` | 1-16384 | - | Largest image side accepted before decoding (pin default 2048; cap added, C-1). |
+| `vision.max_n` | integer | `4` | 1-64 | - | Most images one request may carry (pin default 4; cap added, C-1). |
+| `vision.need_mib` | integer | unset | 1-1048576 | - | Override the free-VRAM figure the encoder is checked against (unset: computed; bounds added, C-1). |
+| `vision.no_flash_attn` | boolean | `false` | - | - | Run the encoder without flash attention (added, spec §5.1; the encoder's --no-flash-attn). |
+| `vision.resident` | boolean | `true` | - | - | Keep the encoder running from boot (the pin's eager resident encoder; false: the first image starts it). |
+| `vision.threads` | integer | `0` | 0-256 | - | Encoder CPU threads (0: the tool's own default; cap added, C-1). |
+| `vision.ready_timeout_s` | integer | `300` | 0-86400 | - | Seconds the encoder gets to print READY (0: wait for ever, as at the pin). |
+| `vision.encode_timeout_s` | integer | `300` | 0-86400 | - | Seconds one image encoding may take (0: wait for ever, as at the pin). |
 <!-- config-keys:end -->
 
 `roots.secret` defaults to the config file's directory only for a `file:` token
@@ -302,12 +358,205 @@ source; an `env:` source never opens it. `roots.logs` and `roots.cache` may be
 absent if their parent is a private directory; only serving and `init` create
 them. `--check` creates nothing.
 
+**Replicas (SP5 narrowing, spec C-4).** N-child replica scheduling is not
+implemented in SP5; `--parallel` within one engine is. The pinned scheduler's
+`replicas` entry and its `replica_*` members are rejected at load, naming the
+key; what stands is engine-internal parallelism: `replicas.parallel` decodes up
+to N requests together inside the one engine child (rendered to the engine as
+`--batch N`, exactly like the pinned server; 1, the default, is one request at
+a time, and the engine's batch window is 8).
+
+**Vision (SP5 M1, spec D-9).** Image *input* is typed and plumbed; image
+*generation* stays out (its routes answer 404, parity table). `vision.enabled`
+needs the manifest artifact `launch.mmproj` — the files[] role `mmproj` is
+listed like any other file, at most one — and the engine then receives
+`--vision`, like the pinned server's section gate (serve/server.py:2926-2931).
+The encoder is a supervised `strata-vision` child, a sibling of the engine
+executable (the pin's config-named vision exe stays rejected, spec §4); it
+must print READY within `vision.ready_timeout_s` (300 s, the pin's
+VISION_READY_S; 0 waits for ever), and a resident encoder that cannot start
+fails the boot — `vision.enabled` promises images. `vision.resident` false
+waits for the first picture (the pin's laziness, :2646). On the request path
+images arrive as `data:` URLs only — an http(s) image URL is refused 400 by
+name, never fetched — `vision.max_side` and `vision.max_n` cap them before
+any decode, `vision.encode_timeout_s` (the pin's VISION_ENCODE_S, :328)
+bounds one ENC round trip, and every staged or encoded scratch file lives
+under `<state>/vision` (owner-private) and is deleted when the request ends.
+`engine.max_tokens`/
+`engine.min_tokens` also reach the child as `--max-tokens`/`--min-tokens`
+exactly as at the pin (:2564-2567), and `vision.no_flash_attn` is the added
+spec §5.1 family flag. Real encode behaviour on real images is proven only by
+the owner-box acceptance kit.
+
 **Constants.** Internal constants live in
 `include/secure_frontend/api_constants.hpp` (SP3) and `config_defaults.hpp`
 (SP1). SP3 removed SP1's 1000 ms minimum send budget (SP1 addendum A4); the
 half-close drain (100 ms / 256 KiB) moved to `api_constants.hpp`; M2 adds the
 streaming bounds `kMaxDeltaTextBytes` (16 KiB of text per content delta) and
 `kMaxSseEventBytes` (128 KiB per SSE event).
+
+## Strata option-surface parity (SP5 M1)
+
+The pinned upstream Strata (`upstream.version`, tag `v0.2.1.3`) reads 87 config
+keys and 31 environment knobs (the verbatim grep in
+`secure_frontend/tests/parity_keys_upstream.hpp`); the parity table
+(`secure_frontend/src/parity_table.cpp`) gives each one — plus a few rule rows
+the flat grep cannot see — exactly one disposition, cited to the governing
+read site. The three tables below mirror that table for humans, one block per
+disposition; the C++ table stays the authority and the pytest gate
+`tools/secure/test_parity_readme_coverage.py` re-checks these blocks against
+it. Typed options live in the config table above (each note names the wiring
+task); rejected options are refused **at config load, by name**, and
+`strata doctor` warns about ignored `STRATA_*`/`MAYA_*` environment variables.
+Narrowings: `replicas.parallel` is typed but renders `--batch N` inside the
+one child (C-4: the pin's N-child replica scheduler is not implemented);
+`session.answer_room` is typed only (the pin's formula sits in its thinking
+parser, not in our §7.2 room rule); `lazy_load` is typed but has no flag (the
+pin has none either); the vision encoder gets no per-generation cgroup in M1
+(recorded gap); `session.keep_files` keeps the pin's default but its LRU
+consumer is out of M1 — every request cleans up after itself instead.
+
+### Kept as typed options
+
+<!-- parity-typed:begin -->
+| Upstream option | Destination | Disposition note and the pin read site |
+| --- | --- | --- |
+| `aliases` | frontend behaviour | serve/server.py:8046, set_aliases :3764-3777; runconfig.py:34 (M1 Task 8: model.aliases — /v1/models lists them, chat matches exactly) |
+| `allowed_hosts` | frontend behaviour | already typed (SP1/SP3 listen); serve/server.py:8066 |
+| `answer_room` | typed config | serve/server.py:8014 (`is not False`), formula :4704-4716; typed only: the pin's formula sits in its thinking parser, not in our §7.2 room rule (Ruling T8-d, Task 15) |
+| `anthropic_thinking` | typed config | serve/server.py:8102 (M1 Task 5: reasoning.anthropic_thinking) |
+| `codex_compaction_cache` | typed config | serve/server.py:8044 (M1 Task 9: session.codex_compaction_cache) |
+| `codex_thread_titles` | typed config | serve/server.py:8043 (M1 Task 9: session.codex_thread_titles) |
+| `cors_origins` | frontend behaviour | already typed (SP3 B12: listener.cors_origins); serve/server.py:8063 |
+| `effort_position` | engine argv | serve/server.py:2836 (M1 Task 5: reasoning.effort_position composes the engine's --tail-role-token) |
+| `elastic` | frontend behaviour | serve/server.py:2550, :7927 (M1 Task 7: engine.elastic; Tasks 11-12 consume it) |
+| `elastic_idle_s` | frontend behaviour | serve/server.py:2552, :3854 (M1 Task 7: engine.elastic_idle_s) |
+| `elastic_mib` | frontend behaviour | serve/server.py:2551, :3832 (M1 Task 7: engine.elastic_mib; /v1/vram headroom) |
+| `engine_silence_s` | frontend behaviour | serve/server.py:941, default 300 at :276, engine_silence_s() :2861-2868; runconfig.py:39 (M1 Task 8: the pump's silence watchdog) |
+| `env_to_user` | typed config | serve/server.py:8110 (M1 Task 9: session.env_to_user) |
+| `expert_profile_save` | engine argv | serve/server.py:3000-3005 (M1 Task 9: --expert-profile-save; an operator-owned flag wins, :3001) |
+| `expert_profile_save_every` | engine argv | serve/server.py:3004-3005, default 10 at :2996 (M1 Task 9: --expert-profile-save-every; rides the save, :3001) |
+| `fit_max_tokens` | frontend behaviour | serve/server.py:7996 (M1 Task 5: engine.fit_max_tokens) |
+| `gpu` | engine argv | already typed (SP2 engine.gpu; compose renders --gpu); serve/server.py:2815 |
+| `gpu_order` | engine argv | serve/server.py:3112 (M1 Task 7) |
+| `gpu_policy` | typed config | serve/images.py:173 (M1 Task 7: engine.gpu_policy, re-scoped to the vision child's GPU turn; the pin's use is the image-generation turn) |
+| `hip_ordinal` | engine argv | serve/server.py:3023 (M1 Task 7) |
+| `host` | frontend behaviour | already typed (SP1 listen.host); serve/server.py:7862 |
+| `idle_unload_s` | frontend behaviour | serve/server.py:4100-4109, :8081 (M1 Task 6: supervisor idle timer) |
+| `keep_files` | typed config | serve/images.py:188 (`or 64`); typed only: the consumer is the pin's ImageService and D-9 keeps image generation out (Ruling T9-e, M1 Task 9) |
+| `layer_split` | engine argv | serve/server.py:2877 (M1 Task 7) |
+| `lazy_load` | frontend behaviour | serve/server.py:7925, :966-993 (M1 Task 6: the first request spawns the same composed launch) |
+| `max_n` | frontend behaviour | serve/images.py:103 (M1 Tasks 11-12: vision.max_n; the pin's cap lives on the images block) |
+| `max_side` | frontend behaviour | serve/images.py:102 (M1 Task 12: vision.max_side pre-decode cap) |
+| `max_tokens` | request rule | serve/server.py:2564 (vision encoder at the pin); engine.max_tokens re-scoped as the request output ceiling (added, C-1; Ruling T8-e: caps at the §7.2 resolve site) |
+| `min_free_vram_mib` | frontend behaviour | serve/server.py:8083 (M1 Task 7: engine.min_free_vram_mib) |
+| `min_tokens` | request rule | serve/server.py:2566 (vision encoder at the pin); engine.min_tokens re-scoped as the request output floor (added, C-1; Ruling T8-e: lifts at the §7.2 resolve site) |
+| `mtp` | engine argv | strata_control/draft_layer.py is_off; serve/server.py:2922-2925 (M1 Task 6: engine.mtp drops --mtp/--spec-min-p/--batch-mtp at every start) |
+| `need_mib` | frontend behaviour | serve/images.py:156 (M1 Task 11: vision.need_mib; added security bound) |
+| `parallel` | engine argv | serve/server.py:2955-2975 (replicas.parallel renders --batch N, :2975; window PARALLEL_MAX 8 at :2954; cap 1024 from the pin's own bound :7845, M1 Task 10) |
+| `reasoning_budget_tokens` | typed config | serve/server.py:8120 (M1 Task 5: reasoning.budget_tokens) |
+| `reasoning_close_retry` | typed config | serve/server.py:8015 (M1 Task 5: reasoning.close_retry) |
+| `reasoning_effort` | typed config | serve/server.py:7433 (M1 Task 5: reasoning.effort) |
+| `reasoning_loop_recovery` | typed config | serve/server.py:8129 (M1 Task 5: reasoning.loop_recovery) |
+| `repeat_stop_tokens` | frontend behaviour | serve/server.py:197 (REPEAT_STOP_TOKENS 256), the pin's detector is frontend-side at :4908, notice :5088, 0 = off :8115 (Ruling T8-f: no GEN key) |
+| `sampling` | typed config | serve/server.py:7482 (M1 Task 4: defaults.sampling.*) |
+| `slot_save_path` | typed config | serve/server.py:8094 + slot_save_dir :3469-3481; the pin uses it FRONTEND-side for its /slots file store (:3698-3715) — no argv append (Ruling T9-a, M1 Task 9) |
+| `split_skip_if_fits` | engine argv | serve/server.py:2941 (M1 Task 7) |
+| `threads` | engine argv | serve/server.py:2562 (M1 Task 11: vision.threads; the only pin read of `threads`, inside the vision reader_args — the flag lands on the encoder child's argv) |
+| `tool_call_recovery` | typed config | serve/server.py:8106 (M1 Task 9: session.tool_call_recovery) |
+| `trusted_origins` | frontend behaviour | already typed (SP3 origins family); serve/server.py:8064 |
+| `uma` | frontend behaviour | serve/images.py:23, :334 (M1 Task 7: engine.uma; Tasks 11-12 consume it) |
+| `vision` | typed config | serve/server.py:2930 (M1 Task 11: the vision.* block) |
+| `vram_elastic` | engine argv | serve/server.py:2945 (M1 Task 7) |
+| `vram_segment_mib` | engine argv | serve/server.py:2947 (M1 Task 7) |
+| `STRATA_ALLOWED_HOSTS` | frontend behaviour | same semantics as allowed_hosts, already typed; serve/server.py:3516 |
+| `STRATA_BATCH_MTP` | engine argv | serve/server.py:2972; engine.mtp (M1 Task 6) |
+| `STRATA_ENGINE_READY_S` | frontend behaviour | already typed: ready_timeout (SP1); serve/server.py:291 |
+| `STRATA_ENGINE_STALL_S` | frontend behaviour | serve/server.py:307; engine.silence_s (M1 Task 8) |
+| `STRATA_MAX_BODY_MIB` | frontend behaviour | already typed: limits.chat.max_body_bytes (SP1); serve/server.py:5660 |
+| `STRATA_VISION_ENCODE_S` | frontend behaviour | serve/server.py:328 (M1 Task 12: vision encode-timeout row) |
+| `STRATA_VISION_READY_S` | frontend behaviour | serve/server.py:327 (M1 Task 11: vision.ready_timeout_s; 0 = wait for ever, :291) |
+| `vram_reserve_mib` | engine argv | serve/runconfig.py:42 renders --vram-reserve-mib (M1 Task 7) |
+<!-- parity-typed:end -->
+
+### Mapped to a Strata mechanism instead
+
+<!-- parity-mapped:begin -->
+| Upstream option | Where it lives in Strata instead (and the pin read site) |
+| --- | --- |
+| `api_key` | SP1 token store is the only auth source (CFG-06: no secret in config); serve/server.py:7869 |
+| `arch` | model identity comes from the SP4 manifest/GGUF inventory; serve/server.py:7648 |
+| `backend` | engine identity: SP4 manifest + engine gate; serve/server.py:7680 |
+| `images` | spec D-9: image generation is out, the route answers 404 like an unknown route; serve/server.py:8016 |
+| `max_queue` | the SP3 row limits.concurrency.max_queued_generations already carries queue admission (pin bound 0..4096 at serve/server.py:7835, derived default :3602-3604; Ruling T8-a) |
+| `model_name` | served-model identity comes from the SP4 manifest; serve/images.py:183 |
+| `native` | the SP4 manifest composes --native (engine_arguments); serve/images.py:126 |
+| `out_dir` | spec D-9 image generation is out; serve/images.py:185 |
+| `quant` | quant identity comes from the SP4 manifest; serve/images.py:282 |
+| `queue_timeout` | the SP3 row limits.concurrency.queue_timeout_ms already carries admission waiting (pin bound 0.1..600 at serve/server.py:7839; Ruling T8-a) |
+| `reload` | image-generation card reload mode (spec D-9); the vision child's lifecycle follows the vision/elastic rows; serve/images.py:176 |
+| `sigmas` | spec D-9 image generation is out; serve/images.py:120 |
+| `steps` | spec D-9 image generation is out; serve/images.py:104 |
+| `timeout_s` | the SP3 row limits.engine.generation_timeout_s already carries the generation deadline (pin: generation job timeout at serve/images.py:226; Ruling T8-b) |
+| `tokenizer` | the SP4 manifest carries the tokenizer; serve/server.py:7883 |
+| `STRATA_ADMIT_MAX_WAIT_S` | serve/server.py:311; admission waiting is already carried by limits.concurrency.queue_timeout_ms (Ruling T8-a) |
+| `STRATA_ADMIT_SHORT_FIRST` | SP3 admission ordering is the pool policy (B8); serve/server.py:314 |
+| `STRATA_API_KEY` | SP1 token store is the only auth source; serve/server.py:7216 |
+| `STRATA_DROP_CACHE_ON_EXIT` | the SP2 shutdown order (§3.7) is fixed by the supervisor; serve/cache_drop.py:1 |
+| `STRATA_HTTP_BACKLOG` | the listener backlog is fixed by the SP3 poll design (128 entries); serve/server.py:7021 |
+| `STRATA_KEEP_EMPTY_TURNS` | the frontend serves stateless requests; conversation history is the client's; serve/frontend.py:60 |
+| `STRATA_KEEP_LEFTOVERS` | lifecycle is teardown + respawn (M1 Task 6); serve/server.py:128 |
+| `STRATA_LIFELINE` | SP2 supervision replaces the lifeline watcher (pdeathsig, monitor handle); serve/lifeline.py:33 |
+| `STRATA_NO_PRESET` | launch is SP4 manifest-composed; serve/server.py:7448 |
+| `STRATA_OFFLINE` | PRIV-01: the frontend never reaches the network; enforced by design and the DL-01 proof; serve/server.py:3240 |
+| `STRATA_REQUEST_LINES` | the wire record is fixed by docs/security/engine-protocol-limits.md; serve/server.py:639 |
+| `STRATA_START_RETRIES` | respawn retries belong to the SP2 RestartTracker (restart_policy.hpp); serve/server.py:609 |
+| `STRATA_TOKENIZER` | the SP4 manifest carries the tokenizer; serve/test_detok.py:21 |
+<!-- parity-mapped:end -->
+
+### Excluded keys — refused at config load
+
+<!-- parity-rejected:begin -->
+| Upstream option | Excluded by (and the pin read site) |
+| --- | --- |
+| `api_monitor` | spec §4 web/desktop/telemetry; serve/server.py:8072 |
+| `args` | spec §4 free-form process control; serve/server.py:3114 |
+| `batch_telemetry` | spec §4 telemetry endpoints; serve/server.py:897 |
+| `before_load` | spec §4 command execution; serve/server.py:7899 |
+| `before_load_ignore_failure` | spec §4 command execution; serve/server.py:8090 |
+| `before_load_strict` | spec §4 command execution; serve/server.py:8091 |
+| `before_load_timeout_s` | spec §4 command execution; serve/server.py:8086 |
+| `command` | spec §4 MCP command; serve/mcp.py:610 |
+| `cwd` | spec §4 free-form process control; serve/mcp.py:106 |
+| `env` | spec §4 raw env dict; serve/server.py:3228 |
+| `exe` | spec §4 free-form process control (engine identity comes from the SP4 manifest); serve/server.py:7674 |
+| `headers` | spec §4 MCP headers; serve/mcp.py:257 |
+| `lib_dirs` | spec §4 free-form process control; serve/images.py:135 |
+| `log` | spec §4 free-form process control; serve/replicas.py:99 |
+| `mcp` | spec §4 MCP; serve/mcp.py:632 |
+| `mcp_servers` | spec §4 MCP; serve/mcp.py:651 |
+| `open_browser` | spec §4 web/desktop; serve/server.py:8191 |
+| `prevent_sleep` | spec §4 desktop; serve/server.py:8031 |
+| `replica_cpus` | spec C-4: N-child replica scheduling is the accepted narrowing; serve/server.py:7549 |
+| `replica_load_tokens` | spec C-4: N-child replica scheduling is the accepted narrowing; serve/server.py:7583 |
+| `replicas` | spec C-4: N-child replica scheduling is the accepted narrowing; serve/replicas.py:44 |
+| `telemetry_read_key` | spec §4 telemetry endpoints; serve/server.py:8053 |
+| `type` | spec §4 MCP entry type; serve/mcp.py:604 |
+| `url` | spec §4 MCP url; serve/mcp.py:384 |
+| `user_args` | spec §4 free-form process control; serve/server.py:2918 |
+| `STRATA_BATCH_TELEMETRY` | spec §4 telemetry endpoints; serve/server.py:899 |
+| `STRATA_BATCH_TRACE` | spec §4 no new web/diagnostics surface; serve/server.py:821 |
+| `STRATA_DEBUG` | spec §4 no new web/diagnostics surface; serve/mcp.py:130 |
+| `STRATA_FAIL_ONCE` | spec §4 free-form process control (fault-injection knob); serve/test_server.py:4610 |
+| `STRATA_OWNER_ATTEST_KEY` | spec §4 signing material, deferred to SP7; serve/server.py:7820 |
+| `STRATA_PARALLEL_SOLO` | spec C-4: N-child replica scheduling is the accepted narrowing; serve/server.py:1727 |
+| `STRATA_REPLICA_START` | spec C-4: N-child replica scheduling is the accepted narrowing; serve/server.py:7565 |
+| `STRATA_RUNTIME_PROFILE` | spec §4 no new web/diagnostics surface; serve/lifeline.py:265 |
+| `STRATA_SYCL_BIN` | spec §4 free-form process control (external binary path); serve/server.py:2824 |
+| `STRATA_TELEMETRY_KEY` | spec §4 telemetry endpoints; serve/server.py:8053 |
+| `STRATA_VERIFY_TRACE` | spec §4 no new web/diagnostics surface; serve/server.py:1213 |
+| `mcpServers` | spec §4 MCP (Claude Desktop block); serve/mcp.py:648 |
+<!-- parity-rejected:end -->
 
 ## Run the native inference server
 
@@ -318,8 +567,22 @@ only through private stdio, and exposes authenticated `GET /health`, `GET
 — complete JSON or streamed SSE (`"stream": true`, SP3 M2). Its
 default fixed native profile uses the local GPT-2-byte-BPE tokenizer pack and
 the fixed Qwen ChatML renderer; the separately selected GLM-5.3 profile is
-documented below. It deliberately rejects tools, images, URLs, MCP, downloads,
-and a request whose `model` is not the one model selected at startup.
+documented below. It deliberately rejects tools, MCP and downloads, and a
+request whose `model` is not the one model selected at startup. Images are an
+input path only for a vision-capable model (`vision.enabled` plus the
+manifest `mmproj` artifact, SP5 M1) and only as `data:` URLs — an http(s)
+image URL is refused by name, never fetched.
+
+`strata serve` (SP5 M1) runs exactly this boot in the foreground from the
+config file alone — no daemonization, no `server.json`, no lock (the pin has
+none, and the PX lifecycle writer has never existed); it serves the installed
+managed model, and `--expert` stays a `strata-secure-server` flag. `strata
+version` prints the frontend and pin versions — the tag version governs, and
+the engine's own self-version is informational only. `strata key show [--env]`
+prints the locally generated API token (only when the store is readable by
+this uid — the SP1 store rules), and `strata key rotate` replaces it atomically;
+after a rotate, restart the server and reconfigure every app that used the old
+token.
 
 ### Routes, errors, headers (SP3)
 
@@ -407,7 +670,11 @@ The server adds `--serve` and, for this default profile, supplies shard 1 via
 (appended last); never pass `--native` yourself. The expert pack (`--pack DIR`)
 and the other weight sources (`--ple-gguf`, `--embd-gguf`, `--native-head-gguf`,
 `--native-dense-gguf`, `--mtp`) are operator-supplied with `--engine-arg`
-(`engine.args` in the config file) until SP5 models the whole launch. The
+(`engine.args` in the config file) until SP5 models the whole launch. With
+`engine.mtp` set to `false` the draft layer's own options (`--mtp`,
+`--spec-min-p`, `--batch-mtp`) are dropped from the engine's argv at every
+start — the pinned `mtp: false` behaviour (`strata_control/draft_layer.py`);
+prompt-lookup `--spec` stays. The
 engine loads `--pack` unconditionally and its default is the cwd-relative
 `pack/full`, so a real run must pass it. Give every engine switch and value as
 its own `--engine-arg` (its own array element in `engine.args`). With the

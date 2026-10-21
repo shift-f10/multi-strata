@@ -308,6 +308,8 @@ int main(int argc, char** argv) {
       {"rm_refuses_loaded_model", acquire_cases::rm_refuses_loaded_model},
       {"rm_retired_deletes_unheld_versions", acquire_cases::rm_retired_deletes_unheld_versions},
       {"rm_partials_deletes_other_staging", acquire_cases::rm_partials_deletes_other_staging},
+      {"version_names_frontend_and_engine_versions", acquire_cases::version_names_frontend_and_engine_versions},
+      {"key_show_requires_local_token_and_never_logs", acquire_cases::key_show_requires_local_token_and_never_logs},
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
       {"list_outdated_uses_catalog_sequence", acquire_cases::list_outdated_uses_catalog_sequence},
 #endif

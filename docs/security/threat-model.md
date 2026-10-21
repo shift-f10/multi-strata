@@ -121,6 +121,13 @@ Trust boundaries:
 - (SP3 M2) R4's real numbers are only measurable on the owner's GPU boxes:
   `docs/validation/sp3-api-kit.md` with the `cancel-during-prefill` probe mode
   is a release-record step, not a CI proof (see R4 under residual risks).
+- (SP5 M1) Image input exists only for a vision-capable model (`vision.enabled`
+  plus the manifest `mmproj` artifact): the OpenAI content-parts grammar opens
+  only for that model, an image URL must be a `data:` URL — an http(s) image
+  URL is refused by name and never fetched, so no image path reaches any
+  resolver or socket — and every cap (images per request, base64 length, 32 MiB
+  decoded, the side-length probe) is answered before any scratch file is
+  written; the refusal is the fixed 400 naming `image_url`.
 
 ### Configuration and filesystem
 
@@ -140,6 +147,21 @@ Trust boundaries:
   owns its short-lived secret representation.
 - The service creates data files with user-only permissions where the platform
   supports them and rejects configuration files writable by untrusted users.
+- (SP5 M1) Upstream-style environment configuration knobs (`STRATA_*`,
+  `MAYA_*`) never configure the frontend — the typed config file is the only
+  source — and `strata doctor` warns when such variables sit in the
+  environment, so a user who expects the pinned server's behaviour sees that
+  they are ignored.
+- (SP5 M1) `strata serve` is foreground-only: it never daemonizes and never
+  writes a lifecycle file (no pidfile, no `server.json`, no lock). The pin has
+  none of these, and our lifecycle writer has never existed.
+- (SP5 M1) Vision staging and encoded scratch files are 0600 regular files
+  under `<state_dir>/vision` (0700), and every request deletes its own files
+  when its generation ends, by success or failure. The pin's
+  `session.keep_files` LRU has no consumer in M1 (recorded gap); the
+  per-request cleanup bounds what the directory holds. Boot with
+  `vision.enabled` fails when the state path contains whitespace — the
+  encoder's positional argv cannot carry it safely (pin issue #480).
 
 ### Artifact acquisition
 
@@ -238,6 +260,16 @@ Trust boundaries:
   Windows token; an engine that requires elevation is a spawn failure and is
   never started via `runas` (G3 is verified only on a non-elevated Windows
   prompt, a validation-kit step; CI runners are elevated).
+- (SP5 M1) The vision encoder is a second supervised child (`strata-vision`, a
+  sibling of the engine executable): the same fixed environment allowlist, cwd
+  `<state_dir>/vision`, private stdio only, READY/ENC/QUIT role protocol with
+  typed ready/encode timeouts, and a resident encoder that fails the boot if it
+  cannot reach READY. **Recorded gap:** in M1 the encoder role receives no
+  per-generation cgroup delegation (the PROC-05 residual above applies to it
+  too, one role smaller). Lifecycle timers are typed frontend decisions —
+  `engine.lazy_load` defers the engine start, `engine.idle_unload_s` reaps an
+  idle engine child, the MTP rows compose argv — they hand no control to the
+  engine.
 
 ### Extensions and MCP
 

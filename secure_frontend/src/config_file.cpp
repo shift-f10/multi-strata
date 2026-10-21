@@ -2,6 +2,7 @@
 
 #include "secure_frontend/canonical_path.hpp"
 #include "secure_frontend/json.hpp"
+#include "secure_frontend/parity_table.hpp"
 
 #include <cstdint>
 #include <functional>
@@ -16,11 +17,75 @@ namespace secure_frontend {
 namespace {
 
 constexpr JsonLimits kConfigJsonLimits{.max_bytes = kMaxConfigFileBytes, .max_depth = 4U,
-                                       .max_container_entries = 256U, .max_string_bytes = 4096U};
+                                       .max_container_entries = 256U, .max_string_bytes = 4096U,
+                                       // SP5 M1 Task 4: defaults.sampling.* rows are decimal; integer
+                                       // rows still reject fractions in the schema reader.
+                                       .allow_fractions = true};
+
+// SP5 M1 (spec D-3): document-order walk for the first member whose parity row
+// is `rejected`. Paths the schema knows (a key or a section) never match: the
+// typed namespace wins over the flat upstream name. SP5 M1 Task 10 sharpens the
+// section rule: a section name wins ONLY when the object actually speaks the typed
+// namespace — every member names a schema path under it. `replicas: {"count": 4}` is
+// the pinned rejected scheduler dict, not our `replicas.parallel` section (C-4).
+bool typed_section_object(const JsonValue& value, const std::string& prefix) {
+  const auto* members = value.if_object();
+  if (members == nullptr) return false;
+  for (const auto& member : *members) {
+    if (member.key.empty() || member.key.find('.') != std::string::npos) return false;
+    if (find_config_key(prefix + "." + member.key) == nullptr) return false;
+  }
+  return true;
+}
+
+bool walk_rejected(const std::vector<JsonMember>& members, const std::string& prefix, std::optional<std::string>& out) {
+  for (const auto& member : members) {
+    if (member.key.empty() || member.key.find('.') != std::string::npos) continue;  // not a path segment
+    const std::string path = prefix.empty() ? member.key : prefix + "." + member.key;
+    if (find_config_key(path) == nullptr && !(is_config_section(path) && typed_section_object(member.value, path))) {
+      const auto* row = parity::strata_parity_row(member.key);
+      if (row != nullptr && row->disposition == parity::ParityDisposition::rejected) {
+        out = path;
+        return true;
+      }
+    }
+    if (const auto* inner = member.value.if_object()) {
+      if (walk_rejected(*inner, path, out)) return true;
+    }
+  }
+  return false;
+}
+
+// SP5 M1 Task 4: with allow_fractions the parser admits fraction/exponent
+// literals, but SP1's schema contract stands — outside a decimal row a
+// fraction is the same malformed document the strict parser used to reject at
+// its byte, and it wins over excluded-name and unknown-key detection exactly
+// like the old parse-time failure did.
+bool walk_fraction_outside_decimal(const std::vector<JsonMember>& members, const std::string& prefix) {
+  for (const auto& member : members) {
+    const std::string path = prefix.empty() ? member.key : prefix + "." + member.key;
+    if (const auto* inner = member.value.if_object()) {
+      if (walk_fraction_outside_decimal(*inner, path)) return true;
+      continue;
+    }
+    const auto is_decimal = [](const JsonValue& value) { return value.if_decimal() != nullptr; };
+    if (const auto* items = member.value.if_array()) {
+      for (const auto& item : *items) {
+        if (is_decimal(item)) return true;  // no array row is decimal-valued
+      }
+      continue;
+    }
+    if (!is_decimal(member.value)) continue;
+    const auto* key = find_config_key(path);
+    if (key == nullptr || key->type != ConfigValueType::decimal) return true;
+  }
+  return false;
+}
 
 std::optional<ConfigDraftValue> draft_value(const JsonValue& value) {
   if (const auto* b = value.if_boolean()) return ConfigDraftValue{*b};
   if (const auto* i = value.if_integer()) return ConfigDraftValue{*i};
+  if (const auto* d = value.if_decimal()) return ConfigDraftValue{*d};
   if (const auto* s = value.if_string()) return ConfigDraftValue{*s};
   if (const auto* items = value.if_array()) {
     std::vector<std::string> strings;
@@ -63,6 +128,14 @@ void collect(const std::vector<JsonMember>& members, const std::string& prefix, 
 
 }  // namespace
 
+std::optional<std::string> find_rejected_key(const JsonValue& root) {
+  const auto* members = root.if_object();
+  if (members == nullptr) return std::nullopt;
+  std::optional<std::string> found;
+  walk_rejected(*members, "", found);
+  return found;
+}
+
 std::variant<FrontendConfigDraft, ConfigErrors> parse_config_text(const std::string_view text,
                                                                   const std::filesystem::path& config_directory) {
   const auto parsed = parse_json(text, kConfigJsonLimits);
@@ -76,6 +149,18 @@ std::variant<FrontendConfigDraft, ConfigErrors> parse_config_text(const std::str
   const auto* members = std::get<JsonValue>(parsed).if_object();
   if (members == nullptr) {
     return ConfigErrors{ConfigIssue{"config file", ConfigIssueCode::malformed_document, "must be a JSON object"}};
+  }
+  // SP5 M1 Task 4: a fraction outside a decimal row is malformed at the whole-
+  // document level, before name-based checks (see walk_fraction_outside_decimal).
+  if (walk_fraction_outside_decimal(*members, "")) {
+    return ConfigErrors{ConfigIssue{"config file", ConfigIssueCode::malformed_document, "has a number that is not an integer"}};
+  }
+  // SP5 M1 Task 3: an excluded upstream option is named with its rule before
+  // generic unknown-key detection (spec D-3).
+  if (const auto rejected = find_rejected_key(std::get<JsonValue>(parsed))) {
+    return ConfigErrors{ConfigIssue{*rejected, ConfigIssueCode::excluded_key,
+                                    "is an excluded upstream option (SP5 parity table; the accepted narrowing is in "
+                                    "README, section Configuration; threat model docs/security/threat-model.md)"}};
   }
   FrontendConfigDraft draft;
   draft.config_directory = config_directory;

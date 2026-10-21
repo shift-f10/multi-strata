@@ -213,7 +213,10 @@ void egress_command_like_values_trigger_nothing() {
   const auto pull = raw_http::exchange("127.0.0.1", server->port(),
       raw_http::request("POST", "/v1/chat/completions", a, {raw_http::bearer(token), "Content-Type: application/json", "X-Strata-Update: now"},
                         R"({"model":"pull:qwen","messages":[{"role":"user","content":"Hi"}]})"));
-  expect(pull && pull->status == 400, "a pull-like model value is refused");
+  // Ruling T12-l (SP5 M1 Task 12): name:tag is the served managed-model id grammar,
+  // so "pull:qwen" now parses and answers model_not_found — still a refusal, still
+  // no engine contact, which is what this case pins.
+  expect(pull && pull->status == 404, "a pull-like model value is refused as model_not_found");
   for (const std::string target : {"/api/pull", "/v1/pull", "/update", "/v1/models/pull:x"}) {
     const auto r = raw_http::exchange("127.0.0.1", server->port(), raw_http::request("GET", target, a, {raw_http::bearer(token)}));
     expect(r && r->status == 404, "no acquire/update route: " + target);

@@ -94,9 +94,30 @@ std::string render_sampling_keys(const SamplingParams& sampling) {
     out += '=';
     out.append(buffer, end);
   };
-  if (sampling.temperature) number("temperature", *sampling.temperature);
-  if (sampling.top_p) number("top_p", *sampling.top_p);
-  if (sampling.seed) out += " seed=" + std::to_string(*sampling.seed);
+  // The pinned v0.2.1.3 wire rules (serve/server.py:1360-1394), in the pin's
+  // order: neutral values the engine already defaults to are omitted, top_k
+  // clamps wide lists to the engine's 64 candidates, penalties take the
+  // engine's alias names, and any penalty without a window gets the engine's
+  // default window of 64.
+  if (sampling.temperature.has_value() && *sampling.temperature > 0.0) number("temperature", *sampling.temperature);
+  if (sampling.top_p.has_value() && *sampling.top_p < 1.0) number("top_p", *sampling.top_p);
+  if (sampling.top_k.has_value() && *sampling.top_k >= 0) {
+    const auto candidates = (*sampling.top_k >= 1 && *sampling.top_k <= 64) ? *sampling.top_k : 64;
+    out += " top_k=" + std::to_string(candidates);
+  }
+  if (sampling.min_p.has_value() && *sampling.min_p > 0.0 && *sampling.min_p <= 1.0) number("min_p", *sampling.min_p);
+  const bool repeat_on = sampling.repetition_penalty.has_value() && *sampling.repetition_penalty != 1.0;
+  const bool frequency_on = sampling.frequency_penalty.has_value() && *sampling.frequency_penalty != 0.0;
+  const bool presence_on = sampling.presence_penalty.has_value() && *sampling.presence_penalty != 0.0;
+  if (repeat_on) number("penalty_repeat", *sampling.repetition_penalty);
+  if (frequency_on) number("penalty_freq", *sampling.frequency_penalty);
+  if (presence_on) number("penalty_present", *sampling.presence_penalty);
+  if (repeat_on || frequency_on || presence_on) {
+    const auto window =
+        (sampling.penalty_last_n.has_value() && *sampling.penalty_last_n > 0) ? *sampling.penalty_last_n : 64;
+    out += " penalty_last_n=" + std::to_string(window);
+  }
+  if (sampling.seed.has_value() && *sampling.seed > 0U) out += " seed=" + std::to_string(*sampling.seed);
   return out;
 }
 
@@ -201,18 +222,32 @@ std::optional<EngineProtocolError> EngineProtocolClient::await_ready(const std::
 
 std::optional<EngineProtocolError> EngineProtocolClient::begin_generation(
     const std::uint32_t max_new_tokens, const std::vector<std::uint32_t>& prompt_token_ids,
-    const MonotonicClock::time_point write_deadline, const SamplingParams& sampling) {
+    const MonotonicClock::time_point write_deadline, const SamplingParams& sampling, const std::string_view embeddings) {
   stop_cause_.reset();  // a cause never outlives its request, even if this GEN is refused
   if (state_ != State::idle) return EngineProtocolError{EngineProtocolErrorCode::invalid_state, "engine is not idle"};
   if (max_new_tokens == 0 || max_new_tokens > limits_.max_new_tokens || prompt_token_ids.empty() ||
       prompt_token_ids.size() > limits_.max_prompt_tokens) {
     return EngineProtocolError{EngineProtocolErrorCode::invalid_argument, "generation request exceeds protocol limits"};
   }
-  std::string command = "GEN " + std::to_string(max_new_tokens) + render_sampling_keys(sampling) + " ";
+  // The embeddings path is protocol-visible: whitespace or control bytes would split the
+  // line (#480 — the pin's own rule for the encoder's file names).
+  if (!embeddings.empty() &&
+      (embeddings.find_first_of(" \t\r\n") != std::string_view::npos || embeddings.size() > kProtocolMaxLineBytes / 2U)) {
+    return EngineProtocolError{EngineProtocolErrorCode::invalid_argument, "embeddings path is not a protocol field"};
+  }
+  std::string command = embeddings.empty() ? "GEN " : "GENI ";
+  command += std::to_string(max_new_tokens) + render_sampling_keys(sampling) + " ";
   for (std::size_t index = 0; index < prompt_token_ids.size(); ++index) {
     if (index != 0) command.push_back(',');
     command += std::to_string(prompt_token_ids[index]);
     if (command.size() > effective_max_line_bytes_) {
+      return EngineProtocolError{EngineProtocolErrorCode::invalid_argument, "generation command exceeds line limit"};
+    }
+  }
+  if (!embeddings.empty()) {
+    command.push_back(' ');
+    command.append(embeddings);
+    if (command.size() > effective_max_line_bytes_) {  // the tail rides the same cap (SP3 DOS rule, extended)
       return EngineProtocolError{EngineProtocolErrorCode::invalid_argument, "generation command exceeds line limit"};
     }
   }

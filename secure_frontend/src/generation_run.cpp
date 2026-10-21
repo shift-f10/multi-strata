@@ -23,7 +23,7 @@ std::size_t code_point_prefix(const std::string_view text, std::size_t limit) {
   return limit;
 }
 
-enum class StopCause { none, timeout, bytes, cancel, undecodable };
+enum class StopCause { none, timeout, bytes, cancel, undecodable, repeat };
 
 }  // namespace
 
@@ -34,6 +34,12 @@ GenerationRunResult drive_generation(EngineProtocolClient& protocol, const Token
   std::size_t released = 0;
   StopCause cause = StopCause::none;
   const auto generation_deadline = Clock::now() + limits.generation_timeout;
+  // SP5 M1 Task 8 (engine_silence_s; serve/server.py:274-276): the last moment the engine
+  // said anything valid (a token, a progress line, DONE). A timeout slice is not activity.
+  auto last_activity = Clock::now();
+  // SP5 M1 Task 8 (repeat_stop_tokens; serve/server.py:4908): the run of one repeated id.
+  std::uint32_t run_id = 0;
+  std::size_t run_len = 0;
   Clock::time_point drain_deadline{};
   auto last_tick = Clock::now();
 
@@ -81,6 +87,13 @@ GenerationRunResult drive_generation(EngineProtocolClient& protocol, const Token
       result.timed_out = true;
       if (!send_stop(StopCause::timeout)) return result;  // engine_unavailable
     }
+    // SP5 M1 Task 8 (engine_silence_s): a stalled engine — nothing valid for silence_s —
+    // reaches the same stall path (STOP, drain, timed-out length) at the silence bound,
+    // before the total generation deadline (serve/server.py:274-276, :2861-2868).
+    if (cause == StopCause::none && limits.silence.count() > 0 && Clock::now() - last_activity >= limits.silence) {
+      result.timed_out = true;
+      if (!send_stop(StopCause::timeout)) return result;  // engine_unavailable
+    }
     if (cause != StopCause::none && Clock::now() >= drain_deadline) {
       protocol.abandon();  // the engine ignored STOP: SP2 drain_failed
       return result;       // engine_unavailable
@@ -99,19 +112,32 @@ GenerationRunResult drive_generation(EngineProtocolClient& protocol, const Token
       idle_slice = true;
     } else if (const auto* token = std::get_if<TokenEvent>(&event)) {
       ++result.completion_tokens;
+      last_activity = Clock::now();  // a token is the engine speaking
       if (limits.max_tokens != 0U && result.completion_tokens > limits.max_tokens) {
         protocol.abandon();  // more tokens than GEN allowed: not trusted further (M1: engine_error)
         result.end = RunEnd::engine_error;
         return result;
       }
       if (cause == StopCause::none) {
+        if (token->id == run_id) ++run_len;
+        else {
+          run_id = token->id;
+          run_len = 1;
+        }
         const auto bytes = decoder.bytes_for(token->id);
         const bool ok = std::holds_alternative<std::string>(bytes) ? release(utf8.push(std::get<std::string>(bytes)))
                                                                    : send_stop(StopCause::undecodable);
         if (!ok) return result;  // engine_unavailable
+        // SP5 M1 Task 8 (repeat_stop_tokens, serve/server.py:4908, :5088): the pin's own
+        // runaway detector — this many of one token in a row end the reply. The run is kept
+        // (it is already released above), everything after it is dropped by the STOP+drain.
+        if (limits.repeat_stop_tokens != 0U && run_len >= limits.repeat_stop_tokens) {
+          if (!send_stop(StopCause::repeat)) return result;  // engine_unavailable
+        }
       }
     } else if (std::holds_alternative<ProgressEvent>(event)) {
       progress = true;
+      last_activity = Clock::now();  // a progress line is the engine speaking (pin: "nothing valid")
     } else {
       const auto& done = std::get<DoneEvent>(event);
       if (cause == StopCause::none) (void)release(utf8.finish(done.finish != "stop"));
@@ -122,7 +148,8 @@ GenerationRunResult drive_generation(EngineProtocolClient& protocol, const Token
       switch (cause) {
         case StopCause::none: result.end = done.finish == "stop" ? RunEnd::stop : RunEnd::length; break;
         case StopCause::timeout:
-        case StopCause::bytes: result.end = RunEnd::length; break;
+        case StopCause::bytes:
+        case StopCause::repeat: result.end = RunEnd::length; break;  // the pin's "ended as length" (:5088)
         case StopCause::cancel: result.end = RunEnd::cancelled; break;
         case StopCause::undecodable: result.end = RunEnd::undecodable; break;
       }

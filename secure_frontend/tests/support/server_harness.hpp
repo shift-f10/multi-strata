@@ -64,6 +64,12 @@ struct ServerOptions final {
   std::map<std::string, std::string> extra_env{};    // added to the server's own environment
   std::optional<std::filesystem::path> engine{};     // default: the fake engine
   std::optional<std::filesystem::path> state_dir{};  // --state-dir; default: <root>/state, created 0700
+  // SP5 M1 Task 12: boot the MANAGED vision model instead of the SP1 expert fixture.
+  // Installs fx m:t (qwen_payload_vision_pack: mmproj + launch.mmproj + the real byte
+  // tokenizer pack) into <root>/models, drops --expert/--tokenizer-pack, and puts a
+  // copy of strata-fake-vision-child beside the engine as "strata-vision" (the T11-y
+  // sibling rule).
+  bool managed_vision{false};
   // Key path -> JSON literal. Non-empty: <root>/config.json (owner-only) holds
   // schema_version 1 plus these keys and the server gets --config <path>.
   std::map<std::string, std::string> config_literals{};

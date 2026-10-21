@@ -677,6 +677,50 @@ void prompt_alone_over_context_is_400() {
   expect(gen_lines(record_of(r.record)).empty(), "no GEN was written");
 }
 
+// SP5 M1 Task 5 (parity row fit_max_tokens, serve/server.py:4526-4544): a configured false turns an
+// over-room request into the §7.2 400 instead of shortening it; the default true keeps SP3's B2 clamp
+// (covered by max_tokens_clamped_to_context_room).
+void fit_max_tokens_false_returns_400_like_the_pin() {
+  auto r = start_recorded("fitoff", {{"engine.fit_max_tokens", "false"}}, {"--ready-context=200"});
+  if (!r.server) return;
+  const auto response = raw(*r.server, chat_request(*r.server, chat_body(R"("max_tokens":1000)")));
+  expect(response && response->status == 400 && response->body.find("context_length_exceeded") != std::string::npos,
+         "400 like the pin's over-room refusal (:4536-4543)");
+  expect(gen_lines(record_of(r.record)).empty(), "no GEN is written when fit_max_tokens is false");
+}
+
+// SP5 M1 Task 6 (parity row idle_unload_s, runconfig.py:35): the serving path's teardown +
+// respawn (pin :4100-4109 unload thread, :6252 "loads on use"). With a 1 s window the
+// supervisor tears the engine down after the first request; /health keeps the closed literal
+// set and reports the cold engine as ok/"starting" (Ruling T6-e); the next POST wakes the
+// supervisor and a fresh generation answers. The fake engine rewrites its record at every
+// start, so the record proves WHICH generation answered last and the supervisor's stderr
+// proves the unload: generation 1 ends "unloaded", and the final record holds exactly the
+// respawned generation's GEN.
+void idle_unload_respawns_before_the_next_request() {
+  auto r = start_recorded("idle", {{"engine.idle_unload_s", "1"}}, {"--ready-context=200"});
+  if (!r.server) return;
+  const auto first = raw(*r.server, chat_request(*r.server, chat_body(R"("max_tokens":4)")));
+  expect(first && first->status == 200, "the first request answers");
+  bool cold = false;
+  std::string last_body;
+  for (int i = 0; i < 100 && !cold; ++i) {
+    const auto health = raw(*r.server, raw_http::request("GET", "/health", authority(*r.server), {raw_http::bearer(token())}));
+    last_body = health ? health->body : std::string{"<no response>"};
+    cold = health && health->body == "{\"status\":\"ok\",\"engine\":\"starting\"}\n";
+    if (!cold) std::this_thread::sleep_for(100ms);
+  }
+  expect(cold, "the idle window tears the engine down: /health reports ok + starting (unloaded), saw " + last_body);
+  const auto second = raw(*r.server, chat_request(*r.server, chat_body(R"("max_tokens":4)")), 30s);
+  expect(second && second->status == 200, "the next request answers: the wake respawned the engine");
+  const std::string log = r.server->stderr_text();
+  expect(log.find("engine generation 1 ended: unloaded") != std::string::npos,
+         "the supervisor's log names generation 1's intentional unload");
+  const auto gens = gen_lines(record_of(r.record));
+  expect(gens.size() == 1U, "the answer came from the respawned generation: one GEN in the final record (got " +
+                                std::to_string(gens.size()) + ")");
+}
+
 void absent_max_tokens_uses_auto() {
   auto r = start_recorded("mt4");
   if (!r.server) return;
@@ -687,8 +731,59 @@ void absent_max_tokens_uses_auto() {
          "auto = min(max_completion_tokens, ctx - n - 8) (B1)");
 }
 
-void sampling_passthrough_reaches_gen() {
-  auto r = start_recorded("smp");
+// SP5 M1 Task 8 (parity rows engine.max_tokens / engine.min_tokens re-scoped as request
+// output bounds per the Task-2 rows and Ruling T8-e, and the answer_room typed row): the
+// configured ceiling/floor ride the GEN budget at admission — cap wins downward, floor
+// lifts upward, and answer_room=false changes nothing on a path with no thinking parser
+// (Ruling T8-d).
+void queue_and_answer_room_limits_are_enforced() {
+  auto ceiling = start_recorded("shape_c", {{"engine.max_tokens", "8"}});
+  if (!ceiling.server) return;
+  const auto over = raw(*ceiling.server, chat_request(*ceiling.server, chat_body(R"("max_tokens":64)")));
+  expect(over && over->status == 200, "an over-ceiling request is capped, not refused");
+  const auto ceiling_gens = gen_lines(record_of(ceiling.record));
+  expect(ceiling_gens.size() == 1U && gen_max(ceiling_gens.front()) == 8U,
+         "engine.max_tokens caps the GEN budget: " + (ceiling_gens.empty() ? "<none>" : ceiling_gens.front()));
+  auto floor = start_recorded("shape_f", {{"engine.min_tokens", "16"}});
+  if (!floor.server) return;
+  const auto tiny = raw(*floor.server, chat_request(*floor.server, chat_body(R"("max_tokens":2)")));
+  expect(tiny && tiny->status == 200, "a below-floor request is lifted, not refused");
+  const auto floor_gens = gen_lines(record_of(floor.record));
+  expect(floor_gens.size() == 1U && gen_max(floor_gens.front()) == 16U,
+         "engine.min_tokens lifts the GEN budget: " + (floor_gens.empty() ? "<none>" : floor_gens.front()));
+  auto room = start_recorded("shape_a", {{"engine.answer_room", "false"}});
+  if (!room.server) return;
+  const auto still = raw(*room.server, chat_request(*room.server, chat_body(R"("max_tokens":64)")));
+  expect(still && still->status == 200, "answer_room false changes nothing on this path (T8-d)");
+}
+
+// SP5 M1 Task 8 (parity row aliases, runconfig.py:34 + set_aliases :3764-3777): a
+// configured alias is a served name — listed by /v1/models, answered by chat; matching is
+// exact (§4: never empty or partial) and an alias equal to the model is dropped (:3775).
+void aliases_answer_like_the_primary_model() {
+  auto r = start_recorded("aliases", {{"model.aliases", R"(["Alt.Model","fake-model","secondary"])"}});
+  if (!r.server) return;
+  const auto list = raw(*r.server, raw_http::request("GET", "/v1/models", authority(*r.server), {raw_http::bearer(token())}));
+  expect(list && list->status == 200, "the model list answers");
+  if (list) {
+    expect(list->body.find("\"fake-model\"") != std::string::npos && list->body.find("\"Alt.Model\"") != std::string::npos &&
+               list->body.find("\"secondary\"") != std::string::npos,
+           "the list names the model and both aliases: " + list->body);
+    std::size_t ids = 0;
+    for (std::size_t at = list->body.find("\"id\":\""); at != std::string::npos; at = list->body.find("\"id\":\"", at + 1)) ++ids;
+    expect(ids == 3U, "the alias equal to the model is dropped (:3775): " + list->body);
+  }
+  const auto by_alias = raw(*r.server, raw_http::request("GET", "/v1/models/Alt.Model", authority(*r.server), {raw_http::bearer(token())}));
+  expect(by_alias && by_alias->status == 200, "GET /v1/models/<alias> finds the served model");
+  const auto alt = raw(*r.server, chat_request(*r.server, R"({"model":"Alt.Model","messages":[{"role":"user","content":"Hi"}]})"));
+  expect(alt && alt->status == 200, "an alias answers like the primary model");
+  const auto miss = raw(*r.server, chat_request(*r.server, R"({"model":"Alt.Mod","messages":[{"role":"user","content":"Hi"}]})"));
+  expect(miss && miss->status == 404, "a prefix of an alias is not a match (§4: never partial)");
+  const auto empty = raw(*r.server, chat_request(*r.server, R"({"model":"","messages":[{"role":"user","content":"Hi"}]})"));
+  expect(empty && empty->status != 200, "an empty model name never matches (§4)");
+}
+
+void sampling_passthrough_reaches_gen() {  auto r = start_recorded("smp");
   if (!r.server) return;
   const auto response = raw(*r.server, chat_request(*r.server, chat_body(R"("max_tokens":2,"temperature":0.5,"top_p":0.9,"seed":42,"presence_penalty":0)")));
   expect(response && response->status == 200, "sampling accepted");
@@ -704,6 +799,131 @@ void dos01_context_rule_is_400_without_gen() {
   expect(response && response->status == 400 && response->body.find("context_length_exceeded") != std::string::npos, "400");
   expect(gen_lines(record_of(r.record)).empty() && r.server->wait_for_health(test_support::kHealthReady, 2s),
          "no GEN; the engine never saw a request it would refuse and stays ready");
+}
+
+// --- SP5 M1 Task 12 e2e: the managed model that reads images (C-9 carve-out) ----------
+// Tiny helpers: a base64 encoder and a PNG header with an 8x6 IHDR (the payload gate
+// reads IHDR; nothing decodes pixels on this path).
+std::string b64e(const std::string& raw_bytes) {
+  static constexpr char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string out;
+  for (std::size_t i = 0; i < raw_bytes.size(); i += 3U) {
+    const unsigned b0 = static_cast<unsigned char>(raw_bytes[i]);
+    const unsigned b1 = i + 1U < raw_bytes.size() ? static_cast<unsigned char>(raw_bytes[i + 1U]) : 0U;
+    const unsigned b2 = i + 2U < raw_bytes.size() ? static_cast<unsigned char>(raw_bytes[i + 2U]) : 0U;
+    out += table[b0 >> 2U];
+    out += table[((b0 & 3U) << 4U) | (b1 >> 4U)];
+    out += i + 1U < raw_bytes.size() ? table[((b1 & 15U) << 2U) | (b2 >> 6U)] : '=';
+    out += i + 2U < raw_bytes.size() ? table[b2 & 63U] : '=';
+  }
+  return out;
+}
+std::string png8x6() {
+  const auto be32 = [](const unsigned v) {
+    return std::string{static_cast<char>(v >> 24), static_cast<char>(v >> 16), static_cast<char>(v >> 8),
+                       static_cast<char>(v)};
+  };
+  return std::string("\x89PNG\r\n\x1a\n", 8) + be32(13) + "IHDR" + be32(8) + be32(6) + std::string(9U, '\0');
+}
+std::string image_part(const std::string& url) {
+  return R"({"type":"image_url","image_url":{"url":")" + url + R"("}})";
+}
+std::string vision_body(const std::string& parts, const std::string& model_id = "m:t") {
+  return R"({"model":")" + model_id + R"(","messages":[{"role":"user","content":[)" + parts +
+         R"(]}],"max_tokens":2})";
+}
+
+// Boots the managed vision server: fx m:t (mmproj + byte tokenizer pack) installed in
+// the harness, strata-vision (the fake child) beside the engine, and the fake engine
+// recording its stdin to `record`. Returns nullopt-style on boot failure (expect fires).
+std::unique_ptr<test_support::ServerProcess> start_vision_server(const std::filesystem::path& state,
+                                                                 const std::filesystem::path& record,
+                                                                 std::map<std::string, std::string> literals = {}) {
+  test_support::ServerOptions options;
+  options.managed_vision = true;
+  options.state_dir = state;
+  options.engine_args = {"--record-file=" + test_support::utf8_path(record)};
+  literals["vision.enabled"] = "true";
+  options.config_literals = std::move(literals);
+  auto server = test_support::ServerProcess::start(options);
+  const bool ready = server != nullptr && server->wait_until_listening(10s) &&
+                     server->wait_for_health(test_support::kHealthReady, 15s);
+  expect(ready, "managed+vision server ready" + (server ? ": " + server->stderr_text() : std::string{}));
+  return ready ? std::move(server) : nullptr;
+}
+
+// The C-9 200 path, end to end (plan RED enc_round_trip_reaches_the_prompt): an
+// image_url part on the managed vision model reaches the fake encoder over ENC, the
+// fake engine receives the pin's GENI line (:1778: head, ids, then the combined .sve
+// path at the END), and the request's scratch files are gone afterwards (no LRU in
+// M1, Ruling T12-d). A text request on the same server still writes a plain GEN.
+void enc_round_trip_reaches_the_prompt() {
+  const auto dir = test_support::make_temp_dir("api-vision");
+  const auto state = dir / "state";
+  secure_frontend_test::make_owner_private_directory(state);
+  const auto record = dir / "engine-record.txt";
+  auto server = start_vision_server(state, record);
+  if (server == nullptr) return;
+  const auto body = vision_body(R"({"type":"text","text":"look"},)" + image_part("data:image/png;base64," + b64e(png8x6())));
+  const auto response = raw(*server, chat_request(*server, body));
+  const std::string what = [&response] {
+    if (!response.has_value()) return std::string{"<no response>"};
+    return "status=" + std::to_string(response->status) + " body=" + response->body.substr(0, 400);
+  }();
+  expect(response.has_value() && response->status == 200,
+         "the image request answers like text on the vision model (C-9 200 path): " + what + " server: " + server->stderr_text());
+  const auto text = record_of(record);
+  expect(count_of(text, "GENI ") == 1U, "exactly one GENI line reached the engine");
+  const auto at = text.find("GENI ");
+  std::string line;
+  if (at != std::string::npos) {
+    const auto eol = text.find('\n', at);
+    line = text.substr(at, eol == std::string::npos ? std::string::npos : eol - at);
+  }
+  expect(!line.empty() && line.find(".sve") != std::string::npos,
+         "the GENI tail names the combined embeddings file (pin :1778, :4547-4556): " + line);
+  std::error_code ec;
+  bool leftover = false;
+  for (const auto& entry : std::filesystem::directory_iterator(state / "vision", ec)) {
+    (void)entry;
+    leftover = true;
+  }
+  expect(!leftover, "the staged image and every .sve are deleted when the request ends (T12-d)");
+  const auto text_response = raw(*server, chat_request(*server, R"({"model":"m:t","messages":[{"role":"user","content":"Hi"}],"max_tokens":2})"));
+  expect(text_response.has_value() && text_response->status == 200, "text still answers on the vision server");
+  const auto after = record_of(record);
+  expect(count_of(after, "GENI ") == 1U, "the text request wrote a plain GEN, not a GENI (T12-i)");
+}
+
+// Refusals fire before any write (plan RED oversized_or_bad_base64_rejected_before_decode,
+// server half): bad base64, an unfetched https URL, and one image past vision.max_n all
+// take the fixed 400 naming image_url; the scratch dir stays empty; text serving continues.
+void image_rejections_name_image_url_before_any_write() {
+  const auto dir = test_support::make_temp_dir("api-vision-refuse");
+  const auto state = dir / "state";
+  secure_frontend_test::make_owner_private_directory(state);
+  const auto record = dir / "engine-record.txt";
+  auto server = start_vision_server(state, record, {{"vision.max_n", "1"}});
+  if (server == nullptr) return;
+  for (const auto& url : {std::string{"data:image/png;base64,@@"}, std::string{"https://example.test/a.png"}}) {
+    const auto response = raw(*server, chat_request(*server, vision_body(image_part(url))));
+    expect(response.has_value() && response->status == 400 && response->body.find("\"param\":\"image_url\"") != std::string::npos,
+           "the 400 names image_url before any decode or write: " + url);
+  }
+  const auto two = vision_body(image_part("data:image/png;base64," + b64e(png8x6())) + "," +
+                               image_part("data:image/png;base64," + b64e(png8x6())));
+  const auto over = raw(*server, chat_request(*server, two));
+  expect(over.has_value() && over->status == 400 && over->body.find("\"param\":\"image_url\"") != std::string::npos,
+         "a second image past vision.max_n names image_url (:103 family, re-scoped)");
+  std::error_code ec;
+  bool leftover = false;
+  for (const auto& entry : std::filesystem::directory_iterator(state / "vision", ec)) {
+    (void)entry;
+    leftover = true;
+  }
+  expect(!leftover, "no refusal left a scratch file behind");
+  const auto ok = raw(*server, chat_request(*server, R"({"model":"m:t","messages":[{"role":"user","content":"Hi"}],"max_tokens":2})"));
+  expect(ok.has_value() && ok->status == 200, "refusals do not poison the serving loop");
 }
 
 void chat_response_has_openai_shape() {
@@ -1183,8 +1403,11 @@ void ext01_extension_fields_rejected_on_stream_path() {
 }
 
 void dos02_slow_reader_never_backpressures_engine() {
+  // engine.repeat_stop_tokens 0 (SP5 M1 Task 8): the filler token repeats 1024 times, so the
+  // pin's default runaway rule (256) would legitimately cut this reply; this test is about
+  // reader backpressure, not the repeat rule.
   auto server = test_support::start_stream_server({long_token_ids(), "--tokens=1024", "--ready-context=65536"},
-                                           {{"limits.chat.max_completion_tokens", "8192"}});
+                                           {{"limits.chat.max_completion_tokens", "8192"}, {"engine.repeat_stop_tokens", "0"}});
   expect(server != nullptr, "server ready");
   if (!server) return;
   auto slow = test_support::open_raw(*server, test_support::chat_body(R"("stream":true,"max_tokens":1024)"), 4096);
@@ -1277,7 +1500,10 @@ struct StalledStream final {
     server = test_support::start_stream_server({long_token_ids(), "--tokens=16384", "--burst-tokens=15360", "--token-interval-ms=50", "--ready-context=65536",
                                          "--record-file=" + test_support::utf8_path(record)},
                                         {{"limits.http.write_stall_ms", "500"}, {"limits.chat.max_completion_tokens", "16384"},
-                                         {"limits.chat.max_generated_bytes", "16777216"}});
+                                         {"limits.chat.max_generated_bytes", "16777216"},
+                                         // SP5 M1 Task 8: the filler repeats far past the pin's 256-token runaway bound;
+                                         // this fixture is about the write-stall cut, so the rule is off here.
+                                         {"engine.repeat_stop_tokens", "0"}});
     if (server) slow = test_support::open_raw(*server, test_support::chat_body(R"("stream":true,"max_tokens":16384)"), 4096);
   }
 };
@@ -1441,10 +1667,16 @@ int main(int argc, char** argv) {
       {"max_tokens_above_limit_is_clamped", max_tokens_above_limit_is_clamped},
       {"max_tokens_clamped_to_context_room", max_tokens_clamped_to_context_room},
       {"prompt_alone_over_context_is_400", prompt_alone_over_context_is_400},
+      {"fit_max_tokens_false_returns_400_like_the_pin", fit_max_tokens_false_returns_400_like_the_pin},
+      {"idle_unload_respawns_before_the_next_request", idle_unload_respawns_before_the_next_request},
+      {"queue_and_answer_room_limits_are_enforced", queue_and_answer_room_limits_are_enforced},
+      {"aliases_answer_like_the_primary_model", aliases_answer_like_the_primary_model},
       {"absent_max_tokens_uses_auto", absent_max_tokens_uses_auto},
       {"sampling_passthrough_reaches_gen", sampling_passthrough_reaches_gen},
       {"dos01_context_rule_is_400_without_gen", dos01_context_rule_is_400_without_gen},
       {"chat_response_has_openai_shape", chat_response_has_openai_shape},
+      {"enc_round_trip_reaches_the_prompt", enc_round_trip_reaches_the_prompt},
+      {"image_rejections_name_image_url_before_any_write", image_rejections_name_image_url_before_any_write},
       {"dos02_excess_connections_get_503_retry_after", dos02_excess_connections_get_503_retry_after},
       {"dos02_queue_full_is_503", dos02_queue_full_is_503},
       {"dos02_queue_timeout_is_503", dos02_queue_timeout_is_503},

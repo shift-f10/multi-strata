@@ -3,6 +3,7 @@
 #include "secure_frontend/acquire_url.hpp"
 #include "secure_frontend/canonical_path.hpp"
 #include "secure_frontend/config.hpp"
+#include "secure_frontend/sampling_params.hpp"
 #include "secure_frontend/secret_source.hpp"
 
 #include <chrono>
@@ -10,6 +11,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -21,7 +23,7 @@
 
 namespace secure_frontend {
 
-enum class ConfigValueType { boolean, integer, string, string_array };
+enum class ConfigValueType { boolean, integer, string, string_array, decimal };
 
 // One row per configuration key: the single source of truth for the JSON
 // reader, the command line, --check output and the README key table.
@@ -36,6 +38,13 @@ struct ConfigKey final {
   std::string_view default_string;  // empty = no default
   std::string_view flag;            // strata-secure-server option(s) for the README; empty = file only
   std::string_view description;
+  // SP5 M1 Task 4 (decimal rows): bounds below; default_decimal NaN = "unset"
+  // (the row stays absent); minimum_exclusive models the pin's open bounds.
+  // Defaults keep every pre-Task-4 positional row valid under -Werror.
+  double minimum_decimal = 0.0;
+  double maximum_decimal = 0.0;
+  double default_decimal = std::numeric_limits<double>::quiet_NaN();
+  bool minimum_exclusive = false;
 };
 
 [[nodiscard]] std::span<const ConfigKey> config_schema() noexcept;
@@ -57,7 +66,7 @@ struct ConfigKeyExtension final {
 [[nodiscard]] std::string render_config_schema_markdown();
 
 enum class ConfigSource { file, command_line };
-using ConfigDraftValue = std::variant<bool, std::int64_t, std::string, std::vector<std::string>>;
+using ConfigDraftValue = std::variant<bool, std::int64_t, std::string, std::vector<std::string>, double>;
 struct ConfigDraftEntry final {
   ConfigDraftValue value;
   ConfigSource source;
@@ -74,6 +83,7 @@ struct FrontendConfigDraft final {
 enum class ConfigIssueCode {
   malformed_document, unknown_key, duplicate_key, wrong_type, missing_required, out_of_range, invalid_value,
   conflicting_values, remote_not_enabled, wildcard_bind_not_enabled, file_unavailable, file_untrusted,
+  excluded_key,
 };
 
 // key_path names a key ("limits.http.max_request_bytes") or "config file";
@@ -167,6 +177,71 @@ struct Roots final {
   // requires it and checks it is an existing owner-only directory (spec §3.9).
   std::optional<std::filesystem::path> state{};
 };
+// SP5 M1 Task 5 (parity rows reasoning_*): the pin's config family. Kinds and defaults at
+// frontend_config.cpp's rows; the pin keeps these as service-object values (serve/server.py:8015,
+// :8102-8104, :8120-8136), except effort_position, which composes an engine argument (:2836-2856).
+enum class ReasoningEffort { none, low, medium, high };      // clean_shared_defaults :7341-7343
+enum class LoopRecovery { off, stop, recover };              // :8129-8136 (false | "stop" | "recover")
+enum class EffortPosition { start, end };                    // :2841-2843
+enum class AnthropicThinking { model, on_request };          // :8102-8104
+// SP5 M1 Task 7 (parity rows gpu_order / gpu_policy). The pin reorders GPUs for any value
+// but the string "as_given" (serve/server.py:3112); the typed row closes the vocabulary and
+// names the reordering "auto" (Ruling T7-b: the reorder needs driver scores, owner-box only).
+// GpuTurnPolicy is images.py's POLICIES tuple (images.py:45) re-scoped to the vision turn.
+enum class GpuOrder { auto_order, as_given };
+enum class GpuTurnPolicy { auto_policy, keep, shrink, unload };
+struct ReasoningConfig final {
+  std::optional<ReasoningEffort> effort;                     // unset: no config-level level (pin None)
+  std::int64_t budget_tokens = 0;                            // 0 = no budget (pin default)
+  bool close_retry = false;                                  // #1053 opt-in
+  LoopRecovery loop_recovery = LoopRecovery::off;            // #728 opt-in
+  EffortPosition effort_position = EffortPosition::start;
+  AnthropicThinking anthropic_thinking = AnthropicThinking::model;
+};
+
+// SP5 M1 Task 9 (the session family; serve/server.py:8043-8110, :2999-3005, :8092-8100 +
+// slot_save_dir :3469-3481, images.py:188). The four booleans are the pin's opt-in falses:
+// their pin-side consumers (its OutputParser recovery, frontend._env_to_user, the Codex
+// routes) have no counterpart in our stack, so they are stored typed for parity
+// (config_only rows, Rulings T9-d/T9-e).
+struct SessionPolicy final {
+  std::string slot_save_path;                  // session.slot_save_path (absolute, T9-b; the /slots store route is not ours, T9-a)
+  std::string expert_profile_save;             // session.expert_profile_save -> --expert-profile-save (:3002)
+  std::int64_t expert_profile_save_every{10};  // minutes; 0 = at QUIT only (the pin's docstring, :2996)
+  bool tool_call_recovery{false};              // session.tool_call_recovery (:8106, strict bool)
+  bool env_to_user{false};                     // session.env_to_user (:8110, strict bool)
+  bool codex_thread_titles{false};             // session.codex_thread_titles (:8043, `is True`)
+  bool codex_compaction_cache{false};          // session.codex_compaction_cache (:8044, `is True`)
+  std::int64_t keep_files{64};                 // session.keep_files (images.py:188; typed only, T9-e)
+};
+
+// SP5 M1 Task 10 (the C-4 narrowing, spec + README): N-child replica scheduling is not
+// implemented — the pin's `replicas` dict and replica_* members are rejected at load by
+// name. What stands is engine-INTERNAL parallelism: replicas.parallel decodes up to N
+// requests together inside the one child (serve/server.py:2955-2975 renders --batch N).
+struct ReplicasConfig final {
+  std::int64_t parallel{1};  // replicas.parallel (1: one request at a time, the pin's default)
+};
+
+// SP5 M1 Task 11 (D-9 vision split): image INPUT is typed and plumbed (supervised encoder
+// child, mmproj manifest artifact); image GENERATION stays out. Defaults at the pin:
+// max_side/max_n take the images-block values (serve/images.py:102-103 `or 2048`/`or 4`,
+// caps added here, C-1); need_mib overrides the pin's VRAM arithmetic (images.py:156; the
+// gate itself is driver-bound, cf. T7-c); resident is the pin's eager encoder
+// (server.py:2511/:2552); threads 0 = the pin's unset (truthy -> --threads, :2562).
+// no_flash_attn rides the spec §5.1 family: not read by this pin, proven by the kit.
+struct VisionConfig final {
+  bool enabled{false};                       // vision.enabled: gates the whole family
+  std::int64_t max_side{2048};               // vision.max_side (pre-decode image side cap, Task 12)
+  std::int64_t max_n{4};                     // vision.max_n (images per request cap, Task 12)
+  std::optional<std::int64_t> need_mib;      // vision.need_mib (unset: the pin computes it)
+  bool no_flash_attn{false};                 // vision.no_flash_attn (added knob, spec §5.1; child flag)
+  bool resident{true};                       // vision.resident (false: woken by the first image, Task 12)
+  std::int64_t threads{0};                   // vision.threads (0: unset — the pin's truthy skip, :2562)
+  std::int64_t ready_timeout_s{300};         // vision.ready_timeout_s (0: wait for ever — the pin's :291 rule)
+  std::int64_t encode_timeout_s{300};        // vision.encode_timeout_s (VISION_ENCODE_S gate, :328; 0: for ever)
+};
+
 struct EngineLaunch final {
   std::optional<EngineProfile> profile;  // --expert only; a managed model's manifest sets it (SP4 §4.9 c)
   CanonicalFile executable;
@@ -175,6 +250,37 @@ struct EngineLaunch final {
   std::vector<std::filesystem::path> lib_dirs{};  // engine.lib_dirs, each absolute
   std::vector<unsigned> gpus{};                   // engine.gpu, parsed by parse_gpu_list (empty: unset)
   bool allow_new_privileges{false};               // engine.allow_new_privileges (Linux: no PR_SET_NO_NEW_PRIVS)
+  bool fit_max_tokens{true};                      // engine.fit_max_tokens (pin :3485: false answers 400 over room)
+  // SP5 M1 Task 6 (parity rows lazy_load / idle_unload_s / mtp; runconfig.py:35-38): the
+  // lifecycle family. mtp is on unless explicitly false (draft_layer.py is_off).
+  bool lazy_load{false};                          // engine.lazy_load: the first request loads the engine
+  std::chrono::seconds idle_unload{0};            // engine.idle_unload_s (0: never, the pin default)
+  bool mtp{true};                                 // engine.mtp: false strips the draft layer at every start
+  // SP5 M1 Task 7 (the VRAM / GPU / elastic family). Kinds and defaults verbatim from the
+  // pin (runconfig.py:42; serve/server.py:2550-2552, 2870-2948, 3023, 3112, 8083;
+  // serve/images.py:23/45/173); the caps and closed vocabularies are added (C-1).
+  std::optional<std::int64_t> vram_reserve_mib;   // engine.vram_reserve_mib -> --vram-reserve-mib (unset: engine's 700)
+  std::int64_t min_free_vram{0};                  // engine.min_free_vram_mib (svc-side pre-load gate; :8083, default 0)
+  bool vram_elastic{false};                       // engine.vram_elastic -> --vram-elastic (#533, :2945)
+  std::optional<std::int64_t> vram_segment_mib;   // engine.vram_segment_mib -> --vram-segment-mib (unset: engine's 512)
+  bool elastic{false};                            // engine.elastic: the elastic vision turn (Task 11 consumer, :2550)
+  std::chrono::seconds elastic_idle{120};         // engine.elastic_idle_s (pin float-or 120; integer seconds, T7-h)
+  std::int64_t elastic_mib{2048};                 // engine.elastic_mib (pin int-or 2048; /v1/vram headroom, Task 11)
+  GpuOrder gpu_order{GpuOrder::auto_order};       // engine.gpu_order (only "as_given" changes anything; :3112)
+  GpuTurnPolicy gpu_policy{GpuTurnPolicy::auto_policy};  // engine.gpu_policy (POLICIES, images.py:45; vision turn)
+  std::string layer_split{"auto"};                // engine.layer_split -> --layer-split when several GPUs (:2870-2894)
+  bool split_skip_if_fits{false};                 // engine.split_skip_if_fits -> --split-skip-if-fits (:2941)
+  std::optional<std::int64_t> hip_ordinal;        // engine.hip_ordinal: wins over one (or zero) GPUs (:3023-3029)
+  bool uma{false};                                // engine.uma: an APU shares RAM either way (images.py:23/334)
+  // SP5 M1 Task 8 (parity rows engine_silence_s / answer_room / repeat_stop_tokens /
+  // max_tokens / min_tokens + model.aliases). Kinds and defaults verbatim from the pin
+  // (runconfig.py:34/:39; serve/server.py:197-199/:8014/:8115/:4908); added bounds marked C-1.
+  std::chrono::seconds silence{300};              // engine.silence_s (default 300, 0 = wait; :274-276/:2861-2868)
+  bool answer_room{true};                         // engine.answer_room (pin `is not False`, :8014)
+  std::size_t repeat_stop_tokens{256};            // engine.repeat_stop_tokens (REPEAT_STOP_TOKENS 256, :197/:8115; 0: off)
+  std::optional<std::size_t> max_tokens;          // engine.max_tokens: ceiling on the request output budget (added, C-1)
+  std::optional<std::size_t> min_tokens;          // engine.min_tokens: floor on the request output budget (added, C-1)
+  std::vector<std::string> aliases{};             // model.aliases (set_aliases :3764-3777)
 };
 
 // SP4 §3.9. pull.downloader is only a syntactically absolute path here; the
@@ -205,14 +311,22 @@ class FrontendConfig final {
   const EngineLaunch engine;
   const PullSettings pull;
   const LoggingConfig logging;  // SP3 §8
+  const SamplingDefaults sampling;  // SP5 M1 Task 4: defaults.sampling.*
+  const ReasoningConfig reasoning;  // SP5 M1 Task 5: reasoning.*
+  const SessionPolicy session;      // SP5 M1 Task 9: session.*
+  const ReplicasConfig replicas;    // SP5 M1 Task 10: replicas.parallel (the C-4 narrowing)
+  const VisionConfig vision;        // SP5 M1 Task 11: vision.* (the D-9 split)
 
  private:
   friend std::variant<ValidatedConfig, std::vector<ConfigIssue>> validate(const FrontendConfigDraft& draft);
   FrontendConfig(ListenerConfig listener_value, Limits limits_value, Roots roots_value, SecretSource token_value,
-                 EngineLaunch engine_value, PullSettings pull_value, LoggingConfig logging_value)
+                 EngineLaunch engine_value, PullSettings pull_value, LoggingConfig logging_value,
+                 SamplingDefaults sampling_value, ReasoningConfig reasoning_value, SessionPolicy session_value,
+                 ReplicasConfig replicas_value, VisionConfig vision_value)
       : listener(std::move(listener_value)), limits(limits_value), roots(std::move(roots_value)),
         token(std::move(token_value)), engine(std::move(engine_value)), pull(std::move(pull_value)),
-        logging(logging_value) {}
+        logging(logging_value), sampling(std::move(sampling_value)), reasoning(reasoning_value),
+        session(std::move(session_value)), replicas(replicas_value), vision(vision_value) {}
 };
 
 // Immutable after validation; subsystems derive their limits from it once.

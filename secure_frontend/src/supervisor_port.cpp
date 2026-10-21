@@ -17,4 +17,17 @@ void SupervisorPort::report_fatal(const Lease& lease, const KillReason reason) {
   supervisor_.report_fatal(lease, reason);
 }
 
+// SP5 M1 Task 6 (idle_unload_s / lazy_load): the serving-path bracket and the wake.
+void SupervisorPort::note_request_started() {
+  supervisor_.note_request_started();
+}
+
+void SupervisorPort::note_request_finished() {
+  supervisor_.note_request_finished();
+}
+
+void SupervisorPort::wake_for_request() {
+  supervisor_.wake_for_request();
+}
+
 }  // namespace secure_frontend

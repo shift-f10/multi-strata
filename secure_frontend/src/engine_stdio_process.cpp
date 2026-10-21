@@ -151,11 +151,15 @@ EngineStdioProcess::~EngineStdioProcess() { cleanup(); }
 std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& command) {
   if (running()) return ProcessError{ProcessErrorCode::already_running, "an engine process is already running"};
   if (const auto error = validate(command); error.has_value()) return error;
+  // Ruling T11-x: remember the role's kill code; supervisor kills tag the child with it.
+  kill_exit_code_ = command.kill_exit_code;
   cleanup(); pending_stdout_.clear(); exit_status_.reset();
 #if defined(_WIN32)
   const std::wstring executable = command.executable.wstring();
   std::wstring line = quote(executable);
-  line += L" --serve";
+  // SP5 M1 Task 11 (Ruling T11-ff): the literal --serve insertion is the ENGINE protocol;
+  // the pin's vision child takes none (serve/server.py:2556-2568), so insert_serve gates it.
+  if (command.insert_serve) line += L" --serve";
   for (const auto& arg : command.arguments) { auto wide = to_wide(arg); if (!wide) return ProcessError{ProcessErrorCode::invalid_command, "engine argument is not valid UTF-8"}; line += L' ' + quote(*wide); }
   std::wstring environment;
   for (const auto& [name, value] : command.environment) { auto n = to_wide(name); auto v = to_wide(value); if (!n || !v) return ProcessError{ProcessErrorCode::invalid_command, "engine environment is not valid UTF-8"}; environment += *n + L"=" + *v; environment.push_back(L'\0'); }
@@ -247,7 +251,7 @@ std::optional<ProcessError> EngineStdioProcess::start(const EngineCommand& comma
 #else
   // Everything the child needs is built before fork(); the child body is async-signal-safe.
   posix_launch::PreparedExec prepared;
-  posix_launch::prepare(prepared, command, /*insert_serve=*/true);
+  posix_launch::prepare(prepared, command, command.insert_serve);
   if (!posix_launch::open_cgroup(prepared, command)) {
     return ProcessError{ProcessErrorCode::platform_failure, "engine cgroup setup failed"};
   }
@@ -475,7 +479,7 @@ EngineReadResult EngineStdioProcess::read_line(const std::chrono::milliseconds t
 bool EngineStdioProcess::terminate(const std::chrono::milliseconds grace) {
 #if defined(_WIN32)
   if (!process_handle_) return true;
-  if (!TerminateJobObject(static_cast<HANDLE>(job_handle_), kSupervisorKillExitCode)) return false;
+  if (!TerminateJobObject(static_cast<HANDLE>(job_handle_), kill_exit_code_)) return false;
   if (WaitForSingleObject(static_cast<HANDLE>(process_handle_), static_cast<DWORD>(std::max<std::int64_t>(0, grace.count()))) !=
       WAIT_OBJECT_0) {
     return false;
@@ -531,7 +535,7 @@ void EngineStdioProcess::signal_group_terminate() noexcept {
 
 void EngineStdioProcess::kill_group() noexcept {
 #if defined(_WIN32)
-  if (job_handle_ != nullptr) (void)TerminateJobObject(static_cast<HANDLE>(job_handle_), kSupervisorKillExitCode);
+  if (job_handle_ != nullptr) (void)TerminateJobObject(static_cast<HANDLE>(job_handle_), kill_exit_code_);
 #else
   if (cgroup_dir_) (void)kill_cgroup(*cgroup_dir_);  // escape-proof when delegated (spec §3.7d)
   // Spec §3.7a: the process-group id stays valid while any member lives, so

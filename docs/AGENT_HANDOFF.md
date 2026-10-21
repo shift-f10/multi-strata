@@ -202,6 +202,53 @@ Follow [`PROVENANCE.md`](PROVENANCE.md), "Updating the baseline" (the only copy 
 
 ## What has changed
 
+### SP5 M1 (branch `sp5-parity-cli`, base `60f94aeb`; the branch waits for the owner's merge word)
+
+Plan `docs/superpowers/plans/2026-10-21-sp5-m1-strata-parity-cli.md` (Tasks 1–15),
+spec `docs/superpowers/specs/2026-10-21-sp5-parity-typed-options-design.md`
+(D-1…D-10, C-1…C-9). Lane ledger with every ruling (T2…T15) and the per-task
+briefs: `.superpowers/sdd/2026-10-21-sp5-m1-strata-parity/` (git-ignored work
+record); final report `docs/superpowers/handoff/reports/sp5-m1/FINAL-REPORT.md`.
+All commits authored `shift-f10` with the `Co-Authored-By` trailer and no
+`Claude-Session:` trailer (owner ruling 2026-10-20). One line per task.
+
+| Task | Commit | Landed | Proof (cases, named in the ledger) |
+| --- | --- | --- | --- |
+| 1 | — | baseline + seam inventory (no files) | — |
+| 2 | `e5ffa597` | parity spine: `parity_table.{hpp,cpp}` — 121 rows, every upstream option of v0.2.1.3 exactly one disposition + read-site citation; generated inventory `tests/parity_keys_upstream.hpp` (87 config keys + 31 env knobs, greps verbatim, committed) | parity-table meta-tests (coverage, one-row, citation shape) |
+| 3 | `42bcafa7` | upstream-excluded keys refused at config load **by name**; `strata doctor` flags ignored `STRATA_*`/`MAYA_*` env knobs | typed_config rejection family + doctor cases |
+| 4 | `e2743afe` | sampling defaults at the pin's validator; params reach `GEN` | sampling matrix + GEN-record cases |
+| 5 | `cbd37ba4` | reasoning family typed (effort/budget/recovery, Maya names C-3); `fit_max_tokens` both pin behaviours | reasoning + fit cases |
+| 6 | `25364882` | lifecycle: `lazy_load` (no flag — the pin has none), `idle_unload_s` respawn-on-request, `mtp=false` drops the draft layer | supervisor/argv lifecycle cases |
+| 7 | `1c4fc2e8` | VRAM/GPU/elastic family typed to the engine argv | argv-composition cases |
+| 8 | `9a6273ce` | silence/queue/room/stop-token keys at the pin | timeout/queue cases |
+| 9 | `3bc08b21` | session/context family typed with path rules | session cases |
+| 10 | `761b9b4a` | C-4 narrowing: `replicas.parallel` renders `--batch N` inside the one child; the pin's N-child replica config is rejected by name | replicas cases |
+| 11 | `cbb4e747` | vision artifacts: manifest `files[]` role `mmproj` (≤1 entry), supervised `strata-vision` child (READY/ENC/QUIT, `kVisionKillExitCode`), resident encoder at boot (no READY → boot fails) | supervision cases with the fake vision child |
+| 12 | `b3b7c6d6` | C-9 request half: content-parts only for vision-capable models; pre-decode caps (count, base64 length, 32 MiB, side probe); 0600 staging under `<state>/vision`; ENC round trip inside the lease before the `GENI` write (pin FIFO :4489); `GENI` embeddings tail; `<|vision_start|>`/pads/`<|vision_end|>` prompt runs; per-request scratch cleanup; `vision.encode_timeout_s` (schema 108→109) | image_payload unit + e2e enc round trip + rejection-before-write cases |
+| 13 | `8b61436b` | shared boot library `secure_frontend_server_bootstrap` (moved verbatim from `secure_server_main.cpp`); `strata serve` — foreground, managed-only, no daemonization/`server.json`/lock | `serve_prints_ready_then_serves`, `serve_runs_foreground_and_shuts_clean_on_sigterm` (SIGTERM → exit 0 ≤5 s) |
+| 14 | `18b2af90` | `strata version` (tag governs; engine self-version labelled informational, never spoken here); `strata key show [--env]`/`key rotate` on SP1 store rules, token printed once, logged nowhere | acquire_cli cases incl. chmod-unsafe store refusal |
+| 15 | (this commit) | truth pass: README gains the parity mirror (typed/mapped/rejected blocks, regenerated from the C++ table), the `strata serve/version/key` paragraph and the images-are-input truth fix; threat-model rows for the env-knob warning, the image path, lifecycle timers, the encoder child and the no-lifecycle-files rule; PROVENANCE names the parity artifacts as bump pin-sites; new pytest gate mirrors README blocks vs the table | `tools/secure/test_parity_readme_coverage.py` |
+
+Gates at the branch tip (this host, 2026-10-21): debug build clean under
+`-Werror`; `ctest --preset linux-gcc` 803 registered / 799 run / 4 env-only
+skips, 100% (lane base was 750/746 — +53 cases); release-and-also 10/10;
+`windows-llvm-mingw-cross` builds 0 warnings — Windows/wine **not run** on this
+host (owner-hardware rule, CI disabled 2026-10-20); pytest 26 (new parity gate);
+root build + `ctest` 769 registered, 100%, 8 env skips, 0 warnings; clang18
+TSan filtered concurrency suites (engine supervisor/child/stdio/process, pool,
+socket server, chat execution, api server): 224 cases, **zero** ThreadSanitizer
+reports — only the parked flake `api_server_tests.log_line_format_and_rate_limit`
+flaked once and passed on rerun (untouched, as parked).
+
+Recorded gaps and waits (each also in the ledger/threat model):
+the vision child gets no per-generation cgroup delegation in M1; the pin's
+`session.keep_files` LRU has no consumer (per-request cleanup instead);
+`session.answer_room` is typed only (T8-d — the pin's formula sits in its
+thinking parser); GPU, real-encoder and the D-1 acceptance kit (corpus mode of
+`strata-api-probe`) wait for the owner's boxes; M2 (Maya table D-10, dialect
+layer, the kit) is a separate plan written after this one merges.
+
 ### SP4 (branch `sp4-acquire`)
 
 Plan: `docs/superpowers/plans/2026-10-14-sp4-acquire.md`. One line per task.

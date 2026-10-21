@@ -18,7 +18,7 @@ struct ExitStatus final {
 // Why the supervisor ended a generation (spec §3.5); `none` when it did not.
 // `client_stop_drain_failed` (SP3 D-2) is a drain_failed whose STOP the serving
 // side sent for a client that went away; it restarts without counting.
-enum class KillReason { none, fatal_line, ready_timeout, drain_failed, write_timeout, protocol_failed, shutdown, client_stop_drain_failed };
+enum class KillReason { none, fatal_line, ready_timeout, drain_failed, write_timeout, protocol_failed, shutdown, client_stop_drain_failed, idle_unload };
 
 // Diagnostic only: every kind counts as a failure (except our own
 // client_stop_drain_failed kill, SP3 D-2), and the literal appears only
@@ -39,6 +39,9 @@ struct ExitClassification final {
 
 // TerminateJobObject exit code: a customer code (bit 29), never an engine `return 1`.
 inline constexpr std::uint32_t kSupervisorKillExitCode = 0x20000001U;
+// SP5 M1 Task 11 (plan: the vision role's "distinct exit-code space"): a supervisor-killed
+// strata-vision child terminates with this code instead of the engine's.
+inline constexpr std::uint32_t kVisionKillExitCode = 0x20000002U;
 
 // `sent_by_supervisor` is the reason recorded when the supervisor sent a kill
 // (KillReason::none otherwise). The kill is credited to the supervisor only if

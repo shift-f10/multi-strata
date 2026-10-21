@@ -162,12 +162,15 @@ add_library(secure_frontend_json
     src/json.cpp
 )
 
+secure_frontend_add_library(secure_frontend_parity
+    SOURCES src/parity_table.cpp)
+
 add_library(secure_frontend_typed_config src/frontend_config.cpp src/config_file.cpp)
 target_compile_features(secure_frontend_typed_config PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_typed_config PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
 target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_config secure_frontend_json
-    secure_frontend_model_inventory secure_frontend_engine_arguments)
+    secure_frontend_model_inventory secure_frontend_engine_arguments secure_frontend_parity)
 target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_paths)
 # SP4 §3.9: pull.proxy is parsed by parse_proxy (ProxySetting).
 target_link_libraries(secure_frontend_typed_config PUBLIC secure_frontend_manifest_core)
@@ -210,6 +213,7 @@ add_library(secure_frontend_engine_supervisor
     src/descendant_sweep.cpp
     src/engine_environment.cpp
     src/engine_supervisor.cpp
+    src/vision_supervisor.cpp
     src/privilege_check.cpp
     src/restart_policy.cpp
     src/shutdown_signal.cpp
@@ -224,6 +228,14 @@ add_library(secure_frontend_token_store src/token_store.cpp)
 target_compile_features(secure_frontend_token_store PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_token_store PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+
+# SP5 M1 Task 12: the image_url payload gate (data URL -> strict base64 -> caps -> 0600 staging).
+add_library(secure_frontend_image_payload src/image_payload.cpp)
+target_compile_features(secure_frontend_image_payload PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_image_payload PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_link_libraries(secure_frontend_image_payload PUBLIC secure_frontend_sha256 secure_frontend_secrets
+    secure_frontend_engine_supervisor)
 target_link_libraries(secure_frontend_token_store PUBLIC secure_frontend_paths secure_frontend_secrets)
 target_link_libraries(secure_frontend_token_store PUBLIC secure_frontend_token_reader)
 
@@ -233,7 +245,7 @@ target_include_directories(secure_frontend_subsystem_limits PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
 target_link_libraries(secure_frontend_subsystem_limits PUBLIC secure_frontend_typed_config
     secure_frontend_http_socket_server secure_frontend_chat_execution secure_frontend_chat_schema
-    secure_frontend_engine_supervisor)
+    secure_frontend_engine_supervisor secure_frontend_image_payload)
 
 add_executable(secure-frontend-smoke src/smoke_main.cpp)
 
@@ -287,7 +299,8 @@ secure_frontend_add_library(secure_frontend_generation_gate
 secure_frontend_add_library(secure_frontend_chat_route
     SOURCES src/chat_route.cpp
     LINKS secure_frontend_generation_gate secure_frontend_chat_execution secure_frontend_chat_schema
-          secure_frontend_chat_generation_plan secure_frontend_secrets secure_frontend_api_core)
+          secure_frontend_chat_generation_plan secure_frontend_secrets secure_frontend_api_core
+          secure_frontend_image_payload)
 target_link_libraries(secure_frontend_chat_route PUBLIC secure_frontend_chat_stream)
 
 secure_frontend_add_library(secure_frontend_request_log
@@ -339,6 +352,8 @@ target_include_directories(secure_frontend_engine_arguments
 )
 target_link_libraries(secure_frontend_engine_arguments PUBLIC secure_frontend_model_inventory)
 target_link_libraries(secure_frontend_engine_arguments PUBLIC secure_frontend_paths)
+# SP5 M1 Task 5: compose_effort_end_arguments encodes "system" with the tokenizer pack.
+target_link_libraries(secure_frontend_engine_arguments PUBLIC secure_frontend_tokenizer_pack)
 target_compile_features(secure_frontend_json PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_json PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
@@ -605,12 +620,28 @@ target_link_libraries(secure_frontend_launch PUBLIC secure_frontend_model_store 
 secure_frontend_set_warnings(secure_frontend_launch)
 target_link_libraries(strata-secure-server PRIVATE secure_frontend_launch)
 
+# SP5 M1 Task 13 (Ruling T13-b): the supervised serve path as a library — the one
+# boot `strata-secure-server` and `strata serve` share (server_bootstrap.hpp).
+secure_frontend_add_library(secure_frontend_server_bootstrap
+    SOURCES src/server_bootstrap.cpp
+    LINKS secure_frontend_config secure_frontend_token_reader secure_frontend_secrets
+          secure_frontend_http_policy secure_frontend_http_request_handler secure_frontend_http_socket_server
+          secure_frontend_api_router secure_frontend_model_inventory secure_frontend_tokenizer_pack
+          secure_frontend_engine_protocol_client secure_frontend_engine_stdio_process secure_frontend_chat_schema
+          secure_frontend_chat_generation_plan secure_frontend_chat_execution secure_frontend_engine_arguments
+          secure_frontend_typed_config secure_frontend_subsystem_limits secure_frontend_engine_supervisor
+          secure_frontend_socket_io secure_frontend_api_core secure_frontend_connection_pool
+          secure_frontend_chat_route secure_frontend_request_log secure_frontend_launch)
+target_link_libraries(strata-secure-server PRIVATE secure_frontend_server_bootstrap)
+
 # SP4 Task 23 (spec §1.5): the strata CLI's verbs.
 add_library(secure_frontend_strata_cli src/strata_cli.cpp)
 target_compile_features(secure_frontend_strata_cli PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_strata_cli PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
-target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_acquire secure_frontend_typed_config)
+target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_acquire secure_frontend_typed_config
+    secure_frontend_server_bootstrap
+    secure_frontend_server_cli)  # SP5 M1 Tasks 13/14: shared boot; frontend_init's token store for `key`
 target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_launch)
 # SP4 Task 27: pull, run, update --models and doctor drive the confined downloader.
 target_sources(secure_frontend_strata_cli PRIVATE src/strata_cli_network.cpp)
@@ -768,13 +799,20 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         target_link_libraries(strata-supervision-fake-engine PRIVATE shell32 advapi32)
     endif()
 
+    # SP5 M1 Task 11: test-only stand-in for `strata-vision` (the vision encoder child).
+    # Never installed. Records its argv, answers READY, serves ENC/QUIT (see the file).
+    add_executable(strata-fake-vision-child tests/fake_vision_child_main.cpp)
+    target_compile_features(strata-fake-vision-child PRIVATE cxx_std_20)
+    secure_frontend_set_warnings(strata-fake-vision-child)
+
     # Paths every SP2 test needs (fixture directories come from SP1's
     # make_scratch_directory below ${SECURE_FRONTEND_TEST_TMP}).
     function(secure_frontend_test_paths target)
         target_compile_definitions(${target} PRIVATE
             "STRATA_FAKE_ENGINE_PATH=\"$<TARGET_FILE:strata-supervision-fake-engine>\""
+            "STRATA_FAKE_VISION_CHILD_PATH=\"$<TARGET_FILE:strata-fake-vision-child>\""
             "STRATA_SECURE_SERVER_PATH=\"$<TARGET_FILE:strata-secure-server>\"")
-        add_dependencies(${target} strata-supervision-fake-engine strata-secure-server)
+        add_dependencies(${target} strata-supervision-fake-engine strata-fake-vision-child strata-secure-server)
         if(TARGET strata_egress_tripwire)  # SP3 Task 19: Linux-only tripwire targets, when defined
             target_compile_definitions(${target} PRIVATE
                 STRATA_EGRESS_TRIPWIRE_PATH="$<TARGET_FILE:strata_egress_tripwire>"
@@ -818,6 +856,10 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     target_link_libraries(secure_frontend_test_support PUBLIC secure_frontend_tokenizer_pack)
     # SP3 Task 9 (pre-flight P36): §7.2 bodies (api_errors) and the --config file renderer (config_json.hpp).
     target_link_libraries(secure_frontend_test_support PUBLIC secure_frontend_api_core secure_frontend_typed_config)
+    # SP5 M1 Task 12: the managed-vision harness branch installs an fx model in-process
+    # (publish_staged), so the store/manifest libraries join the support closure.
+    target_link_libraries(secure_frontend_test_support PUBLIC secure_frontend_acquire secure_frontend_model_store
+        secure_frontend_manifest_core)
     if(WIN32)
         target_link_libraries(secure_frontend_test_support PUBLIC ws2_32 advapi32)
     endif()
@@ -879,6 +921,11 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         dos01_eviction_over_tcp_admits_new_client dos01_slowloris_cannot_starve_a_real_client dos01_slow_body_clients_cannot_starve_a_real_client
         net01_workers_add_no_listener net01_ipv6_loopback_listener_only
         max_tokens_above_limit_is_clamped max_tokens_clamped_to_context_room prompt_alone_over_context_is_400
+        fit_max_tokens_false_returns_400_like_the_pin
+        enc_round_trip_reaches_the_prompt image_rejections_name_image_url_before_any_write
+        idle_unload_respawns_before_the_next_request
+        queue_and_answer_room_limits_are_enforced
+        aliases_answer_like_the_primary_model
         absent_max_tokens_uses_auto sampling_passthrough_reaches_gen dos01_context_rule_is_400_without_gen
         chat_response_has_openai_shape dos02_excess_connections_get_503_retry_after dos02_queue_full_is_503
         dos02_queue_timeout_is_503 dos02_queue_is_fifo dos02_health_answers_while_generation_places_full
@@ -972,8 +1019,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # before any child runs); also smoke-run under wine. PROCESS: real
     # fake-engine children. LINUX / WINDOWS: platform-only process cases. Later
     # tasks append case names to these four set() lines only.
-    set(SECURE_FRONTEND_SUPERVISOR_UNIT_CASES supervisor_health_literals_per_state proc04_restart_backoff_then_circuit_open proc04_healthy_window_resets_failure_count proc04_missing_engine_opens_circuit_without_spinning proc04_client_err_lines_open_circuit_until_restart supervisor_retires_ended_generation_on_its_own_thread proc04_monitor_fallback_without_pidfd proc04_backoff_survives_stale_wake proc04_fatal_line_before_ready_kills_as_fatal_line proc04_unreaped_child_opens_circuit supervisor_unreaped_at_shutdown_reports_engine_left proc06_nnp_hint_when_exit_status_lags supervisor_exception_opens_circuit supervisor_shutdown_sends_eof_first_then_kills supervisor_lease_outliving_shutdown_is_safe supervisor_wait_wakes_on_lease_release supervisor_wait_wakes_on_shutdown proc06_refuses_privileged_start engine_environment_uses_cache_root_when_set sp3_d2_kill_reason_follows_stop_cause sp3_d2_client_stop_drain_failure_restarts_uncounted sp3_d2_timeout_stop_drain_failure_still_counts sp3_d2_client_stop_counts_when_engine_ended_itself sp3_d2_uncounted_end_resets_count_after_healthy_window sp3_d2_uncounted_streak_is_bounded sp3_d2_done_resets_uncounted_streak sp6_env_strata_family_renders_unchanged sp6_env_forced_values_override_and_add sp6_env_forced_values_reject_never_list sp6_env_forcible_names_are_the_ruled_set sp6_env_hook_derives_values_from_environment sp6_env_hook_suppresses_only_optional_rows sp6_env_refused_family_is_spawn_failure)
-    set(SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES proc04_recovers_after_transient_crash proc04_monitor_detects_idle_crash proc04_fatal_prefix_kills_engine proc04_ready_timeout_kills_and_counts proc04_drain_failure_kills_and_restarts proc04_no_leak_across_restarts proc02_child_env_is_exact_allowlist supervisor_serving_api_is_thread_safe proc04_slow_stdin_write_bounded_by_request_deadline sp6_env_derived_value_reaches_child)
+    set(SECURE_FRONTEND_SUPERVISOR_UNIT_CASES supervisor_health_literals_per_state proc04_restart_backoff_then_circuit_open proc04_healthy_window_resets_failure_count proc04_missing_engine_opens_circuit_without_spinning proc04_client_err_lines_open_circuit_until_restart supervisor_retires_ended_generation_on_its_own_thread proc04_monitor_fallback_without_pidfd proc04_backoff_survives_stale_wake proc04_fatal_line_before_ready_kills_as_fatal_line proc04_unreaped_child_opens_circuit supervisor_unreaped_at_shutdown_reports_engine_left proc06_nnp_hint_when_exit_status_lags supervisor_exception_opens_circuit supervisor_shutdown_sends_eof_first_then_kills supervisor_lease_outliving_shutdown_is_safe supervisor_wait_wakes_on_lease_release supervisor_wait_wakes_on_shutdown proc06_refuses_privileged_start engine_environment_uses_cache_root_when_set sp3_d2_kill_reason_follows_stop_cause sp3_d2_client_stop_drain_failure_restarts_uncounted sp3_d2_timeout_stop_drain_failure_still_counts sp3_d2_client_stop_counts_when_engine_ended_itself sp3_d2_uncounted_end_resets_count_after_healthy_window sp3_d2_uncounted_streak_is_bounded sp3_d2_done_resets_uncounted_streak sp6_env_strata_family_renders_unchanged sp6_env_forced_values_override_and_add sp6_env_forced_values_reject_never_list sp6_env_forcible_names_are_the_ruled_set sp6_env_hook_derives_values_from_environment sp6_env_hook_suppresses_only_optional_rows sp6_env_refused_family_is_spawn_failure idle_unload_tears_down_then_respawns_on_next_request idle_unload_never_fires_during_a_generation lazy_load_defers_the_first_spawn)
+    set(SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES proc04_recovers_after_transient_crash proc04_monitor_detects_idle_crash proc04_fatal_prefix_kills_engine proc04_ready_timeout_kills_and_counts proc04_drain_failure_kills_and_restarts proc04_no_leak_across_restarts proc02_child_env_is_exact_allowlist supervisor_serving_api_is_thread_safe proc04_slow_stdin_write_bounded_by_request_deadline sp6_env_derived_value_reaches_child vision_child_launches_with_pinned_args_when_enabled vision_child_respects_resource_limits vision_encode_round_trip_at_the_pin vision_encode_failures_take_the_pinned_paths)
     set(SECURE_FRONTEND_SUPERVISOR_LINUX_CASES proc05_setsid_grandchild_is_reaped proc05_setsid_grandchild_is_reaped_at_shutdown supervisor_start_refuses_without_wake shutdown_signal_preserves_errno proc05_cgroup_kill_when_delegated)
     set(SECURE_FRONTEND_SUPERVISOR_WINDOWS_CASES proc04_windows_abort_does_not_stall proc04_windows_crash_does_not_stall proc04_windows_write_timeout_kills_engine)
     if(WIN32)
@@ -1087,11 +1134,12 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_test_executable(secure_frontend_engine_protocol_client_tests tests/engine_protocol_client_test.cpp
         secure_frontend_engine_protocol_client)
     secure_frontend_add_cases(secure_frontend_engine_protocol_client_tests
-        runs_the_solo_protocol stop_and_quit_are_explicit write_deadlines_reach_the_transport refuses_stop_when_not_advertised
+        runs_the_solo_protocol gen_line_unchanged_without_embeddings_geni_with_them stop_and_quit_are_explicit write_deadlines_reach_the_transport refuses_stop_when_not_advertised
         rejects_malformed_and_unexpected_engine_output bounds_and_engine_errors_fail_closed
         prefill_progress_is_bounded_in_both_profiles
         resume_and_reused_progress_is_consumed_in_the_strata_profile
         gen_carries_bounded_sampling_keys
+        sampling_defaults_reach_gen_request
         generation_total_deadline_is_enforced
         gen_line_fits_max_prompt_tokens derived_line_cap_is_clamped_to_protocol_max stop_cause_and_completed_generations
         next_event_yields_tokens_progress_and_done next_event_timeout_keeps_generation_active
@@ -1122,12 +1170,18 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         engine_args_reject_owned_and_network_flags
         strata_profile_passes_pack_and_weight_flags_through rejects_invalid_relative_artifact_path
         glm_profile_passes_arguments_through_without_native engine_args_render_typed_gpu_and_deny_gpu_passthrough
+        reasoning_config_reaches_engine_launch_and_env
+        mtp_false_drops_the_mtp_arg
+        vram_reserve_mib_becomes_the_pinned_flag
+        gpu_and_elastic_rows_reach_the_engine_argv
+        expert_profile_flags_reach_launch
+        parallel_reaches_the_engine_within_one_child
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     # Pure parsing, no canonical root: runs under wine too.
     secure_frontend_add_cases(secure_frontend_engine_arguments_tests gpu_list_rejects_malformed_values)
     # SP4 Task 24b (spec §2.3, §4.9 c): the managed launch over a scratch models store.
     target_link_libraries(secure_frontend_engine_arguments_tests PRIVATE secure_frontend_launch secure_frontend_strata_cli)
-    secure_frontend_add_cases(secure_frontend_engine_arguments_tests launch_composed_from_manifest_qwen
+    secure_frontend_add_cases(secure_frontend_engine_arguments_tests launch_composed_from_manifest_qwen vision_compose_rules
         managed_launch_argv_is_utf8_for_non_ascii_models_root launch_refuses_model_not_installed
         engine_args_reject_weight_flags_for_managed_model managed_launch_renders_typed_gpu_list LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     # Pure in-memory (F-63): wine runs it too.
@@ -1135,9 +1189,20 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
 
     secure_frontend_add_test_executable(secure_frontend_chat_schema_tests tests/chat_schema_test.cpp secure_frontend_chat_schema)
     secure_frontend_add_cases(secure_frontend_chat_schema_tests
-        parses_minimal_text_request rejects_unsupported_and_unsafe_features rejects_duplicate_and_malformed_json
+        parses_minimal_text_request image_url_parts_accepted_only_for_vision_models
+        image_part_caps_and_shape_are_checked_before_decode
+        rejects_unsupported_and_unsafe_features rejects_duplicate_and_malformed_json
         renders_escaped_minimal_response
         renders_openai_completion_shape)
+
+    # SP5 M1 Task 12: the image_url payload gate — data URL, strict base64, byte caps and
+    # the four pass-through formats' dimensions, checked before ANY write (0600 staging).
+    secure_frontend_add_test_executable(secure_frontend_image_payload_tests tests/image_payload_test.cpp
+        secure_frontend_image_payload)
+    secure_frontend_add_cases(secure_frontend_image_payload_tests
+        image_payload_stages_valid_images_with_the_pin_key
+        image_payload_rejects_bad_shape_before_any_write
+        image_payload_caps_bytes_and_sides)
 
     # SP3 Task 18: static egress tripwire (spec §6.2) over the server binary itself.
     secure_frontend_add_test_executable(secure_frontend_egress_tests tests/egress_test.cpp secure_frontend_test_support)
@@ -1166,6 +1231,12 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         json_rejects_non_integer_numbers json_rejects_bom_trailing_data_and_comments
         json_enforces_size_entry_and_string_limits json_string_escaper_round_trips json_decimals_only_when_enabled)
 
+    secure_frontend_add_test_executable(secure_frontend_parity_table_tests tests/parity_table_test.cpp
+        secure_frontend_parity)
+    secure_frontend_add_cases(secure_frontend_parity_table_tests
+        every_upstream_key_has_exactly_one_disposition every_env_knob_is_dispositioned
+        typed_rows_name_a_destination)
+
     secure_frontend_add_test_executable(secure_frontend_typed_config_tests tests/typed_config_test.cpp
         secure_frontend_typed_config)
     secure_frontend_add_cases(secure_frontend_typed_config_tests
@@ -1179,6 +1250,21 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # SP4 §4.9 c, d: engine.model_id is name or name:tag; roots.tokenizer_pack is optional.
     secure_frontend_add_cases(secure_frontend_typed_config_tests typed_config_model_reference_accepts_name_tag
         describe_reports_unset_expert_keys LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    secure_frontend_add_cases(secure_frontend_typed_config_tests each_rejected_upstream_key_errors_at_load_naming_it
+        sampling_defaults_cover_the_pinned_validator
+        reasoning_rows_match_the_pinned_validator
+        lifecycle_rows_match_the_pin
+        vram_family_rows_match_the_pin
+        timeout_shape_rows_match_the_pin
+        timeout_shape_rows_at_each_edge
+        session_rows_match_the_pin
+        slot_save_path_is_a_bounded_private_path
+        codex_and_tool_call_rows_are_dispositioned
+        session_rows_at_each_edge
+        replicas_parallel_row_at_the_pin
+        multi_child_replicas_reject_with_the_ruling
+        vision_rows_match_the_pin
+        bounds_are_the_pins_at_each_edge)
     # SP4 Task 24b (spec §4.9 c/d; F-8): managed-model config errors, also through strata-secure-server --check.
     target_link_libraries(secure_frontend_typed_config_tests PRIVATE secure_frontend_launch secure_frontend_strata_cli)
     add_dependencies(secure_frontend_typed_config_tests strata-secure-server)
@@ -1242,8 +1328,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_test_executable(secure_frontend_chat_generation_plan_tests tests/chat_generation_plan_test.cpp
         secure_frontend_chat_generation_plan)
     secure_frontend_add_cases(secure_frontend_chat_generation_plan_tests
-        composes_schema_prompt_and_tokenizer defaults_output_limit_and_rejects_unsafe_inputs
-        rejects_missing_or_non_control_framing_tokens does_not_parse_arbitrary_special_literals)
+        composes_schema_prompt_and_tokenizer vision_marker_runs_join_the_prompt_ids defaults_output_limit_and_rejects_unsafe_inputs
+        rejects_missing_or_non_control_framing_tokens does_not_parse_arbitrary_special_literals
+        sampling_defaults_merge_under_request_overrides)
 
     secure_frontend_add_test_executable(secure_frontend_chat_execution_tests tests/chat_execution_test.cpp
         secure_frontend_chat_execution)
@@ -1255,6 +1342,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         health_is_failed_after_engine_closed_mid_generation health_is_failed_when_engine_closes_before_ready
         chat_applies_engine_context_rule_with_eight_token_margin chat_uses_adopted_ready_without_waiting
         resolve_max_tokens_follows_decisions_1_and_2
+        resolve_max_tokens_fit_false_refuses_like_the_pin
+        min_and_max_tokens_bounds_clamp_at_resolve engine_silence_s_sets_the_stall_watchdog
+        repeat_stop_tokens_ends_a_runaway_reply
         run_generation_reports_finish_usage_and_context run_generation_cancel_sends_stop_and_drains
         run_generation_timeout_stops_and_reports_timed_out run_generation_drain_failure_abandons
         run_generation_shutdown_uses_short_drain run_generation_maps_engine_errors
@@ -1270,11 +1360,12 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     add_executable(secure_frontend_fake_engine tests/fake_engine_main.cpp)
     target_compile_features(secure_frontend_fake_engine PRIVATE cxx_std_20)
     secure_frontend_set_warnings(secure_frontend_fake_engine)
-    set(SECURE_FRONTEND_SERVER_ARGS ARGS $<TARGET_FILE:strata-secure-server> $<TARGET_FILE:secure_frontend_fake_engine>)
+    set(SECURE_FRONTEND_SERVER_ARGS ARGS $<TARGET_FILE:strata-secure-server> $<TARGET_FILE:secure_frontend_fake_engine>
+        $<TARGET_FILE:strata>)  # SP5 M1 Task 13: ARGS[2] is the `strata` CLI (strata serve cases)
 
     secure_frontend_add_test_executable(secure_frontend_server_cli_tests tests/server_cli_test.cpp
         secure_frontend_typed_config)
-    add_dependencies(secure_frontend_server_cli_tests strata-secure-server secure_frontend_fake_engine)
+    add_dependencies(secure_frontend_server_cli_tests strata-secure-server secure_frontend_fake_engine strata)
     secure_frontend_add_cases(secure_frontend_server_cli_tests
         cli_config_file_and_flags_share_validator cli_flag_overrides_file_and_is_reported cli_check_prints_no_token
         cli_check_unreadable_token_is_not_reported_valid
@@ -1283,7 +1374,12 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
     secure_frontend_add_cases(secure_frontend_server_cli_tests cli_check_has_no_side_effects
         ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
-    target_link_libraries(secure_frontend_server_cli_tests PRIVATE secure_frontend_token_reader secure_frontend_server_cli)
+    # SP5 M1 Task 13: `strata serve` (foreground) — the CLI binary boots the same supervised path.
+    secure_frontend_add_cases(secure_frontend_server_cli_tests
+        serve_prints_ready_then_serves serve_runs_foreground_and_shuts_clean_on_sigterm
+        ${SECURE_FRONTEND_SERVER_ARGS} LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+    target_link_libraries(secure_frontend_server_cli_tests PRIVATE secure_frontend_token_reader secure_frontend_server_cli
+        secure_frontend_acquire)
     # Unit case (parse + validate in process, no child): unlabeled, so it also runs under wine.
     secure_frontend_add_cases(secure_frontend_server_cli_tests cli_sp2_flags_map_to_schema_keys TIMEOUT 120)
     # SP4 §4.9 d: pure argv parsing, so wine runs it too.
@@ -1390,6 +1486,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_acquire_tests list_and_show_report_installed_models
         list_all_reports_retired_orphaned_and_staging rm_refuses_loaded_model rm_retired_deletes_unheld_versions
         rm_partials_deletes_other_staging LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # SP5 M1 Task 14 (D-4): strata version and strata key show|rotate.
+    secure_frontend_add_cases(secure_frontend_acquire_tests version_names_frontend_and_engine_versions
+        key_show_requires_local_token_and_never_logs LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     if(SECURE_FRONTEND_TEST_HOOKS)
         secure_frontend_add_cases(secure_frontend_acquire_tests dl03_third_party_cannot_shadow_catalog
             pull_test_cacert_reaches_argv_in_hook_builds list_outdated_uses_catalog_sequence
@@ -1484,7 +1583,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_manifest_tests valid_qwen_manifest_accepted manifest_field_rules_matrix
         reserved_manifest_names_rejected model_name_index_json_rejected part_suffix_path_rejected stored_path_length_fits_p1
         file_and_directory_prefix_collision_rejected shard_set_must_be_complete_in_one_directory
-        launch_keys_follow_profile wildcard_redirect_hosts_validated total_size_above_budget_is_total_budget_exceeded
+        launch_keys_follow_profile manifest_accepts_mmproj_role_and_rejects_duplicates wildcard_redirect_hosts_validated total_size_above_budget_is_total_budget_exceeded
         engine_version_parsed_with_fourth_component)
     secure_frontend_add_cases(secure_frontend_manifest_tests raw_profile_rejected_in_release_build LABELS release-only)
     if(SECURE_FRONTEND_TEST_HOOKS)
@@ -1603,6 +1702,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_privacy_tests priv03_api_payloads_resembling_pull_trigger_nothing ${_sf_server_args}
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
     secure_frontend_add_cases(secure_frontend_privacy_tests doctor_proxy_hint_is_presence_only ARGS $<TARGET_FILE:strata>
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    secure_frontend_add_cases(secure_frontend_privacy_tests doctor_warns_on_strata_env_knob ARGS $<TARGET_FILE:strata>
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     secure_frontend_add_cases(secure_frontend_privacy_tests priv04_secure_server_does_not_link_acquisition
         ARGS ${CMAKE_CURRENT_BINARY_DIR}/strata-secure-server.link-set.txt ${CMAKE_CURRENT_BINARY_DIR}/strata.link-set.txt

@@ -11,6 +11,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <ctime>
+#include <cwchar>
 #include <ostream>
 #include <system_error>
 
@@ -20,6 +21,12 @@
 
 namespace secure_frontend {
 namespace {
+
+#if !defined(_WIN32)
+}  // namespace
+extern "C" char** environ;  // POSIX process environment (presence scan only)
+namespace {
+#endif
 
 using namespace strata_cli_detail;
 
@@ -320,10 +327,44 @@ bool variable_present(const char* name) {
 #endif
 }
 
+// SP5 M1 (spec §4): the process environment never carries engine knobs.
+// Presence of any STRATA_*/MAYA_* name is reported once by doctor; values are
+// never read, printed or stored.
+bool engine_env_knob_present() {
+  const auto hits_prefix = [](std::string_view name) {
+    return name.rfind("STRATA_", 0) == 0 || name.rfind("MAYA_", 0) == 0;
+  };
+#if defined(_WIN32)
+  const auto* block = GetEnvironmentStringsW();
+  if (block == nullptr) return false;
+  struct FreeBlock {
+    wchar_t* p;
+    ~FreeBlock() { FreeEnvironmentStringsW(p); }
+  } free_block{const_cast<wchar_t*>(block)};
+  for (const wchar_t* entry = block; *entry != L'\0'; entry += std::wcslen(entry) + 1U) {
+    std::string name;
+    for (const wchar_t* c = entry; *c != L'\0' && *c != L'='; ++c) {
+      name.push_back(*c < 128 ? static_cast<char>(*c) : '?');
+    }
+    if (hits_prefix(name)) return true;
+  }
+  return false;
+#else
+  for (char* const* entry = environ; entry != nullptr && *entry != nullptr; ++entry) {
+    const std::string_view text{*entry};
+    if (hits_prefix(text.substr(0, text.find('=')))) return true;
+  }
+  return false;
+#endif
+}
+
 int verb_doctor(const FrontendConfig& config, const std::filesystem::path& config_file, const std::span<const std::string> rest,
                 CliStreams& io, CliServices& services) {
   const auto args = parse_args(rest, {"--downloader"}, {});
   if (!args || !args->positional.empty()) return usage(io, "doctor [--downloader]");
+  if (engine_env_knob_present()) {
+    io.out << "doctor: ignoring STRATA_*/MAYA_* environment; configure server.json instead\n";
+  }
   const bool probe = args->flags.contains("--downloader");
   NetworkKit kit;
   if (auto failure = fill_kit(kit, config, config_file, services, probe)) return report(io, *failure);

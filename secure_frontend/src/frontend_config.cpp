@@ -8,6 +8,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <charconv>
+#include <limits>
 #include <set>
 #include <string>
 #include <utility>
@@ -21,7 +24,18 @@ namespace {
 namespace d = config_defaults;
 using T = ConfigValueType;
 
-constexpr std::array<ConfigKey, 43 + 7 + 3> kSchema{{
+// SP5 M1 Task 4: a decimal row with this default has no default — an absent
+// entry stays unset (never sent to the engine).
+constexpr double kUnsetDecimal = std::numeric_limits<double>::quiet_NaN();
+
+// Shortest round-trip decimal text (shared by issue messages and --check).
+std::string decimal_text(const double value) {
+  char buffer[32];
+  const auto [end, ec] = std::to_chars(buffer, buffer + sizeof(buffer), value);
+  return ec == std::errc{} ? std::string{buffer, end} : std::string{"?"};
+}
+
+constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9> kSchema{{
     {"schema_version", T::integer, false, 1, 1, d::kSchemaVersion, false, "", "",
      "Config format version; must be 1. Required in a config file."},
     {"listener.host", T::string, false, 0, 0, 0, false, "127.0.0.1", "--host",
@@ -122,6 +136,174 @@ constexpr std::array<ConfigKey, 43 + 7 + 3> kSchema{{
     {"pull.connect_timeout_s", T::integer, false, 1, 300, 30, false, "", "", "TCP/TLS connect timeout per request."},
     {"logging.requests", T::boolean, false, 0, 0, 0, false, "", "",
      "One line per request to stderr: route, status, code, time, bytes, loopback or remote; never paths, headers, tokens or text."},
+    // SP5 M1 Task 4 (parity row `sampling`): bounds copied from the pin —
+    // clean_shared_defaults (serve/server.py:7331-7367) and the wire conditions
+    // (serve/server.py:1360-1394). Unset rows are never sent. The 2.0 caps,
+    // the 8192 window cap and the 32-bit seed cap are added security bounds (C-1).
+    {"defaults.sampling.temperature", T::decimal, false, 0, 0, 0, false, "", "",
+     "Request default temperature (pin: 0..2); unset keeps the engine default.", 0.0, 2.0, kUnsetDecimal, false},
+    {"defaults.sampling.top_p", T::decimal, false, 0, 0, 0, false, "", "",
+     "Request default top_p (pin: 0 < top_p <= 1); unset keeps the engine default.", 0.0, 1.0, kUnsetDecimal, true},
+    {"defaults.sampling.top_k", T::integer, false, 1, 64, -1, false, "", "",
+     "Request default top_k candidates (pin: an integer 1..64); unset keeps the engine default.", 0.0, 0.0, kUnsetDecimal, false},
+    {"defaults.sampling.min_p", T::decimal, false, 0, 0, 0, false, "", "",
+     "Request default min_p (pin wire: only 0 < min_p <= 1 is sent; 0 stays off).", 0.0, 1.0, kUnsetDecimal, false},
+    {"defaults.sampling.presence_penalty", T::decimal, false, 0, 0, 0, false, "", "",
+     "Request default presence penalty (0 off; cap 2 added, C-1).", 0.0, 2.0, kUnsetDecimal, false},
+    {"defaults.sampling.repetition_penalty", T::decimal, false, 0, 0, 0, false, "", "",
+     "Request default repetition penalty (pin wire: only != 1.0 is sent; cap 2 added, C-1).", 0.0, 2.0, kUnsetDecimal, true},
+    {"defaults.sampling.frequency_penalty", T::decimal, false, 0, 0, 0, false, "", "",
+     "Request default frequency penalty (0 off; cap 2 added, C-1).", 0.0, 2.0, kUnsetDecimal, false},
+    {"defaults.sampling.penalty_last_n", T::integer, false, 0, 8192, -1, false, "", "",
+     "Penalty window; unset means the pin default of 64 when any penalty is on (cap added, C-1).", 0.0, 0.0, kUnsetDecimal, false},
+    {"defaults.sampling.seed", T::integer, false, 1, 4294967295, -1, false, "", "",
+     "Request default sampling seed (pin: a positive integer; 32-bit cap added, C-1).", 0.0, 0.0, kUnsetDecimal, false},
+    // SP5 M1 Task 5 (parity rows reasoning_* / fit_max_tokens): kinds and defaults copied from the
+    // pin — effort clean_shared_defaults serve/server.py:7341-7343; budget_tokens :8120-8127 and
+    // reasoning_budget :3794-3807 (a whole number, 0 = no budget; the 0..4294967295 bounds are ADDED
+    // security bounds, C-1); close_retry :8015; loop_recovery :8129-8136 (the pin also takes bools,
+    // the typed row names the three words); effort_position :2841-2843; anthropic_thinking
+    // :8102-8104; fit_max_tokens :3485-3488 read at :7996 (false answers 400 over the room, :4536).
+    {"reasoning.effort", T::string, false, 0, 0, 0, false, "", "",
+     "Thinking level for requests that name none: none, low, medium or high (pin levels); unset names none."},
+    {"reasoning.budget_tokens", T::integer, false, 0, 4294967295, 0, false, "", "",
+     "Default thinking budget in tokens (0 = none, the pin default); bounds added, C-1."},
+    {"reasoning.close_retry", T::boolean, false, 0, 0, 0, false, "", "",
+     "Close an unfinished thinking block once when the reply ends inside it (pin opt-in, off)."},
+    {"reasoning.loop_recovery", T::string, false, 0, 0, 0, false, "off", "",
+     "A reasoning loop ends the reply (off, the pin default), stops (stop) or continues once (recover)."},
+    {"reasoning.effort_position", T::string, false, 0, 0, 0, false, "start", "",
+     "Where a non-default effort sits in the prompt: start (the pin default) or end; end adds the engine's --tail-role-token."},
+    {"reasoning.anthropic_thinking", T::string, false, 0, 0, 0, false, "model", "",
+     "Thinking default for /v1/messages-shaped clients: model (the pin default) or on_request."},
+    {"engine.fit_max_tokens", T::boolean, false, 0, 0, 0, true, "", "",
+     "Fit an over-room max_tokens to the context room (true, the pin default); false answers the §7.2 400 instead."},
+    // SP5 M1 Task 6 (parity rows lazy_load / idle_unload_s / mtp): runconfig.py:38 "Start
+    // without loading the model; the first request loads it (text only)"; :35 "0 or empty:
+    // never" (whole seconds; the 86400 cap is ADDED, C-1); :36 + strata_control/
+    // draft_layer.py is_off: the draft layer is on unless an explicit false.
+    {"engine.lazy_load", T::boolean, false, 0, 0, 0, false, "", "",
+     "Start with the engine unloaded; the first request loads it (the pin's lazy_load, text only)."},
+    {"engine.idle_unload_s", T::integer, false, 0, 86400, 0, false, "", "",
+     "Seconds without a request before the engine is unloaded (0: never, the pin default); cap added, C-1."},
+    {"engine.mtp", T::boolean, false, 0, 0, 0, true, "", "",
+     "Draft layer (MTP): on unless explicitly false; false drops --mtp/--spec-min-p/--batch-mtp at every start."},
+    // SP5 M1 Task 7 (the VRAM / GPU / elastic family). Kinds and defaults verbatim from the
+    // pin; caps and closed vocabularies added (C-1). vram_reserve_mib: runconfig.py:42-43
+    // renders --vram-reserve-mib (engine default 700, unset composes nothing). min_free_vram_mib:
+    // int-or 0 svc-side gate (serve/server.py:8083-8084). vram_elastic/vram_segment_mib:
+    // #533 (:2943-2948, engine segment default 512). elastic/elastic_mib/elastic_idle_s:
+    // the vision turn (server.py:2548-2552, defaults 2048 MiB / 120 s; Task 11 consumes them).
+    // gpu_order: only "as_given" is read (:3105-3112). gpu_policy: images.py POLICIES
+    // (:45, :173-175). layer_split: "auto" or rising first-layer numbers (:2870-2894).
+    // split_skip_if_fits: :2940-2942. hip_ordinal: :3016-3030. uma: images.py:23/:334.
+    {"engine.vram_reserve_mib", T::integer, false, 0, 1048576, -1, false, "", "",
+     "VRAM MiB the engine leaves free (renders --vram-reserve-mib; unset: the engine's own 700)."},
+    {"engine.min_free_vram_mib", T::integer, false, 0, 1048576, 0, false, "", "",
+     "Refuse to load when free VRAM is below this (0: never; the driver check runs on the owner's GPU box)."},
+    {"engine.vram_elastic", T::boolean, false, 0, 0, 0, false, "", "",
+     "Segment the expert cache so VRAM can be given back and taken back (renders --vram-elastic, #533)."},
+    {"engine.vram_segment_mib", T::integer, false, 1, 1048576, -1, false, "", "",
+     "Segment size for vram_elastic (renders --vram-segment-mib; unset: the engine's own 512)."},
+    {"engine.elastic", T::boolean, false, 0, 0, 0, false, "", "",
+     "The image encoder starts with the first picture and stops when idle (needs vram_elastic; the vision turn)."},
+    {"engine.elastic_idle_s", T::integer, false, 1, 86400, 120, false, "", "",
+     "Seconds without a picture before the elastic encoder stops (pin default 120); whole seconds, cap added."},
+    {"engine.elastic_mib", T::integer, false, 1, 1048576, 2048, false, "", "",
+     "VRAM MiB the expert cache keeps free while the encoder runs (pin default 2048)."},
+    {"engine.gpu_order", T::string, false, 0, 0, 0, false, "auto", "",
+     "GPU order: auto (reorder by card speed, where the driver can tell) or as_given (keep the configured order)."},
+    {"engine.gpu_policy", T::string, false, 0, 0, 0, false, "auto", "",
+     "GPU turn for a picture: auto, keep, shrink or unload the engine's VRAM first (the POLICIES set)."},
+    {"engine.layer_split", T::string, false, 0, 0, 0, false, "auto", "",
+     "First layer of each later GPU (rising numbers from 2), or auto; renders --layer-split with several GPUs."},
+    {"engine.split_skip_if_fits", T::boolean, false, 0, 0, 0, false, "", "",
+     "Let an auto split run on the first card alone when it holds every expert and the KV (renders --split-skip-if-fits)."},
+    {"engine.hip_ordinal", T::integer, false, 0, 127, -1, false, "", "",
+     "The HIP number of the discrete card (setup-recorded); wins over one (or zero) configured GPUs."},
+    {"engine.uma", T::boolean, false, 0, 0, 0, false, "", "",
+     "An APU: engine and image turn share the RAM either way, so a picture never needs the engine moved."},
+    // SP5 M1 Task 8 (the timeout / queue / request-shape family). engine_silence_s:
+    // runconfig.py:39 "num>=0 ... default 300 s, 0 = wait" (cap added, C-1); the watchdog
+    // is serve/server.py:274-276/:2861-2868. answer_room: :3490/:8014 `is not False`
+    // (default true). repeat_stop_tokens: :8115-8118 whole number >= 0, default
+    // REPEAT_STOP_TOKENS=256 (:197; 0 = off; cap added, C-1). max/min tokens: the pin's
+    // keys bound the vision encoder (:2564-2567); the typed rows re-scope to request
+    // output bounds (added, C-1; Ruling T8-e). model.aliases: runconfig.py:34 +
+    // set_aliases :3764-3777.
+    {"engine.silence_s", T::integer, false, 0, 86400, 300, false, "", "",
+     "End a request when the engine says nothing valid for this long (pin default 300 s; 0: wait, still bounded by the total generation timeout)."},
+    {"engine.answer_room", T::boolean, false, 0, 0, 0, true, "", "",
+     "Close a long un-budgeted thinking reply early enough to leave the answer room (true, the pin default)."},
+    {"engine.repeat_stop_tokens", T::integer, false, 0, 65536, 256, false, "", "",
+     "One token this many times in a row ends a reply as length (pin default 256; 0: off). Cap added, C-1."},
+    {"engine.max_tokens", T::integer, false, 1, 1048576, -1, false, "", "",
+     "Ceiling on a request's output budget (unset: the completion cap; an added frontend bound, C-1)."},
+    {"engine.min_tokens", T::integer, false, 1, 1048576, -1, false, "", "",
+     "Floor on a request's output budget (unset: none; an added frontend bound, C-1)."},
+    {"model.aliases", T::string_array, false, 0, 0, 0, false, "", "",
+     "Other model names the server lists and answers to (exact match only, like the pin's set_aliases)."},
+    // SP5 M1 Task 9 (the session family). slot_save_path: the pin's /slots file directory
+    // (:8092-8100 + slot_save_dir :3469-3481) — typed with our absolute rule; the route
+    // itself is not in our spec (Rulings T9-a/b). expert_profile_save / -every: the pin
+    // appends both engine flags when the path is set (:3000-3005; docstring default 10
+    // minutes, 0 = at QUIT only, :2996; added cap C-1). The four booleans are the pin's
+    // opt-in falses (:8043-:8044 `is True`, :8106/:8110 strict bool) whose pin-side
+    // consumers (OutputParser recovery, frontend._env_to_user, the Codex routes) we do not
+    // serve (config_only). keep_files: the pin's ImageService scratch retention
+    // (images.py:188 `or 64`); typed with added bounds, D-9 keeps image generation out.
+    {"session.slot_save_path", T::string, false, 0, 0, 0, false, "", "",
+     "Directory for engine slot session save/restore files (absolute; the /slots route is not served today)."},
+    {"session.expert_profile_save", T::string, false, 0, 0, 0, false, "", "",
+     "Where the engine re-saves its learned expert profile (absolute path; --expert-profile-save)."},
+    {"session.expert_profile_save_every", T::integer, false, 0, 1440, 10, false, "", "",
+     "Re-save the learned expert profile every N minutes (pin default 10; 0: at engine exit only). Cap added, C-1."},
+    {"session.tool_call_recovery", T::boolean, false, 0, 0, 0, false, "", "",
+     "Attempt to recover malformed tool-call output (the pin's opt-in; stored for parity today)."},
+    {"session.env_to_user", T::boolean, false, 0, 0, 0, false, "", "",
+     "Pass configured environment hints to the user prompt path (the pin's opt-in; stored for parity today)."},
+    {"session.codex_thread_titles", T::boolean, false, 0, 0, 0, false, "", "",
+     "Codex thread titles (#923; the pin's opt-in; the route is not served here)."},
+    {"session.codex_compaction_cache", T::boolean, false, 0, 0, 0, false, "", "",
+     "Codex compaction cache (#924; the pin's opt-in; the route is not served here)."},
+    {"session.keep_files", T::integer, false, 1, 1024, 64, false, "", "",
+     "How many image-scratch files to retain (pin default 64; bounds added, C-1; the consumer is out per D-9)."},
+    // SP5 M1 Task 10 (the C-4 narrowing): engine-internal parallelism only — the pin renders
+    // this as --batch N (serve/server.py:2975); 2..8 is the engine's batch window
+    // (PARALLEL_MAX :2954) and larger values ride on for the engine to adjust (:2969-2974).
+    // The cap 1024 is added (C-1), taken from the pin's own --parallel bound (:7845).
+    {"replicas.parallel", T::integer, false, 1, 1024, 1, false, "", "",
+     "Decode up to N requests together inside the one engine (1: one at a time; the N-child scheduler is not implemented)."},
+    // SP5 M1 Task 11 (D-9 vision split): image INPUT is typed and plumbed, generation stays
+    // out. Defaults at the pin — max_side/max_n carry the images-block values (images.py:102-
+    // 103 `or 2048`/`or 4`; caps added, C-1); need_mib overrides the pin's VRAM arithmetic
+    // (images.py:156; the driver gate itself is owner-box, cf. T7-c); no_flash_attn rides the
+    // spec §5.1 family (not read by this pin — the kit proves the child flag); resident is
+    // the pin's eager encoder (server.py:2511/:2552; false: the first image wakes it);
+    // threads 0 = the pin's unset (truthy -> --threads, server.py:2562).
+    {"vision.enabled", T::boolean, false, 0, 0, 0, false, "", "",
+     "Read images: a supervised strata-vision child encodes image_url parts for the engine."},
+    {"vision.max_side", T::integer, false, 1, 16384, 2048, false, "", "",
+     "Largest image side accepted before decoding (pin default 2048; cap added, C-1)."},
+    {"vision.max_n", T::integer, false, 1, 64, 4, false, "", "",
+     "Most images one request may carry (pin default 4; cap added, C-1)."},
+    {"vision.need_mib", T::integer, false, 1, 1048576, -1, false, "", "",
+     "Override the free-VRAM figure the encoder is checked against (unset: computed; bounds added, C-1)."},
+    {"vision.no_flash_attn", T::boolean, false, 0, 0, 0, false, "", "",
+     "Run the encoder without flash attention (added, spec §5.1; the encoder's --no-flash-attn)."},
+    {"vision.resident", T::boolean, false, 0, 0, 0, true, "", "",
+     "Keep the encoder running from boot (the pin's eager resident encoder; false: the first image starts it)."},
+    {"vision.threads", T::integer, false, 0, 256, 0, false, "", "",
+     "Encoder CPU threads (0: the tool's own default; cap added, C-1)."},
+    // The STRATA_VISION_READY_S counterpart the Task-2 parity row promises (its gate
+    // default 300 s, server.py:327; 0 = wait for ever, :291 — the shape engine.silence_s
+    // took in Task 8; bound added, C-1).
+    {"vision.ready_timeout_s", T::integer, false, 0, 86400, 300, false, "", "",
+     "Seconds the encoder gets to print READY (0: wait for ever, as at the pin)."},
+    // The STRATA_VISION_ENCODE_S counterpart promised by the Task-2 parity row
+    // (gate default 300 s, server.py:328; 0 = wait for ever, :291; bound added, C-1).
+    {"vision.encode_timeout_s", T::integer, false, 0, 86400, 300, false, "", "",
+     "Seconds one image encoding may take (0: wait for ever, as at the pin)."},
 }};
 
 void add(ConfigErrors& errors, std::string key, const ConfigIssueCode code, std::string reason) {
@@ -172,6 +354,43 @@ class DraftReader final {
     const auto* value = std::get_if<std::vector<std::string>>(&entry->value);
     if (value == nullptr) return wrong_type(key), std::vector<std::string>{};
     return *value;
+  }
+  // SP5 M1 Task 4: an optional integer row (default_integer outside the range
+  // = unset); range-checked when present.
+  std::optional<std::int64_t> optional_integer(const std::string_view path) {
+    const ConfigKey& key = *find_config_key(path);
+    const auto* entry = lookup(key);
+    if (entry == nullptr) return std::nullopt;
+    const auto* value = std::get_if<std::int64_t>(&entry->value);
+    if (value == nullptr) return wrong_type(key), std::nullopt;
+    if (*value < key.minimum || *value > key.maximum) {
+      add(errors_, std::string{path}, ConfigIssueCode::out_of_range,
+          "must be between " + std::to_string(key.minimum) + " and " + std::to_string(key.maximum));
+      return std::nullopt;
+    }
+    return *value;
+  }
+  // SP5 M1 Task 4: a decimal row; integers are accepted (JSON "1" is a valid
+  // number); the NaN default means "unset".
+  std::optional<double> decimal(const std::string_view path) {
+    const ConfigKey& key = *find_config_key(path);
+    const auto* entry = lookup(key);
+    if (entry == nullptr) {
+      if (std::isnan(key.default_decimal)) return std::nullopt;
+      return key.default_decimal;
+    }
+    double value = 0.0;
+    if (const auto* i = std::get_if<std::int64_t>(&entry->value)) value = static_cast<double>(*i);
+    else if (const auto* dp = std::get_if<double>(&entry->value)) value = *dp;
+    else return wrong_type(key), std::nullopt;
+    if (value < key.minimum_decimal || value > key.maximum_decimal ||
+        (key.minimum_exclusive && value == key.minimum_decimal)) {
+      add(errors_, std::string{path}, ConfigIssueCode::out_of_range,
+          (key.minimum_exclusive ? "must be greater than " : "must be at least ") + decimal_text(key.minimum_decimal) +
+          (key.minimum_exclusive ? " and at most " : " and at most ") + decimal_text(key.maximum_decimal));
+      return std::nullopt;
+    }
+    return value;
   }
   bool present(const std::string_view path) const { return draft_.entries.find(path) != draft_.entries.end(); }
 
@@ -276,11 +495,37 @@ const ConfigKey* find_config_key(const std::string_view path) noexcept {
 }
 
 namespace {
-constexpr std::array<ConfigKeyExtension, 4> kSchemaExtensions{{
+
+// SP5 M1 Task 8 (parity row aliases): the entry grammar is SP1's one model-ID grammar
+// (validate_model_id) with an added 64-character cap (C-1); aliases join /v1/models and
+// must stay inside the JSON model-field bounds. set_aliases (:3764-3777) drops empties
+// and duplicates at use; the typed row rejects an empty entry outright.
+bool is_valid_model_alias(const std::string_view value) noexcept {
+  return !value.empty() && value.size() <= 64U && std::holds_alternative<std::string>(validate_model_id(value));
+}
+
+// SP5 M1 Task 9 (Ruling T9-b): the pin's slot_save_dir shape — non-empty, no control
+// characters (serve/server.py:3472-3475) — plus our added absolute rule (C-1, like
+// engine.lib_dirs): there is no config-cwd to resolve a relative path against, and
+// validation never touches the filesystem.
+bool is_absolute_store_path(const std::string& text) noexcept {
+  return !text.empty() && text.find('\0') == std::string::npos &&
+         std::none_of(text.begin(), text.end(), [](const char c) {
+           return static_cast<unsigned char>(c) < 0x20U || c == 0x7f;
+         }) &&
+         path_from_utf8(text).is_absolute();
+}
+
+constexpr std::array<ConfigKeyExtension, 5> kSchemaExtensions{{
     {"listener.cors_origins", static_cast<std::size_t>(config_defaults::kMaxListEntries), &is_valid_cors_origin,
      "each entry must be http:// or https://, a lower-case host, an optional port and no path; * and null are not allowed", ""},
     {"listener.host_aliases", static_cast<std::size_t>(config_defaults::kMaxListEntries), &is_valid_host_alias,
      "each entry must be a host or host:port", ""},
+    // SP5 M1 Task 8 (parity row aliases): the entry grammar is SP1's one model-ID grammar
+    // (validate_model_id) with an added 64-character cap (C-1). set_aliases (:3764-3777)
+    // strips and drops empties and duplicates at use; the typed row rejects outright.
+    {"model.aliases", static_cast<std::size_t>(config_defaults::kMaxListEntries), &is_valid_model_alias,
+     "each entry must be a model name: ASCII letters, digits, dot, underscore or hyphen, at most 64 characters", ""},
     {"limits.concurrency.max_queued_generations", 0U, nullptr, "", "derived: min(4, max(0, workers-2))"},
     {"limits.concurrency.max_connections_per_remote_address", 0U, nullptr, "", "derived: min(4, workers)"},
 }};
@@ -341,6 +586,7 @@ std::string_view type_reason(const ConfigValueType type) noexcept {
     case ConfigValueType::integer: return "must be an integer";
     case ConfigValueType::string: return "must be a string";
     case ConfigValueType::string_array: return "must be an array of strings";
+    case ConfigValueType::decimal: return "must be a number";
   }
   return "has the wrong type";
 }
@@ -358,7 +604,9 @@ std::string render_config_schema_markdown() {
         break;
       case ConfigValueType::integer:
         type = "integer";
-        fallback = "`" + std::to_string(key.default_integer) + "`";
+        fallback = (key.default_integer < key.minimum || key.default_integer > key.maximum)
+                       ? "unset"
+                       : "`" + std::to_string(key.default_integer) + "`";
         if (const auto* ext = find_config_key_extension(key.path); ext != nullptr && !ext->derived_default.empty()) {
           fallback = "`" + std::string{ext->derived_default} + "`";
         }
@@ -373,6 +621,12 @@ std::string render_config_schema_markdown() {
       case ConfigValueType::string_array:
         type = "string array";
         fallback = "`[]`";
+        break;
+      case ConfigValueType::decimal:
+        type = "number";
+        fallback = std::isnan(key.default_decimal) ? "unset" : "`" + decimal_text(key.default_decimal) + "`";
+        range = (key.minimum_exclusive ? ">" : "") + decimal_text(key.minimum_decimal) + "-" +
+                decimal_text(key.maximum_decimal);
         break;
     }
     const std::string option = key.flag.empty() ? "-" : "`" + std::string{key.flag} + "`";
@@ -442,6 +696,46 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   const auto response_deadline_ms = read.integer("limits.http.response_write_deadline_ms");
   const auto keepalive_ms = read.integer("limits.http.stream_keepalive_ms");
   const bool log_requests = read.boolean("logging.requests");
+  // SP5 M1 Task 4: defaults.sampling.* (unset rows stay unset).
+  SamplingDefaults sampling_defaults{
+      read.decimal("defaults.sampling.temperature"), read.decimal("defaults.sampling.top_p"),
+      read.decimal("defaults.sampling.min_p"), read.decimal("defaults.sampling.presence_penalty"),
+      read.decimal("defaults.sampling.repetition_penalty"), read.decimal("defaults.sampling.frequency_penalty"),
+      read.optional_integer("defaults.sampling.top_k"), read.optional_integer("defaults.sampling.penalty_last_n"),
+      read.optional_integer("defaults.sampling.seed")};
+  // SP5 M1 Task 5: reasoning.* (pin vocabularies; the string rows carry the pin's defaults).
+  ReasoningConfig reasoning;
+  if (const auto text = read.string("reasoning.effort")) {
+    if (*text == "none") reasoning.effort = ReasoningEffort::none;
+    else if (*text == "low") reasoning.effort = ReasoningEffort::low;
+    else if (*text == "medium") reasoning.effort = ReasoningEffort::medium;
+    else if (*text == "high") reasoning.effort = ReasoningEffort::high;
+    else add(errors, "reasoning.effort", ConfigIssueCode::invalid_value, "must be none, low, medium or high");
+  }
+  reasoning.budget_tokens = read.integer("reasoning.budget_tokens");
+  reasoning.close_retry = read.boolean("reasoning.close_retry");
+  if (const auto text = read.string("reasoning.loop_recovery")) {
+    if (*text == "off") reasoning.loop_recovery = LoopRecovery::off;
+    else if (*text == "stop") reasoning.loop_recovery = LoopRecovery::stop;
+    else if (*text == "recover") reasoning.loop_recovery = LoopRecovery::recover;
+    else add(errors, "reasoning.loop_recovery", ConfigIssueCode::invalid_value, "must be off, stop or recover");
+  }
+  if (const auto text = read.string("reasoning.effort_position")) {
+    if (*text == "start") reasoning.effort_position = EffortPosition::start;
+    else if (*text == "end") reasoning.effort_position = EffortPosition::end;
+    else add(errors, "reasoning.effort_position", ConfigIssueCode::invalid_value, "must be start or end");
+  }
+  if (const auto text = read.string("reasoning.anthropic_thinking")) {
+    if (*text == "model") reasoning.anthropic_thinking = AnthropicThinking::model;
+    else if (*text == "on_request") reasoning.anthropic_thinking = AnthropicThinking::on_request;
+    else add(errors, "reasoning.anthropic_thinking", ConfigIssueCode::invalid_value, "must be model or on_request");
+  }
+  const bool fit_max_tokens = read.boolean("engine.fit_max_tokens");
+  // SP5 M1 Task 6 (parity rows lazy_load / idle_unload_s / mtp, runconfig.py:35-38):
+  // lifecycle family reads; mtp is on unless an explicit false (draft_layer.py is_off).
+  const bool lazy_load = read.boolean("engine.lazy_load");
+  const std::int64_t idle_unload_s = read.integer("engine.idle_unload_s");
+  const bool mtp = read.boolean("engine.mtp");
   const auto max_body = read.integer("limits.chat.max_body_bytes");
   const auto max_messages = read.integer("limits.chat.max_messages");
   const auto max_message = read.integer("limits.chat.max_message_bytes");
@@ -592,6 +886,113 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
     }
   }
   const bool allow_new_privileges = read.boolean("engine.allow_new_privileges");
+  // SP5 M1 Task 7: the VRAM / GPU / elastic family. Kinds/defaults verbatim from the pin
+  // (runconfig.py:42-43; serve/server.py:2548-2552, 2870-2894, 2947, 8083; images.py:45);
+  // the layer_split grammar is the pin's own (layer_split_value, :2875-2892: blank or
+  // "auto" is the default; otherwise rising integers from >=2, one per GPU after the
+  // first — the count rule applies only with several GPUs, as at :2888).
+  const auto vram_reserve_mib = read.optional_integer("engine.vram_reserve_mib");
+  const std::int64_t min_free_vram = read.integer("engine.min_free_vram_mib");
+  const bool vram_elastic = read.boolean("engine.vram_elastic");
+  const auto vram_segment_mib = read.optional_integer("engine.vram_segment_mib");
+  const bool elastic = read.boolean("engine.elastic");
+  const std::int64_t elastic_idle_s = read.integer("engine.elastic_idle_s");
+  const std::int64_t elastic_mib = read.integer("engine.elastic_mib");
+  GpuOrder gpu_order{GpuOrder::auto_order};
+  if (const auto text = read.string("engine.gpu_order")) {
+    if (*text == "auto") gpu_order = GpuOrder::auto_order;
+    else if (*text == "as_given") gpu_order = GpuOrder::as_given;
+    else add(errors, "engine.gpu_order", ConfigIssueCode::invalid_value, "must be auto or as_given");
+  }
+  GpuTurnPolicy gpu_policy{GpuTurnPolicy::auto_policy};
+  if (const auto text = read.string("engine.gpu_policy")) {
+    if (*text == "auto") gpu_policy = GpuTurnPolicy::auto_policy;
+    else if (*text == "keep") gpu_policy = GpuTurnPolicy::keep;
+    else if (*text == "shrink") gpu_policy = GpuTurnPolicy::shrink;
+    else if (*text == "unload") gpu_policy = GpuTurnPolicy::unload;
+    else add(errors, "engine.gpu_policy", ConfigIssueCode::invalid_value, "must be auto, keep, shrink or unload");
+  }
+  const std::string layer_split = read.string("engine.layer_split").value_or("");
+  if (auto trimmed = layer_split; !(trimmed.empty() || trimmed == "auto")) {
+    std::vector<std::int64_t> layers;
+    bool grammar = true;
+    std::size_t start = 0;
+    while (start <= trimmed.size()) {
+      const auto comma = trimmed.find(',', start);
+      const auto token = trimmed.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+      std::size_t begin = token.find_first_not_of(" \t");
+      std::size_t end = token.find_last_not_of(" \t");
+      if (begin == std::string::npos) {
+        grammar = false;
+        break;
+      }
+      std::int64_t value = 0;
+      const auto [ptr, ec] = std::from_chars(token.data() + begin, token.data() + end + 1, value);
+      if (ec != std::errc{} || ptr != token.data() + end + 1) {
+        grammar = false;
+        break;
+      }
+      layers.push_back(value);
+      if (comma == std::string::npos) break;
+      start = comma + 1;
+    }
+    bool rising = grammar && !layers.empty() && layers.front() >= 2;
+    for (std::size_t i = 1; i < layers.size(); ++i) {
+      if (layers[i] <= layers[i - 1]) rising = false;
+    }
+    const bool count_ok = gpus.size() <= 1 || layers.size() == gpus.size() - 1;
+    if (!grammar || !rising || !count_ok) {
+      add(errors, "engine.layer_split", ConfigIssueCode::invalid_value,
+          "must be auto, or the first layer of each later GPU: rising numbers from 2, one per GPU after the first (for example \"24,36,42\" for 4 GPUs), not a count per card");
+    }
+  }
+  const bool split_skip_if_fits = read.boolean("engine.split_skip_if_fits");
+  const auto hip_ordinal = read.optional_integer("engine.hip_ordinal");
+  const bool uma = read.boolean("engine.uma");
+  // SP5 M1 Task 8: the timeout / request-shape family. silence 0 = wait (the pin's),
+  // repeat 0 = off (:8115); the token bounds stay unset until configured; aliases keep
+  // set_aliases' grammar (dedup and dropping the model's own name happen at wiring).
+  const std::int64_t silence_s = read.integer("engine.silence_s");
+  const bool answer_room = read.boolean("engine.answer_room");
+  const std::int64_t repeat_stop_tokens = read.integer("engine.repeat_stop_tokens");
+  const auto max_output = read.optional_integer("engine.max_tokens");
+  const auto min_output = read.optional_integer("engine.min_tokens");
+  const std::vector<std::string> aliases = read_bounded_strings(read, errors, "model.aliases");
+  // SP5 M1 Task 9 (the session family; serve/server.py:2999-3005, :8043-8110, :8092-8100 +
+  // slot_save_dir :3469-3481, images.py:188). Path rows keep the pin's shape (non-empty, no
+  // control characters) and ride our added absolute rule (T9-b, engine.lib_dirs precedent):
+  // there is no config-cwd to resolve a relative path against, and load never touches the
+  // filesystem (the pin's makedirs 0700 is a runtime act).
+  SessionPolicy session;
+  const auto slot_text = read.string("session.slot_save_path");
+  if (slot_text.has_value()) {
+    if (is_absolute_store_path(*slot_text)) session.slot_save_path = *slot_text;
+    else add(errors, "session.slot_save_path", ConfigIssueCode::invalid_value, "must be an absolute path without control characters");
+  }
+  const auto profile_text = read.string("session.expert_profile_save");
+  if (profile_text.has_value()) {
+    if (is_absolute_store_path(*profile_text)) session.expert_profile_save = *profile_text;
+    else add(errors, "session.expert_profile_save", ConfigIssueCode::invalid_value, "must be an absolute path without control characters");
+  }
+  session.expert_profile_save_every = read.integer("session.expert_profile_save_every");
+  session.tool_call_recovery = read.boolean("session.tool_call_recovery");
+  session.env_to_user = read.boolean("session.env_to_user");
+  session.codex_thread_titles = read.boolean("session.codex_thread_titles");
+  session.codex_compaction_cache = read.boolean("session.codex_compaction_cache");
+  session.keep_files = read.integer("session.keep_files");
+  // SP5 M1 Task 10 (the C-4 narrowing): engine-internal parallelism only.
+  const ReplicasConfig replicas{read.integer("replicas.parallel")};
+  // SP5 M1 Task 11 (D-9 vision split): image input plumbing; generation stays out.
+  VisionConfig vision;
+  vision.enabled = read.boolean("vision.enabled");
+  vision.max_side = read.integer("vision.max_side");
+  vision.max_n = read.integer("vision.max_n");
+  vision.need_mib = read.optional_integer("vision.need_mib");
+  vision.no_flash_attn = read.boolean("vision.no_flash_attn");
+  vision.resident = read.boolean("vision.resident");
+  vision.threads = read.integer("vision.threads");
+  vision.ready_timeout_s = read.integer("vision.ready_timeout_s");
+  vision.encode_timeout_s = read.integer("vision.encode_timeout_s");
 
   // pull (SP4 §3.9)
   std::filesystem::path downloader = default_downloader_path();
@@ -633,13 +1034,46 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
       ConcurrencyLimits{u32(concurrent), u32(queued), std::chrono::milliseconds(queue_timeout_ms), u32(remote_cap), !queue_set,
                         !cap_set}};
   Roots roots{*models, tokenizer, secret, logs, cache, state};
-  EngineLaunch engine{profile, *executable, std::move(*model_id), args, std::move(lib_dirs), std::move(gpus), allow_new_privileges};
-  return ValidatedConfig{std::shared_ptr<const FrontendConfig>(
+  EngineLaunch engine{profile,
+                      *executable,
+                      std::move(*model_id),
+                      args,
+                      std::move(lib_dirs),
+                      std::move(gpus),
+                      allow_new_privileges,
+                      fit_max_tokens,
+                      lazy_load,
+                      std::chrono::seconds(idle_unload_s),
+                      mtp,
+                      vram_reserve_mib,
+                      min_free_vram,
+                      vram_elastic,
+                      vram_segment_mib,
+                      elastic,
+                      std::chrono::seconds(elastic_idle_s),
+                      elastic_mib,
+                      gpu_order,
+                      gpu_policy,
+                      layer_split.empty() ? std::string{"auto"} : layer_split,
+                      split_skip_if_fits,
+                      hip_ordinal,
+                      uma,
+                      std::chrono::seconds(silence_s),
+                      answer_room,
+                      static_cast<std::size_t>(repeat_stop_tokens),
+                      max_output.has_value() ? std::optional<std::size_t>{static_cast<std::size_t>(*max_output)}
+                                             : std::optional<std::size_t>{},
+                      min_output.has_value() ? std::optional<std::size_t>{static_cast<std::size_t>(*min_output)}
+                                             : std::optional<std::size_t>{},
+                      std::move(aliases)};
+  auto config_ptr = std::shared_ptr<const FrontendConfig>(
       new FrontendConfig(std::move(listener), limits, std::move(roots), std::move(*token), std::move(engine),
                          PullSettings{std::move(downloader), std::move(proxy), allow_private,
                                       static_cast<std::uint64_t>(max_total), std::chrono::seconds(max_duration),
                                       std::chrono::seconds(stall), std::chrono::seconds(connect)},
-                         LoggingConfig{log_requests}))};
+                         LoggingConfig{log_requests}, std::move(sampling_defaults), reasoning, std::move(session),
+                         replicas, vision));
+  return ValidatedConfig{std::move(config_ptr)};
 }
 
 std::string describe(const FrontendConfig& c) {
@@ -724,6 +1158,89 @@ std::string describe(const FrontendConfig& c) {
   line("pull.stall_timeout_s", std::to_string(c.pull.stall_timeout.count()));
   line("pull.connect_timeout_s", std::to_string(c.pull.connect_timeout.count()));
   line("logging.requests", c.logging.requests ? "true" : "false");
+  // SP5 M1 Task 4: the defaults.sampling.* rows; an unset row stays unset and
+  // is never sent (the engine keeps its own default).
+  const auto decimal_or_unset = [](const std::optional<double>& value) {
+    return value.has_value() ? decimal_text(*value) : std::string{"(unset)"};
+  };
+  const auto integer_or_unset = [](const std::optional<std::int64_t>& value) {
+    return value.has_value() ? std::to_string(*value) : std::string{"(unset)"};
+  };
+  line("defaults.sampling.temperature", decimal_or_unset(c.sampling.temperature));
+  line("defaults.sampling.top_p", decimal_or_unset(c.sampling.top_p));
+  line("defaults.sampling.min_p", decimal_or_unset(c.sampling.min_p));
+  line("defaults.sampling.presence_penalty", decimal_or_unset(c.sampling.presence_penalty));
+  line("defaults.sampling.repetition_penalty", decimal_or_unset(c.sampling.repetition_penalty));
+  line("defaults.sampling.frequency_penalty", decimal_or_unset(c.sampling.frequency_penalty));
+  line("defaults.sampling.top_k", integer_or_unset(c.sampling.top_k));
+  line("defaults.sampling.penalty_last_n", integer_or_unset(c.sampling.penalty_last_n));
+  line("defaults.sampling.seed", integer_or_unset(c.sampling.seed));
+  // SP5 M1 Task 5: the reasoning.* family and engine.fit_max_tokens.
+  line("reasoning.effort",
+       !c.reasoning.effort.has_value()                  ? std::string{"(unset)"}
+       : *c.reasoning.effort == ReasoningEffort::none   ? "none"
+       : *c.reasoning.effort == ReasoningEffort::low    ? "low"
+       : *c.reasoning.effort == ReasoningEffort::medium ? "medium"
+                                                        : "high");
+  line("reasoning.budget_tokens", std::to_string(c.reasoning.budget_tokens));
+  line("reasoning.close_retry", c.reasoning.close_retry ? "true" : "false");
+  line("reasoning.loop_recovery",
+       c.reasoning.loop_recovery == LoopRecovery::off      ? "off"
+       : c.reasoning.loop_recovery == LoopRecovery::stop   ? "stop"
+                                                           : "recover");
+  line("reasoning.effort_position", c.reasoning.effort_position == EffortPosition::start ? "start" : "end");
+  line("reasoning.anthropic_thinking",
+       c.reasoning.anthropic_thinking == AnthropicThinking::model ? "model" : "on_request");
+  // SP5 M1 Task 9: the session family.
+  line("session.slot_save_path", c.session.slot_save_path.empty() ? std::string{"(unset)"} : json_quoted(c.session.slot_save_path));
+  line("session.expert_profile_save", c.session.expert_profile_save.empty() ? std::string{"(unset)"} : json_quoted(c.session.expert_profile_save));
+  line("session.expert_profile_save_every", std::to_string(c.session.expert_profile_save_every));
+  line("session.tool_call_recovery", c.session.tool_call_recovery ? "true" : "false");
+  line("session.env_to_user", c.session.env_to_user ? "true" : "false");
+  line("session.codex_thread_titles", c.session.codex_thread_titles ? "true" : "false");
+  line("session.codex_compaction_cache", c.session.codex_compaction_cache ? "true" : "false");
+  line("session.keep_files", std::to_string(c.session.keep_files));
+  // SP5 M1 Task 10: engine-internal parallelism (the C-4 narrowing's surviving half).
+  line("replicas.parallel", std::to_string(c.replicas.parallel));
+  // SP5 M1 Task 11: the vision family (D-9 split).
+  line("vision.enabled", c.vision.enabled ? "true" : "false");
+  line("vision.max_side", std::to_string(c.vision.max_side));
+  line("vision.max_n", std::to_string(c.vision.max_n));
+  line("vision.need_mib", c.vision.need_mib.has_value() ? std::to_string(*c.vision.need_mib) : std::string{"unset"});
+  line("vision.no_flash_attn", c.vision.no_flash_attn ? "true" : "false");
+  line("vision.resident", c.vision.resident ? "true" : "false");
+  line("vision.threads", std::to_string(c.vision.threads));
+  line("vision.ready_timeout_s", std::to_string(c.vision.ready_timeout_s));
+  line("engine.fit_max_tokens", c.engine.fit_max_tokens ? "true" : "false");
+  // SP5 M1 Task 6: the lifecycle family (runconfig.py:35-38).
+  line("engine.lazy_load", c.engine.lazy_load ? "true" : "false");
+  line("engine.idle_unload_s", std::to_string(c.engine.idle_unload.count()));
+  line("engine.mtp", c.engine.mtp ? "true" : "false");
+  // SP5 M1 Task 7: the VRAM / GPU / elastic family.
+  line("engine.vram_reserve_mib", integer_or_unset(c.engine.vram_reserve_mib));
+  line("engine.min_free_vram_mib", std::to_string(c.engine.min_free_vram));
+  line("engine.vram_elastic", c.engine.vram_elastic ? "true" : "false");
+  line("engine.vram_segment_mib", integer_or_unset(c.engine.vram_segment_mib));
+  line("engine.elastic", c.engine.elastic ? "true" : "false");
+  line("engine.elastic_idle_s", std::to_string(c.engine.elastic_idle.count()));
+  line("engine.elastic_mib", std::to_string(c.engine.elastic_mib));
+  line("engine.gpu_order", c.engine.gpu_order == GpuOrder::as_given ? "as_given" : "auto");
+  line("engine.gpu_policy",
+       c.engine.gpu_policy == GpuTurnPolicy::keep    ? "keep"
+       : c.engine.gpu_policy == GpuTurnPolicy::shrink ? "shrink"
+       : c.engine.gpu_policy == GpuTurnPolicy::unload ? "unload"
+                                                      : "auto");
+  line("engine.layer_split", c.engine.layer_split);
+  line("engine.split_skip_if_fits", c.engine.split_skip_if_fits ? "true" : "false");
+  line("engine.hip_ordinal", integer_or_unset(c.engine.hip_ordinal));
+  line("engine.uma", c.engine.uma ? "true" : "false");
+  // SP5 M1 Task 8: the timeout / request-shape family.
+  line("engine.silence_s", std::to_string(c.engine.silence.count()));
+  line("engine.answer_room", c.engine.answer_room ? "true" : "false");
+  line("engine.repeat_stop_tokens", std::to_string(c.engine.repeat_stop_tokens));
+  line("engine.max_tokens", c.engine.max_tokens ? std::to_string(*c.engine.max_tokens) : std::string{"unset"});
+  line("engine.min_tokens", c.engine.min_tokens ? std::to_string(*c.engine.min_tokens) : std::string{"unset"});
+  line("model.aliases", list_text(c.engine.aliases));
   return out;
 }
 

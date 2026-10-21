@@ -4,8 +4,10 @@
 #include "support/cli_harness.hpp"
 #include "support/test_support.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <variant>
@@ -208,6 +210,66 @@ void launch_composed_from_manifest_qwen() {
   expect(bare_launch != nullptr && bare_launch->model_id == "m:t", "a bare (case-folded) name serves its one installed tag as name:tag");
 }
 
+// SP5 M1 Task 11 (D-9; Rulings T11-aa/T11-bb): compose-time vision wiring — enabled with a
+// manifest that declares no mmproj artifact fails closed naming it; a declared mmproj is
+// carried on ComposedLaunch and the engine receives --vision (the pin's section gate,
+// serve/server.py:2926-2931); lazy_load + an image-reading model is the pin's config
+// conflict (runconfig.py:97-98 — pin wins); --expert has no manifest, so vision fails there by name.
+void vision_compose_rules() {
+  const auto enable_vision = [](secure_frontend_test::cli::CliHarness& h, const std::string& body) {
+    std::string text = secure_frontend_test::read_file(h.config);
+    text.insert(text.find("\"pull\""), "\"vision\": " + body + ", ");
+    secure_frontend_test::write_file(h.config, text);
+  };
+  {  // enabled, but the manifest has no mmproj artifact: fail closed (exit 5).
+    secure_frontend_test::cli::CliHarness h;
+    (void)secure_frontend_test::cli::install(h);
+    h.make_managed("m:t");
+    enable_vision(h, "{\"enabled\": true}");
+    const auto composed = secure_frontend::compose_engine_launch(h.validated_config().get(), false);
+    const auto* failure = std::get_if<secure_frontend::LaunchFailure>(&composed);
+    expect(failure != nullptr && failure->exit == secure_frontend::ExitCode::manifest &&
+               failure->messages.front().find("mmproj") != std::string::npos,
+           "vision on a manifest without mmproj fails closed (T11-aa)");
+  }
+  {  // a declared mmproj: carried on the composition; the engine gets --vision.
+    secure_frontend_test::cli::CliHarness h;
+    const auto entry = secure_frontend_test::cli::install(h, 1, "", secure_frontend::ModelOrigin::third_party, "m", "t", true);
+    h.make_managed("m:t");
+    enable_vision(h, "{\"enabled\": true}");
+    const auto composed = secure_frontend::compose_engine_launch(h.validated_config().get(), false);
+    const auto* launch = std::get_if<secure_frontend::ComposedLaunch>(&composed);
+    if (launch == nullptr) {
+      for (const auto& m : std::get<secure_frontend::LaunchFailure>(composed).messages) std::cerr << "  " << m << '\n';
+      return;
+    }
+    const auto base = h.models().path() / "m" / "t" / entry.dir;
+    expect(launch->vision_mmproj == secure_frontend::path_to_utf8((base / "mmproj" / "mmproj.gguf").make_preferred()) &&
+               launch->vision_model == secure_frontend::path_to_utf8((base / "weights" / "fx-00001-of-00002.gguf").make_preferred()),
+         "ComposedLaunch carries the encoder artifact and the weights, same join as --native");
+    expect(std::count(launch->engine_args.begin(), launch->engine_args.end(), "--vision") == 1,
+           "the engine receives --vision, like the pin's vision-section gate (:2930)");
+  }
+  {  // the pin's conflict: "lazy loading is text-only, and this model reads images".
+    secure_frontend_test::cli::CliHarness h;
+    (void)secure_frontend_test::cli::install(h, 1, "", secure_frontend::ModelOrigin::third_party, "m", "t", true);
+    h.make_managed("m:t", ", \"lazy_load\": true");
+    enable_vision(h, "{\"enabled\": true}");
+    const auto conflict = secure_frontend::compose_engine_launch(h.validated_config().get(), false);
+    const auto* failure = std::get_if<secure_frontend::LaunchFailure>(&conflict);
+    expect(failure != nullptr && failure->messages.front().find("images") != std::string::npos,
+           "lazy_load + an image-reading model is refused at compose (runconfig.py:97-98)");
+  }
+  {  // --expert is the operator path: no manifest, no mmproj — vision fails by name.
+    secure_frontend_test::cli::CliHarness h;
+    enable_vision(h, "{\"enabled\": true}");
+    const auto expert = secure_frontend::compose_engine_launch(h.validated_config().get(), true);
+    const auto* failure = std::get_if<secure_frontend::LaunchFailure>(&expert);
+    expect(failure != nullptr && failure->messages.front().find("vision") != std::string::npos,
+           "vision needs a managed model; --expert fails by name");
+  }
+}
+
 // F-7 (SP1 rule, engine_arguments.cpp): every engine argv path is UTF-8, never path::string().
 void managed_launch_argv_is_utf8_for_non_ascii_models_root() {
   secure_frontend_test::cli::CliHarness h("Jos\xC3\xA9-models");
@@ -288,9 +350,229 @@ void managed_launch_renders_typed_gpu_list() {
   expect(launch != nullptr, "managed launch with engine.gpu");
   if (launch == nullptr) return;
   auto expected = managed_argv(h, entry);
-  expected.insert(expected.end(), {"--gpu", "0,2"});
+  expected.insert(expected.end(), {"--gpu", "0,2", "--layer-split", "auto"});  // two GPUs compose the split (:2938)
   expect(launch->engine_args == expected, "the typed engine.gpu list becomes the engine's own --gpu");
 }
+// SP5 M1 Task 5 (parity rows reasoning_* / fit_max_tokens). Only ONE of the pin's reasoning values
+// reaches the engine launch: effort_position "end" composes --tail-role-token with the tokenizer's
+// single "system" token id (effort_end_args serve/server.py:2836-2856, appended to the engine argv at
+// :7966/:7977), and its probe rules are the pin's: the engine binary must contain the flag literal,
+// and tok.encode("system") must be exactly one token, else one fixed warning and no argument.
+// The other reasoning rows are service-object values in the pin and reach NOTHING in argv/env:
+// reasoning_effort :8035-8041, reasoning_budget_tokens :8120-8127, reasoning_close_retry :8015,
+// reasoning_loop_recovery :8129-8136, anthropic_thinking :8102-8104, fit_max_tokens :7996.
+void reasoning_config_reaches_engine_launch_and_env() {
+  const auto dir = secure_frontend_test::make_scratch_directory();
+  const auto binary = dir / "strata-engine";
+  const std::string with_flag = std::string("engine-bytes --tail-role-token trailing");
+  const std::string without_flag = std::string("engine-bytes --something-else trailing");
+  {
+    std::ofstream out(binary, std::ios::binary);
+    out.write(with_flag.data(), static_cast<std::streamsize>(with_flag.size()));
+  }
+  secure_frontend::TokenizerPack pack;  // "system" encodes to one token through a merge chain
+  pack.tokens_by_id = {"s", "y", "t", "e", "m", "sy", "sys", "syst", "syste", "system"};
+  pack.merges_by_rank = {{"s", "y"}, {"sy", "s"}, {"sys", "t"}, {"syst", "e"}, {"syste", "m"}};
+  pack.token_types = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+  const auto composed = secure_frontend::compose_effort_end_arguments(binary, pack);
+  expect(composed.arguments == std::vector<std::string>{"--tail-role-token", "9"},
+         "the flag plus the single 'system' token id (:2857)");
+  expect(composed.notice.find("effort_position end:") == 0U, "the pin's fixed success line (:2856)");
+  {
+    std::ofstream out(binary, std::ios::binary);
+    out.write(without_flag.data(), static_cast<std::streamsize>(without_flag.size()));
+  }
+  const auto probe_miss = secure_frontend::compose_effort_end_arguments(binary, pack);
+  expect(probe_miss.arguments.empty(), "an engine without the flag composes nothing (:2849-2855)");
+  expect(probe_miss.notice.find("needs engine 0.1.39 or newer") != std::string_view::npos,
+         "the pin's fixed fallback line (:2853)");
+  secure_frontend::TokenizerPack multi;  // "system" is six ordinary characters: not one token
+  multi.tokens_by_id = {"s", "y", "t", "e", "m"};
+  multi.token_types = {1, 1, 1, 1, 1};
+  {
+    std::ofstream out(binary, std::ios::binary);
+    out.write(with_flag.data(), static_cast<std::streamsize>(with_flag.size()));
+  }
+  const auto role_miss = secure_frontend::compose_effort_end_arguments(binary, multi);
+  expect(role_miss.arguments.empty(), "a multi-token 'system' composes nothing (:2850)");
+  expect(role_miss.notice.find("needs engine 0.1.39 or newer") != std::string_view::npos,
+         "the same fixed fallback line (:2853)");
+}
+
+// SP5 M1 Task 6 (parity row mtp; runconfig.py:36, strata_control/draft_layer.py): an explicit
+// engine.mtp=false strips the draft layer's own options from the engine arguments at every
+// start — MTP_FLAGS verbatim {"--mtp" value, "--spec-min-p" value, "--batch-mtp" no value} —
+// while prompt-lookup --spec stays (draft_layer.py: "why --spec stays"). Absent or true keeps
+// today's launch. Only the strata profile: the GLM runner does not speak these flags.
+void mtp_false_drops_the_mtp_arg() {
+  const auto root = models_root();
+  const std::vector<std::string> user{"--mtp", "mtp/rt", "--spec-min-p", "0.3", "--batch-mtp", "--spec", "4"};
+  const auto on = secure_frontend::build_engine_arguments(kStrata, manifest(), root, user);
+  const auto* kept = std::get_if<std::vector<std::string>>(&on);
+  expect(kept != nullptr, "default mtp composes");
+  if (kept == nullptr) return;
+  expect(std::count(kept->begin(), kept->end(), "--mtp") == 1 && std::count(kept->begin(), kept->end(), "--spec-min-p") == 1 &&
+             std::count(kept->begin(), kept->end(), "--batch-mtp") == 1,
+         "mtp true leaves every flag");
+  const auto off = secure_frontend::build_engine_arguments(kStrata, manifest(), root, user, {}, false);
+  const auto* cut = std::get_if<std::vector<std::string>>(&off);
+  expect(cut != nullptr, "mtp false composes");
+  if (cut == nullptr) return;
+  expect(std::none_of(cut->begin(), cut->end(), [](const std::string& a) { return a == "--mtp" || a == "--spec-min-p" || a == "--batch-mtp"; }),
+         "mtp false drops the draft layer's flags");
+  const auto spec = std::find(cut->begin(), cut->end(), "--spec");
+  expect(spec != cut->end() && std::next(spec) != cut->end() && *std::next(spec) == "4", "--spec and its value stay (prompt lookup)");
+  // The pin consumes the value only when the next token is not another flag (:draft_layer.strip).
+  const auto edge = secure_frontend::build_engine_arguments(kStrata, manifest(), root, {"--mtp", "--spec", "4"}, {}, false);
+  const auto* edge_args = std::get_if<std::vector<std::string>>(&edge);
+  expect(edge_args != nullptr, "flag-after-flag still composes");
+  if (edge_args != nullptr) {
+    expect(std::none_of(edge_args->begin(), edge_args->end(), [](const std::string& a) { return a == "--mtp"; }), "the bare --mtp goes");
+    const auto kept_spec = std::find(edge_args->begin(), edge_args->end(), "--spec");
+    expect(kept_spec != edge_args->end() && std::next(kept_spec) != edge_args->end() && *std::next(kept_spec) == "4",
+           "--spec was not eaten as --mtp's value");
+  }
+  // The composition reports what was removed for the pin's fixed startup line (:2925).
+  const auto removed = secure_frontend::draft_layer_removed(user);
+  expect(removed == std::vector<std::string>{"--mtp", "--spec-min-p", "--batch-mtp"}, "the removed list names the flags in order");
+}
+
+// SP5 M1 Task 7 (parity row vram_reserve_mib; runconfig.py:42-43 renders --vram-reserve-mib
+// from the config unless the args already carry it). Unset composes nothing; the engine's
+// own default (700) then applies.
+void vram_reserve_mib_becomes_the_pinned_flag() {
+  secure_frontend::VramGpuElasticArgs vram;
+  std::vector<std::string> user;
+  std::vector<std::string> args;
+  secure_frontend::append_vram_gpu_elastic_arguments(args, vram, user, {});
+  expect(std::find(args.begin(), args.end(), "--vram-reserve-mib") == args.end(), "unset: no flag is composed");
+  vram.vram_reserve_mib = 700;
+  secure_frontend::append_vram_gpu_elastic_arguments(args, vram, user, {});
+  const auto flag = std::find(args.begin(), args.end(), "--vram-reserve-mib");
+  expect(flag != args.end() && std::next(flag) != args.end() && *std::next(flag) == "700", "set: --vram-reserve-mib 700");
+  user.emplace_back("--vram-reserve-mib");  // the pin's "not in args" guard (:2930 for vision, same shape)
+  user.emplace_back("900");
+  std::vector<std::string> kept;
+  secure_frontend::append_vram_gpu_elastic_arguments(kept, vram, user, {});
+  expect(std::count(kept.begin(), kept.end(), "--vram-reserve-mib") == 0, "the operator's own flag is never doubled");
+}
+
+// SP5 M1 Task 7 (parity rows vram_elastic/vram_segment_mib/layer_split/split_skip_if_fits/
+// hip_ordinal; serve/server.py:2943-2948, :2938-2942, :3016-3030): every value reaches the
+// engine through argv only (Ruling T7-a — no GPU/elastic engine-env variables, SP2 §3.9).
+void gpu_and_elastic_rows_reach_the_engine_argv() {
+  secure_frontend::VramGpuElasticArgs vram;
+  std::vector<std::string> user;
+  const auto compose = [&](const std::vector<unsigned>& gpus) {
+    std::vector<std::string> args;
+    secure_frontend::append_vram_gpu_elastic_arguments(args, vram, user, gpus);
+    return args;
+  };
+  vram.vram_segment_mib = 512;
+  const auto segment_alone = compose({});
+  expect(std::find(segment_alone.begin(), segment_alone.end(), "--vram-segment-mib") == segment_alone.end(),
+         "a segment size without vram_elastic composes nothing (the pin nests it in the elastic branch)");
+  vram.vram_elastic = true;
+  const auto elastic = compose({});
+  const auto segment = std::find(elastic.begin(), elastic.end(), "--vram-segment-mib");
+  expect(std::find(elastic.begin(), elastic.end(), "--vram-elastic") != elastic.end() && segment != elastic.end() &&
+             std::next(segment) != elastic.end() && *std::next(segment) == "512",
+         "vram_elastic renders --vram-elastic and the segment size beside it");
+  vram.vram_segment_mib = std::nullopt;
+  const auto bare_elastic = compose({});
+  expect(std::find(bare_elastic.begin(), bare_elastic.end(), "--vram-elastic") != bare_elastic.end() &&
+             std::find(bare_elastic.begin(), bare_elastic.end(), "--vram-segment-mib") == bare_elastic.end(),
+         "the engine's own 512 default applies when the size is unset");
+  const auto single = compose({});
+  expect(std::find(single.begin(), single.end(), "--layer-split") == single.end(),
+         "one GPU (or none): no layer split — the pin gates it on several GPUs (:2896-2899)");
+  const auto split = compose({0, 1});
+  const auto split_flag = std::find(split.begin(), split.end(), "--layer-split");
+  expect(split_flag != split.end() && std::next(split_flag) != split.end() && *std::next(split_flag) == "auto",
+         "several GPUs compose --layer-split auto (the pin default)");
+  vram.layer_split = "24";
+  const auto manual = compose({0, 1});
+  const auto manual_flag = std::find(manual.begin(), manual.end(), "--layer-split");
+  expect(manual_flag != manual.end() && std::next(manual_flag) != manual.end() && *std::next(manual_flag) == "24",
+         "the manual first-layer list renders verbatim");
+  user = {"--peer-device", "1"};
+  const auto peer = compose({0, 1});
+  expect(std::find(peer.begin(), peer.end(), "--layer-split") == peer.end(),
+         "--peer-device in the args means the later card is an expert tier, not a split (:2898)");
+  user = {"--layer-split", "18"};
+  const auto owned = compose({0, 1});
+  expect(std::count(owned.begin(), owned.end(), "--layer-split") == 0, "the operator's --layer-split is never doubled");
+  user.clear();
+  vram.split_skip_if_fits = true;
+  const auto one_gpu = compose({0});
+  const auto two_gpus = compose({0, 1});
+  expect(std::find(one_gpu.begin(), one_gpu.end(), "--split-skip-if-fits") == one_gpu.end() &&
+             std::find(two_gpus.begin(), two_gpus.end(), "--split-skip-if-fits") != two_gpus.end(),
+         "split_skip_if_fits rides the same layer-split gate (:2941)");
+  // hip_visible (:3023-3029): the recorded ordinal wins over one (or zero) configured GPUs,
+  // never over several; it reaches the engine through --gpu (Ruling T7-f).
+  expect(secure_frontend::effective_gpu_list({5}, 1) == std::vector<unsigned>{1}, "one card: the ordinal wins");
+  expect(secure_frontend::effective_gpu_list({}, 1) == std::vector<unsigned>{1}, "no card: the ordinal selects it");
+  expect(secure_frontend::effective_gpu_list({0, 1}, 1) == (std::vector<unsigned>{0, 1}), "several cards: the list stands");
+  expect(secure_frontend::effective_gpu_list({2, 3}, std::nullopt) == (std::vector<unsigned>{2, 3}), "unset: unchanged");
+}
+
+// SP5 M1 Task 10 (parity row parallel; serve/server.py:2955-2975): replicas.parallel rides
+// as ONE engine flag, --batch N — the pin's own rendering ("parallel" in, --batch out;
+// llama.cpp's historical name, :2975). One at a time at <=1 (the pin's docstring); an
+// operator --batch or --slots in the engine args silences the composition (:2961); past the
+// 8-row batch window (PARALLEL_MAX, :2954) the value rides on — the engine warns and adjusts,
+// recommend never force (:2969-2974).
+void parallel_reaches_the_engine_within_one_child() {
+  const auto compose = [](secure_frontend::ParallelBatchArgs p, const std::vector<std::string>& user) {
+    std::vector<std::string> args = {"--ngl", "99"};
+    secure_frontend::append_parallel_batch_arguments(args, p, user);
+    return args;
+  };
+  expect(compose({1}, {}).size() == 2U, "1 (the default): one request at a time, no flag (:2966-2968)");
+  expect(compose({0}, {}).size() == 2U, "0: not more than one, no flag (the pin treats <=1 as absent)");
+  const auto four = compose({4}, {});
+  const auto batch = std::find(four.begin(), four.end(), "--batch");
+  expect(batch != four.end() && std::next(batch) != four.end() && *std::next(batch) == "4",
+         "four requests decode together through --batch 4 (the pin's rendering, :2975)");
+  const auto big = compose({20}, {});
+  expect(std::count(big.begin(), big.end(), "--batch") == 1 && std::count(big.begin(), big.end(), "20") == 1,
+         "past the 8-row window the value rides on: the engine warns and adjusts (:2969-2974)");
+  expect(compose({4}, {"--batch", "8"}).size() == 2U, "an operator --batch in the engine args wins (:2961)");
+  expect(compose({4}, {"--slots", "8"}).size() == 2U, "an operator --slots wins too (:2961)");
+}
+
+// SP5 M1 Task 9 (parity rows expert_profile_save / expert_profile_save_every;
+// serve/server.py:3000-3005): a configured learned-profile save path composes
+// --expert-profile-save plus the every-minutes re-save (the pin's default 10, :2996; 0 = at
+// QUIT only). An operator's own --expert-profile-save in argv wins and nothing is appended —
+// not even the every (:3001); no path composes nothing.
+void expert_profile_flags_reach_launch() {
+  secure_frontend::ExpertProfileSaveArgs save;
+  expect(save.every == 10, "the typed default is the pin's 10 minutes (:2996)");
+  const auto compose = [&](const std::vector<std::string>& user) {
+    std::vector<std::string> args = {"--pack", "x"};
+    secure_frontend::append_expert_profile_save_arguments(args, save, user);
+    return args;
+  };
+  expect(compose({}).size() == 2U, "no save path: the args stand unchanged (:3001)");
+  save.path = "/state/learned.bin";
+  const auto learned = compose({});
+  const auto at = std::find(learned.begin(), learned.end(), "--expert-profile-save");
+  expect(at != learned.end() && std::next(at) != learned.end() && *std::next(at) == "/state/learned.bin" &&
+             std::find(learned.begin(), learned.end(), "--expert-profile-save-every") != learned.end(),
+         "the path composes the pair, the default 10 riding along (:3002-3005)");
+  save.every = 0;
+  const auto quit_only = compose({});
+  const auto every = std::find(quit_only.begin(), quit_only.end(), "--expert-profile-save-every");
+  expect(every != quit_only.end() && std::next(every) != quit_only.end() && *std::next(every) == "0",
+         "0 keeps the pin's QUIT-only re-save (:2996)");
+  const auto operator_kept = compose({"--expert-profile-save", "/operator/path.bin"});
+  expect(operator_kept.size() == 2U &&
+             std::find(operator_kept.begin(), operator_kept.end(), "--expert-profile-save") == operator_kept.end(),
+         "an operator --expert-profile-save in argv wins; no doubling, no every (:3001)");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -304,10 +586,17 @@ int main(int argc, char** argv) {
       {"engine_args_render_typed_gpu_and_deny_gpu_passthrough", engine_args_render_typed_gpu_and_deny_gpu_passthrough},
       {"gpu_list_rejects_malformed_values", gpu_list_rejects_malformed_values},
       {"launch_composed_from_manifest_qwen", launch_composed_from_manifest_qwen},
+      {"vision_compose_rules", vision_compose_rules},
       {"managed_launch_argv_is_utf8_for_non_ascii_models_root", managed_launch_argv_is_utf8_for_non_ascii_models_root},
       {"launch_refuses_model_not_installed", launch_refuses_model_not_installed},
       {"engine_args_reject_weight_flags_for_managed_model", engine_args_reject_weight_flags_for_managed_model},
       {"launch_refuses_engine_too_old", launch_refuses_engine_too_old},
       {"managed_launch_renders_typed_gpu_list", managed_launch_renders_typed_gpu_list},
+      {"reasoning_config_reaches_engine_launch_and_env", reasoning_config_reaches_engine_launch_and_env},
+      {"mtp_false_drops_the_mtp_arg", mtp_false_drops_the_mtp_arg},
+      {"vram_reserve_mib_becomes_the_pinned_flag", vram_reserve_mib_becomes_the_pinned_flag},
+      {"gpu_and_elastic_rows_reach_the_engine_argv", gpu_and_elastic_rows_reach_the_engine_argv},
+      {"expert_profile_flags_reach_launch", expert_profile_flags_reach_launch},
+      {"parallel_reaches_the_engine_within_one_child", parallel_reaches_the_engine_within_one_child},
   }, failures);
 }
