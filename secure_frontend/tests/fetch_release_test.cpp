@@ -23,7 +23,10 @@ void release_spawn_has_no_fd4() {
   secure_frontend_test::write_file(h.config, text);
   const auto result = secure_frontend_test::run_to_completion(
       secure_frontend_test::ProcessSpec{args.at(0), {"--config", h.config.string(), "doctor", "--downloader"}, {}});
-  expect(result.exit_code == 0 && secure_frontend_test::contains(result.out, "downloader: curl 8.4.0"),
+  // D-7 (R-T3-b): exit is 0 iff every check passed; this host has no GPU bundle, and the
+  // fds-0-2 fact under test is the curl probe line, asserted exactly as before.
+  expect(((result.exit_code == 0) == secure_frontend_test::contains(result.out, "doctor: all checks passed")) &&
+             secure_frontend_test::contains(result.out, "downloader: curl 8.4.0"),
          "the shipped binary's probe child has exactly fds 0-2: " + result.err);
 }
 

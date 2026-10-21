@@ -103,7 +103,10 @@ void doctor_downloader_probes_on_fresh_store() {
   secure_frontend_test::cli::CliHarness h;
   (void)install_serving_fake(h);
   const int code = h.run({"doctor", "--downloader"});
-  expect(code == 0, "doctor --downloader on a fresh store: " + h.err);
+  // D-7 (SP7 M1 T3, R-T3-b): doctor now exits 0 iff every check passed; the host's GPU
+  // decides that part. The probe behaviour below stays asserted exactly as before.
+  const bool verdict_ok = h.out.find("doctor: all checks passed") != std::string::npos;
+  expect((code == 0) == verdict_ok, "doctor --downloader exits 0 iff every check passed: " + h.err);
   expect(h.out.find("downloader: curl 8.4.0 (OpenSSL)") != std::string::npos, "probe result printed");
   expect(std::filesystem::is_directory(h.models_path / ".staging" / ".cwd"), "the downloader cwd exists");
 }
@@ -126,7 +129,8 @@ void confinement_reduced_when_root_beneath_allowed_dir() {
     text.replace(text.find(old_models), old_models.size(), std::filesystem::canonical(inner).generic_string());
     secure_frontend_test::write_file(h.config, text);
     const int doctor = h.run({"doctor"});
-    expect(doctor == 0, "doctor: " + h.err);
+    // D-7 verdict rule (R-T3-b); the confinement announcement below is the invariant.
+    expect((doctor == 0) == (h.out.find("doctor: all checks passed") != std::string::npos), "doctor exit follows the D-7 verdict: " + h.err);
     expect(h.out.find("confinement: " + reduced_models) != std::string::npos,
            "a root beneath an allowed directory reduces confinement and doctor says so");
 
@@ -158,7 +162,8 @@ void confinement_reduced_when_root_beneath_allowed_dir() {
     const auto inside = fake.executable.parent_path() / "config.json";
     secure_frontend_test::write_file(inside, secure_frontend_test::read_file(h.config));
     const int doctor = h.run_raw({"--config", inside.string(), "doctor"});
-    expect(doctor == 0, "doctor: " + h.err);
+    // D-7 verdict rule (R-T3-b); the confinement announcement below is the invariant.
+    expect((doctor == 0) == (h.out.find("doctor: all checks passed") != std::string::npos), "doctor exit follows the D-7 verdict: " + h.err);
     expect(h.out.find("confinement: " + reduced_config) != std::string::npos,
            "a config file beneath an allowed directory reduces confinement and doctor says so");
   }

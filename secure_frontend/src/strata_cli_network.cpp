@@ -4,19 +4,31 @@
 #include "secure_frontend/downloader.hpp"
 #include "secure_frontend/engine_gate.hpp"
 #include "secure_frontend/strata_cli.hpp"
+#include "doctor_checks.hpp"
+#include "service_ops.hpp"
+#include "uninstall_plan.hpp"
 #include "strata_cli_internal.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <csignal>
+#include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <cwchar>
+#include <limits>
 #include <ostream>
 #include <system_error>
 
 #if defined(_WIN32)
 #include "secure_frontend/win32_prelude.hpp"
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/resource.h>
+#include <sys/socket.h>
+#include <unistd.h>
 #endif
 
 namespace secure_frontend {
@@ -327,6 +339,127 @@ bool variable_present(const char* name) {
 #endif
 }
 
+// --- SP7 M1 Task 3 (spec D-7): production wiring of the doctor ProbeBundle ---
+// Self path, stat, rlimit and bind probes only. Nothing installs and nothing
+// touches the network (PX §8); the only process run is the read-only
+// nvidia-smi query through service::run_argv.
+
+std::filesystem::path self_program_dir() {
+#if defined(_WIN32)
+  std::vector<wchar_t> buffer(32768);
+  const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+  if (length == 0 || length >= buffer.size()) return {};
+  return std::filesystem::path(std::wstring(buffer.data(), length)).parent_path();
+#else
+  char buffer[4096];
+  const ssize_t length = readlink("/proc/self/exe", buffer, sizeof buffer - 1U);
+  if (length <= 0) return {};
+  buffer[length] = '\0';
+  return std::filesystem::path(buffer).parent_path();
+#endif
+}
+
+std::optional<unsigned> regular_file_mode(const std::filesystem::path& path) {
+  std::error_code ec;
+  if (std::filesystem::symlink_status(path, ec).type() != std::filesystem::file_type::regular || ec) return std::nullopt;
+  const auto permissions = std::filesystem::status(path, ec).permissions();
+  if (ec) return std::nullopt;
+  return static_cast<unsigned>(permissions & std::filesystem::perms{0777});
+}
+
+std::optional<std::uint64_t> current_memlock() {
+#if defined(_WIN32)
+  return std::nullopt;  // Windows large pages ride the user right; the verb marks the check not applicable (R-T3-c)
+#else
+  struct rlimit limit {};
+  if (getrlimit(RLIMIT_MEMLOCK, &limit) != 0) return std::nullopt;
+  if (limit.rlim_cur == RLIM_INFINITY) return std::numeric_limits<std::uint64_t>::max();
+  return static_cast<std::uint64_t>(limit.rlim_cur);
+#endif
+}
+
+// One bind attempt on the configured listener address: EADDRINUSE and every
+// other failure read as "not free" (fail closed).
+bool listener_port_free(const FrontendConfig& config) {
+  const bool is_v4 = config.listener.host.family() == IpFamily::v4;
+#if defined(_WIN32)
+  WSADATA wsa{};
+  if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return false;
+  const SOCKET probe = WSASocketW(is_v4 ? AF_INET : AF_INET6, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, 0);
+  const auto close_probe = [](SOCKET s) { closesocket(s); WSACleanup(); };
+#else
+  const int probe = ::socket(is_v4 ? AF_INET : AF_INET6, SOCK_STREAM, 0);
+  const auto close_probe = [](int s) { ::close(s); };
+#endif
+#if defined(_WIN32)
+  if (probe == INVALID_SOCKET) return false;
+#else
+  if (probe < 0) return false;
+#endif
+  bool free = false;
+  if (is_v4) {
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(config.listener.port);
+    std::memcpy(&address.sin_addr, config.listener.host.bytes().data(), 4U);
+    free = ::bind(probe, reinterpret_cast<const sockaddr*>(&address), sizeof address) == 0;
+  } else {
+    sockaddr_in6 address{};
+    address.sin6_family = AF_INET6;
+    address.sin6_port = htons(config.listener.port);
+    std::memcpy(address.sin6_addr.s6_addr, config.listener.host.bytes().data(), 16U);
+    free = ::bind(probe, reinterpret_cast<const sockaddr*>(&address), sizeof address) == 0;
+  }
+  close_probe(probe);
+  return free;
+}
+
+std::optional<std::filesystem::path> token_file_below_secret(const FrontendConfig& config) {
+  if (config.token.kind() != SecretSourceKind::protected_file || !config.roots.secret) return std::nullopt;
+  const auto file = parse_relative_path(config.token.location());
+  if (const auto* relative = std::get_if<RelativePath>(&file)) return config.roots.secret->join(*relative);
+  return std::nullopt;
+}
+
+std::vector<doctor::RootProbe> root_probes(const FrontendConfig& config) {
+  std::vector<doctor::RootProbe> probes;
+  const auto add = [&probes](const std::string_view label, const std::filesystem::path& path, const RootPolicy policy) {
+    const auto opened = open_root(path, policy);
+    if (std::holds_alternative<CanonicalRoot>(opened)) probes.push_back({std::string{label}, ""});
+    else probes.push_back({std::string{label}, std::get<PathError>(opened).message});
+  };
+  add("roots.models", config.roots.models.path(), RootPolicy::existing);
+  if (config.roots.secret) add("roots.secret", config.roots.secret->path(), RootPolicy::existing);
+  // R-T3-d: roots.state is only checked when it exists (serve creates/uses it;
+  // a pull-only box may legitimately have no state root yet). logs/cache use
+  // SP1's own creatable-but-may-be-absent rule.
+  if (config.roots.state && std::filesystem::exists(*config.roots.state)) add("roots.state", *config.roots.state, RootPolicy::existing);
+  const auto add_creatable = [&probes](const std::string_view label, const std::filesystem::path& path) {
+    const auto checked = check_creatable_root(path);
+    if (std::holds_alternative<std::filesystem::path>(checked)) probes.push_back({std::string{label}, ""});
+    else probes.push_back({std::string{label}, std::get<PathError>(checked).message});
+  };
+  if (config.roots.logs) add_creatable("roots.logs", *config.roots.logs);
+  if (config.roots.cache) add_creatable("roots.cache", *config.roots.cache);
+  return probes;
+}
+
+std::vector<std::string> deep_digest_failures(const FrontendConfig& config) {
+  std::vector<std::string> failures;
+  const auto read = read_model_index(config.roots.models);
+  if (const auto* failure = std::get_if<AcquireError>(&read)) {
+    failures.push_back(std::string{"index: "} + std::string{reason_name(failure->reason)});
+    return failures;
+  }
+  for (const auto& entry : std::get<ModelIndex>(read).models) {
+    const auto model = load_installed(config.roots.models, entry);  // the verify path: manifest re-hash, fails closed
+    if (const auto* failure = std::get_if<AcquireError>(&model)) {
+      failures.push_back(model_ref_text(entry.name, entry.tag) + ": " + std::string{reason_name(failure->reason)});
+    }
+  }
+  return failures;
+}
+
 // SP5 M1 (spec §4): the process environment never carries engine knobs.
 // Presence of any STRATA_*/MAYA_* name is reported once by doctor; values are
 // never read, printed or stored.
@@ -360,8 +493,8 @@ bool engine_env_knob_present() {
 
 int verb_doctor(const FrontendConfig& config, const std::filesystem::path& config_file, const std::span<const std::string> rest,
                 CliStreams& io, CliServices& services) {
-  const auto args = parse_args(rest, {"--downloader"}, {});
-  if (!args || !args->positional.empty()) return usage(io, "doctor [--downloader]");
+  const auto args = parse_args(rest, {"--downloader", "--deep"}, {});
+  if (!args || !args->positional.empty()) return usage(io, "doctor [--downloader] [--deep]");
   if (engine_env_knob_present()) {
     io.out << "doctor: ignoring STRATA_*/MAYA_* environment; configure server.json instead\n";
   }
@@ -380,7 +513,40 @@ int verb_doctor(const FrontendConfig& config, const std::filesystem::path& confi
   auto read = read_model_index(config.roots.models);
   if (auto* failure = std::get_if<AcquireError>(&read)) return report(io, *failure);
   if (const int code = print_store_usage(config.roots.models, std::get<ModelIndex>(read), io); code != 0) return code;
-  if (!probe) return 0;  // plain doctor spawns nothing (§3.2)
+  // SP7 M1 Task 3 (D-7): the full offline check set. The §3.2 "plain doctor spawns
+  // nothing" rule is superseded for the read-only nvidia-smi query (D-7 names it);
+  // nothing installs and no network is touched (PX §8). Exit is 0 iff every check
+  // passed (R-T3-b; the fixed verdict line is what scripts and tests key on).
+  doctor::ProbeBundle bundle;
+  // The config outlives this verb; the bundle borrows it (aliasing shared_ptr,
+  // never owns).
+  bundle.config = std::shared_ptr<const FrontendConfig>(std::shared_ptr<void>{}, std::addressof(config));
+  bundle.nvidia_smi = []() -> std::optional<std::string> {
+    const auto result = service::run_argv({"nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"});
+    if (result.exit_code != 0) return std::nullopt;
+    return result.out;
+  };
+  bundle.file_mode = regular_file_mode;
+  bundle.program_dir = self_program_dir();
+  bundle.token_file = token_file_below_secret(config);
+  bundle.roots = root_probes(config);
+  bundle.port_free = [&config] { return listener_port_free(config); };
+  bundle.memlock_limit = current_memlock;
+#if defined(_WIN32)
+  bundle.memlock_applicable = false;  // Windows large pages: the user right, not RLIMIT_MEMLOCK (R-T3-c)
+#endif
+  bundle.deep = args->flags.contains("--deep");
+  bundle.deep_digest_failures = [&config] { return deep_digest_failures(config); };
+  bool all_checks_passed = true;
+  for (const auto& check : doctor::run_checks(bundle)) {
+    if (check.ok) io.out << "doctor " << check.name << ": ok\n";
+    else {
+      all_checks_passed = false;
+      io.out << "doctor " << check.name << ": " << check.human_fix << '\n';
+    }
+  }
+  io.out << (all_checks_passed ? "doctor: all checks passed\n" : "doctor: one or more checks failed\n");
+  if (!probe) return all_checks_passed ? 0 : 1;
   if (auto failure = kit.probe->probe()) return report(io, *failure);
   if (kit.downloader && kit.downloader->probe_result()) {
     const auto& result = *kit.downloader->probe_result();
@@ -389,6 +555,168 @@ int verb_doctor(const FrontendConfig& config, const std::filesystem::path& confi
   if (config.pull.downloader != default_downloader_path()) {
     io.out << "note: a custom pull.downloader that reads its CA bundle from SSL_CERT_FILE fails with tls_failed under the empty environment\n";
   }
+  return all_checks_passed ? 0 : 1;
+}
+
+// --- SP7 M1 Task 5 (spec D-5/D-6): the service verbs and uninstall in production ---
+
+// The user config home (R-T2-a): XDG_CONFIG_HOME when set and non-empty, else
+// HOME/.config; Windows has no systemd and the task branch (Task 6) will use
+// its own location — the plans answer "not wired yet" until then.
+std::filesystem::path user_config_home() {
+  if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg != nullptr && xdg[0] != '\0') return std::filesystem::path{xdg};
+  if (const char* home = std::getenv("HOME"); home != nullptr && home[0] != '\0') return std::filesystem::path{home} / ".config";
+#if defined(_WIN32)
+  if (const char* appdata = std::getenv("APPDATA"); appdata != nullptr && appdata[0] != '\0') return std::filesystem::path{appdata};
+#endif
+  return {};
+}
+
+std::filesystem::path self_executable() {
+#if defined(_WIN32)
+  std::vector<wchar_t> buffer(32768);
+  const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+  if (length == 0 || length >= buffer.size()) return {};
+  return std::filesystem::path(std::wstring(buffer.data(), length));
+#else
+  char buffer[4096];
+  const ssize_t length = readlink("/proc/self/exe", buffer, sizeof buffer - 1U);
+  if (length <= 0) return {};
+  buffer[length] = '\0';
+  return std::filesystem::path(buffer);
+#endif
+}
+
+int verb_service(const FrontendConfig& config, const std::filesystem::path& config_file, const std::span<const std::string> rest,
+                 CliStreams& io) {
+  const auto args = parse_args(rest, {}, {});
+  if (!args || args->positional.size() != 1U ||
+      (args->positional.front() != "enable" && args->positional.front() != "disable" && args->positional.front() != "status")) {
+    return usage(io, "service enable|disable|status");
+  }
+  const std::string sub = args->positional.front();
+  const auto home = user_config_home();
+  if (home.empty()) {
+    io.out << "service: neither XDG_CONFIG_HOME nor HOME is set, so there is no user unit directory\n";
+    return 1;
+  }
+  service::ServiceEnv env;
+#if defined(_WIN32)
+  env.user_unit_dir = home / "strata";  // the task-file directory (Task 6; runtime is the owner's box)
+  env.task_xml_path = env.user_unit_dir / std::string{service::kTaskXmlFileName};
+  env.unit_path = env.task_xml_path;
+#else
+  env.user_unit_dir = home / "systemd" / "user";
+  env.unit_path = env.user_unit_dir / std::string{service::kUnitFileName};
+#endif
+  if (sub != "status") {
+    // enable/disable render the unit; the served process needs its write target.
+    if (!config.roots.state) {
+      io.out << "service: roots.state is not set in your config; strata will not install a service without it\n";
+      return 1;
+    }
+    const auto target = service::resolve_current_target(self_executable());
+    if (auto* error = std::get_if<service::ServiceError>(&target)) {
+      io.out << "service: " << error->message << '\n';
+      return 1;
+    }
+    env.unit.exec_start = std::get<std::filesystem::path>(target);
+    env.unit.config_file = std::filesystem::weakly_canonical(config_file).generic_string();
+    // R-T1-a: the unit's ReadWritePaths are exactly the roots serve writes.
+    env.unit.read_write_paths.push_back(config.roots.state->generic_string());
+    if (config.roots.logs) env.unit.read_write_paths.push_back(config.roots.logs->generic_string());
+    if (config.roots.cache) env.unit.read_write_paths.push_back(config.roots.cache->generic_string());
+  }
+  service::CommandRunner runner = &service::run_argv;
+  if (sub == "status") {
+    const auto status = service::plan_status(env, runner);
+    io.out << status.enabled_line << '\n' << status.active_line << '\n';
+    return 0;  // a report, not a verdict (R-T5-a)
+  }
+  const auto outcome = sub == "enable" ? service::plan_enable(env, runner) : service::plan_disable(env, runner);
+  io.out << outcome.message << '\n';
+  return outcome.ok ? 0 : 1;
+}
+
+int verb_uninstall(const FrontendConfig& config, const std::filesystem::path& config_file, const std::span<const std::string> rest,
+                   CliStreams& io) {
+  const auto args = parse_args(rest, {"--purge"}, {});
+  if (!args || !args->positional.empty()) return usage(io, "uninstall [--purge]");
+
+  uninstall::UninstallEnv env;
+  env.config_path = std::filesystem::weakly_canonical(config_file);
+  if (config.roots.state) env.state_root = *config.roots.state;
+  if (const auto token = token_file_below_secret(config)) env.token_path = *token;
+  env.models_root = config.roots.models.path();
+  if (config.roots.logs) env.logs_root = *config.roots.logs;
+  const auto home = user_config_home();
+#if defined(_WIN32)
+  const auto unit_path = home.empty() ? std::filesystem::path{} : home / "strata" / std::string{service::kTaskXmlFileName};
+#else
+  const auto unit_path = home.empty() ? std::filesystem::path{} : home / "systemd" / "user" / std::string{service::kUnitFileName};
+#endif
+  std::error_code ec;
+  if (!unit_path.empty() && std::filesystem::exists(unit_path, ec)) {
+    env.unit_installed = true;
+    env.unit_path = unit_path;
+  }
+  service::CommandRunner runner = &service::run_argv;
+  env.manager_available = service::user_manager_reachable(runner);
+  env.server_listening = uninstall::server_answers_on(config.listener.host, config.listener.port);
+  // M1 has no install metadata yet — the versioned layout and `current` pointer
+  // are the M2 update's own story; nothing to compare, so honestly matching (R-T5-b).
+  env.install_location_ok = true;
+  env.purge = args->flags.contains("--purge");
+  if (env.purge) {
+    io.out << "uninstall: --purge also removes your models under " << env.models_root.generic_string() << '\n'
+           << "uninstall: type the word purge to confirm: " << std::flush;
+    std::string line;
+    if (std::getline(io.in, line)) {
+      while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
+      env.purge_confirmed = line == "purge";
+    }
+  }
+  env.allowed_roots = {env.config_path.parent_path(), env.state_root, env.models_root, env.logs_root, home};
+  if (config.roots.secret) env.allowed_roots.push_back(config.roots.secret->path());
+  const auto plan = uninstall::plan_uninstall(env);
+  if (!plan.proceed) {
+    io.out << "uninstall: " << plan.deny_reason << '\n';
+    return 1;
+  }
+  if (plan.stop == uninstall::StopDecision::via_service_manager) {
+    service::ServiceEnv service_env;
+#if defined(_WIN32)
+    service_env.user_unit_dir = home / "strata";
+    service_env.task_xml_path = unit_path;
+    service_env.unit_path = unit_path;
+#else
+    service_env.user_unit_dir = home / "systemd" / "user";
+    service_env.unit_path = unit_path;
+#endif
+    const auto stopped = service::plan_disable(service_env, runner);
+    io.out << stopped.message << '\n';
+    if (!stopped.ok) {
+      io.out << "uninstall: the service could not be stopped; nothing was removed\n";
+      return 1;
+    }
+  }
+  for (const auto& removal : plan.removals) {
+    std::error_code exists_ec;
+    if (!std::filesystem::exists(removal, exists_ec)) {
+      // Legitimately gone already: disable --now removed the unit file itself.
+      io.out << "uninstall: " << removal.generic_string() << " is already gone\n";
+      continue;
+    }
+    std::error_code remove_ec;
+    const auto removed = std::filesystem::is_directory(removal, remove_ec) ? std::filesystem::remove_all(removal, remove_ec)
+                                                                          : std::filesystem::remove(removal, remove_ec);
+    if (remove_ec || removed == 0) {
+      io.out << "uninstall: could not remove " << removal.generic_string() << "; stopping here\n";
+      return 1;
+    }
+    io.out << "uninstall: removed " << removal.generic_string() << '\n';
+  }
+  for (const auto& kept : plan.kept) io.out << "uninstall: kept " << kept.generic_string() << '\n';
   return 0;
 }
 
@@ -400,6 +728,8 @@ int run_network_verb(const std::string& verb, const FrontendConfig& config, cons
   if (verb == "pull") return verb_pull(config, config_file, rest, io, services);
   if (verb == "run") return verb_run(config, config_file, rest, io, services);
   if (verb == "doctor") return verb_doctor(config, config_file, rest, io, services);
+  if (verb == "service") return verb_service(config, config_file, rest, io);
+  if (verb == "uninstall") return verb_uninstall(config, config_file, rest, io);
   return verb_update_models(config, config_file, rest, io, services);
 }
 

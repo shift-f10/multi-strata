@@ -646,7 +646,31 @@ target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_launch)
 # SP4 Task 27: pull, run, update --models and doctor drive the confined downloader.
 target_sources(secure_frontend_strata_cli PRIVATE src/strata_cli_network.cpp)
 target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_downloader)
+# SP7 M1 Tasks 1-3: service verbs and the full doctor live beside the network verbs.
+target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_service_ops secure_frontend_doctor)
+# SP7 M1 Task 4/5: the uninstall verb.
+target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_uninstall)
+if(WIN32)
+    target_link_libraries(secure_frontend_strata_cli PUBLIC ws2_32)
+endif()
 secure_frontend_set_warnings(secure_frontend_strata_cli)
+
+# SP7 M1 Task 1 (spec D-5): the per-user service unit — rendering, and the
+# enable/disable/status verbs that use it (Task 2).
+secure_frontend_add_library(secure_frontend_service_ops SOURCES src/service_ops.cpp)
+
+# SP7 M1 Task 3 (spec D-7): the doctor check set — pure checks over an injected
+# ProbeBundle; the verb composes them (strata_cli_network).
+secure_frontend_add_library(secure_frontend_doctor SOURCES src/doctor_checks.cpp
+    LINKS secure_frontend_typed_config)
+
+# SP7 M1 Task 4 (spec D-6): the uninstall planner — ordered removals under allowed
+# roots, the health-probe stop decision, the --purge typed gate.
+secure_frontend_add_library(secure_frontend_uninstall SOURCES src/uninstall_plan.cpp
+    LINKS secure_frontend_typed_config)
+if(WIN32)
+    target_link_libraries(secure_frontend_uninstall PUBLIC ws2_32)
+endif()
 
 # PX §2: the one user-facing binary. SP4 provides only its acquisition verbs (Controller note 1);
 # strata-secure-server never links secure_frontend_acquire or secure_frontend_strata_cli (§7.1).
@@ -1398,6 +1422,79 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_server_cli_tests cli_sp2_flags_map_to_schema_keys TIMEOUT 120)
     # SP4 §4.9 d: pure argv parsing, so wine runs it too.
     secure_frontend_add_cases(secure_frontend_server_cli_tests cli_expert_flag_parsing)
+
+    # SP7 M1 Task 1: the hardened service unit (exact text) and the `current`
+    # seam. The internal header lives in src/, like the SP2 launch seams.
+    secure_frontend_add_test_executable(secure_frontend_service_ops_tests tests/service_ops_test.cpp
+        secure_frontend_service_ops secure_frontend_test_support)
+    target_include_directories(secure_frontend_service_ops_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    set(SECURE_FRONTEND_SERVICE_OPS_CASES render_systemd_unit_exact_golden render_systemd_unit_rejects_whitespace_paths
+        render_systemd_unit_rejects_relative_or_empty render_schtasks_create_exact_golden
+        render_schtasks_create_rejects_unsafe_paths)
+    secure_frontend_add_cases(secure_frontend_service_ops_tests ${SECURE_FRONTEND_SERVICE_OPS_CASES})
+
+    # SP7 M1 Task 3: the D-7 doctor checks, all driven by fake ProbeBundles.
+    secure_frontend_add_test_executable(secure_frontend_doctor_tests tests/doctor_checks_test.cpp
+        secure_frontend_doctor secure_frontend_typed_config secure_frontend_test_support)
+    target_include_directories(secure_frontend_doctor_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    secure_frontend_add_cases(secure_frontend_doctor_tests
+        doctor_check_config_names_rejected_keys doctor_check_config_valid_passes doctor_check_token_modes
+        doctor_check_roots_report_named_failures doctor_check_port_busy_fails_with_fix
+        doctor_check_gpu_and_driver doctor_check_cuda_runtime doctor_check_memlock
+        doctor_deep_digests_and_run_order doctor_human_fix_never_carries_install_commands)
+
+    # SP7 M1 Task 4: the D-6 uninstall plan; the probe case runs a canned HTTP
+    # listener on loopback (no real server, no engine).
+    secure_frontend_add_test_executable(secure_frontend_uninstall_tests tests/uninstall_test.cpp
+        secure_frontend_uninstall secure_frontend_typed_config secure_frontend_test_support)
+    target_include_directories(secure_frontend_uninstall_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    secure_frontend_add_cases(secure_frontend_uninstall_tests
+        uninstall_plan_no_listener_orders_removals uninstall_plan_listener_with_unit_stops_via_manager
+        uninstall_plan_listener_without_unit_refuses_with_ctrlc_hint uninstall_plan_listener_with_unit_but_no_manager_refuses
+        uninstall_plan_purge_needs_the_typed_word uninstall_plan_refuses_paths_outside_allowed_roots
+        uninstall_plan_missing_optional_paths_are_skipped uninstall_plan_refuses_when_install_metadata_mismatches
+        uninstall_health_probe_answers_on_a_listener_and_not_without_one)
+
+    # SP7 M1 Task 5: the new CLI verbs as real child processes against temp roots.
+    secure_frontend_add_test_executable(secure_frontend_cli_verbs_tests tests/cli_verbs_test.cpp
+        secure_frontend_test_support)
+    secure_frontend_add_cases(secure_frontend_cli_verbs_tests
+        cli_usage_lists_the_new_verbs cli_uninstall_refuses_while_a_server_answers
+        ARGS $<TARGET_FILE:strata> TIMEOUT 120)
+    if(NOT WIN32)
+        # The systemd-shim cases are POSIX-only; the Windows side is registered
+        # in the WIN32 block below (Task 6).
+        secure_frontend_add_cases(secure_frontend_cli_verbs_tests
+            cli_service_enable_status_disable_roundtrip cli_service_enable_without_user_manager
+            cli_uninstall_plain_removes_and_keeps cli_uninstall_purge_without_the_word_refuses
+            cli_uninstall_purge_with_typed_word_removes_models
+            ARGS $<TARGET_FILE:strata> TIMEOUT 120)
+    endif()
+    if(WIN32)
+        # Task 6: the Task Scheduler CLI roundtrip, windows-runtime labelled —
+        # cross-compiled by the cross gate, run only on the owner's Windows box.
+        secure_frontend_add_cases(secure_frontend_cli_verbs_tests
+            cli_service_enable_status_disable_taskscheduler
+            ARGS $<TARGET_FILE:strata> LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+    endif()
+    if(NOT WIN32)
+        # Symlink layouts are POSIX-only here; the Windows pointer form
+        # (current.txt) belongs to M2's update, which writes through it.
+        secure_frontend_add_cases(secure_frontend_service_ops_tests
+            resolve_current_target_follows_current_pointer resolve_current_target_plain_install_uses_self
+            service_enable_writes_unit_then_enables service_enable_missing_user_manager_writes_nothing
+            service_enable_reports_failed_enable service_disable_removes_only_our_unit
+            service_disable_refuses_foreign_unit service_status_one_line_each service_status_without_user_manager
+            service_enable_e2e_path_shim)
+    endif()
+    if(WIN32)
+        # The Task Scheduler plan branch (Task 6): registered in Windows test
+        # builds; the cross gate compiles them, the owner's box runs them.
+        secure_frontend_add_cases(secure_frontend_service_ops_tests
+            service_enable_writes_task_then_creates service_enable_without_task_scheduler_writes_nothing
+            service_disable_refuses_foreign_task_file service_disable_removes_task_and_our_file
+            service_status_task_one_line_each)
+    endif()
     secure_frontend_add_cases(secure_frontend_server_cli_tests
         init_writes_config_and_token_then_server_starts init_refuses_to_overwrite_without_force
         init_force_refuses_a_non_regular_config_target init_failure_creates_nothing

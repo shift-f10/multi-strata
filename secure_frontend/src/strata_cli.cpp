@@ -33,7 +33,9 @@ const std::string_view kUsage =
     "  serve                        (foreground serve of the installed managed model)\n"
     "  version                      (frontend and pin versions; the tag version governs)\n"
     "  key show [--env] | key rotate (token store maintenance; SP1 store rules)\n"
-    "  doctor [--downloader]\n"
+    "  doctor [--downloader] [--deep]\n"
+    "  service enable|disable|status  (per-user strata service; Linux systemd user unit)\n"
+    "  uninstall [--purge]            (removes unit, token, config, state; models only with --purge and a typed word)\n"
     "strata update        (program update: not available until SP7, exit 12)";
 
 std::optional<Args> parse_args(const std::span<const std::string> args, const std::set<std::string>& flags,
@@ -518,7 +520,7 @@ int run_strata(const std::span<const std::string> all_args, CliStreams& io, CliS
   const auto& config = std::get<ValidatedConfig>(loaded).get();
   const std::string verb = args[2];
   const auto rest = args.subspan(3);
-  if (verb == "pull" || verb == "run" || verb == "doctor" || verb == "update") {
+  if (verb == "pull" || verb == "run" || verb == "doctor" || verb == "update" || verb == "service" || verb == "uninstall") {
     return run_network_verb(verb, config, path_from_utf8(args[1]), rest, io, services);
   }
   struct Grammar final {
