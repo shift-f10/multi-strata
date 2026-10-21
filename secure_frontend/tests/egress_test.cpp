@@ -1,17 +1,23 @@
 #include "support/binary_imports.hpp"
+#include "support/egress_support.hpp"
+#include "support/server_harness.hpp"
 #include "support/test_paths.hpp"
 #include "support/test_support.hpp"
+#include "secure_frontend/socket_io.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace {
+using namespace std::chrono_literals;
 int failures = 0;
 void expect(bool condition, const std::string& message) {
   if (!condition) { ++failures; std::cerr << "FAILED: " << message << '\n'; }
@@ -127,11 +133,105 @@ void egress_static_tripwire_fails_on_binary_without_dynamic_section() {
   const auto empty = test_support::read_pe_imports(no_imports);
   expect(!empty.ok && empty.error.find("no import directory") != std::string::npos, "a PE without an import directory fails");
 }
+
+// SP3 Task 19 (spec §6.2 runtime tripwires, PRIV-01/03, DL-01).
+void egress_interposer_self_test() {
+#if defined(STRATA_EGRESS_PROBE_PATH) && defined(STRATA_EGRESS_TRIPWIRE_PATH)
+  const auto dir = test_support::make_temp_dir("probe");
+  const auto record = dir / "record.txt";
+  const auto out = dir / "out.txt";
+  const std::string command = std::string{"LD_PRELOAD='"} + STRATA_EGRESS_TRIPWIRE_PATH + "' STRATA_EGRESS_RECORD='" +
+                              test_support::utf8_path(record) + "' '" + STRATA_EGRESS_PROBE_PATH + "' > '" + test_support::utf8_path(out) + "'";
+  expect(std::system(command.c_str()) == 0, "the probe helper runs");
+  const std::string recorded = test_support::file_text(record);
+  for (const char* call : {"getaddrinfo", "connect", "socket_unix", "socket_dgram", "gethostbyname"}) {
+    expect(recorded.find(call) != std::string::npos, std::string{"recorded: "} + call);
+  }
+  const std::string printed = test_support::file_text(out);
+  expect(printed.find("getaddrinfo=denied") != std::string::npos && printed.find("connect=denied") != std::string::npos &&
+         printed.find("unix=denied") != std::string::npos, "and denied: " + printed);
+#else
+  test_support::skip("the LD_PRELOAD interposer is Linux-only");
+#endif
+}
+
+void egress_interposer_records_nothing_during_lifecycle() {
+  const auto dir = test_support::make_temp_dir("ipose");
+  const auto record = dir / "egress.txt";
+  test_support::ServerOptions options;
+  options.engine_args = {"--fail-first=1", "--counter-file=" + test_support::utf8_path(dir / "count"), "--tokens=10000", "--token-interval-ms=5"};
+  if (!test_support::arm_egress_tripwire(options, record)) test_support::skip("the LD_PRELOAD interposer is Linux-only");
+  auto server = test_support::ServerProcess::start(options);
+  expect(server && server->wait_until_listening(10s) && server->wait_for_health(test_support::kHealthReady, 20s), "ready after one restart");
+  if (!server) return;
+  test_support::run_lifecycle(*server, std::string{test_support::kHarnessToken});
+  server->stop(test_support::ServerProcess::Stop::term);
+  expect(server->wait_exit(10s) == std::optional<int>{0}, "clean shutdown");
+  expect(test_support::file_text(record).empty(), "no outbound call, DNS lookup, UDP or Unix socket: " + test_support::file_text(record));
+}
+
+void egress_table_scan_during_lifecycle() {
+  const auto dir = test_support::make_temp_dir("scan");
+  test_support::ServerOptions options;
+  options.engine_args = {"--fail-first=1", "--counter-file=" + test_support::utf8_path(dir / "count"), "--tokens=10000", "--token-interval-ms=5"};
+  auto server = test_support::ServerProcess::start(options);
+  expect(server && server->wait_until_listening(10s), "listening");
+  if (!server) return;
+  test_support::SocketScan scan(server->pid(), server->port());
+  expect(server->wait_for_health(test_support::kHealthReady, 20s), "ready after one restart");
+  test_support::run_lifecycle(*server, std::string{test_support::kHarnessToken});
+#if defined(_WIN32)
+  server->stop(test_support::ServerProcess::Stop::ctrl_break);
+#else
+  server->stop(test_support::ServerProcess::Stop::term);
+#endif
+  (void)server->wait_exit(10s);
+  std::string list;
+  for (const auto& v : scan.stop()) list += v + "; ";
+  expect(list.empty(), "only the listener and its accepted connections, no UDP, no Unix socket: " + list);
+}
+
+void egress_command_like_values_trigger_nothing() {
+  const auto dir = test_support::make_temp_dir("cmd");
+  const auto record = dir / "record.txt";
+  const auto egress = dir / "egress.txt";
+  test_support::ServerOptions options;
+  options.engine_args = {"--record-file=" + test_support::utf8_path(record)};
+  const bool armed = test_support::arm_egress_tripwire(options, egress);
+  auto server = test_support::ServerProcess::start(options);
+  expect(server && server->wait_until_listening(10s) && server->wait_for_health(test_support::kHealthReady, 15s), "ready");
+  if (!server) return;
+  const auto before = server->active_processes();
+  const std::string a = "127.0.0.1:" + std::to_string(server->port());
+  const std::string token{test_support::kHarnessToken};
+  for (const std::string content : {"https://example.com/model.gguf", "mcp://x", "file:///etc/passwd", "data:text/plain,x", "HTTP://EXAMPLE.COM"}) {
+    const auto r = raw_http::exchange("127.0.0.1", server->port(),
+        raw_http::request("POST", "/v1/chat/completions", a, {raw_http::bearer(token), "Content-Type: application/json"},
+                          R"({"model":"fake-model","messages":[{"role":"user","content":")" + content + R"("}]})"));
+    expect(r && r->status == 400, "remote-looking content is refused: " + content);
+  }
+  const auto pull = raw_http::exchange("127.0.0.1", server->port(),
+      raw_http::request("POST", "/v1/chat/completions", a, {raw_http::bearer(token), "Content-Type: application/json", "X-Strata-Update: now"},
+                        R"({"model":"pull:qwen","messages":[{"role":"user","content":"Hi"}]})"));
+  expect(pull && pull->status == 400, "a pull-like model value is refused");
+  for (const std::string target : {"/api/pull", "/v1/pull", "/update", "/v1/models/pull:x"}) {
+    const auto r = raw_http::exchange("127.0.0.1", server->port(), raw_http::request("GET", target, a, {raw_http::bearer(token)}));
+    expect(r && r->status == 404, "no acquire/update route: " + target);
+  }
+  expect(test_support::file_text(record).find("GEN") == std::string::npos, "the engine received no GEN");
+  expect(server->active_processes() == before, "no process started or ended");
+  if (armed) expect(test_support::file_text(egress).empty(), "no outbound attempt (interposer)");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
+  secure_frontend::WinsockGuard winsock;
   return secure_frontend_test::run_cases(argc, argv, {
       {"egress_server_imports_no_resolver_or_http_client", egress_server_imports_no_resolver_or_http_client},
       {"egress_static_tripwire_fails_on_binary_without_dynamic_section", egress_static_tripwire_fails_on_binary_without_dynamic_section},
+      {"egress_interposer_self_test", egress_interposer_self_test},
+      {"egress_interposer_records_nothing_during_lifecycle", egress_interposer_records_nothing_during_lifecycle},
+      {"egress_table_scan_during_lifecycle", egress_table_scan_during_lifecycle},
+      {"egress_command_like_values_trigger_nothing", egress_command_like_values_trigger_nothing},
   }, failures);
 }

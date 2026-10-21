@@ -742,10 +742,29 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
             "STRATA_FAKE_ENGINE_PATH=\"$<TARGET_FILE:strata-supervision-fake-engine>\""
             "STRATA_SECURE_SERVER_PATH=\"$<TARGET_FILE:strata-secure-server>\"")
         add_dependencies(${target} strata-supervision-fake-engine strata-secure-server)
+        if(TARGET strata_egress_tripwire)  # SP3 Task 19: Linux-only tripwire targets, when defined
+            target_compile_definitions(${target} PRIVATE
+                STRATA_EGRESS_TRIPWIRE_PATH="$<TARGET_FILE:strata_egress_tripwire>"
+                STRATA_EGRESS_PROBE_PATH="$<TARGET_FILE:strata-egress-probe-helper>")
+            add_dependencies(${target} strata_egress_tripwire strata-egress-probe-helper)
+        endif()
         if(WIN32)
             target_link_libraries(${target} PRIVATE advapi32)  # grant_current_user()
         endif()
     endfunction()
+
+    # SP3 Task 19 (spec §6.2): the LD_PRELOAD egress tripwire and its probe helper.
+    # Test-only, Linux-only, and defined above the first secure_frontend_test_paths
+    # call so if(TARGET ...) is true for every test binary that follows.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_library(strata_egress_tripwire SHARED tests/support/egress_tripwire.cpp)
+        target_link_libraries(strata_egress_tripwire PRIVATE ${CMAKE_DL_LIBS})
+        target_compile_features(strata_egress_tripwire PRIVATE cxx_std_20)
+        secure_frontend_set_warnings(strata_egress_tripwire)
+        add_executable(strata-egress-probe-helper tests/egress_probe_helper.cpp)
+        target_compile_features(strata-egress-probe-helper PRIVATE cxx_std_20)
+        secure_frontend_set_warnings(strata-egress-probe-helper)
+    endif()
 
     # SP1 Task 2 already builds and registers secure_frontend_engine_stdio_process_tests.
     secure_frontend_test_paths(secure_frontend_engine_stdio_process_tests)
@@ -1045,6 +1064,20 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     set(SECURE_FRONTEND_EGRESS_CASES egress_server_imports_no_resolver_or_http_client
         egress_static_tripwire_fails_on_binary_without_dynamic_section)
     secure_frontend_add_cases(secure_frontend_egress_tests ${SECURE_FRONTEND_EGRESS_CASES} TIMEOUT 120)
+    # SP3 Task 19: runtime tripwires. On Windows the interposer cases are not registered (no interposer);
+    # the server-starting cases carry the windows-runtime label (ruling R-J).
+    target_link_libraries(secure_frontend_egress_tests PRIVATE secure_frontend_socket_io)
+    if(WIN32)
+        secure_frontend_add_cases(secure_frontend_egress_tests egress_command_like_values_trigger_nothing
+            LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+        secure_frontend_add_cases(secure_frontend_egress_tests egress_table_scan_during_lifecycle
+            LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+        target_link_libraries(secure_frontend_egress_tests PRIVATE iphlpapi)
+    else()
+        secure_frontend_add_cases(secure_frontend_egress_tests egress_interposer_self_test
+            egress_interposer_records_nothing_during_lifecycle egress_table_scan_during_lifecycle
+            egress_command_like_values_trigger_nothing LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+    endif()
 
     secure_frontend_add_test_executable(secure_frontend_json_tests tests/json_test.cpp secure_frontend_json)
     secure_frontend_add_cases(secure_frontend_json_tests
