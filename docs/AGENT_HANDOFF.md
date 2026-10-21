@@ -813,6 +813,14 @@ SP3 M1 done on branch `sp3-api-streaming`, merged into `main` 2026-10-21: accept
 - TSan: not installed on this host — "not run on this host (controller follow-up)"; the non-blocking `linux-clang-tsan` job (Task 22, ruling T22-tsan) is the future vehicle.
 - Final-grep honesty (ruling T23-grep): `grep -rn "kMinimumSendBudget\|chatcmpl-local\|text/plain; charset" src include` prints ONE line — `chat_schema.cpp:277`, the legacy `render_chat_completion_response` kept per the plan's own Task 16 rule ("stays only if a test still uses it" — `chat_schema_test.cpp` pins it; no product path calls it; the M1 response is the §3.5 `render_chat_completion`, pinned since Task 15/16). `grep -rnE "std::chrono::(milli)?seconds\([0-9]{3,}\)" src` prints 8 lines, ALL in untouched SP1/SP2-era supervision files (`engine_stdio_process.cpp`, `engine_process.cpp`, `engine_supervisor.cpp`, `models_store_windows.cpp` — verified unchanged on this branch; §5.3 governs the HTTP/API constants files, which carry every SP3 timing value). No SP3 task added a literal either grep flags.
 
+#### M2 status (recorded by the controller merge, 2026-10-21)
+
+SP3 M2 done on branch `sp3-api-streaming` (17 commits, `f01ef654..847b5b9e`, 58 files, +4053/−266), merged into `main` at `c83119a9` 2026-10-21. Ledger + final report: `docs/superpowers/handoff/reports/sp3-m2/`.
+
+- Merge-gate battery (controller, this host): linux-gcc build 0 warnings, ctest `100% tests passed out of 746`; release preset: build clean after a merge-time fix, preset ctest 10/10, `secure_distribution_check` PASS; `windows-llvm-mingw-cross` 0 warnings; pytest 25; root build 0 warnings + ctest 712 registered, one failure — the parked flake below; TSan (linux-clang, `-fsanitize=thread`): 111 filtered concurrency/streaming cases, **zero ThreadSanitizer reports**, same single flake.
+- Fixed in-merge (release-gate class, second consecutive lane to miss it): `http_parser_test` took pointers from `ok(parse())` temporaries — dangling use, `-Werror=dangling-pointer` under `-O3`. Gate discipline from now on: the release-preset build is a per-task lane gate, not merge-only.
+- Parked for the owner: `api_server_tests.log_line_format_and_rate_limit` — pre-existing M1 token-bucket timing flake (lane: 3/10 on pristine baseline; merge battery: 10/10 in isolation, fails only under full-suite/TSan load; M2 did not touch bucket timing). Windows runtime for `windows-runtime` cases incl. the two stall-volume streaming cases (owner hardware). GPU validation kit: `docs/validation/sp3-api-kit.md` runs on the owner's boxes.
+
 #### SP1 addendum (recorded by SP3, spec §5.1, §5.3)
 
 | # | Change | Task |

@@ -41,6 +41,11 @@ talk to the owner; the top-level controller does.
   → one CTest test per case named `<binary>.<case>`; `LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME}`
   for real-Windows-only cases; wine preset excludes label `windows-runtime`.
   Baseline before your Task 1: linux-gcc 111/111, wine 102/102.
+ - **Per-task gate discipline (2026-10-21, after both SP3 lanes):** per task build
+   BOTH `linux-gcc` and `linux-gcc-release` (hooks OFF, `-O3`), not just linux-gcc +
+   cross — `-O3` catches classes both lanes missed until the merge gate
+   (`-Werror=unused-result` in M1, `-Werror=dangling-pointer` in M2), since CI no
+   longer runs. Full-suite gates run synchronously in-turn, never background-and-pause.
 - Known parked item: socket-server tests use fixed ports 20000–20099 and
   collide under `ctest -j`; presets/CI run serially. If a task of yours
   touches that fixture, prefer ephemeral port 0.

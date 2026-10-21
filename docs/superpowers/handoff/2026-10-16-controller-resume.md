@@ -25,7 +25,7 @@ Decomposition (approved order): **SP0** foundation/hardening → **SP1** typed c
 | **PP-line protocol fix** (Strata-profile prefill heartbeats accepted) | merged | main (c9629e6e) |
 | SP4 part 2, Tasks 25–29 (confined curl downloader Linux + Windows, verbs end to end, privacy proofs) | merged, real-Windows verified | main (merge bd3b53a6) |
 | **SP3 M1** concurrency + HTTP hardening (26 tasks: 0–5, 6a, 6b, 7, 8a, 8b, 9–23) | **Tasks 0–23 complete, reviewed and merged** | main (merge `b7fb97c9`); lane `sp3-api-streaming` saved at `11f22e47` |
-| SP3 M2 streaming (17 tasks) | **in flight since 2026-10-21**: sub-controller on branch `sp3-api-streaming` re-created at merged main, worktree `.worktrees/sp3`, ledger `.superpowers/sdd/2026-10-14-sp3-m2-streaming/` | `docs/superpowers/plans/2026-10-14-sp3-m2-streaming.md` |
+| SP3 M2 streaming (17 tasks) | **complete and merged** | main (merge `c83119a9`); lane saved at `847b5b9e`; plan `docs/superpowers/plans/2026-10-14-sp3-m2-streaming.md`; ledger `docs/superpowers/handoff/reports/sp3-m2/` |
 | SP6 GLM engine | DRAFT spec + research; **waits on the owner's decision sheet** | specs/research below |
 | SP5, SP7 | not started, no spec | — |
 
@@ -34,6 +34,8 @@ Decomposition (approved order): **SP0** foundation/hardening → **SP1** typed c
 **2026-10-20 — the stop is lifted and the state has moved.** The owner directed the upstream update: **`main` = `7bddb9e1` = `origin/main`**, upstream `v0.1.44.1` → **`v0.2.1.3`** (gitlink `cbfd5b92`), with the `RESUME`/`REUSED` protocol hotfix `01ad7226` immediately before it; every gate green at the new pin, host and (last time) CI. Owner also disabled GitHub Actions (remote = storage; see the 2026-10-20 owner-decisions block in `docs/AGENT_HANDOFF.md`), so the CI statements below describe history unless the owner re-enables. SP3 M1 Task 12 resumes from this base.
 
 **2026-10-21 — SP3 M1 merged; SP3 M2 in flight.** M1 Tasks 12–23 ran on the re-anchored lane (`8520deee` re-anchor merge of main, then 12 commits to `11f22e47`) and were merged into **`main` = `b7fb97c9`** with the full gate battery on the merged tree: linux-gcc 690 run 100% (+4 env skips), linux-gcc-release preset 10/10 + `secure_distribution_check` PASS, windows-llvm-mingw-cross 0 warnings, pytest 25, root build + ctest 652 passed + 4 env skips 0 failed, and — first time — a controller-run **TSan** pass (clang-18 installed under `.toolchains/clang18` with wrappers in `.venv-dev/bin`; filtered concurrency suites 90/90, zero ThreadSanitizer reports). One lane defect fixed in-merge (release-preset `-O3` `-Werror=unused-result` in the new egress tripwire). Egress interposers ruled to stay separate (SP3 `egress_tripwire` for NET/EXT, SP4 connect-audit shim for DL). M1 ledger + final report archived in `docs/superpowers/handoff/reports/sp3-m1/`. M2 (17 tasks) launched 2026-10-21 on branch `sp3-api-streaming` re-created at merged main (base `f01ef654`), same worktree path; ledger `.superpowers/sdd/2026-10-14-sp3-m2-streaming/progress.md` records the host adaptations.
+
+**2026-10-21 (later) — SP3 M2 merged; SP3 complete.** M2 ran 17 commits (`5d086223..847b5b9e`) with three §3.4 forced hand-backs, all recovered from the ledger; process fix: full-suite gates run synchronously in-turn, never pause-and-wait (the hand-backs were the lane ending its turn beside a backgrounded gate). Merged at **`main` = `c83119a9`**: linux-gcc 746/746, release preset clean after a merge-time dangling-pointer fix in `http_parser_test` (real UB, `-Werror=dangling-pointer` under `-O3` — second consecutive lane to miss the release build; it is now a per-task lane gate, see `briefs/subcontroller-common.md`), cross 0 warnings, pytest 25, root ctest 712 with one flake, TSan 111 cases **zero reports** with the same single flake. That flake (`log_line_format_and_rate_limit`) is pre-existing M1 token-bucket timing sensitivity (3/10 on pristine per the lane; 10/10 in isolation here; M2 did not touch bucket timing) — parked for the owner. `docs/superpowers/handoff/reports/sp3-m2/` holds the ledger. **Next milestone needs an owner decision: SP5, SP6 (blocked on the decision sheet, §5.1), or SP7.**
 
 Local gates on `main` (dev host): linux-gcc **560/560** (+2 environment skips: `proc03_other_uid_cannot_open_engine_fd`, `proc05_cgroup_kill_when_delegated`), linux-gcc-release 10/10 labelled (526/526 full), wine 260/260, pytest 25, 0 warnings under `-Werror` on every preset.
 
@@ -103,7 +105,8 @@ Owner-visible behaviour changes already on the **SP3 branch** (not yet on main):
 4. Ratify two SP2 spec-vs-code rulings: C3 grandchild → membership assertion; K4 sockets (now closed on the SP3 branch).
 5. SP1 `deployment.md`: the Windows token caveat can be removed.
 6. The product-spec CLI verbs `serve`, `version`, `key` have **no owner** (SP4 created `strata` with its verbs only); assign to SP3 M2 or SP5.
-7. Whether to resume SP3 M1 before or after the GPU session.
+7. Whether to resume SP3 M1 before or after the GPU session. *(Resolved: resumed 2026-10-20; M1 and M2 both merged 2026-10-21.)*
+8. Pre-existing test flake `secure_frontend_api_server_tests.log_line_format_and_rate_limit` (M1 token-bucket timing; fails only under heavy suite load; battery-verified 10/10 in isolation) — fix or accept, and the two stall-volume `windows-runtime` streaming cases plus the GPU kit run (`docs/validation/sp3-api-kit.md`) all wait on the owner's hardware.
 
 ---
 
