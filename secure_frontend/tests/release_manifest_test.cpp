@@ -4,9 +4,11 @@
 #include "release_manifest.hpp"
 #include "support/test_support.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -133,6 +135,27 @@ void case_no_pinned_key_refuses_exact_line() {
   expect(!secure_frontend::pinned_release_public_key().has_value(), "no key is pinned in the default build");
 }
 
+void case_python_signed_fixture_verifies() {
+  const auto& args = secure_frontend_test::extra_arguments();
+  expect(!args.empty(), "the tests/fixtures directory is passed as ARGS");
+  if (args.empty()) return;
+  const std::filesystem::path dir{std::filesystem::path{args.front()} / "release"};
+  std::error_code ec;
+  if (!std::filesystem::exists(dir / "signed-envelope.txt", ec)) {
+    expect(false, "the committed fixture tests/fixtures/release/signed-envelope.txt exists");
+    return;
+  }
+  const std::string envelope = secure_frontend_test::read_file(dir / "signed-envelope.txt");
+  expect(envelope == std::string(kGoodEnvelope),
+         "the Python-signed fixture bytes equal the RFC-reference envelope this suite pins verbatim");
+  std::string published = secure_frontend_test::read_file(dir / "pubkey.hex");
+  published.erase(std::remove(published.begin(), published.end(), '\n'), published.end());
+  expect(published == std::string(kPk1Hex), "the fixture-published key is the RFC vector-1 key");
+  const auto result = secure_frontend::verify_release_manifest(envelope, key32(published));
+  expect(std::holds_alternative<secure_frontend::ReleaseManifest>(result), "the C++ verifier accepts the signature made by scripts/release/sign.py");
+  if (auto* manifest = std::get_if<secure_frontend::ReleaseManifest>(&result)) expect(manifest->version == "0.9.4", "the fixture version");
+}
+
 void case_malformed_envelopes_rejected() {
   const std::string no_marker = std::string(kManifest) + "\n";
   rejected_as(no_marker, secure_frontend::ReleaseReject::framing, "envelope without the framing line");
@@ -172,6 +195,7 @@ int main(int argc, char** argv) {
       {"tampered_signature_rejected", case_tampered_signature_rejected},
       {"wrong_pinned_key_rejected", case_wrong_pinned_key_rejected},
       {"no_pinned_key_refuses_exact_line", case_no_pinned_key_refuses_exact_line},
+      {"python_signed_fixture_verifies", case_python_signed_fixture_verifies},
       {"malformed_envelopes_rejected", case_malformed_envelopes_rejected},
       {"schema_violations_rejected", case_schema_violations_rejected},
   }, failures);
