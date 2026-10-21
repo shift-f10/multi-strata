@@ -2,10 +2,13 @@
 
 #include "secure_frontend/bundle_io.hpp"
 #include "secure_frontend/catalog.hpp"
+#include "secure_frontend/canonical_path.hpp"
 #include "secure_frontend/config_file.hpp"
 #include "secure_frontend/engine_gate.hpp"
+#include "secure_frontend/frontend_init.hpp"
 #include "secure_frontend/server_bootstrap.hpp"
 #include "secure_frontend/test_hooks.hpp"
+#include "secure_frontend/token_reader.hpp"
 #include "strata_cli_internal.hpp"
 
 #include <istream>
@@ -28,6 +31,8 @@ const std::string_view kUsage =
     "  update --models [<name:tag> ...] [--yes]\n"
     "  run <name[:tag]> [--yes]\n"
     "  serve                        (foreground serve of the installed managed model)\n"
+    "  version                      (frontend and pin versions; the tag version governs)\n"
+    "  key show [--env] | key rotate (token store maintenance; SP1 store rules)\n"
     "  doctor [--downloader]\n"
     "strata update        (program update: not available until SP7, exit 12)";
 
@@ -303,6 +308,67 @@ int verb_serve(const FrontendConfig& config, const Args& args, CliStreams& io) {
   return secure_frontend::server_run(config, false);
 }
 
+// SP5 M1 Task 14 (plan :254, D-4; Ruling T14-a): the tag version governs, so the
+// frontend has no number of its own — every spoken version here comes from the one
+// configure-time source (upstream.version -> built_engine_version_text), which is the
+// same constant the manifest gate compares (AGENT_HANDOFF bump rule). The engine's
+// CMake self-version (0.1.46.2 at this pin) is upstream's own number: this binary
+// never reads it (an empty upstream/ checkout must not change the answer), so the
+// line labels it informational without a number.
+int verb_version(CliStreams& io) {
+  const std::string_view pin = secure_frontend::built_engine_version_text();
+  io.out << "strata (frontend) version " << pin << "\n"
+         << "upstream pin v" << pin << " (upstream.version) \342\200\224 the tag version governs\n"
+         << "engine self-version: informational only (the engine prints its own at --version); nothing here is decided by it\n";
+  return 0;
+}
+
+// SP5 M1 Task 14 (D-4; Rulings T14-c/d/e): token store maintenance on SP1's exact
+// machinery — read_token's store rules ARE the "readable by this uid" verdict, and
+// generate_token is the CSPRNG + atomic-replace + 0600 path. An env: source names
+// no local store, so both subcommands refuse it. The token is printed once on
+// stdout and lives on disk only in the store file; every message here is fixed text.
+int verb_key(const FrontendConfig& config, const Args& args, CliStreams& io) {
+  const bool show = args.positional.size() == 1U && args.positional[0] == "show";
+  const bool rotate = args.positional.size() == 1U && args.positional[0] == "rotate";
+  if (!show && !rotate) return usage(io, "key takes show [--env] or rotate");
+  if (args.flags.contains("--env") && !show) return usage(io, "--env belongs to key show");
+  if (config.token.kind() != secure_frontend::SecretSourceKind::protected_file) {
+    io.err << "key: token.source is an env: variable, not a locally generated token file; key works only on a file: "
+              "token below roots.secret.\n";
+    return exit_code_value(ExitCode::usage);
+  }
+  if (!config.roots.secret.has_value()) {
+    io.err << "key: roots.secret is not configured; the token file lives below it.\n";
+    return exit_code_value(ExitCode::filesystem);
+  }
+  const auto file = parse_relative_path(config.token.location());
+  if (!std::holds_alternative<RelativePath>(file)) {  // the config grammar already checks this; fail closed twice
+    io.err << "key: the token file path is not portable.\n";
+    return exit_code_value(ExitCode::usage);
+  }
+  if (rotate) {
+    // The store's own path: CSPRNG bytes, atomic replacement, private-directory and
+    // 0600 rules (frontend_init's generate_token — the one `init` uses).
+    if (auto failure = secure_frontend::generate_token(*config.roots.secret, std::get<RelativePath>(file), true)) {
+      io.err << "key: rotate: " << failure->message << "\n";
+      return exit_code_value(ExitCode::filesystem);
+    }
+  }
+  const auto read = secure_frontend::read_token(config.token, *config.roots.secret);
+  if (const auto* error = std::get_if<secure_frontend::TokenReadError>(&read)) {
+    io.err << "key: the token cannot be read: " << error->message << "\n";
+    return exit_code_value(ExitCode::filesystem);
+  }
+  const auto& token = std::get<secure_frontend::SecretBytes>(read);
+  if (args.flags.contains("--env")) io.out << "OPENAI_API_KEY=" << token.view() << "\n";
+  else io.out << token.view() << "\n";
+  if (rotate)
+    io.err << "key: the old token is retired — restart the server to pick the new one up, and reconfigure every app "
+              "that used the old one.\n";
+  return 0;
+}
+
 std::variant<ValidatedConfig, int> load_config(const std::string& file, CliStreams& io) {
   auto draft = read_config_file(path_from_utf8(file));
   if (auto* issues = std::get_if<ConfigErrors>(&draft)) {
@@ -437,6 +503,10 @@ int run_strata(const std::span<const std::string> all_args, CliStreams& io, CliS
     io.out << "program update not available in this release; install the new release manually\n";
     return exit_code_value(ExitCode::program_update);
   };
+  // SP5 M1 Task 14 (Ruling T14-b): bare `strata version` reads no config at all —
+  // the spec writes it without --config. The --config form validates, then answers
+  // the same thing through the verb table below.
+  if (args[0] == "version" && args.size() == 1) return verb_version(io);
   if (args[0] == "update" && args.size() == 1) return program_update();
   // The documented form under note 2 (--config on every verb): `update` with no operands is the
   // program part too, exactly like the bare form (the config is not read). `update --models …`
@@ -463,12 +533,19 @@ int run_strata(const std::span<const std::string> all_args, CliStreams& io, CliS
       {"show", {{"--digests"}, {}}},
       {"rm", {{"--force", "--retired"}, {"--partials"}}},
       {"serve", {{}, {}}},
+      {"version", {{}, {}}},
+      {"key", {{"--env"}, {}}},
   };
   const auto it = grammar.find(verb);
   if (it == grammar.end()) return usage(io, "unknown verb");
   const auto parsed = parse_args(rest, it->second.flags, it->second.options);
   if (!parsed) return usage(io, "unknown or incomplete option");
   if (verb == "serve") return verb_serve(config, *parsed, io);
+  if (verb == "version") {
+    if (!parsed->flags.empty() || !parsed->positional.empty()) return usage(io, "version takes no options or operands");
+    return verb_version(io);
+  }
+  if (verb == "key") return verb_key(config, *parsed, io);
   if (verb == "import") return verb_import(config, *parsed, io, services);
   if (verb == "verify") return verb_verify(config, *parsed, io);
   if (verb == "export") return verb_export(config, *parsed, io, services);

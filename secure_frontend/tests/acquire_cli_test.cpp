@@ -1,17 +1,26 @@
 // SP4 Task 23 (spec §1.5, §4.5, §4.8, §6.2): the strata CLI's local verbs.
 #include "acquire_cases.hpp"
+#include "secure_frontend/catalog.hpp"  // SP5 M1 Task 14: the one version source
 #include "secure_frontend/model_index_store.hpp"
 #include "secure_frontend/test_hooks.hpp"
 #include "support/cli_harness.hpp"
+#include "support/config_json.hpp"  // SP5 M1 Task 14: the key-case config rewrite
 #include "support/expect.hpp"
 
+#include <algorithm>
+#include <filesystem>
 #include <memory>
 #include <string>
+
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#endif
 
 namespace acquire_cases {
 namespace {
 
 using secure_frontend_test::expect;
+using secure_frontend_test::json_literal;
 using secure_frontend_test::cli::CliHarness;
 
 class HeldLoaded final : public secure_frontend::LoadedVersions {
@@ -194,6 +203,92 @@ void rm_partials_deletes_other_staging() {
   expect(h.run({"rm", "--partials", "m:t"}) == 0, "rm --partials");
   expect(!std::filesystem::exists(h.models_path / ".staging" / key) && std::filesystem::exists(h.models_path / ".staging" / other_key),
          "only m:t partials deleted");
+}
+
+// SP5 M1 Task 14 (D-4): `strata version` — the tag governs, so the answer comes
+// from the one configure-time version source (upstream.version ->
+// built_engine_version_text), and the engine's self-version is labelled
+// informational without ever being spoken by this binary (Ruling T14-a).
+void version_names_frontend_and_engine_versions() {
+  CliHarness h;
+  const std::string pin{secure_frontend::built_engine_version_text()};
+  const int bare = h.run_raw({"version"});
+  const std::string first = h.out;
+  expect(bare == 0, "strata version runs without --config: " + h.err);
+  expect(h.out.find("strata (frontend) version " + pin) != std::string::npos,
+         "the frontend version names the governing pin: " + h.out);
+  expect(h.out.find("upstream pin v" + pin + " (upstream.version)") != std::string::npos,
+         "upstream.version is named as the pin: " + h.out);
+  expect(h.out.find("the tag version governs") != std::string::npos, "the bump rule is stated: " + h.out);
+  expect(h.out.find("engine self-version: informational only") != std::string::npos,
+         "the engine self-version is labelled informational: " + h.out);
+  expect(h.out.find("0.1.46") == std::string::npos, "the engine's self-number never comes from this binary: " + h.out);
+  expect(h.run({"version"}) == 0 && h.out == first, "the --config form validates, then answers the same: " + h.out);
+}
+
+// SP5 M1 Task 14 (D-4, Rulings T14-c/d/e): key show/rotate on the SP1 store.
+void key_show_requires_local_token_and_never_logs() {
+  CliHarness h;
+  // The harness base config carries env:STRATA_TEST_TOKEN — not a locally
+  // generated store, so show refuses before reading anything.
+  expect(h.run({"key", "show"}) == 1 && h.err.find("env:") != std::string::npos,
+         "an env: source has no local token to show: " + h.err);
+  // A file: token under roots.secret (the store key works on).
+  secure_frontend_test::make_private_directory(h.scratch / "secret");
+  secure_frontend_test::write_file(h.config,
+                                   secure_frontend_test::render_config_json({{"schema_version", "1"},
+                                                                            {"roots.models", json_literal(h.models_path.string())},
+                                                                            {"roots.secret", json_literal((h.scratch / "secret").string())},
+                                                                            {"token.source", json_literal("file:token")},
+                                                                            {"engine.executable", json_literal((h.scratch / "bin" / "engine").string())},
+                                                                            {"engine.model_id", json_literal("m")}}));
+  expect(h.run({"key", "show"}) == 7 && h.out.empty(), "no token yet: show refuses, prints nothing: " + h.err);
+  expect(h.run({"key", "rotate"}) == 0, "rotate creates the store: " + h.err);
+  const auto first_line = h.out.find('\n');
+  const std::string token1 = h.out.substr(0, first_line);
+  expect(!token1.empty() && h.err.find("restart") != std::string::npos,
+         "rotate prints the new token once and the restart notice: " + h.out);
+  expect(std::count(h.out.begin(), h.out.end(), '\n') >= 1 && h.out.find(token1, first_line + 1) == std::string::npos,
+         "the rotated token is printed exactly once");
+  const auto store = h.scratch / "secret" / "token";
+  expect(std::filesystem::exists(store), "the token file sits at roots.secret/token");
+#if !defined(_WIN32)
+  const auto bits = std::filesystem::status(store).permissions();
+  expect((bits & (std::filesystem::perms::group_all | std::filesystem::perms::others_all)) == std::filesystem::perms::none,
+         "the store stays 0600 (SP1 rules unchanged)");
+#endif
+  expect(h.run({"key", "show"}) == 0 && h.out == token1 + "\n", "show prints the stored token, once: " + h.out);
+  // The store readable by THIS uid is the store-rule verdict (T14-c): a
+  // group-readable file is refused without printing.
+#if !defined(_WIN32)
+  (void)::chmod(store.c_str(), 0644);
+  const int unsafe = h.run({"key", "show"});
+  expect(unsafe == 7 && h.out.find(token1) == std::string::npos,
+         "an unsafe store is refused and the token is not printed (exit 7): " + h.out);
+  (void)::chmod(store.c_str(), 0600);
+#endif
+  // --env prints the shell line (PX).
+  expect(h.run({"key", "show", "--env"}) == 0 && h.out == "OPENAI_API_KEY=" + token1 + "\n",
+         "--env prints the shell line: " + h.out);
+  // rotate replaces atomically; the old token is gone from every file.
+  expect(h.run({"key", "rotate"}) == 0, "rotate again");
+  const std::string token2 = h.out.substr(0, h.out.find('\n'));
+  expect(!token2.empty() && token2 != token1, "rotate generated a new token");
+  int token1_files = 0;
+  int token2_files = 0;
+  std::error_code walk_ec;
+  for (auto it = std::filesystem::recursive_directory_iterator(h.scratch, walk_ec);
+       !walk_ec && it != std::filesystem::recursive_directory_iterator(); it.increment(walk_ec)) {
+    if (!it->is_regular_file()) continue;
+    const std::string body = secure_frontend_test::read_file(it->path());
+    if (body.find(token1) != std::string::npos) ++token1_files;
+    if (body.find(token2) != std::string::npos) ++token2_files;
+  }
+  expect(token1_files == 0, "the rotated-out token lives in no file anywhere (nothing logged)");
+  expect(token2_files == 1, "the live token lives in exactly one file: the store itself");
+  // Grammar: bad subcommand and --env misuse are usage errors.
+  expect(h.run({"key", "frobnicate"}) == 1, "key takes show or rotate");
+  expect(h.run({"key", "rotate", "--env"}) == 1, "--env belongs to show only");
 }
 
 #if defined(SECURE_FRONTEND_TEST_HOOKS)

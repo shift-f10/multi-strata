@@ -640,7 +640,8 @@ target_compile_features(secure_frontend_strata_cli PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_strata_cli PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
 target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_acquire secure_frontend_typed_config
-    secure_frontend_server_bootstrap)  # SP5 M1 Task 13: `strata serve` runs the shared boot
+    secure_frontend_server_bootstrap
+    secure_frontend_server_cli)  # SP5 M1 Tasks 13/14: shared boot; frontend_init's token store for `key`
 target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_launch)
 # SP4 Task 27: pull, run, update --models and doctor drive the confined downloader.
 target_sources(secure_frontend_strata_cli PRIVATE src/strata_cli_network.cpp)
@@ -1485,6 +1486,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_acquire_tests list_and_show_report_installed_models
         list_all_reports_retired_orphaned_and_staging rm_refuses_loaded_model rm_retired_deletes_unheld_versions
         rm_partials_deletes_other_staging LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # SP5 M1 Task 14 (D-4): strata version and strata key show|rotate.
+    secure_frontend_add_cases(secure_frontend_acquire_tests version_names_frontend_and_engine_versions
+        key_show_requires_local_token_and_never_logs LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     if(SECURE_FRONTEND_TEST_HOOKS)
         secure_frontend_add_cases(secure_frontend_acquire_tests dl03_third_party_cannot_shadow_catalog
             pull_test_cacert_reaches_argv_in_hook_builds list_outdated_uses_catalog_sequence
