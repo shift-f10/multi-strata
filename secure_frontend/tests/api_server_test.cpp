@@ -1190,10 +1190,16 @@ void ext02_http_headers_cannot_enable_extensions() {
 void log_line_format_and_rate_limit() {
   auto server = start_server({{"logging.requests", "true"}});
   if (!server) return;
+  // NOTE: the readiness gate in start_server POLLS /health; while the engine
+  // boots under a slow toolchain (TSan) those polls are logged as health 503
+  // lines (404-byte body, code "-"), and the pool logs evicted sockets as
+  // `other 0 evicted`. All are real requests with the SAME fixed field shape;
+  // the rate rule counts every logged line. The wave size (6x80) guarantees
+  // the bucket overflows even when the arrival phase is stretched by TSan.
   const auto started = std::chrono::steady_clock::now();
   std::vector<std::thread> clients;
   for (int t = 0; t < 6; ++t) {
-    clients.emplace_back([&] { for (int i = 0; i < 50; ++i) (void)raw(*server, raw_http::request("GET", "/health", authority(*server), {raw_http::bearer(token())})); });
+    clients.emplace_back([&] { for (int i = 0; i < 80; ++i) (void)raw(*server, raw_http::request("GET", "/health", authority(*server), {raw_http::bearer(token())})); });
   }
   for (auto& c : clients) c.join();
   const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
@@ -1208,7 +1214,9 @@ void log_line_format_and_rate_limit() {
       std::istringstream f(line);
       std::string req, seq, route, status, code, ms, bytes, peer, extra;
       f >> req >> seq >> route >> status >> code >> ms >> bytes >> peer;
-      expect(route == "health" && status == "200" && code == "-" && peer == "loopback" && !(f >> extra), "fixed fields only: " + line);
+      const bool health_line = route == "health" && (status == "200" || status == "503") && code == "-";
+      const bool evicted_line = route == "other" && status == "0" && code == "evicted";
+      expect((health_line || evicted_line) && peer == "loopback" && !(f >> extra), "fixed fields only: " + line);
     }
     if (line.rfind("log: ", 0) == 0 && line.find(" request lines suppressed") != std::string::npos) ++suppressions;
   }

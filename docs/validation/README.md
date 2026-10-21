@@ -32,10 +32,17 @@ every claim below waits for the owner's own hardware (owner rulings 2026-10-20/2
 
 ## Parked for the owner (decisions, not runs)
 
-- `secure_frontend_api_server_tests.log_line_format_and_rate_limit` — pre-existing M1
-  token-bucket timing flake: **deterministic under TSan slowdown**, intermittent under
-  heavy non-TSan load; 5/5–10/10 in isolation across six batteries through 2026-10-22.
-  Fix or accept.
+- `secure_frontend_api_server_tests.log_line_format_and_rate_limit` — **FIXED 2026-10-22**
+  (controller, test-side only, product untouched). Was: deterministic failure under TSan,
+  intermittent under heavy load. Cause: readiness-gate `/health` polls are logged as
+  `health 503` lines during a stretched boot, the pool logs `other 0 evicted` bookkeeping
+  lines, and the old assertions assumed a single line shape and a burst that only
+  overflows the token bucket on fast timing. Fix: field rule accepts the two real line
+  shapes, wave raised to 6x80 so overflow is guaranteed at any plausible speed; every
+  invariant (fixed field shape, rate bound, suppression reporting, startup summary) kept.
+  RED: 3/3 deterministic under TSan before the fix. GREEN: 12/12 under TSan, full
+  linux-gcc suite 826/826 (first fully green run in six batteries), release 10/10,
+  cross 0 warnings, pytest 33.
 - SP6 decision sheet (S1–S7, M1–M7), presented 2026-10-14, unanswered.
 
 ## How to record results

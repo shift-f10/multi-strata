@@ -110,7 +110,7 @@ Owner-visible behaviour changes already on the **SP3 branch** (not yet on main):
 5. SP1 `deployment.md`: the Windows token caveat can be removed.
 6. The product-spec CLI verbs `serve`, `version`, `key` have **no owner** (SP4 created `strata` with its verbs only); assign to SP3 M2 or SP5.
 7. Whether to resume SP3 M1 before or after the GPU session. *(Resolved: resumed 2026-10-20; M1 and M2 both merged 2026-10-21.)*
-8. Pre-existing test flake `secure_frontend_api_server_tests.log_line_format_and_rate_limit` (M1 token-bucket timing) — characterization as of 2026-10-22: deterministic failure under TSan slowdown, intermittent under heavy non-TSan load (seen in the SP5 M2 merge battery), passes 5/5–10/10 in isolation across six batteries; never weakened. Fix or accept, and the two stall-volume `windows-runtime` streaming cases plus the GPU kit runs (index: `docs/validation/README.md`) all wait on the owner's hardware.
+8. Pre-existing test flake `secure_frontend_api_server_tests.log_line_format_and_rate_limit` — **RESOLVED 2026-10-22** (controller fix, test-side only; full RED/GREEN record in `docs/validation/README.md`): readiness-gate boot polls (`health 503`) and pool eviction lines (`other 0 evicted`) are accepted as the real second line shape, and the wave (6x80) guarantees bucket overflow under TSan slowdown; no invariant weakened. RED 3/3 TSan, GREEN 12/12 TSan + first fully green full suite (826/826). The two stall-volume `windows-runtime` streaming cases plus the GPU kit runs (index: `docs/validation/README.md`) still wait on the owner's hardware.
 
 ---
 
