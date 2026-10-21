@@ -832,6 +832,14 @@ SP3 M1 done on branch `sp3-api-streaming`, merged into `main` 2026-10-21: accept
 SSE/chunked streaming, `next_event`, `Utf8StreamDecoder` (and the non-streaming decode via it), decision B4 (timeout → partial text with `length`; M1 answers `503 engine_error` + log_code `generation_timeout`), B3 (U+FFFD), B5 (chunked framing), keepalive, `stream_options` acceptance, `secure_frontend_api_client`, `strata-api-probe`, `docs/validation/sp3-api-kit.md`, the streaming DOS-02/WEB-04/EXT-01 cases, fake-engine modes `--progress-records`, `--crash-mid-gen`, `--err-mid-gen` and the UTF-8 tokenizer ids.
 | A6b | export `is_valid_utf8` from json.hpp (noexcept wrapper over the existing valid_utf8; behaviour unchanged) for §3.9 model-field validation | Task 6b |
 
+### SP3 M2 deliverables (branch `sp3-api-streaming`, after the M1 merge)
+
+Plan: `docs/superpowers/plans/2026-10-14-sp3-m2-streaming.md`. Baseline after M1 (reproduced at `f01ef654`, 2026-10-21): linux-gcc N₀ = 690 run, 100% (694 registered, the 4 allowed environment skips), pytest 25, `windows-llvm-mingw-cross` build 0 warnings; wine W₀: **not run on this host (owner ruling 2026-10-20: no wine, no CI; agents prove only the cross build)**. Every M1 name M2 consumes was found (Task 1 Step 2): all greps `OK` except three plan strings with grep-text drift whose interfaces exist exactly as consumed — `api_error_row(ApiError error) noexcept` (named parameter + noexcept), `void report_fatal(const Lease& lease, KillReason reason)` (declared in `generation_gate.hpp`, beside `SupervisorPort`), and `refuse(ApiError::unsupported_parameter, "stream")` in `chat_schema.cpp` (M1's helper is `refuse`, not `fail`; Task 10 replaces that line). Ruling recorded in the lane ledger.
+
+| Task | Deliverable | RED | linux-gcc | wine | Status |
+| --- | --- | --- | --- | --- | --- |
+| 1 | M1 interfaces verified; baseline reproduced | — | 690 run, 100% (694 reg., 4 env skips); pytest 25; cross 0 warnings | not run on this host (owner ruling 2026-10-20) | done |
+
 ## Current security behavior implemented in `secure_frontend`
 
 Since SP1, `strata-secure-server` configuration is one typed, schema-validated
