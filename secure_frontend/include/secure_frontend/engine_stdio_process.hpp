@@ -28,9 +28,10 @@ class EngineStdioProcess final : public EngineLineTransport, public SupervisedPr
   EngineStdioProcess(const EngineStdioProcess&) = delete;
   EngineStdioProcess& operator=(const EngineStdioProcess&) = delete;
 
-  // Inserts the literal --serve argument immediately after the executable. The
-  // caller must not supply it; this placement is required by the GLM runner
-  // and is accepted by the original Strata command-line parser.
+  // Inserts the literal --serve argument immediately after the executable unless
+  // command.insert_serve is false (SP5 M1 Task 11: the pin's vision child takes no
+  // --serve). The caller must not supply it; this placement is required by the GLM
+  // runner and is accepted by the original Strata command-line parser.
   [[nodiscard]] std::optional<ProcessError> start(const EngineCommand& command);
   [[nodiscard]] bool running();
   // Sends SIGTERM to the child's process group, waits up to `grace`, then
@@ -97,6 +98,8 @@ class EngineStdioProcess final : public EngineLineTransport, public SupervisedPr
   std::string pending_stdout_;
   std::optional<ExitStatus> exit_status_;
   std::optional<std::filesystem::path> generation_temp_dir_;
+  // Ruling T11-x: the EngineCommand's kill_exit_code, captured by start().
+  std::uint32_t kill_exit_code_{kSupervisorKillExitCode};
 
   // Removes and validates one complete line from pending_stdout_, or returns
   // nullopt when no newline has arrived yet.

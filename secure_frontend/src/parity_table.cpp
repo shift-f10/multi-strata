@@ -110,7 +110,7 @@ constexpr std::array<ParityRow, 121> kRows{{
     {"split_skip_if_fits", kTyped, engine_arg, "serve/server.py:2941 (M1 Task 7)"},
     {"steps", kMapped, none, "spec D-9 image generation is out; serve/images.py:104"},
     {"telemetry_read_key", kRejected, none, "spec §4 telemetry endpoints; serve/server.py:8053"},
-    {"threads", kTyped, engine_arg, "serve/server.py:2562 (M1 Task 7: engine.threads)"},
+    {"threads", kTyped, engine_arg, "serve/server.py:2562 (M1 Task 11: vision.threads; the only pin read of `threads`, inside the vision reader_args — the flag lands on the encoder child's argv)"},
     {"timeout_s", kMapped, none, "the SP3 row limits.engine.generation_timeout_s already carries the generation deadline (pin: generation job timeout at serve/images.py:226; Ruling T8-b)"},
     {"tokenizer", kMapped, none, "the SP4 manifest carries the tokenizer; serve/server.py:7883"},
     {"tool_call_recovery", kTyped, config_only, "serve/server.py:8106 (M1 Task 9: session.tool_call_recovery)"},
@@ -157,7 +157,7 @@ constexpr std::array<ParityRow, 121> kRows{{
     {"STRATA_TOKENIZER", kMapped, none, "the SP4 manifest carries the tokenizer; serve/test_detok.py:21"},
     {"STRATA_VERIFY_TRACE", kRejected, none, "spec §4 no new web/diagnostics surface; serve/server.py:1213"},
     {"STRATA_VISION_ENCODE_S", kTyped, frontend_behavior, "serve/server.py:328 (M1 Task 12: vision encode-timeout row)"},
-    {"STRATA_VISION_READY_S", kTyped, frontend_behavior, "serve/server.py:291 (M1 Task 11: vision ready-timeout row)"},
+    {"STRATA_VISION_READY_S", kTyped, frontend_behavior, "serve/server.py:327 (M1 Task 11: vision.ready_timeout_s; 0 = wait for ever, :291)"},
 
     // ---- extra rule rows the flat grep cannot see -------------------------
     {"mcpServers", kRejected, none, "spec §4 MCP (Claude Desktop block); serve/mcp.py:648"},

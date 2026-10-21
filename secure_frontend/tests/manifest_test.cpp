@@ -142,7 +142,7 @@ AcquireManifest valid_qwen_manifest() {
              file("pack/tokenizer/vocab.json", FileRole::tokenizer), file("pack/tokenizer/merges.txt", FileRole::tokenizer),
              file("pack/tokenizer/token_type.json", FileRole::tokenizer),
              file("pack/tokenizer/tokenizer.json", FileRole::tokenizer)};
-  m.launch = {"weights/m-00001-of-00002.gguf", "weights/m-00002-of-00002.gguf", "pack", "pack/tokenizer"};
+  m.launch = {"weights/m-00001-of-00002.gguf", "weights/m-00002-of-00002.gguf", "pack", "pack/tokenizer", std::nullopt};
   return m;
 }
 
@@ -436,6 +436,42 @@ void expect_rejected_at(const std::string& text, const std::string& key, const s
          "manifest rejected at " + key + ": " + why + " (got " + (issue ? issue->key_path : std::string{"no issue"}) + ")");
 }
 
+// SP5 M1 Task 11 (D-9: mmproj enters schema 1 as a manifest artifact role): the role parses,
+// at most ONE entry, and the optional launch.mmproj must name a listed mmproj file.
+// "vision"/"draft" stay reserved-and-rejected (the role we use is mmproj, like the pin's
+// --mmproj flag spelling, serve/server.py:2557).
+void manifest_accepts_mmproj_role_and_rejects_duplicates() {
+  const std::string entry =
+      "{\"path\": \"mmproj/v.gguf\", \"role\": \"mmproj\", \"size\": 1, \"sha256\": \"" + hex64('e') + "\", \"sources\": []}, ";
+  const auto with_mmproj = [&](const std::string& launch) {
+    std::string text =
+        replaced(base_manifest(), "    {\"path\": \"pack/tokenizer/vocab.json\"", entry + "    {\"path\": \"pack/tokenizer/vocab.json\"");
+    return replaced(text, "\"tokenizer_pack\": \"pack/tokenizer\"", "\"tokenizer_pack\": \"pack/tokenizer\", " + launch);
+  };
+  const auto parsed = secure_frontend::parse_manifest(with_mmproj("\"mmproj\": \"mmproj/v.gguf\""), secure_frontend::ManifestRules{});
+  const auto* doc = std::get_if<secure_frontend::ParsedManifest>(&parsed);
+  expect(doc != nullptr && doc->manifest.launch.mmproj == "mmproj/v.gguf",
+         "one mmproj entry + launch.mmproj is valid schema 1 (Ruling T11-bb)");
+  const std::string doubled = replaced(with_mmproj("\"mmproj\": \"mmproj/v.gguf\""), "{\"path\": \"pack/index.txt\"",
+                                       replaced(entry, "mmproj/v.gguf", "mmproj/w.gguf") + "{\"path\": \"pack/index.txt\"");
+  expect_rejected_at(doubled, "files", "a second mmproj entry is rejected");
+  expect_rejected_at(with_mmproj("\"mmproj\": \"weights/m-00001-of-00002.gguf\""), "launch.mmproj",
+                     "launch.mmproj must name a listed mmproj file, not the weights");
+  expect_rejected_at(with_mmproj("\"mmproj\": \"mmproj/absent.gguf\""), "launch.mmproj", "launch.mmproj must name a listed file");
+
+  auto m = valid_qwen_manifest();
+  m.files.push_back(file("mmproj/v.gguf", FileRole::mmproj));
+  m.launch.mmproj = "mmproj/v.gguf";
+  expect(!secure_frontend::validate_manifest(m, rules()).has_value(), "qwen with mmproj is valid");
+  auto glm = m;
+  glm.profile = ManifestProfile::glm53;
+  glm.family = secure_frontend::ManifestFamily::glm;
+  glm.launch.pack.reset();
+  glm.launch.tokenizer_pack.reset();
+  glm.launch.ple_gguf.reset();
+  expect_issue(glm, "launch.mmproj", "glm53 keeps only launch.native in schema 1 (Maya vision is the M2 kit, D-10)");
+}
+
 void base_manifest_parses() {
   const auto result = secure_frontend::parse_manifest(base_manifest(), secure_frontend::ManifestRules{});
   const auto* parsed = std::get_if<secure_frontend::ParsedManifest>(&result);
@@ -603,6 +639,7 @@ int main(int argc, char** argv) {
       {"file_and_directory_prefix_collision_rejected", file_and_directory_prefix_collision_rejected},
       {"shard_set_must_be_complete_in_one_directory", shard_set_must_be_complete_in_one_directory},
       {"launch_keys_follow_profile", launch_keys_follow_profile},
+      {"manifest_accepts_mmproj_role_and_rejects_duplicates", manifest_accepts_mmproj_role_and_rejects_duplicates},
       {"wildcard_redirect_hosts_validated", wildcard_redirect_hosts_validated},
       {"total_size_above_budget_is_total_budget_exceeded", total_size_above_budget_is_total_budget_exceeded},
       {"raw_profile_rejected_in_release_build", raw_profile_rejected_in_release_build},

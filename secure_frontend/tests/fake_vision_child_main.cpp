@@ -1,0 +1,69 @@
+// strata-fake-vision-child: a test-only stand-in for `strata-vision` (SP5 M1 Task 11).
+// Never installed. It speaks the pin's encoder lifecycle (upstream/serve/server.py
+// VisionServer :2511-2620, :2755-2792): on start it records its argv (one "ARG" line
+// each, after a "SPAWN" line) into --record-file=PATH, prints "READY ..." on stdout,
+// then serves stdin: "ENC <img> <out>" -> writes the named files' sibling .sve
+// embedding and answers "OK <n>"; "QUIT" -> exit 0. --mode selects the failure
+// shapes the supervision tests need:
+//   oversize : after the record lines, print one > 8192-byte line (never READY) and exit 3
+//   diedie   : exit 3 immediately after the record lines (never READY)
+// Unknown arguments (--mmproj PATH, --model PATH, --threads N, ...) are accepted and
+// echoed; the launch-proof tests read the record, not behaviour.
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace {
+
+std::string option_value(const std::vector<std::string>& args, const std::string_view flag) {
+  for (const auto& arg : args) {
+    if (arg.starts_with(flag)) return arg.substr(flag.size());
+  }
+  return {};
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  std::vector<std::string> args;
+  args.reserve(static_cast<std::size_t>(argc) - 1U);
+  for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
+  const std::string record = option_value(args, "--record-file=");
+  const std::string mode = option_value(args, "--mode=");
+
+  if (!record.empty()) {
+    std::ofstream out(std::filesystem::path(record), std::ios::app);  // test paths are ASCII; no u8path deprecation
+    out << "SPAWN\n";
+    for (const auto& arg : args) out << "ARG " << arg << "\n";
+    out.flush();
+  }
+  std::cout.flush();
+  std::cerr.flush();
+
+  if (mode == "diedie") return 3;
+  if (mode == "oversize") {
+    std::cout << std::string(20000U, 'x') << "\n" << std::flush;
+    return 3;
+  }
+
+  std::cout << "READY vision\n" << std::flush;
+  std::string line;
+  while (std::getline(std::cin, line)) {
+    if (line == "QUIT") return 0;
+    if (line.starts_with("ENC ")) {
+      // "ENC <img> <out>" (pin #480: names are relative to the child's cwd, no spaces).
+      const auto rest = line.substr(4);
+      const auto space = rest.find(' ');
+      const std::string out_name = space == std::string::npos ? std::string{"out.sve"} : rest.substr(space + 1);
+      std::ofstream out(std::filesystem::path(out_name), std::ios::binary);
+      out << "\x00sve0";
+      out.flush();
+      std::cout << "OK 5\n" << std::flush;
+    }
+  }
+  return 0;  // stdin closed (the frontend's EOF path): exit like the pin's stop
+}

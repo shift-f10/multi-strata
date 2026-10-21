@@ -92,13 +92,19 @@ struct CliHarness final {
 };
 
 // Publishes a fixture model <name>:<tag> (sequence `sequence`) straight into the harness's roots.models.
+// `vision` (SP5 M1 Task 11) installs the model that reads images: an mmproj artifact + launch.mmproj.
 inline secure_frontend::IndexEntry install(CliHarness& h, const std::uint32_t sequence = 1, const std::string_view salt = "",
                                            const secure_frontend::ModelOrigin origin = secure_frontend::ModelOrigin::third_party,
-                                           const std::string_view name = "m", const std::string_view tag = "t") {
+                                           const std::string_view name = "m", const std::string_view tag = "t",
+                                           const bool vision = false) {
   namespace fx = secure_frontend_test::acquire;
   const auto root = h.models();
-  const auto manifest = fx::trusted(fx::manifest_text(name, tag, sequence, fx::qwen_payload(salt)), origin);
-  fx::stage(root, manifest, fx::qwen_payload(salt));
+  const auto payload = vision ? fx::qwen_payload_vision(salt) : fx::qwen_payload(salt);
+  const auto manifest =
+      fx::trusted(fx::manifest_text(name, tag, sequence, payload, true, true, "fixture.example",
+                                    vision ? "mmproj/mmproj.gguf" : std::string_view{}),
+                  origin);
+  fx::stage(root, manifest, payload);
   fx::FakeLoaded nobody;
   const secure_frontend::StoreEnvironment env;
   return std::get<secure_frontend::PublishResult>(

@@ -342,6 +342,14 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `session.codex_compaction_cache` | boolean | `false` | - | - | Codex compaction cache (#924; the pin's opt-in; the route is not served here). |
 | `session.keep_files` | integer | `64` | 1-1024 | - | How many image-scratch files to retain (pin default 64; bounds added, C-1; the consumer is out per D-9). |
 | `replicas.parallel` | integer | `1` | 1-1024 | - | Decode up to N requests together inside the one engine (1: one at a time; the N-child scheduler is not implemented). |
+| `vision.enabled` | boolean | `false` | - | - | Read images: a supervised strata-vision child encodes image_url parts for the engine. |
+| `vision.max_side` | integer | `2048` | 1-16384 | - | Largest image side accepted before decoding (pin default 2048; cap added, C-1). |
+| `vision.max_n` | integer | `4` | 1-64 | - | Most images one request may carry (pin default 4; cap added, C-1). |
+| `vision.need_mib` | integer | unset | 1-1048576 | - | Override the free-VRAM figure the encoder is checked against (unset: computed; bounds added, C-1). |
+| `vision.no_flash_attn` | boolean | `false` | - | - | Run the encoder without flash attention (added, spec §5.1; the encoder's --no-flash-attn). |
+| `vision.resident` | boolean | `true` | - | - | Keep the encoder running from boot (the pin's eager resident encoder; false: the first image starts it). |
+| `vision.threads` | integer | `0` | 0-256 | - | Encoder CPU threads (0: the tool's own default; cap added, C-1). |
+| `vision.ready_timeout_s` | integer | `300` | 0-86400 | - | Seconds the encoder gets to print READY (0: wait for ever, as at the pin). |
 <!-- config-keys:end -->
 
 `roots.secret` defaults to the config file's directory only for a `file:` token
@@ -356,6 +364,23 @@ key; what stands is engine-internal parallelism: `replicas.parallel` decodes up
 to N requests together inside the one engine child (rendered to the engine as
 `--batch N`, exactly like the pinned server; 1, the default, is one request at
 a time, and the engine's batch window is 8).
+
+**Vision (SP5 M1, spec D-9).** Image *input* is typed and plumbed; image
+*generation* stays out (its routes answer 404, parity table). `vision.enabled`
+needs the manifest artifact `launch.mmproj` — the files[] role `mmproj` is
+listed like any other file, at most one — and the engine then receives
+`--vision`, like the pinned server's section gate (serve/server.py:2926-2931).
+The encoder is a supervised `strata-vision` child, a sibling of the engine
+executable (the pin's config-named vision exe stays rejected, spec §4); it
+must print READY within `vision.ready_timeout_s` (300 s, the pin's
+VISION_READY_S; 0 waits for ever), and a resident encoder that cannot start
+fails the boot — `vision.enabled` promises images. `vision.resident` false
+waits for the first picture (the request path is Task 12); `vision.max_side`
+and `vision.max_n` cap images on that path; `engine.max_tokens`/
+`engine.min_tokens` also reach the child as `--max-tokens`/`--min-tokens`
+exactly as at the pin (:2564-2567), and `vision.no_flash_attn` is the added
+spec §5.1 family flag. Real encode behaviour on real images is proven only by
+the owner-box acceptance kit.
 
 **Constants.** Internal constants live in
 `include/secure_frontend/api_constants.hpp` (SP3) and `config_defaults.hpp`

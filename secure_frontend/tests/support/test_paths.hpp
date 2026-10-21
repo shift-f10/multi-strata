@@ -51,6 +51,8 @@ inline constexpr int kSkipReturnCode = 77;
 }
 
 inline std::filesystem::path fake_engine_path() { return std::filesystem::path(STRATA_FAKE_ENGINE_PATH); }
+// SP5 M1 Task 11: the test-only strata-vision stand-in (tests/fake_vision_child_main.cpp).
+inline std::filesystem::path fake_vision_child_path() { return std::filesystem::path(STRATA_FAKE_VISION_CHILD_PATH); }
 inline std::filesystem::path server_path() { return std::filesystem::path(STRATA_SECURE_SERVER_PATH); }
 
 // This test binary's own path. Fails the test loudly if the OS call fails or

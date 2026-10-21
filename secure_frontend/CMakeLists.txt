@@ -213,6 +213,7 @@ add_library(secure_frontend_engine_supervisor
     src/descendant_sweep.cpp
     src/engine_environment.cpp
     src/engine_supervisor.cpp
+    src/vision_supervisor.cpp
     src/privilege_check.cpp
     src/restart_policy.cpp
     src/shutdown_signal.cpp
@@ -773,13 +774,20 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         target_link_libraries(strata-supervision-fake-engine PRIVATE shell32 advapi32)
     endif()
 
+    # SP5 M1 Task 11: test-only stand-in for `strata-vision` (the vision encoder child).
+    # Never installed. Records its argv, answers READY, serves ENC/QUIT (see the file).
+    add_executable(strata-fake-vision-child tests/fake_vision_child_main.cpp)
+    target_compile_features(strata-fake-vision-child PRIVATE cxx_std_20)
+    secure_frontend_set_warnings(strata-fake-vision-child)
+
     # Paths every SP2 test needs (fixture directories come from SP1's
     # make_scratch_directory below ${SECURE_FRONTEND_TEST_TMP}).
     function(secure_frontend_test_paths target)
         target_compile_definitions(${target} PRIVATE
             "STRATA_FAKE_ENGINE_PATH=\"$<TARGET_FILE:strata-supervision-fake-engine>\""
+            "STRATA_FAKE_VISION_CHILD_PATH=\"$<TARGET_FILE:strata-fake-vision-child>\""
             "STRATA_SECURE_SERVER_PATH=\"$<TARGET_FILE:strata-secure-server>\"")
-        add_dependencies(${target} strata-supervision-fake-engine strata-secure-server)
+        add_dependencies(${target} strata-supervision-fake-engine strata-fake-vision-child strata-secure-server)
         if(TARGET strata_egress_tripwire)  # SP3 Task 19: Linux-only tripwire targets, when defined
             target_compile_definitions(${target} PRIVATE
                 STRATA_EGRESS_TRIPWIRE_PATH="$<TARGET_FILE:strata_egress_tripwire>"
@@ -982,7 +990,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # fake-engine children. LINUX / WINDOWS: platform-only process cases. Later
     # tasks append case names to these four set() lines only.
     set(SECURE_FRONTEND_SUPERVISOR_UNIT_CASES supervisor_health_literals_per_state proc04_restart_backoff_then_circuit_open proc04_healthy_window_resets_failure_count proc04_missing_engine_opens_circuit_without_spinning proc04_client_err_lines_open_circuit_until_restart supervisor_retires_ended_generation_on_its_own_thread proc04_monitor_fallback_without_pidfd proc04_backoff_survives_stale_wake proc04_fatal_line_before_ready_kills_as_fatal_line proc04_unreaped_child_opens_circuit supervisor_unreaped_at_shutdown_reports_engine_left proc06_nnp_hint_when_exit_status_lags supervisor_exception_opens_circuit supervisor_shutdown_sends_eof_first_then_kills supervisor_lease_outliving_shutdown_is_safe supervisor_wait_wakes_on_lease_release supervisor_wait_wakes_on_shutdown proc06_refuses_privileged_start engine_environment_uses_cache_root_when_set sp3_d2_kill_reason_follows_stop_cause sp3_d2_client_stop_drain_failure_restarts_uncounted sp3_d2_timeout_stop_drain_failure_still_counts sp3_d2_client_stop_counts_when_engine_ended_itself sp3_d2_uncounted_end_resets_count_after_healthy_window sp3_d2_uncounted_streak_is_bounded sp3_d2_done_resets_uncounted_streak sp6_env_strata_family_renders_unchanged sp6_env_forced_values_override_and_add sp6_env_forced_values_reject_never_list sp6_env_forcible_names_are_the_ruled_set sp6_env_hook_derives_values_from_environment sp6_env_hook_suppresses_only_optional_rows sp6_env_refused_family_is_spawn_failure idle_unload_tears_down_then_respawns_on_next_request idle_unload_never_fires_during_a_generation lazy_load_defers_the_first_spawn)
-    set(SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES proc04_recovers_after_transient_crash proc04_monitor_detects_idle_crash proc04_fatal_prefix_kills_engine proc04_ready_timeout_kills_and_counts proc04_drain_failure_kills_and_restarts proc04_no_leak_across_restarts proc02_child_env_is_exact_allowlist supervisor_serving_api_is_thread_safe proc04_slow_stdin_write_bounded_by_request_deadline sp6_env_derived_value_reaches_child)
+    set(SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES proc04_recovers_after_transient_crash proc04_monitor_detects_idle_crash proc04_fatal_prefix_kills_engine proc04_ready_timeout_kills_and_counts proc04_drain_failure_kills_and_restarts proc04_no_leak_across_restarts proc02_child_env_is_exact_allowlist supervisor_serving_api_is_thread_safe proc04_slow_stdin_write_bounded_by_request_deadline sp6_env_derived_value_reaches_child vision_child_launches_with_pinned_args_when_enabled vision_child_respects_resource_limits)
     set(SECURE_FRONTEND_SUPERVISOR_LINUX_CASES proc05_setsid_grandchild_is_reaped proc05_setsid_grandchild_is_reaped_at_shutdown supervisor_start_refuses_without_wake shutdown_signal_preserves_errno proc05_cgroup_kill_when_delegated)
     set(SECURE_FRONTEND_SUPERVISOR_WINDOWS_CASES proc04_windows_abort_does_not_stall proc04_windows_crash_does_not_stall proc04_windows_write_timeout_kills_engine)
     if(WIN32)
@@ -1143,7 +1151,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_engine_arguments_tests gpu_list_rejects_malformed_values)
     # SP4 Task 24b (spec §2.3, §4.9 c): the managed launch over a scratch models store.
     target_link_libraries(secure_frontend_engine_arguments_tests PRIVATE secure_frontend_launch secure_frontend_strata_cli)
-    secure_frontend_add_cases(secure_frontend_engine_arguments_tests launch_composed_from_manifest_qwen
+    secure_frontend_add_cases(secure_frontend_engine_arguments_tests launch_composed_from_manifest_qwen vision_compose_rules
         managed_launch_argv_is_utf8_for_non_ascii_models_root launch_refuses_model_not_installed
         engine_args_reject_weight_flags_for_managed_model managed_launch_renders_typed_gpu_list LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     # Pure in-memory (F-63): wine runs it too.
@@ -1214,6 +1222,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         session_rows_at_each_edge
         replicas_parallel_row_at_the_pin
         multi_child_replicas_reject_with_the_ruling
+        vision_rows_match_the_pin
         bounds_are_the_pins_at_each_edge)
     # SP4 Task 24b (spec §4.9 c/d; F-8): managed-model config errors, also through strata-secure-server --check.
     target_link_libraries(secure_frontend_typed_config_tests PRIVATE secure_frontend_launch secure_frontend_strata_cli)
@@ -1524,7 +1533,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_manifest_tests valid_qwen_manifest_accepted manifest_field_rules_matrix
         reserved_manifest_names_rejected model_name_index_json_rejected part_suffix_path_rejected stored_path_length_fits_p1
         file_and_directory_prefix_collision_rejected shard_set_must_be_complete_in_one_directory
-        launch_keys_follow_profile wildcard_redirect_hosts_validated total_size_above_budget_is_total_budget_exceeded
+        launch_keys_follow_profile manifest_accepts_mmproj_role_and_rejects_duplicates wildcard_redirect_hosts_validated total_size_above_budget_is_total_budget_exceeded
         engine_version_parsed_with_fourth_component)
     secure_frontend_add_cases(secure_frontend_manifest_tests raw_profile_rejected_in_release_build LABELS release-only)
     if(SECURE_FRONTEND_TEST_HOOKS)

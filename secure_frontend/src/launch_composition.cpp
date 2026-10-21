@@ -69,7 +69,7 @@ std::variant<ComposedLaunch, LaunchFailure> expert_launch(const FrontendConfig& 
   std::vector<std::string> mtp_removed;
   if (!config.engine.mtp && profile != EngineProfile::glm53) mtp_removed = draft_layer_removed(config.engine.args);
   return ComposedLaunch{profile, std::move(argv), *config.roots.tokenizer_pack, id, std::move(served), false,
-                        std::move(mtp_removed)};
+                        std::move(mtp_removed), std::nullopt, std::nullopt};
 }
 
 // <models>/<version_dir>/<relative> through the P1 grammar; nullopt if the joined path is not P1-valid.
@@ -109,6 +109,13 @@ std::vector<std::string> launch_config_issues(const FrontendConfig& config, cons
 std::vector<std::string> managed_config_issues(const FrontendConfig& config) { return launch_config_issues(config, false); }
 
 std::variant<ComposedLaunch, LaunchFailure> compose_engine_launch(const FrontendConfig& config, const bool expert) {
+  // SP5 M1 Task 11 (Ruling T11-aa): --expert is the operator path — no manifest, no mmproj
+  // artifact — so vision fails there by name before anything else is composed.
+  if (expert && config.vision.enabled) {
+    return LaunchFailure{ExitCode::usage,
+                         {"vision: the supervised encoder needs a managed model (its mmproj comes from the "
+                          "manifest; --expert has none)"}};
+  }
   if (expert) return expert_launch(config);
   if (auto issues = managed_config_issues(config); !issues.empty()) return config_failure(std::move(issues));
   const auto reference = parse_model_reference(config.engine.model_id.value());  // valid: checked above
@@ -127,6 +134,18 @@ std::variant<ComposedLaunch, LaunchFailure> compose_engine_launch(const Frontend
   const auto& model = std::get<InstalledModel>(loaded);
   const auto& m = model.manifest.manifest;
   if (auto gate = engine_gate(m)) return LaunchFailure{ExitCode::engine, {format_error(*gate)}};
+  // SP5 M1 Task 11 (D-9, Ruling T11-aa): vision is fail-closed on the manifest artifact.
+  if (config.vision.enabled && !m.launch.mmproj) {
+    return LaunchFailure{ExitCode::manifest,
+                         {"vision: this model's manifest declares no mmproj artifact (turn vision.enabled off, "
+                          "or install a model that reads images)"}};
+  }
+  // The pin's config conflict, runconfig.py:97-98: lazy loading is text-only.
+  if (m.launch.mmproj && config.engine.lazy_load) {
+    return LaunchFailure{ExitCode::usage,
+                         {"vision: lazy loading is text-only, and this model reads images "
+                          "(engine.lazy_load with a vision model)"}};
+  }
   const std::string ref = model_ref_text(entry.name, entry.tag);
   const auto inconsistent = [&ref] {
     return store_failure(AcquireError{AcquireReason::index_inconsistent, ref + ": launch paths"});
@@ -138,6 +157,16 @@ std::variant<ComposedLaunch, LaunchFailure> compose_engine_launch(const Frontend
   const auto tokenizer = in_version(config.roots.models, model.version_dir, *m.launch.tokenizer_pack);
   const auto ple = m.launch.ple_gguf ? in_version(config.roots.models, model.version_dir, *m.launch.ple_gguf) : std::nullopt;
   if (!native || !pack || !tokenizer || (m.launch.ple_gguf && !ple)) return inconsistent();
+  // SP5 M1 Task 11 (D-9): the encoder artifact and the weights it reads, joined exactly
+  // like --native; carried whether or not vision.enabled (doctor and the boot read them).
+  std::optional<std::string> vision_mmproj;
+  std::optional<std::string> vision_model;
+  if (m.launch.mmproj) {
+    const auto mmproj = in_version(config.roots.models, model.version_dir, *m.launch.mmproj);
+    if (!mmproj) return inconsistent();
+    vision_mmproj = path_to_utf8(*mmproj);
+    vision_model = path_to_utf8(*native);
+  }
   // UTF-8, never path::string(): on Windows that narrows through the ANSI code
   // page, and the engine launcher decodes every argument as UTF-8 (SP1 rule, F-7).
   std::vector<std::string> args{"--native", path_to_utf8(*native), "--pack", path_to_utf8(*pack)};
@@ -183,6 +212,12 @@ std::variant<ComposedLaunch, LaunchFailure> compose_engine_launch(const Frontend
       config.engine.args);
   // SP5 M1 Task 10 (serve/server.py:2955-2975): engine-internal parallelism renders --batch N.
   append_parallel_batch_arguments(args, ParallelBatchArgs{config.replicas.parallel}, config.engine.args);
+  // SP5 M1 Task 11 (D-9; pin :2926-2931, #1322): an enabled vision family drives an engine
+  // that advertises images; an operator-owned --vision in the saved args stays untouched.
+  if (config.vision.enabled &&
+      std::find(config.engine.args.begin(), config.engine.args.end(), "--vision") == config.engine.args.end()) {
+    args.emplace_back("--vision");
+  }
   // Opened once, on the path (F-7), and only if it stays below roots.models.
   auto opened = open_root(*tokenizer);
   auto* root = std::get_if<CanonicalRoot>(&opened);
@@ -191,7 +226,7 @@ std::variant<ComposedLaunch, LaunchFailure> compose_engine_launch(const Frontend
                          {"Unable to load local tokenizer pack: the model's tokenizer directory cannot be opened safely"}};
   }
   return ComposedLaunch{EngineProfile::qwen, std::move(args), std::move(*root), ref, std::vector<std::string>{ref}, true,
-                        std::move(mtp_removed)};
+                        std::move(mtp_removed), std::move(vision_mmproj), std::move(vision_model)};
 }
 
 }  // namespace secure_frontend

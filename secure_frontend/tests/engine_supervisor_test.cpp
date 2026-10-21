@@ -4,6 +4,7 @@
 #include "secure_frontend/engine_stdio_process.hpp"
 #include "secure_frontend/privilege_check.hpp"
 #include "secure_frontend/shutdown_signal.hpp"
+#include "secure_frontend/vision_supervisor.hpp"
 
 #include "support/fake_engine_dump.hpp"
 #include "support/fake_supervised_process.hpp"
@@ -20,6 +21,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <new>
 #include <iostream>
 #include <map>
@@ -1072,6 +1075,91 @@ void proc04_slow_stdin_write_bounded_by_request_deadline() {
   supervisor.shutdown(5s);
 }
 
+// SP5 M1 Task 11 (D-9, rulings T11-w/x): the supervised vision role with the pin's child.
+// The fake (tests/fake_vision_child_main.cpp) records its argv and answers READY; these
+// cases prove the launch shape and the SP2-style resource policy (oversize line -> kill,
+// restart once, then circuit).
+
+namespace {
+
+std::string read_whole_file(const std::filesystem::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  return std::string{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
+}
+
+secure_frontend::ProcessFactory vision_factory(const std::filesystem::path& record, const std::vector<std::string>& args) {
+  // Value captures: the caller's temporaries (the argument list) die at the end of the
+  // full expression that stores this factory; the factory runs later, on start().
+  return [record, args](std::uint64_t) -> secure_frontend::SpawnResult {
+    auto child = std::make_unique<secure_frontend::EngineStdioProcess>();
+    const std::vector<std::string> all{"--record-file=" + test_support::utf8_path(record)};
+    std::vector<std::string> argv{all};
+    argv.insert(argv.end(), args.begin(), args.end());
+    if (const auto error = child->start({.executable = test_support::fake_vision_child_path(), .arguments = std::move(argv),
+                                         .environment = {}})) {
+      return secure_frontend::SpawnFailure{error->message};
+    }
+    return child;
+  };
+}
+
+int spawns_in(const std::string& record_text) {
+  int count = 0;
+  for (std::size_t at = record_text.find("SPAWN\n"); at != std::string::npos; at = record_text.find("SPAWN\n", at + 1U)) {
+    ++count;
+  }
+  return count;
+}
+
+}  // namespace
+
+// The pin's vision block form (serve/server.py:2556-2568): --mmproj, --model, then the
+// optional --threads / --max-tokens / --min-tokens; our added --no-flash-attn rides last.
+// The role opens on the child's READY line and QUITs it down.
+void vision_child_launches_with_pinned_args_when_enabled() {
+  const auto dir = test_support::make_temp_dir("vision-launch");
+  const auto record = dir / "record.txt";
+  const auto argv = secure_frontend::compose_vision_arguments({
+      .mmproj = test_support::utf8_path(dir / "mmproj.gguf"), .model = test_support::utf8_path(dir / "native.gguf"),
+      .threads = 4, .max_tokens = 2048, .min_tokens = 16, .no_flash_attn = true});
+  expect((argv == std::vector<std::string>{"--mmproj", test_support::utf8_path(dir / "mmproj.gguf"), "--model",
+                                           test_support::utf8_path(dir / "native.gguf"), "--threads", "4", "--max-tokens",
+                                           "2048", "--min-tokens", "16", "--no-flash-attn"}),
+         "compose_vision_arguments renders the pin's argv shape (:2556-2568; the added flag last)");
+  secure_frontend::VisionLimits limits;
+  limits.policy.backoff_initial = std::chrono::milliseconds{10};
+  secure_frontend::VisionSupervisor supervisor(vision_factory(record, argv), limits);
+  supervisor.start();
+  expect(supervisor.state() == secure_frontend::VisionState::up, "the READY gate opens the role");
+  supervisor.stop();
+  expect(supervisor.state() == secure_frontend::VisionState::stopped, "QUIT closes the role (pin :2792)");
+  const std::string text = read_whole_file(record);
+  expect(spawns_in(text) == 1, "exactly one spawn: " + text);
+  expect(text.find("ARG --mmproj\nARG " + test_support::utf8_path(dir / "mmproj.gguf") + "\nARG --model\nARG " +
+                         test_support::utf8_path(dir / "native.gguf") + "\n") != std::string::npos,
+         "the child received the mmproj/model pair first, like the pin");
+  expect(text.find("ARG --threads\nARG 4\nARG --max-tokens\nARG 2048\nARG --min-tokens\nARG 16\nARG --no-flash-attn\n") !=
+             std::string::npos,
+         "threads and the token bounds ride the pin's flag names (:2562-2567; Ruling T11-dd)");
+}
+
+// SP2 policy on this role (plan): an oversize stdout line is a failure (the shared
+// 8192-byte line bound), the child is killed, restart happens ONCE, then the circuit.
+void vision_child_respects_resource_limits() {
+  const auto dir = test_support::make_temp_dir("vision-limits");
+  const auto record = dir / "record.txt";
+  secure_frontend::VisionLimits limits;
+  limits.policy.max_consecutive_failures = 2U;
+  limits.policy.backoff_initial = std::chrono::milliseconds{10};
+  secure_frontend::VisionSupervisor supervisor(
+      vision_factory(record, {"--mode=oversize", "--mmproj", "m", "--model", "n"}), limits);
+  supervisor.start();
+  expect(supervisor.state() == secure_frontend::VisionState::circuit_open,
+         "the oversize line kills; one restart; then the circuit (SP2 policy, PROC/DOS rows)");
+  expect(spawns_in(read_whole_file(record)) == 2, "restart once then circuit (spawn count)");
+  supervisor.stop();
+}
+
 // RF4: an exception that escapes the supervisor thread (the factory, the log
 // sink, the clock) opens the circuit instead of reaching std::terminate, and
 // a generation still alive at that point is killed and reaped first.
@@ -1786,5 +1874,7 @@ int main(int argc, char* argv[]) {
                                                 {"proc04_windows_write_timeout_kills_engine", proc04_windows_write_timeout_kills_engine},
 #endif
                                                 {"proc04_slow_stdin_write_bounded_by_request_deadline", proc04_slow_stdin_write_bounded_by_request_deadline},
+                                                {"vision_child_launches_with_pinned_args_when_enabled", vision_child_launches_with_pinned_args_when_enabled},
+                                                {"vision_child_respects_resource_limits", vision_child_respects_resource_limits},
                                                }, failures);
 }

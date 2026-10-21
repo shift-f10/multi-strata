@@ -35,7 +35,7 @@ std::string decimal_text(const double value) {
   return ec == std::errc{} ? std::string{buffer, end} : std::string{"?"};
 }
 
-constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1> kSchema{{
+constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 8> kSchema{{
     {"schema_version", T::integer, false, 1, 1, d::kSchemaVersion, false, "", "",
      "Config format version; must be 1. Required in a config file."},
     {"listener.host", T::string, false, 0, 0, 0, false, "127.0.0.1", "--host",
@@ -274,6 +274,32 @@ constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1> kSchema
     // The cap 1024 is added (C-1), taken from the pin's own --parallel bound (:7845).
     {"replicas.parallel", T::integer, false, 1, 1024, 1, false, "", "",
      "Decode up to N requests together inside the one engine (1: one at a time; the N-child scheduler is not implemented)."},
+    // SP5 M1 Task 11 (D-9 vision split): image INPUT is typed and plumbed, generation stays
+    // out. Defaults at the pin — max_side/max_n carry the images-block values (images.py:102-
+    // 103 `or 2048`/`or 4`; caps added, C-1); need_mib overrides the pin's VRAM arithmetic
+    // (images.py:156; the driver gate itself is owner-box, cf. T7-c); no_flash_attn rides the
+    // spec §5.1 family (not read by this pin — the kit proves the child flag); resident is
+    // the pin's eager encoder (server.py:2511/:2552; false: the first image wakes it);
+    // threads 0 = the pin's unset (truthy -> --threads, server.py:2562).
+    {"vision.enabled", T::boolean, false, 0, 0, 0, false, "", "",
+     "Read images: a supervised strata-vision child encodes image_url parts for the engine."},
+    {"vision.max_side", T::integer, false, 1, 16384, 2048, false, "", "",
+     "Largest image side accepted before decoding (pin default 2048; cap added, C-1)."},
+    {"vision.max_n", T::integer, false, 1, 64, 4, false, "", "",
+     "Most images one request may carry (pin default 4; cap added, C-1)."},
+    {"vision.need_mib", T::integer, false, 1, 1048576, -1, false, "", "",
+     "Override the free-VRAM figure the encoder is checked against (unset: computed; bounds added, C-1)."},
+    {"vision.no_flash_attn", T::boolean, false, 0, 0, 0, false, "", "",
+     "Run the encoder without flash attention (added, spec §5.1; the encoder's --no-flash-attn)."},
+    {"vision.resident", T::boolean, false, 0, 0, 0, true, "", "",
+     "Keep the encoder running from boot (the pin's eager resident encoder; false: the first image starts it)."},
+    {"vision.threads", T::integer, false, 0, 256, 0, false, "", "",
+     "Encoder CPU threads (0: the tool's own default; cap added, C-1)."},
+    // The STRATA_VISION_READY_S counterpart the Task-2 parity row promises (its gate
+    // default 300 s, server.py:327; 0 = wait for ever, :291 — the shape engine.silence_s
+    // took in Task 8; bound added, C-1).
+    {"vision.ready_timeout_s", T::integer, false, 0, 86400, 300, false, "", "",
+     "Seconds the encoder gets to print READY (0: wait for ever, as at the pin)."},
 }};
 
 void add(ConfigErrors& errors, std::string key, const ConfigIssueCode code, std::string reason) {
@@ -952,6 +978,16 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   session.keep_files = read.integer("session.keep_files");
   // SP5 M1 Task 10 (the C-4 narrowing): engine-internal parallelism only.
   const ReplicasConfig replicas{read.integer("replicas.parallel")};
+  // SP5 M1 Task 11 (D-9 vision split): image input plumbing; generation stays out.
+  VisionConfig vision;
+  vision.enabled = read.boolean("vision.enabled");
+  vision.max_side = read.integer("vision.max_side");
+  vision.max_n = read.integer("vision.max_n");
+  vision.need_mib = read.optional_integer("vision.need_mib");
+  vision.no_flash_attn = read.boolean("vision.no_flash_attn");
+  vision.resident = read.boolean("vision.resident");
+  vision.threads = read.integer("vision.threads");
+  vision.ready_timeout_s = read.integer("vision.ready_timeout_s");
 
   // pull (SP4 §3.9)
   std::filesystem::path downloader = default_downloader_path();
@@ -1031,7 +1067,7 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
                                       static_cast<std::uint64_t>(max_total), std::chrono::seconds(max_duration),
                                       std::chrono::seconds(stall), std::chrono::seconds(connect)},
                          LoggingConfig{log_requests}, std::move(sampling_defaults), reasoning, std::move(session),
-                         replicas));
+                         replicas, vision));
   return ValidatedConfig{std::move(config_ptr)};
 }
 
@@ -1161,6 +1197,15 @@ std::string describe(const FrontendConfig& c) {
   line("session.keep_files", std::to_string(c.session.keep_files));
   // SP5 M1 Task 10: engine-internal parallelism (the C-4 narrowing's surviving half).
   line("replicas.parallel", std::to_string(c.replicas.parallel));
+  // SP5 M1 Task 11: the vision family (D-9 split).
+  line("vision.enabled", c.vision.enabled ? "true" : "false");
+  line("vision.max_side", std::to_string(c.vision.max_side));
+  line("vision.max_n", std::to_string(c.vision.max_n));
+  line("vision.need_mib", c.vision.need_mib.has_value() ? std::to_string(*c.vision.need_mib) : std::string{"unset"});
+  line("vision.no_flash_attn", c.vision.no_flash_attn ? "true" : "false");
+  line("vision.resident", c.vision.resident ? "true" : "false");
+  line("vision.threads", std::to_string(c.vision.threads));
+  line("vision.ready_timeout_s", std::to_string(c.vision.ready_timeout_s));
   line("engine.fit_max_tokens", c.engine.fit_max_tokens ? "true" : "false");
   // SP5 M1 Task 6: the lifecycle family (runconfig.py:35-38).
   line("engine.lazy_load", c.engine.lazy_load ? "true" : "false");

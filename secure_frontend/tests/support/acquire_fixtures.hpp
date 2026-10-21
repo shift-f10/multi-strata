@@ -39,7 +39,8 @@ inline std::vector<PayloadFile> qwen_payload(const std::string_view salt = "") {
 
 inline std::string manifest_text(const std::string_view name, const std::string_view tag, const std::uint32_t sequence,
                                  const std::vector<PayloadFile>& files, const bool with_sources = true,
-                                 const bool bundle_allowed = true, const std::string_view host = "fixture.example") {
+                                 const bool bundle_allowed = true, const std::string_view host = "fixture.example",
+                                 const std::string_view launch_mmproj = "") {
   std::string out = "{\"format\":\"strata-model-manifest\",\"schema_version\":1,\"name\":\"" + std::string{name} +
                     "\",\"tag\":\"" + std::string{tag} + "\",\"version\":\"2026.10.14." + std::to_string(sequence) +
                     "\",\"sequence\":" + std::to_string(sequence) +
@@ -54,8 +55,17 @@ inline std::string manifest_text(const std::string_view name, const std::string_
            "\",\"sources\":[" + (with_sources ? "\"https://" + std::string{host} + "/fx/" + f.path + "\"" : std::string{}) + "]}";
   }
   out += "],\"launch\":{\"native\":\"weights/fx-00001-of-00002.gguf\",\"ple_gguf\":\"weights/fx-00002-of-00002.gguf\","
-         "\"pack\":\"pack\",\"tokenizer_pack\":\"pack/tokenizer\"}}\n";
+         "\"pack\":\"pack\",\"tokenizer_pack\":\"pack/tokenizer\"" +
+         (launch_mmproj.empty() ? std::string{} : ",\"mmproj\":\"" + std::string{launch_mmproj} + "\"") + "}}\n";
   return out;
+}
+
+// SP5 M1 Task 11 (D-9): the fixture model that reads images — qwen payload plus one
+// mmproj artifact (and, via manifest_text's launch_mmproj, launch.mmproj naming it).
+inline std::vector<PayloadFile> qwen_payload_vision(const std::string_view salt = "") {
+  auto files = qwen_payload(salt);
+  files.push_back(PayloadFile{"mmproj/mmproj.gguf", secure_frontend::FileRole::mmproj, "mmproj " + std::string{salt}});
+  return files;
 }
 
 inline secure_frontend::TrustedManifest trusted(const std::string& text, const secure_frontend::ModelOrigin origin) {

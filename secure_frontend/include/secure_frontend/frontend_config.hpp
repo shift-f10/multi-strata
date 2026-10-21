@@ -223,6 +223,24 @@ struct ReplicasConfig final {
   std::int64_t parallel{1};  // replicas.parallel (1: one request at a time, the pin's default)
 };
 
+// SP5 M1 Task 11 (D-9 vision split): image INPUT is typed and plumbed (supervised encoder
+// child, mmproj manifest artifact); image GENERATION stays out. Defaults at the pin:
+// max_side/max_n take the images-block values (serve/images.py:102-103 `or 2048`/`or 4`,
+// caps added here, C-1); need_mib overrides the pin's VRAM arithmetic (images.py:156; the
+// gate itself is driver-bound, cf. T7-c); resident is the pin's eager encoder
+// (server.py:2511/:2552); threads 0 = the pin's unset (truthy -> --threads, :2562).
+// no_flash_attn rides the spec §5.1 family: not read by this pin, proven by the kit.
+struct VisionConfig final {
+  bool enabled{false};                       // vision.enabled: gates the whole family
+  std::int64_t max_side{2048};               // vision.max_side (pre-decode image side cap, Task 12)
+  std::int64_t max_n{4};                     // vision.max_n (images per request cap, Task 12)
+  std::optional<std::int64_t> need_mib;      // vision.need_mib (unset: the pin computes it)
+  bool no_flash_attn{false};                 // vision.no_flash_attn (added knob, spec §5.1; child flag)
+  bool resident{true};                       // vision.resident (false: woken by the first image, Task 12)
+  std::int64_t threads{0};                   // vision.threads (0: unset — the pin's truthy skip, :2562)
+  std::int64_t ready_timeout_s{300};         // vision.ready_timeout_s (0: wait for ever — the pin's :291 rule)
+};
+
 struct EngineLaunch final {
   std::optional<EngineProfile> profile;  // --expert only; a managed model's manifest sets it (SP4 §4.9 c)
   CanonicalFile executable;
@@ -296,17 +314,18 @@ class FrontendConfig final {
   const ReasoningConfig reasoning;  // SP5 M1 Task 5: reasoning.*
   const SessionPolicy session;      // SP5 M1 Task 9: session.*
   const ReplicasConfig replicas;    // SP5 M1 Task 10: replicas.parallel (the C-4 narrowing)
+  const VisionConfig vision;        // SP5 M1 Task 11: vision.* (the D-9 split)
 
  private:
   friend std::variant<ValidatedConfig, std::vector<ConfigIssue>> validate(const FrontendConfigDraft& draft);
   FrontendConfig(ListenerConfig listener_value, Limits limits_value, Roots roots_value, SecretSource token_value,
                  EngineLaunch engine_value, PullSettings pull_value, LoggingConfig logging_value,
                  SamplingDefaults sampling_value, ReasoningConfig reasoning_value, SessionPolicy session_value,
-                 ReplicasConfig replicas_value)
+                 ReplicasConfig replicas_value, VisionConfig vision_value)
       : listener(std::move(listener_value)), limits(limits_value), roots(std::move(roots_value)),
         token(std::move(token_value)), engine(std::move(engine_value)), pull(std::move(pull_value)),
         logging(logging_value), sampling(std::move(sampling_value)), reasoning(reasoning_value),
-        session(std::move(session_value)), replicas(replicas_value) {}
+        session(std::move(session_value)), replicas(replicas_value), vision(vision_value) {}
 };
 
 // Immutable after validation; subsystems derive their limits from it once.

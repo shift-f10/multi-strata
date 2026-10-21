@@ -210,6 +210,66 @@ void launch_composed_from_manifest_qwen() {
   expect(bare_launch != nullptr && bare_launch->model_id == "m:t", "a bare (case-folded) name serves its one installed tag as name:tag");
 }
 
+// SP5 M1 Task 11 (D-9; Rulings T11-aa/T11-bb): compose-time vision wiring — enabled with a
+// manifest that declares no mmproj artifact fails closed naming it; a declared mmproj is
+// carried on ComposedLaunch and the engine receives --vision (the pin's section gate,
+// serve/server.py:2926-2931); lazy_load + an image-reading model is the pin's config
+// conflict (runconfig.py:97-98 — pin wins); --expert has no manifest, so vision fails there by name.
+void vision_compose_rules() {
+  const auto enable_vision = [](secure_frontend_test::cli::CliHarness& h, const std::string& body) {
+    std::string text = secure_frontend_test::read_file(h.config);
+    text.insert(text.find("\"pull\""), "\"vision\": " + body + ", ");
+    secure_frontend_test::write_file(h.config, text);
+  };
+  {  // enabled, but the manifest has no mmproj artifact: fail closed (exit 5).
+    secure_frontend_test::cli::CliHarness h;
+    (void)secure_frontend_test::cli::install(h);
+    h.make_managed("m:t");
+    enable_vision(h, "{\"enabled\": true}");
+    const auto composed = secure_frontend::compose_engine_launch(h.validated_config().get(), false);
+    const auto* failure = std::get_if<secure_frontend::LaunchFailure>(&composed);
+    expect(failure != nullptr && failure->exit == secure_frontend::ExitCode::manifest &&
+               failure->messages.front().find("mmproj") != std::string::npos,
+           "vision on a manifest without mmproj fails closed (T11-aa)");
+  }
+  {  // a declared mmproj: carried on the composition; the engine gets --vision.
+    secure_frontend_test::cli::CliHarness h;
+    const auto entry = secure_frontend_test::cli::install(h, 1, "", secure_frontend::ModelOrigin::third_party, "m", "t", true);
+    h.make_managed("m:t");
+    enable_vision(h, "{\"enabled\": true}");
+    const auto composed = secure_frontend::compose_engine_launch(h.validated_config().get(), false);
+    const auto* launch = std::get_if<secure_frontend::ComposedLaunch>(&composed);
+    if (launch == nullptr) {
+      for (const auto& m : std::get<secure_frontend::LaunchFailure>(composed).messages) std::cerr << "  " << m << '\n';
+      return;
+    }
+    const auto base = h.models().path() / "m" / "t" / entry.dir;
+    expect(launch->vision_mmproj == secure_frontend::path_to_utf8((base / "mmproj" / "mmproj.gguf").make_preferred()) &&
+               launch->vision_model == secure_frontend::path_to_utf8((base / "weights" / "fx-00001-of-00002.gguf").make_preferred()),
+         "ComposedLaunch carries the encoder artifact and the weights, same join as --native");
+    expect(std::count(launch->engine_args.begin(), launch->engine_args.end(), "--vision") == 1,
+           "the engine receives --vision, like the pin's vision-section gate (:2930)");
+  }
+  {  // the pin's conflict: "lazy loading is text-only, and this model reads images".
+    secure_frontend_test::cli::CliHarness h;
+    (void)secure_frontend_test::cli::install(h, 1, "", secure_frontend::ModelOrigin::third_party, "m", "t", true);
+    h.make_managed("m:t", ", \"lazy_load\": true");
+    enable_vision(h, "{\"enabled\": true}");
+    const auto conflict = secure_frontend::compose_engine_launch(h.validated_config().get(), false);
+    const auto* failure = std::get_if<secure_frontend::LaunchFailure>(&conflict);
+    expect(failure != nullptr && failure->messages.front().find("images") != std::string::npos,
+           "lazy_load + an image-reading model is refused at compose (runconfig.py:97-98)");
+  }
+  {  // --expert is the operator path: no manifest, no mmproj — vision fails by name.
+    secure_frontend_test::cli::CliHarness h;
+    enable_vision(h, "{\"enabled\": true}");
+    const auto expert = secure_frontend::compose_engine_launch(h.validated_config().get(), true);
+    const auto* failure = std::get_if<secure_frontend::LaunchFailure>(&expert);
+    expect(failure != nullptr && failure->messages.front().find("vision") != std::string::npos,
+           "vision needs a managed model; --expert fails by name");
+  }
+}
+
 // F-7 (SP1 rule, engine_arguments.cpp): every engine argv path is UTF-8, never path::string().
 void managed_launch_argv_is_utf8_for_non_ascii_models_root() {
   secure_frontend_test::cli::CliHarness h("Jos\xC3\xA9-models");
@@ -526,6 +586,7 @@ int main(int argc, char** argv) {
       {"engine_args_render_typed_gpu_and_deny_gpu_passthrough", engine_args_render_typed_gpu_and_deny_gpu_passthrough},
       {"gpu_list_rejects_malformed_values", gpu_list_rejects_malformed_values},
       {"launch_composed_from_manifest_qwen", launch_composed_from_manifest_qwen},
+      {"vision_compose_rules", vision_compose_rules},
       {"managed_launch_argv_is_utf8_for_non_ascii_models_root", managed_launch_argv_is_utf8_for_non_ascii_models_root},
       {"launch_refuses_model_not_installed", launch_refuses_model_not_installed},
       {"engine_args_reject_weight_flags_for_managed_model", engine_args_reject_weight_flags_for_managed_model},

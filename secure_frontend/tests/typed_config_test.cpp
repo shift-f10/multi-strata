@@ -1422,6 +1422,65 @@ void multi_child_replicas_reject_with_the_ruling() {
            std::string{key} + " is rejected by name (the C-4 narrowing): " + issues_of(result));
   }
 }
+
+// SP5 M1 Task 11 (D-9): the seven vision rows at the pin — enabled gates the whole family;
+// max_side/max_n default at the images-block values (serve/images.py:102-103 `or 2048`/`or 4`,
+// caps added C-1); need_mib unset (images.py:156 override; the VRAM gate is owner-box, cf
+// T7-c); no_flash_attn/resident per the spec family list (resident = the pin's eager encoder,
+// server.py:2511/:2552); threads 0 = the pin's unset (truthy -> --threads, :2562).
+void vision_rows_match_the_pin() {
+  ConfigFixture f;
+  const auto bare_result = with_literals(f, {});
+  const auto* bare = config_of(bare_result);
+  expect(bare != nullptr, "a config without the vision rows still validates: " + issues_of(bare_result));
+  if (bare != nullptr) {
+    expect(!bare->vision.enabled && bare->vision.max_side == 2048 && bare->vision.max_n == 4 &&
+               !bare->vision.need_mib.has_value() && !bare->vision.no_flash_attn && bare->vision.resident &&
+               bare->vision.threads == 0 && bare->vision.ready_timeout_s == 300,
+           "defaults at the pin: off, 2048, 4, unset, off, resident, unset, 300 s (:2511-2562, :327; images.py:102-103,156)");
+    const std::string described = secure_frontend::describe(*bare);
+    expect(described.find("vision.enabled = false\n") != std::string::npos &&
+               described.find("vision.max_side = 2048\n") != std::string::npos &&
+               described.find("vision.resident = true\n") != std::string::npos,
+           "describe reports the vision family");
+  }
+  const auto accept = [&](const char* path, const std::string& value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result),
+           std::string{"accepts "} + value + " for " + path + ": " + issues_of(result));
+  };
+  const auto reject = [&](const char* path, const std::string& value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ConfigErrors>(result), std::string{"rejects "} + value + " for " + path);
+  };
+  accept("vision.enabled", "true");
+  reject("vision.enabled", "\"true\"");   // strict booleans, like every boolean row
+  accept("vision.max_side", "1");
+  accept("vision.max_side", "16384");     // added cap (C-1)
+  reject("vision.max_side", "16385");
+  reject("vision.max_side", "0");
+  accept("vision.max_n", "1");
+  accept("vision.max_n", "64");           // added cap (C-1)
+  reject("vision.max_n", "65");
+  accept("vision.need_mib", "1048576");
+  reject("vision.need_mib", "0");
+  reject("vision.need_mib", "-1");
+  accept("vision.threads", "0");
+  accept("vision.threads", "256");        // added cap (C-1)
+  reject("vision.threads", "257");
+  accept("vision.ready_timeout_s", "0");     // 0: wait for ever — the pin's :291 rule
+  accept("vision.ready_timeout_s", "86400"); // added cap (C-1)
+  reject("vision.ready_timeout_s", "86401");
+  const auto set_result = with_literals(f, {{"vision.enabled", "true"}, {"vision.max_side", "1024"}, {"vision.max_n", "2"},
+                                            {"vision.need_mib", "1126"}, {"vision.no_flash_attn", "true"},
+                                            {"vision.resident", "false"}, {"vision.threads", "8"},
+                                            {"vision.ready_timeout_s", "45"}});
+  const auto* set = config_of(set_result);
+  expect(set != nullptr && set->vision.enabled && set->vision.max_side == 1024 && set->vision.max_n == 2 &&
+             set->vision.need_mib == 1126 && set->vision.no_flash_attn && !set->vision.resident && set->vision.threads == 8 &&
+             set->vision.ready_timeout_s == 45,
+         "the vision family is typed: " + issues_of(set_result));
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1443,6 +1502,7 @@ int main(int argc, char** argv) {
       {"session_rows_at_each_edge", session_rows_at_each_edge},
       {"replicas_parallel_row_at_the_pin", replicas_parallel_row_at_the_pin},
       {"multi_child_replicas_reject_with_the_ruling", multi_child_replicas_reject_with_the_ruling},
+      {"vision_rows_match_the_pin", vision_rows_match_the_pin},
       {"bounds_are_the_pins_at_each_edge", bounds_are_the_pins_at_each_edge},
       {"typed_config_accepts_minimal_file_and_applies_defaults", typed_config_accepts_minimal_file_and_applies_defaults},
       {"cfg01_unknown_key_rejected", cfg01_unknown_key_rejected},

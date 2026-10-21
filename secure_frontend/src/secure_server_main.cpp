@@ -7,6 +7,7 @@
 #include "secure_frontend/connection_pool.hpp"
 #include "secure_frontend/engine_arguments.hpp"
 #include "secure_frontend/engine_environment.hpp"
+#include "secure_frontend/engine_stdio_process.hpp"
 #include "secure_frontend/engine_supervisor.hpp"
 #include "secure_frontend/frontend_config.hpp"
 #include "secure_frontend/frontend_init.hpp"
@@ -25,6 +26,7 @@
 #include "secure_frontend/token_verifier.hpp"
 #include "secure_frontend/tokenizer_pack.hpp"
 #include "secure_frontend/utf8_argv.hpp"
+#include "secure_frontend/vision_supervisor.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -289,6 +291,65 @@ int run(const FrontendConfig& config, const bool expert) {
     secure_frontend::EngineSupervisor& supervisor;
     ~StopSupervisor() { supervisor.shutdown(secure_frontend::config_defaults::kShutdownBound); }
   } stop_supervisor{supervisor};
+  // SP5 M1 Task 11 (D-9 vision split; Rulings T11-y/T11-ee/T11-z): the supervised
+  // strata-vision child. Its exe is OUR distribution's — strata-vision beside the
+  // engine executable (the pin's vision-exe-from-config stays kRejected, spec §4);
+  // the mmproj artifact and the weights come from compose (the manifest's
+  // launch.mmproj). resident (the pin's eager default, serve/server.py:2511) starts
+  // the child now: no READY within the policy, and boot fails — vision.enabled is a
+  // promise of images. resident=false stays stopped until the first image wakes it
+  // (the request path is Task 12). Declared after stop_supervisor, so its child is
+  // gone (dtor stops it) before the engine supervisor's shutdown.
+  std::unique_ptr<secure_frontend::VisionSupervisor> vision;
+  if (config.vision.enabled) {
+    if (!launch.vision_mmproj.has_value() || !launch.vision_model.has_value()) {  // compose guards; fail closed twice
+      std::cerr << "vision: this model declares no mmproj artifact.\n";
+      return EXIT_FAILURE;
+    }
+    std::filesystem::path vision_exe = config.engine.executable.path().parent_path() / "strata-vision";
+#if defined(_WIN32)
+    vision_exe += L".exe";
+#endif
+    if (std::error_code ec; !std::filesystem::exists(vision_exe, ec) || ec) {
+      std::cerr << "vision: no strata-vision beside the engine executable.\n";
+      return EXIT_FAILURE;
+    }
+    const auto argv = secure_frontend::compose_vision_arguments(secure_frontend::VisionChildSpec{
+        .mmproj = *launch.vision_mmproj, .model = *launch.vision_model, .threads = config.vision.threads,
+        .max_tokens = config.engine.max_tokens, .min_tokens = config.engine.min_tokens,
+        .no_flash_attn = config.vision.no_flash_attn});
+    // The engine's confinement family minus the per-generation cgroup delegation
+    // (recorded M1 gap, AGENT_HANDOFF); environment stays an empty allowlist and
+    // cwd the prepared state dir (T11-ee; image scratch arrives with Task 12).
+    const std::filesystem::path exe = std::move(vision_exe);
+    const std::filesystem::path vision_cwd = state_dir;
+    const bool nnp = secure_frontend::config_defaults::kNoNewPrivilegesDefault && !config.engine.allow_new_privileges;
+    secure_frontend::ProcessFactory vision_factory = [exe, argv, vision_cwd, nnp](std::uint64_t) -> secure_frontend::SpawnResult {
+      auto child = std::make_unique<secure_frontend::EngineStdioProcess>();
+      secure_frontend::EngineCommand command{.executable = exe,
+                                             .arguments = argv,
+                                             .environment = {},
+                                             .working_directory = vision_cwd,
+                                             .no_new_privileges = nnp,
+                                             .kill_exit_code = secure_frontend::kVisionKillExitCode,
+                                             .insert_serve = false};  // the pin's reader_args carry no --serve (T11-ff)
+      if (const auto error = child->start(command)) return secure_frontend::SpawnFailure{error->message};
+      return child;
+    };
+    secure_frontend::VisionLimits vision_limits;
+    // The STRATA_VISION_READY_S counterpart, typed (vision.ready_timeout_s; 0 = wait
+    // for ever, the pin's :291 rule).
+    vision_limits.policy.ready_timeout = std::chrono::milliseconds{std::chrono::seconds{config.vision.ready_timeout_s}};
+    vision = std::make_unique<secure_frontend::VisionSupervisor>(std::move(vision_factory), std::move(vision_limits));
+    if (config.vision.resident) {
+      vision->start();
+      if (!vision->up()) {
+        std::cerr << "vision: the encoder did not reach READY; refusing to serve without it.\n";
+        return EXIT_FAILURE;
+      }
+      std::cerr << "[strata] vision: the encoder is resident\n";
+    }
+  }
   std::cout << "Secure server listening on http://" << authority << " (authenticated; Ctrl-C to stop)\n";
   std::cout.flush();
   // Task 12: the server is concurrent (spec §2.1). The accept loop runs on this

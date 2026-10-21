@@ -29,6 +29,10 @@ struct ComposedLaunch final {
   // SP5 M1 Task 6 (parity row mtp): non-empty when engine.mtp=false dropped the draft
   // layer's own flags; the startup line reports them once, like the pin (serve/server.py:2925).
   std::vector<std::string> mtp_removed;
+  // SP5 M1 Task 11 (D-9): when the manifest declares launch.mmproj, these carry the encoder
+  // artifact and the weights it reads (absolute UTF-8, joined exactly like the engine args).
+  std::optional<std::string> vision_mmproj;
+  std::optional<std::string> vision_model;
 };
 
 struct LaunchFailure final {

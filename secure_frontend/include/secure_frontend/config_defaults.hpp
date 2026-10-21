@@ -30,6 +30,9 @@ inline constexpr std::int64_t kChatMaxCompletionTokens = 4'096;
 inline constexpr std::int64_t kChatDefaultMaxTokens = 0;  // 0 = auto (SP3 B1)
 inline constexpr std::int64_t kChatMaxGeneratedBytes = 1'048'576;
 inline constexpr std::int64_t kEngineReadyTimeoutS = 900;   // upstream STRATA_ENGINE_READY_S
+// SP5 M1 Task 11: the vision child's READY gate (upstream VISION_READY_S default,
+// serve/server.py:327; the pin's env override is not typed in M1).
+inline constexpr std::int64_t kVisionReadyTimeoutS = 300;
 inline constexpr std::int64_t kEngineGenerationTimeoutS = 120;
 inline constexpr std::int64_t kEngineStopDrainTimeoutS = 5;
 inline constexpr std::int64_t kMaxConcurrentRequests = 8;  // SP3 B11

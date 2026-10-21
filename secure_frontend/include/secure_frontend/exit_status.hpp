@@ -39,6 +39,9 @@ struct ExitClassification final {
 
 // TerminateJobObject exit code: a customer code (bit 29), never an engine `return 1`.
 inline constexpr std::uint32_t kSupervisorKillExitCode = 0x20000001U;
+// SP5 M1 Task 11 (plan: the vision role's "distinct exit-code space"): a supervisor-killed
+// strata-vision child terminates with this code instead of the engine's.
+inline constexpr std::uint32_t kVisionKillExitCode = 0x20000002U;
 
 // `sent_by_supervisor` is the reason recorded when the supervisor sent a kill
 // (KillReason::none otherwise). The kill is credited to the supervisor only if
