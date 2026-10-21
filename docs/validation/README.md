@@ -27,8 +27,10 @@ every claim below waits for the owner's own hardware (owner rulings 2026-10-20/2
    `glm53` profile; results file is hashed into `docs/PROVENANCE.md` as the SP5
    acceptance entry (row exists as a placeholder — **no GLM parity claim until you run it**).
    Status: ready; **run is owner-side**.
-3. **SP6 GLM eval kit** — `tools/glm-eval/*` per the SP6 design; blocked on the
-   owner's decision sheet (`docs/superpowers/handoff/2026-10-16-controller-resume.md` §5.1).
+3. **SP6 GLM eval kit** — `tools/glm-eval/*` per the SP6 design (decision sheet adopted
+   2026-10-22, resume §5 item 1; kit planned in `docs/superpowers/plans/2026-10-22-sp6-plan1-eval-kit.md`).
+   Status: plan queued after SP7 M2; **battery runs (B-01…B-24) and pack building are owner-box
+   work**.
 
 ## Parked for the owner (decisions, not runs)
 
@@ -43,7 +45,9 @@ every claim below waits for the owner's own hardware (owner rulings 2026-10-20/2
   RED: 3/3 deterministic under TSan before the fix. GREEN: 12/12 under TSan, full
   linux-gcc suite 826/826 (first fully green run in six batteries), release 10/10,
   cross 0 warnings, pytest 33.
-- SP6 decision sheet (S1–S7, M1–M7), presented 2026-10-14, unanswered.
+- SP6 decision sheet (S1–S7, M1–M7), presented 2026-10-14 — **adopted by the controller
+  2026-10-22** under the no-block directive (values in resume §5 item 1; any one reversible
+  by the owner with a single line).
 
 ## How to record results
 
