@@ -625,8 +625,8 @@ secure_frontend_set_warnings(strata)
 
 # SP3 M2 — streaming.
 secure_frontend_add_library(secure_frontend_utf8_stream SOURCES src/utf8_stream_decoder.cpp)
-secure_frontend_add_library(secure_frontend_sse SOURCES src/sse_encoder.cpp
-    LINKS secure_frontend_json secure_frontend_api_core secure_frontend_utf8_stream)
+secure_frontend_add_library(secure_frontend_sse SOURCES src/sse_encoder.cpp src/stream_socket.cpp src/chunked_stream_sink.cpp
+    LINKS secure_frontend_json secure_frontend_api_core secure_frontend_utf8_stream secure_frontend_socket_io)
 
 if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     enable_testing()
@@ -636,7 +636,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     set(SECURE_FRONTEND_SSE_CASES
         utf8_split_across_tokens_is_held_then_released utf8_invalid_sequence_becomes_replacement_character
         utf8_incomplete_tail_dropped_on_length_and_cancel utf8_incomplete_tail_on_stop_becomes_one_replacement
-        sse_events_never_contain_raw_newline sse_coalesced_control_heavy_text_respects_event_cap sse_chunk_framing_units)
+        sse_events_never_contain_raw_newline sse_coalesced_control_heavy_text_respects_event_cap sse_chunk_framing_units
+        sse_chunked_framing_and_terminal_chunk sink_buffers_on_would_block_and_flushes_later
+        sink_write_stall_marks_client_gone sink_send_failure_and_peer_probe_are_gone)
     secure_frontend_add_cases(secure_frontend_sse_tests ${SECURE_FRONTEND_SSE_CASES} TIMEOUT 120)
 
     secure_frontend_add_test_executable(secure_frontend_paths_tests tests/paths_test.cpp secure_frontend_paths)
@@ -1005,8 +1007,10 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         send_all_bounded_stall_restarts_on_progress send_all_bounded_stop_flag_cuts_an_inflight_write_within_the_drain_budget
         socket_io_poll_probe_and_recv set_no_inherit_marks_the_socket
         TIMEOUT 300)
+    secure_frontend_add_cases(secure_frontend_http_socket_server_tests stream_socket_peek_and_nonblocking_send
+        TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     target_link_libraries(secure_frontend_http_socket_server_tests PRIVATE secure_frontend_socket_io
-        secure_frontend_api_router secure_frontend_secrets secure_frontend_http_policy)
+        secure_frontend_api_router secure_frontend_secrets secure_frontend_http_policy secure_frontend_sse)
     secure_frontend_test_paths(secure_frontend_http_socket_server_tests)
     set_tests_properties(secure_frontend_http_socket_server_tests.socket_server_ipv6_bind_is_v6only PROPERTIES SKIP_RETURN_CODE 77)
     if(WIN32)

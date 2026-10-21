@@ -67,6 +67,8 @@ struct StreamSink {
   virtual bool writable(std::chrono::milliseconds timeout) = 0;  // the socket can take more bytes within `timeout`
   virtual bool client_gone() = 0;                                // EOF, reset, or any byte after the body (probe_peer)
   virtual void finish() = 0;                                     // [DONE] already sent -> terminal chunk "0\r\n\r\n"
+  // §8 log-only code of the stream (a fixed literal); M2. Default: ignored.
+  virtual void set_log_code(std::string_view /*code*/) {}
   virtual ~StreamSink() = default;
 };
 using StreamHandler = std::function<void(StreamSink&)>;
