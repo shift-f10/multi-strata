@@ -33,10 +33,12 @@ def test_parity_readme_coverage() -> None:
     rows = ROW.findall(array_body(table, "kRows{{"))
     assert len(rows) == 121, f"the parity table shape changed ({len(rows)} rows parsed) — update this gate and the README"
 
-    # SP5 M2: the GLM table must exist and stay whole (README mirror lands with
-    # Task 10; until then the count is the guard against a silently shrinking table).
+    # SP5 M2 Task 10: the GLM (Maya) table mirrors into its own README blocks,
+    # every row in the block for its disposition — the count is the non-vacuity
+    # guard for this table too (178 rows; no strata-style floor, it must be whole).
     maya_rows = ROW.findall(array_body(table, "kMayaRows{{"))
-    assert len(maya_rows) == 178, f"the GLM table changed ({len(maya_rows)} rows) — extend the README mirror (Task 10) and this gate together"
+    assert len(maya_rows) == 178, f"the GLM table changed ({len(maya_rows)} rows) — extend the README mirror and this gate together"
+
 
     inventory = (REPO / "secure_frontend/tests/parity_keys_upstream.hpp").read_text(encoding="utf-8")
     names = [name for body in ARRAY.findall(inventory) for name in NAME.findall(body)]
@@ -60,3 +62,17 @@ def test_parity_readme_coverage() -> None:
     # The auto-rendered config table (gate: the C++ readme_config_table_matches_schema)
     # must also be present here as a real table; the floor catches a truncated paste.
     assert len(re.findall(r"^\| `", region(readme, "config-keys"), re.M)) >= 100, "the config table looks truncated"
+
+    # SP5 M2 Task 10: every Maya row lands in the README block for its disposition;
+    # all 178 must be found — the mirror is proven non-vacuous by the full count.
+    maya_blocks = {"kTyped": region(readme, "maya-typed"), "kRejected": region(readme, "maya-rejected"),
+                   "kMapped": region(readme, "maya-mapped")}
+    maya_found = 0
+    maya_missing = []
+    for name, disposition, _destination, _citation in maya_rows:
+        if re.search(rf'^\| `{re.escape(name)}` \|', maya_blocks[disposition], re.M):
+            maya_found += 1
+        else:
+            maya_missing.append(f"{name} ({disposition})")
+    assert not maya_missing, f"Maya parity rows absent from the README block for their disposition: {maya_missing}"
+    assert maya_found == len(maya_rows), f"the Maya README mirror counts {maya_found} of {len(maya_rows)} rows"

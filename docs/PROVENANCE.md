@@ -291,7 +291,12 @@ by any CMake preset (a pytest guard checks that no CMake file mentions it);
 component; `pytest.ini` keeps its own test tree out of collection. This
 vendoring pulls forward only the reference-source piece of SP6 — no SP6
 engine work happens in SP5, and nothing here comes out of this submodule
-into our binaries.
+into our binaries. **SP5 M2 use:** the submodule is the citation target of
+the GLM parity table (`kMayaRows`, 178 rows) and of the dialect/vision
+citations across `secure_frontend` and the kit docs — the whole table is
+verifiable by opening the cited `file:line` locally. Still: **no code,
+kernel, model or quant has been taken from it**; SP6 import work keeps the
+rules above.
 
 **SP5 parity acceptance kit (placeholder, SP5 M2):** the kit procedure is
 `docs/validation/sp5-parity-kit.md` (corpus: `docs/validation/sp5-parity-corpus.txt`);
