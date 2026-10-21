@@ -647,7 +647,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         sink_write_stall_marks_client_gone sink_send_failure_and_peer_probe_are_gone
         sse_role_content_final_done_sequence sse_include_usage_adds_usage_chunk sse_ids_and_created_constant_per_stream
         stream_with_no_tokens_has_role_final_done stream_slow_reader_coalesces_deltas stream_tail_deadline_cuts_without_terminal_chunk
-        stream_client_gone_sends_stop keepalive_never_splits_a_pending_event)
+        stream_client_gone_sends_stop keepalive_never_splits_a_pending_event stream_error_events_follow_text_and_end_with_done)
     secure_frontend_add_cases(secure_frontend_sse_tests ${SECURE_FRONTEND_SSE_CASES} TIMEOUT 120)
 
     secure_frontend_add_test_executable(secure_frontend_api_client_tests tests/api_client_test.cpp secure_frontend_api_client)
@@ -897,7 +897,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         stream_matches_non_stream_text dos02_queue_full_with_streams_is_503_before_headers ext01_extension_fields_rejected_on_stream_path
         dos02_slow_reader_never_backpressures_engine finish_stop_length_and_generated_bytes_cap utf8_timeout_cut_mid_character_returns_length
         dos02_stream_disconnect_sends_stop_and_frees_engine dos02_slow_stream_reader_hits_write_stall stream_cut_has_no_terminal_chunk
-        stream_cancel_during_prefill_frees_engine log_stream_outcomes_use_fixed_codes stream_keepalive_comment_during_prefill)
+        stream_cancel_during_prefill_frees_engine log_stream_outcomes_use_fixed_codes stream_keepalive_comment_during_prefill
+        err_mid_stream_is_error_event_then_done crash_mid_stream_is_engine_unavailable_event nonfinite_is_engine_error_and_engine_stays_ready
+        engine_error_carries_should_retry_false)
     secure_frontend_add_cases(secure_frontend_api_server_tests ${SECURE_FRONTEND_API_SERVER_M2_CASES}
         TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 

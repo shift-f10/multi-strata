@@ -127,8 +127,21 @@ ChatStreamOutcome run_chat_stream(StreamSink& sink, EngineProtocolClient& protoc
     outcome.log_code = run.cancel == RunCancel::write_stall ? "write_stall" : "client_gone";
     return outcome;  // nothing more is written to a gone client (spec §2.6)
   }
-  if (run.end != RunEnd::stop && run.end != RunEnd::length) return outcome;  // other ends: Task 13, Task 14
   const auto until = Clock::now() + settings.tail_deadline;
+  if (run.end == RunEnd::engine_error || run.end == RunEnd::engine_unavailable || run.end == RunEnd::undecodable) {
+    const ApiError code = run.end == RunEnd::engine_error ? ApiError::engine_error
+                              : run.end == RunEnd::engine_unavailable ? ApiError::engine_unavailable
+                                                                      : ApiError::internal_error;
+    outcome.log_code = api_error_row(code).code;
+    if (!observer.flush_all(until) || !observer.send(render_error_event(code), until) || !observer.send(kSseDoneEvent, until) ||
+        !observer.wait_writable(until)) {
+      return outcome;
+    }
+    sink.finish();
+    outcome.terminal_chunk_sent = sink.writable(std::chrono::milliseconds(0));
+    return outcome;
+  }
+  if (run.end != RunEnd::stop && run.end != RunEnd::length) return outcome;  // shutdown: Task 14
   if (!observer.flush_all(until)) return outcome;
   if (!observer.send(render_final_event(identity, run.end == RunEnd::stop ? "stop" : "length"), until)) return outcome;
   if (settings.include_usage && !observer.send(render_usage_event(identity, settings.prompt_tokens, run.completion_tokens), until)) return outcome;

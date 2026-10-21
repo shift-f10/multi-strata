@@ -443,6 +443,22 @@ void keepalive_never_splits_a_pending_event() {
   }
 }
 
+void stream_error_events_follow_text_and_end_with_done() {
+  const auto check = [](std::vector<std::string> records, const secure_frontend::ApiError code, const std::string& name) {
+    StreamRun stream(std::move(records));
+    const auto outcome = stream.run();
+    const auto& events = stream.sink.events;
+    expect(events.size() >= 3U && events[events.size() - 2U] == secure_frontend::render_error_event(code), name + ": error event");
+    expect(events.back() == secure_frontend::kSseDoneEvent && stream.sink.finished && outcome.terminal_chunk_sent, name + ": [DONE] + terminal");
+    for (const auto& event : events) expect(event.find(R"("finish_reason":")") == std::string::npos, name + ": no finish_reason after an error");
+    expect(stream.text() == "a", name + ": text before the failure was delivered");
+  };
+  check({tok('a'), "ERR boom"}, secure_frontend::ApiError::engine_error, "ERR");
+  check({tok('a'), "DONE 1 3 1.0 1.0 nonfinite"}, secure_frontend::ApiError::engine_error, "nonfinite");
+  check({tok('a'), "<close>"}, secure_frontend::ApiError::engine_unavailable, "engine exit");
+  check({tok('a'), "T 256", "DONE 2 3 1.0 1.0 cancel"}, secure_frontend::ApiError::internal_error, "control token in output");
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -467,6 +483,7 @@ int main(int argc, char* argv[]) {
                                              {"stream_tail_deadline_cuts_without_terminal_chunk", stream_tail_deadline_cuts_without_terminal_chunk},
                                              {"stream_client_gone_sends_stop", stream_client_gone_sends_stop},
                                              {"keepalive_never_splits_a_pending_event", keepalive_never_splits_a_pending_event},
+                                             {"stream_error_events_follow_text_and_end_with_done", stream_error_events_follow_text_and_end_with_done},
                                          },
                                          failures);
 }

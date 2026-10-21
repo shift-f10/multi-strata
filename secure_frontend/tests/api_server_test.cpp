@@ -1342,6 +1342,54 @@ void stream_keepalive_comment_during_prefill() {
          "at least 2 ': keep-alive' comments during a 2.5 s prefill: " + std::to_string(test_support::comments_before_content(streamed)));
 }
 
+void err_mid_stream_is_error_event_then_done() {
+  auto server = test_support::start_stream_server({"--tokens=5", "--err-mid-gen=2"});
+  expect(server != nullptr, "server ready");
+  if (!server) return;
+  const auto streamed = test_support::chat(*server, test_support::chat_body(R"("stream":true)"));
+  expect(test_support::stream_text(streamed) == "HH" && test_support::stream_error_code(streamed) == "engine_error", "text, then engine_error");
+  expect(streamed.done_seen && streamed.terminal_chunk_seen && streamed.end == ChatExchangeEnd::complete, "[DONE] and the terminal chunk follow");
+  expect(test_support::stream_finish(streamed) == "<none>", "no finish_reason after an error");
+}
+
+void crash_mid_stream_is_engine_unavailable_event() {
+  auto server = test_support::start_stream_server({"--tokens=10", "--crash-mid-gen=3", "--token-interval-ms=10"});
+  expect(server != nullptr, "server ready");
+  if (!server) return;
+  const auto streamed = test_support::chat(*server, test_support::chat_body(R"("stream":true)"));
+  expect(test_support::stream_error_code(streamed) == "engine_unavailable" && streamed.terminal_chunk_seen, "engine_unavailable event, ended normally");
+  bool restarting = false;
+  for (int poll = 0; poll < 100 && !restarting; ++poll) {
+    const auto health = server->get("/health");
+    restarting = health && health->body.find(R"("recovery":"restarting")") != std::string::npos;
+    if (!restarting) std::this_thread::sleep_for(20ms);
+  }
+  expect(restarting, "/health follows SP2: recovery=restarting");
+}
+
+void nonfinite_is_engine_error_and_engine_stays_ready() {
+  auto server = test_support::start_stream_server({"--finish=nonfinite"});
+  expect(server != nullptr, "server ready");
+  if (!server) return;
+  const auto engines_before = server->descendants();
+  const auto complete = test_support::chat(*server, test_support::chat_body(""));
+  expect(complete.head.status == 503 && test_support::error_code_of(complete.body) == "engine_error", "non-stream: 503 engine_error");
+  expect(complete.head.header("x-should-retry") == "false", "SDK retries suppressed");
+  const auto streamed = test_support::chat(*server, test_support::chat_body(R"("stream":true)"));
+  expect(test_support::stream_error_code(streamed) == "engine_error" && streamed.done_seen && streamed.terminal_chunk_seen, "stream: error event");
+  expect(server->wait_for_health(test_support::kHealthReady, 2s), "the engine stays ready (SP0 E3)");
+  expect(server->descendants() == engines_before, "no restart");
+}
+
+void engine_error_carries_should_retry_false() {
+  auto server = test_support::start_stream_server({"--tokens=3", "--err-mid-gen=0"});
+  expect(server != nullptr, "server ready");
+  if (!server) return;
+  const auto result = test_support::chat(*server, test_support::chat_body(""));
+  expect(result.head.status == 503 && test_support::error_code_of(result.body) == "engine_error", "ERR is 503 engine_error");
+  expect(result.head.header("x-should-retry") == "false", "x-should-retry: false (risk R5)");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1404,6 +1452,10 @@ int main(int argc, char** argv) {
       {"stream_cancel_during_prefill_frees_engine", stream_cancel_during_prefill_frees_engine},
       {"log_stream_outcomes_use_fixed_codes", log_stream_outcomes_use_fixed_codes},
       {"stream_keepalive_comment_during_prefill", stream_keepalive_comment_during_prefill},
+      {"err_mid_stream_is_error_event_then_done", err_mid_stream_is_error_event_then_done},
+      {"crash_mid_stream_is_engine_unavailable_event", crash_mid_stream_is_engine_unavailable_event},
+      {"nonfinite_is_engine_error_and_engine_stays_ready", nonfinite_is_engine_error_and_engine_stays_ready},
+      {"engine_error_carries_should_retry_false", engine_error_carries_should_retry_false},
       {"win_refusal_is_read_not_reset", win_refusal_is_read_not_reset},
       {"win_eviction_wakes_worker_within_one_slice", win_eviction_wakes_worker_within_one_slice},
       {"win_disconnect_detected_by_peek", win_disconnect_detected_by_peek},
