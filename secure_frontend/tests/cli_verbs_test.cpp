@@ -31,11 +31,14 @@ void expect(const bool condition, const std::string& message) {
 
 std::filesystem::path cli_binary;
 
-#if !defined(_WIN32)  // the note() debug dump is used by the POSIX cases only
 void note(const std::string& what, const ProcessResult& result) {
   std::cerr << "  [" << what << "] exit=" << result.exit_code << " out=" << result.out << " err=" << result.err << "\n";
 }
-#endif
+
+std::string read_text(const std::filesystem::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  return std::string{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
+}
 
 // The honest temp picture: a validated config under a temp HOME, a private
 // secret dir with the token file, an existing state dir, models and logs dirs.
@@ -119,11 +122,6 @@ void write_systemctl_shim(const std::filesystem::path& dir, const std::filesyste
   chmod(shim.c_str(), 0755);
 }
 
-std::string read_text(const std::filesystem::path& path) {
-  std::ifstream in(path, std::ios::binary);
-  return std::string{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
-}
-
 void cli_service_enable_status_disable_roundtrip() {
   const Scene s(18443);
   const auto shim_dir = s.scratch / "shim";
@@ -205,6 +203,39 @@ void cli_uninstall_purge_with_typed_word_removes_models() {
 }
 #endif  // !_WIN32
 
+#if defined(_WIN32)
+// The Task Scheduler roundtrip as a real CLI run (windows-runtime label: runs
+// only in a Windows test build — the owner's box; the cross gate compiles it).
+void cli_service_enable_status_disable_taskscheduler() {
+  const Scene s(18448);
+  const auto shim_dir = s.scratch / "shim";
+  std::filesystem::create_directories(shim_dir);
+  const auto record = s.scratch / "schtasks.calls";
+  {
+    std::ofstream cmd(shim_dir / "schtasks.cmd", std::ios::binary | std::ios::trunc);
+    cmd << "@echo off\r\necho %* >> \"" << record.string() << "\"\r\nexit /b 0\r\n";
+  }
+  Scene scene = s;
+  scene.env = {{"HOME", scene.home.string()}, {"XDG_CONFIG_HOME", scene.xdg.string()}, {"PATH", shim_dir.string()}};
+  const auto task_file = scene.xdg / "strata" / "strata-task.xml";
+
+  const auto enable = scene.run({"service", "enable"});
+  if (enable.exit_code != 0) note("enable", enable);
+  expect(enable.exit_code == 0, "service enable exits 0 with the fake schtasks present");
+  std::error_code ec;
+  expect(std::filesystem::exists(task_file, ec), "the task XML was written under the user config home");
+  expect(contains(read_text(record), "/Create /F /TN strata /XML"), "schtasks /Create /F /XML ran");
+
+  const auto status = scene.run({"service", "status"});
+  expect(status.exit_code == 0, "service status exits 0");
+  expect(status.out.find("service: enabled:") != std::string::npos, "status prints the enabled line");
+
+  const auto disable = scene.run({"service", "disable"});
+  expect(disable.exit_code == 0, "service disable exits 0");
+  expect(!std::filesystem::exists(task_file, ec), "disable removed our task file");
+}
+#endif  // _WIN32
+
 void cli_uninstall_refuses_while_a_server_answers() {
   // A canned HTTP listener stands in for a foreground serve; the CLI's health
   // probe must refuse the uninstall with the Ctrl+C message and change nothing.
@@ -276,6 +307,9 @@ int main(const int argc, char** const argv) {
       {"cli_uninstall_plain_removes_and_keeps", cli_uninstall_plain_removes_and_keeps},
       {"cli_uninstall_purge_without_the_word_refuses", cli_uninstall_purge_without_the_word_refuses},
       {"cli_uninstall_purge_with_typed_word_removes_models", cli_uninstall_purge_with_typed_word_removes_models},
+#endif
+#if defined(_WIN32)
+      {"cli_service_enable_status_disable_taskscheduler", cli_service_enable_status_disable_taskscheduler},
 #endif
   };
   if (!want_case.empty()) {

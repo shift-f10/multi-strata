@@ -4,7 +4,9 @@
 #include "support/process_runner.hpp"
 #include "support/test_support.hpp"
 
+#include <algorithm>
 #include <filesystem>
+#include <functional>
 #include <iostream>
 #include <string>
 #include <variant>
@@ -17,6 +19,7 @@ void expect(const bool condition, const std::string& message) {
 }
 using secure_frontend_test::contains;
 using secure_frontend::service::render_systemd_unit;
+using secure_frontend::service::render_schtasks_create;
 using secure_frontend::service::resolve_current_target;
 using secure_frontend::service::ServiceUnit;
 
@@ -27,6 +30,177 @@ ServiceUnit sample_unit() {
       {"/home/user/.local/state/strata", "/home/user/.local/state/strata/logs", "/home/user/.cache/strata"},
   };
 }
+
+// The Windows shape of the same unit: Task Scheduler text is path-text, so the
+// golden runs host-runnable on any platform (Task 6 scope).
+ServiceUnit sample_unit_windows() {
+  return ServiceUnit{
+      "C:\\strata\\0.2.1.3\\bin\\strata.exe",
+      "C:\\strata\\config.json",
+      {"C:\\strata\\state", "C:\\strata\\logs", "C:\\strata\\cache"},
+  };
+}
+
+// SP7 M1 Task 6 (spec D-5, PX §6): the logon task — current user, never
+// elevated (RunLevel LeastPrivilege), Priority Normal (6, not the Below-normal
+// default), bounded restart. The exact text is the point.
+void render_schtasks_create_exact_golden() {
+  const auto rendered = render_schtasks_create(sample_unit_windows());
+  const auto* xml = std::get_if<std::string>(&rendered);
+  if (xml == nullptr) {
+    expect(false, "the well-formed task renders: " + std::get<secure_frontend::service::ServiceError>(rendered).message);
+    return;
+  }
+  const std::string expected =
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+      "<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n"
+      "  <RegistrationInfo>\n"
+      "    <Description>Strata local model server</Description>\n"
+      "    <Author>strata</Author>\n"
+      "  </RegistrationInfo>\n"
+      "  <Triggers>\n"
+      "    <LogonTrigger>\n"
+      "      <Enabled>true</Enabled>\n"
+      "    </LogonTrigger>\n"
+      "  </Triggers>\n"
+      "  <Principals>\n"
+      "    <Principal id=\"Author\">\n"
+      "      <RunLevel>LeastPrivilege</RunLevel>\n"
+      "    </Principal>\n"
+      "  </Principals>\n"
+      "  <Settings>\n"
+      "    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\n"
+      "    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\n"
+      "    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\n"
+      "    <RestartOnFailure>\n"
+      "      <Interval>PT5M</Interval>\n"
+      "      <Count>3</Count>\n"
+      "    </RestartOnFailure>\n"
+      "    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>\n"
+      "    <Priority>6</Priority>\n"
+      "  </Settings>\n"
+      "  <Actions Context=\"Author\">\n"
+      "    <Exec>\n"
+      "      <Command>C:\\strata\\0.2.1.3\\bin\\strata.exe</Command>\n"
+      "      <Arguments>--config C:\\strata\\config.json serve</Arguments>\n"
+      "    </Exec>\n"
+      "  </Actions>\n"
+      "</Task>\n";
+  expect(*xml == expected, "the task XML is the hardened D-5/PX-6 shape verbatim, got:\n" + *xml);
+}
+
+void render_schtasks_create_rejects_unsafe_paths() {
+  const auto reject = [](ServiceUnit unit) {
+    const auto rendered = render_schtasks_create(unit);
+    expect(std::holds_alternative<secure_frontend::service::ServiceError>(rendered), "rejected: <" + unit.exec_start.string() + ">");
+  };
+  reject(ServiceUnit{"C:\\strata tools\\bin\\strata.exe", "C:\\strata\\config.json", {}});       // space
+  reject(ServiceUnit{"C:\\strata\\bin\\strata.exe", "C:\\strata\\a<b.json", {}});                 // XML metacharacters
+  reject(ServiceUnit{"C:\\strata\\bin\\strata.exe", "C:\\strata\\a&b.json", {}});
+  reject(ServiceUnit{"C:\\strata\\bin\\strata.exe", "C:\\strata\\a\"b.json", {}});
+  reject(ServiceUnit{"strata.exe", "C:\\strata\\config.json", {}});                              // not absolute
+  reject(ServiceUnit{"", "C:\\strata\\config.json", {}});                                        // empty
+}
+
+#if defined(_WIN32)
+// The Task Scheduler plan branch: the same fake-CommandRunner discipline as the
+// systemd cases. These cases run only in a Windows test build (the cross gate
+// compile-proves them here; runtime proof waits for the owner's box).
+struct TaskRecorder final {
+  std::vector<std::string> calls;
+  int query_exit{0};
+  int other_exit{0};
+  secure_frontend::service::CmdResult operator()(const std::vector<std::string>& argv) {
+    std::string joined;
+    for (const auto& argument : argv) {
+      if (!joined.empty()) joined += ' ';
+      joined += argument;
+    }
+    calls.push_back(joined);
+    secure_frontend::service::CmdResult result;
+    result.exit_code = std::find(argv.begin(), argv.end(), "/Query") != argv.end() ? query_exit : other_exit;
+    return result;
+  }
+};
+
+secure_frontend::service::ServiceEnv task_env(const std::filesystem::path& task_dir) {
+  secure_frontend::service::ServiceEnv env;
+  env.user_unit_dir = task_dir;
+  env.task_xml_path = task_dir / "strata-task.xml";
+  env.unit_path = env.task_xml_path;
+  env.unit = sample_unit_windows();
+  return env;
+}
+
+void service_enable_writes_task_then_creates() {
+  const auto dir = secure_frontend_test::make_scratch_directory() / "task";
+  auto env = task_env(dir);
+  TaskRecorder fake;
+  secure_frontend::service::CommandRunner runner{std::ref(fake)};
+  const auto outcome = secure_frontend::service::plan_enable(env, runner);
+  if (!outcome.ok) expect(false, "enable on a working scheduler succeeds: " + outcome.message);
+  std::error_code ec;
+  const bool present = std::filesystem::exists(env.task_xml_path, ec);
+  expect(present, "the task XML file was written at the exact task path");
+  if (present) expect(secure_frontend_test::contains(secure_frontend_test::read_file(env.task_xml_path), "LeastPrivilege"),
+                      "the written task is the never-elevated golden XML");
+  expect(fake.calls.size() == 2U, "exactly the probe then the create ran");
+  if (fake.calls.size() == 2U) {
+    expect(contains(fake.calls[0], "/Query /TN strata"), "first the read-only Query probe");
+    expect(contains(fake.calls[1], "/Create /F /TN strata /XML"), "then schtasks /Create /F with the XML file");
+  }
+}
+
+void service_enable_without_task_scheduler_writes_nothing() {
+  const auto dir = secure_frontend_test::make_scratch_directory() / "task";
+  auto env = task_env(dir);
+  TaskRecorder fake;
+  fake.query_exit = -1;  // schtasks could not start at all
+  secure_frontend::service::CommandRunner runner{std::ref(fake)};
+  const auto outcome = secure_frontend::service::plan_enable(env, runner);
+  expect(!outcome.ok, "an unreachable Task Scheduler is a failure");
+  std::error_code ec;
+  expect(!std::filesystem::exists(dir, ec), "nothing was written, not even the directory");
+}
+
+void service_disable_refuses_foreign_task_file() {
+  const auto dir = secure_frontend_test::make_scratch_directory() / "task";
+  auto env = task_env(dir);
+  env.task_xml_path = dir / "someone-else.xml";
+  TaskRecorder fake;
+  secure_frontend::service::CommandRunner runner{std::ref(fake)};
+  const auto outcome = secure_frontend::service::plan_disable(env, runner);
+  expect(!outcome.ok, "a foreign task file path refuses");
+  expect(fake.calls.empty(), "nothing ran before the refusal");
+}
+
+void service_disable_removes_task_and_our_file() {
+  const auto dir = secure_frontend_test::make_scratch_directory() / "task";
+  auto env = task_env(dir);
+  secure_frontend_test::write_file(env.task_xml_path, "<xml/>", 0600);
+  TaskRecorder fake;
+  secure_frontend::service::CommandRunner runner{std::ref(fake)};
+  const auto outcome = secure_frontend::service::plan_disable(env, runner);
+  expect(outcome.ok, "disable succeeds against a working scheduler");
+  std::error_code ec;
+  expect(!std::filesystem::exists(env.task_xml_path, ec), "our task file is gone");
+  expect(fake.calls.size() == 3U, "Query, End, Delete — in that order");
+  if (fake.calls.size() == 3U) {
+    expect(contains(fake.calls[1], "/End") && contains(fake.calls[2], "/Delete /F"), "the stop then the delete");
+  }
+}
+
+void service_status_task_one_line_each() {
+  auto env = task_env(secure_frontend_test::make_scratch_directory() / "task");
+  TaskRecorder fake;
+  fake.query_exit = 1;  // schtasks answers "cannot find the task"
+  secure_frontend::service::CommandRunner runner{std::ref(fake)};
+  const auto status = secure_frontend::service::plan_status(env, runner);
+  expect(contains(status.enabled_line, "not registered"), "the enabled line reports the missing task");
+  expect(contains(status.active_line, "not registered"), "the active line too");
+  expect(fake.calls.size() == 2U, "exactly two read-only probes");
+}
+#endif  // _WIN32
 
 void render_systemd_unit_exact_golden() {
   const auto rendered = render_systemd_unit(sample_unit());
@@ -332,12 +506,21 @@ int main(int argc, char** argv) {
       {"render_systemd_unit_exact_golden", render_systemd_unit_exact_golden},
       {"render_systemd_unit_rejects_whitespace_paths", render_systemd_unit_rejects_whitespace_paths},
       {"render_systemd_unit_rejects_relative_or_empty", render_systemd_unit_rejects_relative_or_empty},
+      {"render_schtasks_create_exact_golden", render_schtasks_create_exact_golden},
+      {"render_schtasks_create_rejects_unsafe_paths", render_schtasks_create_rejects_unsafe_paths},
+      {"service_enable_writes_task_then_creates", service_enable_writes_task_then_creates},
+      {"service_enable_without_task_scheduler_writes_nothing", service_enable_without_task_scheduler_writes_nothing},
+      {"service_disable_refuses_foreign_task_file", service_disable_refuses_foreign_task_file},
+      {"service_disable_removes_task_and_our_file", service_disable_removes_task_and_our_file},
+      {"service_status_task_one_line_each", service_status_task_one_line_each},
   }, failures);
 #else
   return secure_frontend_test::run_cases(argc, argv, {
       {"render_systemd_unit_exact_golden", render_systemd_unit_exact_golden},
       {"render_systemd_unit_rejects_whitespace_paths", render_systemd_unit_rejects_whitespace_paths},
       {"render_systemd_unit_rejects_relative_or_empty", render_systemd_unit_rejects_relative_or_empty},
+      {"render_schtasks_create_exact_golden", render_schtasks_create_exact_golden},
+      {"render_schtasks_create_rejects_unsafe_paths", render_schtasks_create_rejects_unsafe_paths},
       {"resolve_current_target_follows_current_pointer", resolve_current_target_follows_current_pointer},
       {"resolve_current_target_plain_install_uses_self", resolve_current_target_plain_install_uses_self},
       {"service_enable_writes_unit_then_enables", service_enable_writes_unit_then_enables},

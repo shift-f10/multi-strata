@@ -1429,7 +1429,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         secure_frontend_service_ops secure_frontend_test_support)
     target_include_directories(secure_frontend_service_ops_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     set(SECURE_FRONTEND_SERVICE_OPS_CASES render_systemd_unit_exact_golden render_systemd_unit_rejects_whitespace_paths
-        render_systemd_unit_rejects_relative_or_empty)
+        render_systemd_unit_rejects_relative_or_empty render_schtasks_create_exact_golden
+        render_schtasks_create_rejects_unsafe_paths)
     secure_frontend_add_cases(secure_frontend_service_ops_tests ${SECURE_FRONTEND_SERVICE_OPS_CASES})
 
     # SP7 M1 Task 3: the D-7 doctor checks, all driven by fake ProbeBundles.
@@ -1461,24 +1462,38 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         cli_usage_lists_the_new_verbs cli_uninstall_refuses_while_a_server_answers
         ARGS $<TARGET_FILE:strata> TIMEOUT 120)
     if(NOT WIN32)
-        # The systemd-shim and unit-file cases are POSIX until the Task 6
-        # Windows task branch exists.
+        # The systemd-shim cases are POSIX-only; the Windows side is registered
+        # in the WIN32 block below (Task 6).
         secure_frontend_add_cases(secure_frontend_cli_verbs_tests
             cli_service_enable_status_disable_roundtrip cli_service_enable_without_user_manager
             cli_uninstall_plain_removes_and_keeps cli_uninstall_purge_without_the_word_refuses
             cli_uninstall_purge_with_typed_word_removes_models
             ARGS $<TARGET_FILE:strata> TIMEOUT 120)
     endif()
+    if(WIN32)
+        # Task 6: the Task Scheduler CLI roundtrip, windows-runtime labelled —
+        # cross-compiled by the cross gate, run only on the owner's Windows box.
+        secure_frontend_add_cases(secure_frontend_cli_verbs_tests
+            cli_service_enable_status_disable_taskscheduler
+            ARGS $<TARGET_FILE:strata> LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+    endif()
     if(NOT WIN32)
-        # Symlink layouts are POSIX-only here; the Windows pointer form (current.txt)
-        # arrives with the Task 6 windows-runtime cases. The enable/disable/status
-        # cases ride the same gate until the Windows task branch exists (Task 6).
+        # Symlink layouts are POSIX-only here; the Windows pointer form
+        # (current.txt) belongs to M2's update, which writes through it.
         secure_frontend_add_cases(secure_frontend_service_ops_tests
             resolve_current_target_follows_current_pointer resolve_current_target_plain_install_uses_self
             service_enable_writes_unit_then_enables service_enable_missing_user_manager_writes_nothing
             service_enable_reports_failed_enable service_disable_removes_only_our_unit
             service_disable_refuses_foreign_unit service_status_one_line_each service_status_without_user_manager
             service_enable_e2e_path_shim)
+    endif()
+    if(WIN32)
+        # The Task Scheduler plan branch (Task 6): registered in Windows test
+        # builds; the cross gate compiles them, the owner's box runs them.
+        secure_frontend_add_cases(secure_frontend_service_ops_tests
+            service_enable_writes_task_then_creates service_enable_without_task_scheduler_writes_nothing
+            service_disable_refuses_foreign_task_file service_disable_removes_task_and_our_file
+            service_status_task_one_line_each)
     endif()
     secure_frontend_add_cases(secure_frontend_server_cli_tests
         init_writes_config_and_token_then_server_starts init_refuses_to_overwrite_without_force

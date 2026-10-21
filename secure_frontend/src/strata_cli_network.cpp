@@ -566,6 +566,9 @@ int verb_doctor(const FrontendConfig& config, const std::filesystem::path& confi
 std::filesystem::path user_config_home() {
   if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg != nullptr && xdg[0] != '\0') return std::filesystem::path{xdg};
   if (const char* home = std::getenv("HOME"); home != nullptr && home[0] != '\0') return std::filesystem::path{home} / ".config";
+#if defined(_WIN32)
+  if (const char* appdata = std::getenv("APPDATA"); appdata != nullptr && appdata[0] != '\0') return std::filesystem::path{appdata};
+#endif
   return {};
 }
 
@@ -598,8 +601,14 @@ int verb_service(const FrontendConfig& config, const std::filesystem::path& conf
     return 1;
   }
   service::ServiceEnv env;
+#if defined(_WIN32)
+  env.user_unit_dir = home / "strata";  // the task-file directory (Task 6; runtime is the owner's box)
+  env.task_xml_path = env.user_unit_dir / std::string{service::kTaskXmlFileName};
+  env.unit_path = env.task_xml_path;
+#else
   env.user_unit_dir = home / "systemd" / "user";
   env.unit_path = env.user_unit_dir / std::string{service::kUnitFileName};
+#endif
   if (sub != "status") {
     // enable/disable render the unit; the served process needs its write target.
     if (!config.roots.state) {
@@ -641,7 +650,11 @@ int verb_uninstall(const FrontendConfig& config, const std::filesystem::path& co
   env.models_root = config.roots.models.path();
   if (config.roots.logs) env.logs_root = *config.roots.logs;
   const auto home = user_config_home();
+#if defined(_WIN32)
+  const auto unit_path = home.empty() ? std::filesystem::path{} : home / "strata" / std::string{service::kTaskXmlFileName};
+#else
   const auto unit_path = home.empty() ? std::filesystem::path{} : home / "systemd" / "user" / std::string{service::kUnitFileName};
+#endif
   std::error_code ec;
   if (!unit_path.empty() && std::filesystem::exists(unit_path, ec)) {
     env.unit_installed = true;
@@ -672,8 +685,14 @@ int verb_uninstall(const FrontendConfig& config, const std::filesystem::path& co
   }
   if (plan.stop == uninstall::StopDecision::via_service_manager) {
     service::ServiceEnv service_env;
+#if defined(_WIN32)
+    service_env.user_unit_dir = home / "strata";
+    service_env.task_xml_path = unit_path;
+    service_env.unit_path = unit_path;
+#else
     service_env.user_unit_dir = home / "systemd" / "user";
     service_env.unit_path = unit_path;
+#endif
     const auto stopped = service::plan_disable(service_env, runner);
     io.out << stopped.message << '\n';
     if (!stopped.ok) {

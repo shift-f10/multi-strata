@@ -39,6 +39,17 @@ struct ServiceError final {
 // quoting is not ours to get subtly right).
 [[nodiscard]] std::variant<std::string, ServiceError> render_systemd_unit(const ServiceUnit& unit);
 
+// SP7 M1 Task 6 (spec D-5, PX §6): the Windows side of the same unit — exact
+// Task Scheduler XML for `schtasks /Create /TN strata /XML <file>`. "At log on"
+// for the current user, deliberately NOT "run with highest privileges"
+// (RunLevel LeastPrivilege — PX §6 never elevates, against upstream's hint),
+// Priority Normal (6, not the Below-normal default), bounded restart
+// (PT5M x3, the RestartSec=5 analogue). Unsafe path text is rejected:
+// whitespace (the systemd parity rule), XML metacharacters (& < "), and empty
+// or not-absolute paths — absolute here is portable text (POSIX leading '/'
+// or a Windows drive), so the golden renders identically on any host.
+[[nodiscard]] std::variant<std::string, ServiceError> render_schtasks_create(const ServiceUnit& unit);
+
 // The ExecStart target (D-4): if self_executable sits under a `current`
 // pointer (Linux symlink, Windows current.txt), the path is reported through
 // its resolved version directory; a plain single-directory install reports its
@@ -67,11 +78,15 @@ using CommandRunner = std::function<CmdResult(const std::vector<std::string>&)>;
 struct ServiceEnv final {
   std::filesystem::path user_unit_dir;
   std::filesystem::path unit_path;
+  // Windows (Task 6): the task XML file the verb writes; it must be exactly
+  // user_unit_dir/strata-task.xml — the same foreign-path refusal as the unit.
+  std::filesystem::path task_xml_path;
   ServiceUnit unit;
 };
 
 inline constexpr std::string_view kServiceName = "strata";
 inline constexpr std::string_view kUnitFileName = "strata.service";
+inline constexpr std::string_view kTaskXmlFileName = "strata-task.xml";
 
 // One human line out of every verb (the CLI prints it; ok=false means the verb
 // exits non-zero).

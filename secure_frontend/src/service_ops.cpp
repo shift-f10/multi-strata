@@ -5,6 +5,7 @@
 
 #include "secure_frontend/win32_prelude.hpp"
 
+#include <cctype>
 #include <cerrno>
 #include <cstdlib>
 #include <fstream>
@@ -84,6 +85,59 @@ std::variant<std::string, ServiceError> render_systemd_unit(const ServiceUnit& u
                "[Install]\n"
                "WantedBy=default.target\n";
   return unit_text;
+}
+
+std::variant<std::string, ServiceError> render_schtasks_create(const ServiceUnit& unit) {
+  const auto unsafe = [](const std::filesystem::path& p) {
+    const std::string text = p.string();
+    if (text.empty()) return true;
+    if (text.find_first_of(" \t\n&<>\"") != std::string::npos) return true;  // whitespace parity + XML quoting is not ours
+    const bool drive_like = text.size() >= 3U && std::isalpha(static_cast<unsigned char>(text[0])) != 0 && text[1] == ':' &&
+                            (text[2] == '\\' || text[2] == '/');
+    return !(drive_like || text.front() == '/');
+  };
+  if (unsafe(unit.exec_start) || unsafe(std::filesystem::path{unit.config_file})) {
+    return ServiceError{"the task paths must be absolute and free of whitespace and XML metacharacters"};
+  }
+  std::string xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                    "<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n"
+                    "  <RegistrationInfo>\n"
+                    "    <Description>Strata local model server</Description>\n"
+                    "    <Author>strata</Author>\n"
+                    "  </RegistrationInfo>\n"
+                    "  <Triggers>\n"
+                    "    <LogonTrigger>\n"
+                    "      <Enabled>true</Enabled>\n"
+                    "    </LogonTrigger>\n"
+                    "  </Triggers>\n"
+                    "  <Principals>\n"
+                    "    <Principal id=\"Author\">\n"
+                    "      <RunLevel>LeastPrivilege</RunLevel>\n"
+                    "    </Principal>\n"
+                    "  </Principals>\n"
+                    "  <Settings>\n"
+                    "    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\n"
+                    "    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\n"
+                    "    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\n"
+                    "    <RestartOnFailure>\n"
+                    "      <Interval>PT5M</Interval>\n"
+                    "      <Count>3</Count>\n"
+                    "    </RestartOnFailure>\n"
+                    "    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>\n"
+                    "    <Priority>6</Priority>\n"
+                    "  </Settings>\n"
+                    "  <Actions Context=\"Author\">\n"
+                    "    <Exec>\n"
+                    "      <Command>";
+  xml += unit.exec_start.string();
+  xml += "</Command>\n";
+  xml += "      <Arguments>--config ";
+  xml += unit.config_file;
+  xml += " serve</Arguments>\n";
+  xml += "    </Exec>\n"
+         "  </Actions>\n"
+         "</Task>\n";
+  return xml;
 }
 
 std::variant<std::filesystem::path, ServiceError> resolve_current_target(const std::filesystem::path& self_executable) {
@@ -234,13 +288,13 @@ namespace {
 
 // R-T2-c: only a bus-connect failure (systemd's fixed text) or an unstartable
 // systemctl means "no user manager". A fresh install answers non-zero about the
-// UNIT and proceeds.
-bool manager_unreachable(const CmdResult& probe) {
+// UNIT and proceeds. (Used by the POSIX branches; unused in a Windows build.)
+[[maybe_unused]] bool manager_unreachable(const CmdResult& probe) {
   return probe.exit_code < 0 ||
          (probe.exit_code != 0 && probe.err.find("Failed to connect to bus") != std::string::npos);
 }
 
-std::string first_token(const std::string& text) {
+[[maybe_unused]] std::string first_token(const std::string& text) {
   std::string token;
   for (const char c : text) {
     if (c == ' ' || c == '\n' || c == '\r' || c == '\t') {
@@ -256,11 +310,43 @@ std::string first_token(const std::string& text) {
 
 ServiceOutcome plan_enable(const ServiceEnv& env, CommandRunner& runner) {
 #if defined(_WIN32)
-  (void)env;
-  (void)runner;
-  // The Task Scheduler branch is Task 6's (golden text + windows-runtime e2e);
-  // the cross gate compiles it there, never claims its runtime.
-  return ServiceOutcome{false, "service: the Windows task branch is not wired yet (SP7 M1 Task 6)"};
+  // The Task Scheduler branch (Task 6): the XML is the golden text, the runner
+  // is schtasks. Compile-proven here; runtime proof waits for the owner's box
+  // (windows-runtime-labelled e2e). Never elevates (PX §6).
+  const auto rendered = render_schtasks_create(env.unit);
+  const auto* task_xml = std::get_if<std::string>(&rendered);
+  if (task_xml == nullptr) return ServiceOutcome{false, std::get<ServiceError>(rendered).message};
+  if (env.task_xml_path.empty() || env.task_xml_path != env.user_unit_dir / std::string{kTaskXmlFileName}) {
+    return ServiceOutcome{false, "service: only " + (env.user_unit_dir / std::string{kTaskXmlFileName}).string() +
+                                     " is strata's task file; any other location is never touched"};
+  }
+  const auto probe = runner({"schtasks", "/Query", "/TN", std::string{kServiceName}});
+  if (probe.exit_code < 0) {
+    return ServiceOutcome{false, "service: the Task Scheduler is not reachable (schtasks could not run); nothing was written"};
+  }
+  std::error_code ec;
+  std::filesystem::create_directories(env.user_unit_dir, ec);
+  if (ec) return ServiceOutcome{false, "service: the task directory could not be created: " + env.user_unit_dir.string()};
+  const std::filesystem::path tmp = env.task_xml_path.string() + ".tmp";
+  {
+    std::ofstream out{tmp, std::ios::binary | std::ios::trunc};
+    if (!out) return ServiceOutcome{false, "service: the task file could not be written: " + env.task_xml_path.string()};
+    out << *task_xml;
+    if (!out) return ServiceOutcome{false, "service: the task file could not be written: " + env.task_xml_path.string()};
+  }
+  std::filesystem::rename(tmp, env.task_xml_path, ec);
+  if (ec) {
+    std::filesystem::remove(tmp, ec);
+    return ServiceOutcome{false, "service: the task file could not be put in place: " + env.task_xml_path.string()};
+  }
+  const auto create = runner({"schtasks", "/Create", "/F", "/TN", std::string{kServiceName}, "/XML", env.task_xml_path.string()});
+  if (create.exit_code != 0) {
+    return ServiceOutcome{false, "service: schtasks /Create failed (exit " + std::to_string(create.exit_code) +
+                                     "); the task file stays at " + env.task_xml_path.string()};
+  }
+  return ServiceOutcome{true,
+                        "service: strata's logon task registered at " + env.task_xml_path.string() +
+                            " (schtasks /Create /F; current user, Priority Normal, never elevated)."};
 #else
   const auto rendered = render_systemd_unit(env.unit);
   const auto* unit_text = std::get_if<std::string>(&rendered);
@@ -305,6 +391,31 @@ ServiceOutcome plan_enable(const ServiceEnv& env, CommandRunner& runner) {
 }
 
 ServiceOutcome plan_disable(const ServiceEnv& env, CommandRunner& runner) {
+#if defined(_WIN32)
+  const auto ours = env.user_unit_dir / std::string{kTaskXmlFileName};
+  if (env.task_xml_path != ours) {
+    return ServiceOutcome{false, "service: only " + ours.string() + " is strata's task file; a task file in any "
+                                                                 "other location is never touched"};
+  }
+  const auto probe = runner({"schtasks", "/Query", "/TN", std::string{kServiceName}});
+  if (probe.exit_code < 0) {
+    return ServiceOutcome{false, "service: the Task Scheduler is not reachable (schtasks could not run); nothing was removed"};
+  }
+  if (probe.exit_code != 0) {  // no such task: remove only our own leftover file
+    std::error_code ec;
+    std::filesystem::remove(env.task_xml_path, ec);
+    return ServiceOutcome{true, "service: no strata task was registered — nothing else to remove"};
+  }
+  (void)runner({"schtasks", "/End", "/TN", std::string{kServiceName}});  // stopping a not-running task is fine
+  const auto removed = runner({"schtasks", "/Delete", "/F", "/TN", std::string{kServiceName}});
+  if (removed.exit_code != 0) {
+    return ServiceOutcome{false, "service: schtasks /Delete failed (exit " + std::to_string(removed.exit_code) +
+                                     "); nothing was removed"};
+  }
+  std::error_code ec;
+  std::filesystem::remove(env.task_xml_path, ec);
+  return ServiceOutcome{true, "service: strata's logon task deleted and its task file removed (" + env.task_xml_path.string() + ")"};
+#else
   const auto ours = env.user_unit_dir / std::string{kUnitFileName};
   if (env.unit_path != ours) {
     return ServiceOutcome{false,
@@ -325,10 +436,28 @@ ServiceOutcome plan_disable(const ServiceEnv& env, CommandRunner& runner) {
   std::filesystem::remove(env.unit_path, ec);  // exactly the checked path, never a tree
   if (ec) return ServiceOutcome{false, "service: the unit file could not be removed: " + env.unit_path.string()};
   return ServiceOutcome{true, "service: strata.service disabled and its unit removed (" + env.unit_path.string() + ")"};
+#endif
 }
 
 ServiceStatus plan_status(const ServiceEnv& env, CommandRunner& runner) {
   (void)env;
+#if defined(_WIN32)
+  const auto registered = runner({"schtasks", "/Query", "/TN", std::string{kServiceName}});
+  if (registered.exit_code < 0) {
+    return ServiceStatus{
+        "service: enabled: the Task Scheduler is not reachable (nothing is assumed)",
+        "service: active: the Task Scheduler is not reachable (nothing is assumed)"};
+  }
+  const auto verbose = runner({"schtasks", "/Query", "/TN", std::string{kServiceName}, "/V", "/FO", "LIST"});
+  const auto status_at = verbose.out.find("Status:");
+  std::string active = "unknown";
+  if (status_at != std::string::npos) {
+    const std::string value = verbose.out.substr(status_at + 7, verbose.out.find_first_of("\r\n", status_at) - status_at - 7);
+    active = value.find("Running") != std::string::npos ? "running" : "not running";
+  }
+  return ServiceStatus{std::string{"service: enabled: "} + (registered.exit_code == 0 ? "registered" : "not registered"),
+                       "service: active: " + (registered.exit_code == 0 ? active : std::string{"not registered"})};
+#else
   const auto enabled = runner({"systemctl", "--user", "is-enabled", std::string{kServiceName}});
   const auto active = runner({"systemctl", "--user", "is-active", std::string{kServiceName}});
   if (manager_unreachable(enabled) || manager_unreachable(active)) {
@@ -340,11 +469,17 @@ ServiceStatus plan_status(const ServiceEnv& env, CommandRunner& runner) {
   const auto active_state = first_token(active.out);
   return ServiceStatus{"service: enabled: " + (enabled_state.empty() ? std::string{"not installed"} : enabled_state),
                        "service: active: " + (active_state.empty() ? std::string{"inactive"} : active_state)};
+#endif
 }
 
 bool user_manager_reachable(CommandRunner& runner) {
+#if defined(_WIN32)
+  const auto probe = runner({"schtasks", "/Query", "/TN", std::string{kServiceName}});
+  return probe.exit_code >= 0;
+#else
   const auto probe = runner({"systemctl", "--user", "is-enabled", std::string{kServiceName}});
   return !manager_unreachable(probe);
+#endif
 }
 
 }  // namespace service
