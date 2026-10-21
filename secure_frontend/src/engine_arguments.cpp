@@ -54,10 +54,38 @@ std::optional<EngineArgumentsError> validate_engine_user_arguments(const EngineA
   return std::nullopt;
 }
 
+namespace {
+
+// SP5 M1 Task 6 (parity row mtp): the draft layer's own options — strata_control/
+// draft_layer.py MTP_FLAGS verbatim: flag -> takes a value. `--spec` (prompt lookup)
+// is NOT here: "why --spec stays and only the draft layer's own options go".
+constexpr std::array<std::pair<std::string_view, bool>, 3> kMtpFlags{
+    std::pair{"--mtp", true}, std::pair{"--spec-min-p", true}, std::pair{"--batch-mtp", false}};
+
+// draft_layer.strip() verbatim: drop each flag, and consume the following token as its
+// value only when it is not another flag.
+void strip_mtp_flags(std::vector<std::string>& arguments, std::vector<std::string>* removed) {
+  std::vector<std::string> kept;
+  kept.reserve(arguments.size());
+  for (std::size_t i = 0; i < arguments.size(); ++i) {
+    const auto flag = std::find_if(kMtpFlags.begin(), kMtpFlags.end(),
+                                   [&arguments, i](const auto& entry) { return arguments[i] == entry.first; });
+    if (flag == kMtpFlags.end()) {
+      kept.push_back(arguments[i]);
+      continue;
+    }
+    if (removed != nullptr) removed->emplace_back(flag->first);
+    if (flag->second && i + 1 < arguments.size() && arguments[i + 1].rfind("--", 0) != 0) ++i;  // the value goes too
+  }
+  arguments = std::move(kept);
+}
+
+}  // namespace
+
 EngineArgumentsResult build_engine_arguments(const EngineArgumentsProfile profile, const ModelManifest& selected,
                                              const CanonicalRoot& models_root,
                                              const std::vector<std::string>& user_arguments,
-                                             const std::vector<unsigned>& gpus) {
+                                             const std::vector<unsigned>& gpus, bool mtp_on) {
   if (auto rejected = validate_engine_user_arguments(profile, user_arguments)) return *rejected;
   std::vector<std::string> arguments = user_arguments;
   if (profile == EngineArgumentsProfile::lighttransport_glm53) {
@@ -68,6 +96,10 @@ EngineArgumentsResult build_engine_arguments(const EngineArgumentsProfile profil
     return arguments;
   }
   const auto parsed = parse_relative_path(selected.relative_artifact_path);
+  // SP5 M1 Task 6 (parity row mtp, runconfig.py:36 + draft_layer.is_off): an explicit
+  // false strips the draft layer's own options at every start, before anything else is
+  // composed. The GLM profile returns above: its runner does not speak these flags.
+  if (!mtp_on) strip_mtp_flags(arguments, nullptr);
   const auto* relative = std::get_if<RelativePath>(&parsed);
   if (relative == nullptr) {
     return EngineArgumentsError{EngineArgumentsErrorCode::invalid_value, "selected model has an invalid artifact path"};
@@ -91,6 +123,20 @@ EngineArgumentsResult build_engine_arguments(const EngineArgumentsProfile profil
   // page, and the engine launcher decodes every argument as UTF-8.
   arguments.push_back(path_to_utf8(models_root.join(*relative)));
   return arguments;
+}
+
+// SP5 M1 Task 6: the flags an mtp=false composition drops, for the pin's fixed startup
+// line (serve/server.py:2925). The frontend only ever passes user arguments through, so
+// the removals can only come from them — the same view build_engine_arguments applies.
+std::vector<std::string> strip_draft_layer_arguments(std::vector<std::string>& arguments) {
+  std::vector<std::string> removed;
+  strip_mtp_flags(arguments, &removed);
+  return removed;
+}
+
+std::vector<std::string> draft_layer_removed(const std::vector<std::string>& arguments) {
+  std::vector<std::string> copy = arguments;
+  return strip_draft_layer_arguments(copy);
 }
 
 EffortEndArguments compose_effort_end_arguments(const std::filesystem::path& engine_binary, const TokenizerPack& tokenizer) {

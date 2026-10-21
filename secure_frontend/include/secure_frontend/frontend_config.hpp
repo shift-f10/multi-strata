@@ -202,6 +202,11 @@ struct EngineLaunch final {
   std::vector<unsigned> gpus{};                   // engine.gpu, parsed by parse_gpu_list (empty: unset)
   bool allow_new_privileges{false};               // engine.allow_new_privileges (Linux: no PR_SET_NO_NEW_PRIVS)
   bool fit_max_tokens{true};                      // engine.fit_max_tokens (pin :3485: false answers 400 over room)
+  // SP5 M1 Task 6 (parity rows lazy_load / idle_unload_s / mtp; runconfig.py:35-38): the
+  // lifecycle family. mtp is on unless explicitly false (draft_layer.py is_off).
+  bool lazy_load{false};                          // engine.lazy_load: the first request loads the engine
+  std::chrono::seconds idle_unload{0};            // engine.idle_unload_s (0: never, the pin default)
+  bool mtp{true};                                 // engine.mtp: false strips the draft layer at every start
 };
 
 // SP4 §3.9. pull.downloader is only a syntactically absolute path here; the

@@ -1019,6 +1019,50 @@ void reasoning_rows_match_the_pinned_validator() {
              set->reasoning.effort_position == secure_frontend::EffortPosition::end,
          "reasoning rows are typed: " + issues_of(set_result));
 }
+
+// SP5 M1 Task 6 (parity rows lazy_load / idle_unload_s / mtp): runconfig.py:35-38 —
+// lazy_load bool "Start without loading the model; the first request loads it (text only)";
+// idle_unload_s num>=0, "0 or empty: never" (typed whole seconds; the 86400 cap is ADDED, C-1);
+// mtp bool, and draft_layer.is_off demands an explicit false (absent or true: on).
+void lifecycle_rows_match_the_pin() {
+  ConfigFixture f;
+  const auto accept = [&](const char* path, const char* value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result),
+           std::string{"accepts "} + value + " for " + path + ": " + issues_of(result));
+  };
+  const auto reject = [&](const char* path, const char* value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ConfigErrors>(result), std::string{"rejects "} + value + " for " + path);
+  };
+  accept("engine.lazy_load", "true");
+  accept("engine.lazy_load", "false");
+  reject("engine.lazy_load", "1");
+  accept("engine.idle_unload_s", "0");
+  accept("engine.idle_unload_s", "86400");
+  reject("engine.idle_unload_s", "-1");      // the pin: num>=0 (:35 "0 or empty: never")
+  reject("engine.idle_unload_s", "86401");   // added cap (C-1)
+  reject("engine.idle_unload_s", "\"60\"");
+  accept("engine.mtp", "false");
+  accept("engine.mtp", "true");
+  reject("engine.mtp", "\"false\"");
+  const auto bare_result = with_literals(f, {});
+  const auto* bare = config_of(bare_result);
+  expect(bare != nullptr, "a config without lifecycle rows still validates: " + issues_of(bare_result));
+  if (bare != nullptr) {
+    expect(!bare->engine.lazy_load && bare->engine.idle_unload == std::chrono::seconds(0) && bare->engine.mtp,
+           "the pin's defaults: lazy false, idle 0 (never), mtp on unless explicitly false");
+    const std::string described = secure_frontend::describe(*bare);
+    expect(described.find("engine.lazy_load = false") != std::string::npos &&
+               described.find("engine.idle_unload_s = 0") != std::string::npos &&
+               described.find("engine.mtp = true") != std::string::npos,
+           "describe reports the lifecycle family");
+  }
+  const auto set_result = with_literals(f, {{"engine.lazy_load", "true"}, {"engine.idle_unload_s", "600"}, {"engine.mtp", "false"}});
+  const auto* set = config_of(set_result);
+  expect(set != nullptr && set->engine.lazy_load && set->engine.idle_unload == std::chrono::seconds(600) && !set->engine.mtp,
+         "lifecycle rows are typed: " + issues_of(set_result));
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1030,6 +1074,7 @@ int main(int argc, char** argv) {
       {"each_rejected_upstream_key_errors_at_load_naming_it", each_rejected_upstream_key_errors_at_load_naming_it},
       {"sampling_defaults_cover_the_pinned_validator", sampling_defaults_cover_the_pinned_validator},
       {"reasoning_rows_match_the_pinned_validator", reasoning_rows_match_the_pinned_validator},
+      {"lifecycle_rows_match_the_pin", lifecycle_rows_match_the_pin},
       {"typed_config_accepts_minimal_file_and_applies_defaults", typed_config_accepts_minimal_file_and_applies_defaults},
       {"cfg01_unknown_key_rejected", cfg01_unknown_key_rejected},
       {"cfg01_duplicate_key_rejected", cfg01_duplicate_key_rejected},

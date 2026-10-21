@@ -35,7 +35,7 @@ std::string decimal_text(const double value) {
   return ec == std::errc{} ? std::string{buffer, end} : std::string{"?"};
 }
 
-constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7> kSchema{{
+constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3> kSchema{{
     {"schema_version", T::integer, false, 1, 1, d::kSchemaVersion, false, "", "",
      "Config format version; must be 1. Required in a config file."},
     {"listener.host", T::string, false, 0, 0, 0, false, "127.0.0.1", "--host",
@@ -178,6 +178,16 @@ constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7> kSchema{{
      "Thinking default for /v1/messages-shaped clients: model (the pin default) or on_request."},
     {"engine.fit_max_tokens", T::boolean, false, 0, 0, 0, true, "", "",
      "Fit an over-room max_tokens to the context room (true, the pin default); false answers the §7.2 400 instead."},
+    // SP5 M1 Task 6 (parity rows lazy_load / idle_unload_s / mtp): runconfig.py:38 "Start
+    // without loading the model; the first request loads it (text only)"; :35 "0 or empty:
+    // never" (whole seconds; the 86400 cap is ADDED, C-1); :36 + strata_control/
+    // draft_layer.py is_off: the draft layer is on unless an explicit false.
+    {"engine.lazy_load", T::boolean, false, 0, 0, 0, false, "", "",
+     "Start with the engine unloaded; the first request loads it (the pin's lazy_load, text only)."},
+    {"engine.idle_unload_s", T::integer, false, 0, 86400, 0, false, "", "",
+     "Seconds without a request before the engine is unloaded (0: never, the pin default); cap added, C-1."},
+    {"engine.mtp", T::boolean, false, 0, 0, 0, true, "", "",
+     "Draft layer (MTP): on unless explicitly false; false drops --mtp/--spec-min-p/--batch-mtp at every start."},
 }};
 
 void add(ConfigErrors& errors, std::string key, const ConfigIssueCode code, std::string reason) {
@@ -579,6 +589,11 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
     else add(errors, "reasoning.anthropic_thinking", ConfigIssueCode::invalid_value, "must be model or on_request");
   }
   const bool fit_max_tokens = read.boolean("engine.fit_max_tokens");
+  // SP5 M1 Task 6 (parity rows lazy_load / idle_unload_s / mtp, runconfig.py:35-38):
+  // lifecycle family reads; mtp is on unless an explicit false (draft_layer.py is_off).
+  const bool lazy_load = read.boolean("engine.lazy_load");
+  const std::int64_t idle_unload_s = read.integer("engine.idle_unload_s");
+  const bool mtp = read.boolean("engine.mtp");
   const auto max_body = read.integer("limits.chat.max_body_bytes");
   const auto max_messages = read.integer("limits.chat.max_messages");
   const auto max_message = read.integer("limits.chat.max_message_bytes");
@@ -771,7 +786,7 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
                         !cap_set}};
   Roots roots{*models, tokenizer, secret, logs, cache, state};
   EngineLaunch engine{profile, *executable, std::move(*model_id), args, std::move(lib_dirs), std::move(gpus), allow_new_privileges,
-                      fit_max_tokens};
+                      fit_max_tokens, lazy_load, std::chrono::seconds(idle_unload_s), mtp};
   return ValidatedConfig{std::shared_ptr<const FrontendConfig>(
       new FrontendConfig(std::move(listener), limits, std::move(roots), std::move(*token), std::move(engine),
                          PullSettings{std::move(downloader), std::move(proxy), allow_private,
@@ -896,6 +911,10 @@ std::string describe(const FrontendConfig& c) {
   line("reasoning.anthropic_thinking",
        c.reasoning.anthropic_thinking == AnthropicThinking::model ? "model" : "on_request");
   line("engine.fit_max_tokens", c.engine.fit_max_tokens ? "true" : "false");
+  // SP5 M1 Task 6: the lifecycle family (runconfig.py:35-38).
+  line("engine.lazy_load", c.engine.lazy_load ? "true" : "false");
+  line("engine.idle_unload_s", std::to_string(c.engine.idle_unload.count()));
+  line("engine.mtp", c.engine.mtp ? "true" : "false");
   return out;
 }
 

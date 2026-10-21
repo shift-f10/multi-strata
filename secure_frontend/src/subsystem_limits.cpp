@@ -41,6 +41,10 @@ SupervisorConfig supervisor_config(const FrontendConfig& config) {
   supervisor.profile = config.engine.profile == EngineProfile::glm53 ? NativeChatProfile::glm53 : NativeChatProfile::qwen;
   supervisor.flavor = config.engine.profile == EngineProfile::glm53 ? EngineProtocolFlavor::lighttransport_glm53
                                                                      : EngineProtocolFlavor::strata_0143;
+  // SP5 M1 Task 6 (parity rows lazy_load / idle_unload_s, runconfig.py:35-38): the
+  // supervisor's lifecycle knobs come straight from the typed launch family.
+  supervisor.lazy_start = config.engine.lazy_load;
+  supervisor.idle_unload = config.engine.idle_unload;
   return supervisor;
 }
 

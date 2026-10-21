@@ -689,6 +689,38 @@ void fit_max_tokens_false_returns_400_like_the_pin() {
   expect(gen_lines(record_of(r.record)).empty(), "no GEN is written when fit_max_tokens is false");
 }
 
+// SP5 M1 Task 6 (parity row idle_unload_s, runconfig.py:35): the serving path's teardown +
+// respawn (pin :4100-4109 unload thread, :6252 "loads on use"). With a 1 s window the
+// supervisor tears the engine down after the first request; /health keeps the closed literal
+// set and reports the cold engine as ok/"starting" (Ruling T6-e); the next POST wakes the
+// supervisor and a fresh generation answers. The fake engine rewrites its record at every
+// start, so the record proves WHICH generation answered last and the supervisor's stderr
+// proves the unload: generation 1 ends "unloaded", and the final record holds exactly the
+// respawned generation's GEN.
+void idle_unload_respawns_before_the_next_request() {
+  auto r = start_recorded("idle", {{"engine.idle_unload_s", "1"}}, {"--ready-context=200"});
+  if (!r.server) return;
+  const auto first = raw(*r.server, chat_request(*r.server, chat_body(R"("max_tokens":4)")));
+  expect(first && first->status == 200, "the first request answers");
+  bool cold = false;
+  std::string last_body;
+  for (int i = 0; i < 100 && !cold; ++i) {
+    const auto health = raw(*r.server, raw_http::request("GET", "/health", authority(*r.server), {raw_http::bearer(token())}));
+    last_body = health ? health->body : std::string{"<no response>"};
+    cold = health && health->body == "{\"status\":\"ok\",\"engine\":\"starting\"}\n";
+    if (!cold) std::this_thread::sleep_for(100ms);
+  }
+  expect(cold, "the idle window tears the engine down: /health reports ok + starting (unloaded), saw " + last_body);
+  const auto second = raw(*r.server, chat_request(*r.server, chat_body(R"("max_tokens":4)")), 30s);
+  expect(second && second->status == 200, "the next request answers: the wake respawned the engine");
+  const std::string log = r.server->stderr_text();
+  expect(log.find("engine generation 1 ended: unloaded") != std::string::npos,
+         "the supervisor's log names generation 1's intentional unload");
+  const auto gens = gen_lines(record_of(r.record));
+  expect(gens.size() == 1U, "the answer came from the respawned generation: one GEN in the final record (got " +
+                                std::to_string(gens.size()) + ")");
+}
+
 void absent_max_tokens_uses_auto() {
   auto r = start_recorded("mt4");
   if (!r.server) return;
@@ -1454,6 +1486,7 @@ int main(int argc, char** argv) {
       {"max_tokens_clamped_to_context_room", max_tokens_clamped_to_context_room},
       {"prompt_alone_over_context_is_400", prompt_alone_over_context_is_400},
       {"fit_max_tokens_false_returns_400_like_the_pin", fit_max_tokens_false_returns_400_like_the_pin},
+      {"idle_unload_respawns_before_the_next_request", idle_unload_respawns_before_the_next_request},
       {"absent_max_tokens_uses_auto", absent_max_tokens_uses_auto},
       {"sampling_passthrough_reaches_gen", sampling_passthrough_reaches_gen},
       {"dos01_context_rule_is_400_without_gen", dos01_context_rule_is_400_without_gen},

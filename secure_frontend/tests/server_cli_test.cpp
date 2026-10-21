@@ -334,13 +334,15 @@ void auth04_no_switch_disables_auth() {
       // Linux NNP opt-out; SP4 §3.5: pull.allow_private_addresses widens the
       // downloader's address policy; SP3 §8: logging.requests turns on the
       // per-request stderr line; SP5 M1 Task 5 (ruling T5-d): engine.fit_max_tokens and
-      // reasoning.close_retry are file-only behaviour booleans (the pin's JSON knobs).
-      // None of them touches authentication.
+      // reasoning.close_retry are file-only behaviour booleans (the pin's JSON knobs);
+      // SP5 M1 Task 6 (same ruling pattern): engine.lazy_load and engine.mtp are the
+      // pin's lifecycle booleans (runconfig.py:36-38). None of them touches authentication.
       expect(path == "listener.allow_remote" || path == "listener.allow_wildcard_bind" ||
                  path == "engine.allow_new_privileges" || path == "pull.allow_private_addresses" ||
-                 path == "logging.requests" || path == "engine.fit_max_tokens" || path == "reasoning.close_retry",
+                 path == "logging.requests" || path == "engine.fit_max_tokens" || path == "reasoning.close_retry" ||
+                 path == "engine.lazy_load" || path == "engine.mtp",
              "the only switches are the two bind opt-ins, the engine's NNP opt-out, the pull address opt-in and "
-             "request logging and the SP5 behaviour booleans: " + path);
+             "request logging and the SP5 behaviour and lifecycle booleans: " + path);
     }
   }
   expect(flags.count("--allow-remote") == 1U && flags.count("--token-env") == 1U && flags.count("--check") == 1U,

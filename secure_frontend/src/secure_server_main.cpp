@@ -144,6 +144,16 @@ int run(const FrontendConfig& config, const bool expert) {
     return failure->exit == secure_frontend::ExitCode::usage ? EXIT_FAILURE : secure_frontend::exit_code_value(failure->exit);
   }
   auto& launch = std::get<secure_frontend::ComposedLaunch>(composed);
+  // SP5 M1 Task 6 (parity row mtp; pin serve/server.py:2922-2925): an explicit "mtp":
+  // false is applied at every start and the dropped flags are reported once, fixed text.
+  if (!launch.mtp_removed.empty()) {
+    std::string flags;
+    for (const auto& flag : launch.mtp_removed) {
+      if (!flags.empty()) flags += ' ';
+      flags += flag;
+    }
+    std::cerr << "[strata] \"mtp\": false - starting without the draft layer (" << flags << " left out)\n";
+  }
   const auto tokenizer_result = secure_frontend::load_local_tokenizer_pack(*launch.tokenizer_root);
   const auto* tokenizer = std::get_if<secure_frontend::TokenizerPack>(&tokenizer_result);
   if (tokenizer == nullptr) {

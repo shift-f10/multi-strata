@@ -27,8 +27,10 @@
 
 namespace secure_frontend {
 
-// Spec §3.8; the transition table is in the SP2 plan header.
-enum class SupervisorState { starting, ready, generating, stopping, backoff, circuit_open, shutting_down, stopped };
+// Spec §3.8; the transition table is in the SP2 plan header. SP5 M1 Task 6 adds
+// `unloaded` (runconfig.py:35-38): the engine is torn down when idle, or never
+// started when lazy_load; a request wakes it and the same composed launch respawns it.
+enum class SupervisorState { starting, ready, generating, stopping, backoff, circuit_open, shutting_down, stopped, unloaded };
 
 // The /health view of one state. `engine` and `recovery` are fixed literals;
 // `recovery` ("restarting" | "exhausted") is empty unless engine == "failed".
@@ -92,6 +94,11 @@ struct SupervisorConfig final {
   bool sweep_orphans{true};
   // Linux: log the /dev/nvidia-uvm hint when a generation ends before READY under PR_SET_NO_NEW_PRIVS.
   bool no_new_privileges_hint{false};
+  // SP5 M1 Task 6 (parity rows lazy_load / idle_unload_s, runconfig.py:35-38): lazy_start
+  // sleeps unloaded until the first request wakes it; idle_unload > 0 tears an idle
+  // generation down after that many whole seconds without a request (0: never, the pin default).
+  bool lazy_start{false};
+  std::chrono::seconds idle_unload{0};
 };
 
 // Logged once when a generation ends before READY on its own while
@@ -207,6 +214,20 @@ class EngineSupervisor final {
   // passes HttpSocketServer::shutdown_listener). Set before start().
   void set_on_stopped(std::function<void()> on_stopped);
 
+  // SP5 M1 Task 6 (parity rows lazy_load / idle_unload_s; pin :4100-4109 counts only
+  // requests, and the idle thread acts "without requests"): the serving path brackets
+  // every request around these two calls; both are no-ops when idle_unload is 0 (the
+  // pin's "never" default). note_request_started clears the armed idle window;
+  // note_request_finished re-arms it when the engine is ready.
+  void note_request_started();
+  void note_request_finished();
+  // The armed idle window's remaining time (nullopt: unloaded or idle off). Test seam
+  // and wake diagnostics; the GenerationGate does not depend on it.
+  [[nodiscard]] std::optional<std::chrono::milliseconds> idle_unload_deadline() const;
+  // A request found the supervisor unloaded (lazy start or idle teardown): wake it so
+  // the same composed launch spawns the next generation (the pin's "loads on use").
+  void wake_for_request();
+
   // Test seams.
   [[nodiscard]] bool wait_for_state(SupervisorState state, std::chrono::milliseconds timeout) const;
   [[nodiscard]] std::uint64_t generations_started() const noexcept { return generations_started_.load(); }
@@ -227,6 +248,11 @@ class EngineSupervisor final {
   bool schedule_restart(std::chrono::milliseconds healthy_for, GenerationEnd ended);
   void wait_in_circuit_open();
   void shutdown_generation(const std::shared_ptr<EngineInstance>& instance);
+  // SP5 M1 Task 6: idle teardown — the same orderly stop as shutdown_generation
+  // (stdin EOF first), but the unloaded supervisor parks instead of ending.
+  bool unload_generation(const std::shared_ptr<EngineInstance>& instance);
+  // Parked while unloaded; wakes on wake_for_request() latch or shutdown.
+  void wait_asleep();
   void retire(const std::shared_ptr<EngineInstance>& instance, bool reaped);
   void sweep_retired();
   void finish();
@@ -264,6 +290,15 @@ class EngineSupervisor final {
   std::chrono::steady_clock::time_point shutdown_deadline_{};
   bool main_acknowledged_{false};
   bool nnp_hint_logged_{false};  // kNoNewPrivilegesHint, at most once per supervisor
+  // SP5 M1 Task 6 (idle_unload_s / lazy_load): the unload/lazy machinery. asleep_ and
+  // wake_pending_ are guarded by mutex_; wake_pending_ latches a request that arrives in
+  // the window between the idle decision and the park. idle_deadline_ is armed at READY
+  // and on Lease release, cleared on acquire and at request start (in_flight_ counts the
+  // serving path's pre-acquire window).
+  bool asleep_{false};
+  bool wake_pending_{false};
+  std::optional<SupervisorClock::time_point> idle_deadline_;
+  std::atomic<std::uint32_t> in_flight_{0};
   std::thread thread_;
 };
 

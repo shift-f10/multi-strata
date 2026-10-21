@@ -26,6 +26,9 @@ struct ComposedLaunch final {
   std::string model_id;                         // the model chat requests must name
   std::vector<std::string> served_models;       // /v1/models: SP1's whole inventory under --expert, else {model_id}
   bool managed;                                 // false only with --expert
+  // SP5 M1 Task 6 (parity row mtp): non-empty when engine.mtp=false dropped the draft
+  // layer's own flags; the startup line reports them once, like the pin (serve/server.py:2925).
+  std::vector<std::string> mtp_removed;
 };
 
 struct LaunchFailure final {

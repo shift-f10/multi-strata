@@ -70,6 +70,9 @@ void supervisor_health_literals_per_state() {
       {SupervisorState::generating, true, "generating", ""},  {SupervisorState::stopping, false, "failed", "restarting"},
       {SupervisorState::backoff, false, "failed", "restarting"}, {SupervisorState::circuit_open, false, "failed", "exhausted"},
       {SupervisorState::shutting_down, false, "failed", ""},  {SupervisorState::stopped, false, "failed", ""},
+      // SP5 M1 Task 6: unloaded is served-from-cold: healthy, and /health keeps the closed
+      // literal set — "starting" names the load that the next request triggers (Ruling T6-e).
+      {SupervisorState::unloaded, true, "starting", ""},
   };
   for (const auto& row : rows) {
     const auto health = secure_frontend::health_for(row.state);
@@ -131,6 +134,77 @@ void proc04_healthy_window_resets_failure_count() {
   expect(test_support::wait_generation_ready(supervisor, 4U, 5s), "generation 4 ready: the circuit stayed closed");
   expect(clock->delays() == std::vector<std::chrono::milliseconds>{1000ms, 2000ms, 1000ms},
          "1 s, 2 s, then 1 s again after a healthy window reset the count");
+  supervisor.shutdown(5s);
+}
+
+// SP5 M1 Task 6 (parity row idle_unload_s; pin serve/server.py:8081 and the idle thread
+// :4100-4109 — unload is process teardown, and the next request restarts it). The supervisor
+// tears the idle engine down (orderly: stdin EOF first, the fake exits 0 like the real engine),
+// parks unloaded without counting a failure, and wakes for the request path with the same
+// composed launch (no config reload).
+void idle_unload_tears_down_then_respawns_on_next_request() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.push_line("READY 4096 stop"); });
+  auto clock = std::make_shared<test_support::ManualClock>();
+  secure_frontend::SupervisorConfig config;
+  config.idle_unload = std::chrono::seconds(60);
+  config.monitor_poll = 20ms;  // fake children have no pidfd: deadline checks ride the poll slices
+  secure_frontend::EngineSupervisor supervisor(config, fakes.factory(), clock);
+  expect(supervisor.start(), "the supervisor starts");
+  expect(test_support::wait_generation_ready(supervisor, 1U, 5s), "generation 1 ready");
+  {
+    const auto lease = supervisor.acquire();
+    expect(lease.has_value(), "a lease serves a request");
+  }  // releasing the Lease re-arms the idle deadline at now + 60 s
+  expect(supervisor.idle_unload_deadline().has_value(), "the idle deadline is armed after the request");
+  clock->advance(61s);
+  expect(supervisor.wait_for_state(SupervisorState::unloaded, 5s), "the idle deadline tears the engine down");
+  expect(fakes.spawned() == 1U, "the unload does not respawn by itself");
+  expect(!supervisor.acquire().has_value(), "no lease while unloaded");
+  supervisor.wake_for_request();  // the GenerationGate does this for a request that finds the engine unloaded
+  expect(test_support::wait_generation_ready(supervisor, 2U, 5s), "the request path gets generation 2 on the same composed launch");
+  expect(supervisor.snapshot().state == SupervisorState::ready, "ready again");
+  supervisor.shutdown(5s);
+}
+
+// SP5 M1 Task 6: the timer never fires while a generation is running or a request is in
+// flight (the pin's idle thread only acts "without requests").
+void idle_unload_never_fires_during_a_generation() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.push_line("READY 4096 stop"); });
+  auto clock = std::make_shared<test_support::ManualClock>();
+  secure_frontend::SupervisorConfig config;
+  config.idle_unload = std::chrono::seconds(60);
+  config.monitor_poll = 20ms;
+  secure_frontend::EngineSupervisor supervisor(config, fakes.factory(), clock);
+  expect(supervisor.start(), "the supervisor starts");
+  expect(test_support::wait_generation_ready(supervisor, 1U, 5s), "generation 1 ready");
+  auto lease = supervisor.acquire();
+  expect(lease.has_value(), "the lease is held across the deadline");
+  supervisor.note_request_started();  // a serving thread mid-request
+  clock->advance(61s);
+  expect(!supervisor.wait_for_state(SupervisorState::unloaded, 250ms),
+         "the timer never fires while a generation runs or a request is in flight");
+  supervisor.note_request_finished();
+  lease.reset();  // the generation ends; the idle window restarts from here
+  clock->advance(61s);
+  expect(supervisor.wait_for_state(SupervisorState::unloaded, 5s), "it fires once the request and the generation are over");
+  expect(fakes.spawned() == 1U, "still one generation until a request wakes it");
+  supervisor.shutdown(5s);
+}
+
+// SP5 M1 Task 6 (parity row lazy_load; pin :7925 -> StrataEngine(lazy=True) :966-993: the child
+// is NOT started; the first request path starts it — no engine argument composes for it,
+// which is why this asserts the deferral, not argv (Ruling T6-b)).
+void lazy_load_defers_the_first_spawn() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.push_line("READY 4096 stop"); });
+  secure_frontend::SupervisorConfig config;
+  config.lazy_start = true;  // engine.lazy_load
+  secure_frontend::EngineSupervisor supervisor(config, fakes.factory());
+  expect(supervisor.start(), "the supervisor starts");
+  expect(supervisor.wait_for_state(SupervisorState::unloaded, 5s), "a lazy start is unloaded, not starting");
+  expect(fakes.spawned() == 0U, "no engine process until the first request");
+  expect(!supervisor.acquire().has_value(), "no lease while unloaded");
+  supervisor.wake_for_request();
+  expect(test_support::wait_generation_ready(supervisor, 1U, 5s), "the first request's path spawns and gets READY");
   supervisor.shutdown(5s);
 }
 
@@ -1694,6 +1768,9 @@ int main(int argc, char* argv[]) {
                                                 {"sp6_env_hook_derives_values_from_environment", sp6_env_hook_derives_values_from_environment},
                                                 {"sp6_env_hook_suppresses_only_optional_rows", sp6_env_hook_suppresses_only_optional_rows},
                                                 {"sp6_env_refused_family_is_spawn_failure", sp6_env_refused_family_is_spawn_failure},
+                                                {"idle_unload_tears_down_then_respawns_on_next_request", idle_unload_tears_down_then_respawns_on_next_request},
+                                                {"idle_unload_never_fires_during_a_generation", idle_unload_never_fires_during_a_generation},
+                                                {"lazy_load_defers_the_first_spawn", lazy_load_defers_the_first_spawn},
                                                 {"sp6_env_derived_value_reaches_child", sp6_env_derived_value_reaches_child},
                                                 {"proc02_child_env_is_exact_allowlist", proc02_child_env_is_exact_allowlist},
 #if !defined(_WIN32)

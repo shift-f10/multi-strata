@@ -69,7 +69,19 @@ struct EffortEndArguments final {
                                                            const ModelManifest& selected,
                                                            const CanonicalRoot& models_root,
                                                            const std::vector<std::string>& user_arguments,
-                                                           const std::vector<unsigned>& gpus = {});
+                                                           const std::vector<unsigned>& gpus = {},
+                                                           bool mtp_on = true);
+
+// SP5 M1 Task 6 (parity row mtp; strata_control/draft_layer.py): MTP_FLAGS verbatim —
+// {"--mtp": value, "--spec-min-p": value, "--batch-mtp": no value} — and the pin's
+// strip() rule: a value is consumed only when the next token is not another flag.
+// Returns the draft layer's own flags the composition dropped (in order), for the pin's
+// fixed startup line (serve/server.py:2925). `--spec` (prompt lookup) stays.
+[[nodiscard]] std::vector<std::string> draft_layer_removed(const std::vector<std::string>& arguments);
+
+// The same strip applied in place; returns the flags removed. The managed composition
+// uses this directly (its argv tail is composed, not passed through build_engine_arguments).
+[[nodiscard]] std::vector<std::string> strip_draft_layer_arguments(std::vector<std::string>& arguments);
 
 // Parses the operator's --gpu value: comma-separated decimal device indices
 // 0-255, no sign, spaces or leading zeros, distinct, 1-16 entries.

@@ -22,6 +22,11 @@ class SupervisorPort final {
   [[nodiscard]] HealthSnapshot snapshot();
   [[nodiscard]] std::optional<Lease> acquire();
   void report_fatal(const Lease& lease, KillReason reason);
+  // SP5 M1 Task 6 (parity rows lazy_load / idle_unload_s): request bracketing for the
+  // idle window, and the wake a cold engine needs before it can hand out a Lease.
+  void note_request_started();
+  void note_request_finished();
+  void wake_for_request();
 
  private:
   EngineSupervisor& supervisor_;

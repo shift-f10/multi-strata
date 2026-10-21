@@ -24,7 +24,7 @@ constexpr ParityDisposition kMapped = ParityDisposition::mapped_away;
 
 using enum ParityDestination;
 
-constexpr std::array<ParityRow, 120> kRows{{
+constexpr std::array<ParityRow, 121> kRows{{
     // ---- config keys, alphabetical (the generated inventory) --------------
     {"aliases", kTyped, config_only, "serve/server.py:8046 (M1 Task 8: model.aliases)"},
     {"allowed_hosts", kTyped, frontend_behavior, "already typed (SP1/SP3 listen); serve/server.py:8066"},
@@ -62,11 +62,13 @@ constexpr std::array<ParityRow, 120> kRows{{
     {"headers", kRejected, none, "spec §4 MCP headers; serve/mcp.py:257"},
     {"hip_ordinal", kTyped, engine_arg, "serve/server.py:3023 (M1 Task 7)"},
     {"host", kTyped, frontend_behavior, "already typed (SP1 listen.host); serve/server.py:7862"},
-    {"idle_unload_s", kTyped, frontend_behavior, "serve/server.py:8081 (M1 Task 6: supervisor idle timer)"},
+    {"idle_unload_s", kTyped, frontend_behavior, "serve/server.py:4100-4109, :8081 (M1 Task 6: supervisor idle timer)"},
     {"images", kMapped, none, "spec D-9: image generation is out, the route answers 404 like an unknown route; serve/server.py:8016"},
     {"keep_files", kTyped, frontend_behavior, "serve/images.py:188 (M1 Task 9: session.keep_files, private-scratch retention count)"},
     {"layer_split", kTyped, engine_arg, "serve/server.py:2877 (M1 Task 7)"},
-    {"lazy_load", kTyped, engine_arg, "serve/server.py:7925 (M1 Task 6)"},
+    // Ruling T6-b (Task 6): the pin skips the child start (lazy :966-993), so no engine
+    // argument composes — the deferral is frontend behaviour, like the idle timer.
+    {"lazy_load", kTyped, frontend_behavior, "serve/server.py:7925, :966-993 (M1 Task 6: the first request spawns the same composed launch)"},
     {"lib_dirs", kRejected, none, "spec §4 free-form process control; serve/images.py:135"},
     {"log", kRejected, none, "spec §4 free-form process control; serve/replicas.py:99"},
     {"max_n", kTyped, frontend_behavior, "serve/images.py:103 (M1 Tasks 11-12: vision.max_n; the pin's cap lives on the images block)"},
@@ -78,6 +80,9 @@ constexpr std::array<ParityRow, 120> kRows{{
     {"min_free_vram_mib", kTyped, engine_arg, "serve/server.py:8083 (M1 Task 7)"},
     {"min_tokens", kTyped, request_rule, "serve/server.py:2566 (vision block at the pin); engine.min_tokens is the added frontend bound per C-1 (M1 Task 8)"},
     {"model_name", kMapped, none, "served-model identity comes from the SP4 manifest; serve/images.py:183"},
+    // The pin reads this one through strata_control/draft_layer.is_off, which the Task-2
+    // inventory greps do not see; the row keeps the parity spine complete (extra rule row).
+    {"mtp", kTyped, engine_arg, "strata_control/draft_layer.py is_off; serve/server.py:2922-2925 (M1 Task 6: engine.mtp drops --mtp/--spec-min-p/--batch-mtp at every start)"},
     {"native", kMapped, none, "the SP4 manifest composes --native (engine_arguments); serve/images.py:126"},
     {"need_mib", kTyped, frontend_behavior, "serve/images.py:156 (M1 Task 11: vision.need_mib; added security bound)"},
     {"open_browser", kRejected, none, "spec §4 web/desktop; serve/server.py:8191"},

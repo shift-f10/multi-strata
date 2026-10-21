@@ -56,6 +56,7 @@ std::string_view kill_reason_literal(const KillReason reason) noexcept {
     case KillReason::write_timeout: return "write_timeout";
     case KillReason::protocol_failed: return "protocol_failed";
     case KillReason::shutdown: return "shutdown";
+    case KillReason::idle_unload: return "idle_unload";  // SP5 M1 Task 6: intentional idle teardown
   }
   return "none";
 }

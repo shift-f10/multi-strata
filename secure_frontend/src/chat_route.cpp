@@ -48,6 +48,13 @@ HttpResponse ChatRoute::refusal(const GateRefusal refusal) {
 }
 
 RouteResult ChatRoute::handle(const std::string_view body, const RequestContext& context) {
+  // SP5 M1 Task 6 (parity row idle_unload_s, pin :4100-4109 "without requests"): bracket
+  // the request for the idle timer; both ends are no-ops when idle_unload is 0.
+  port_.note_request_started();
+  const struct RequestBracer {
+    SupervisorPort& port;
+    ~RequestBracer() { port.note_request_finished(); }
+  } bracer{port_};
   // P4: schema, tokenization, budget (spec §5.4) - before any queue place is taken.
   const ChatRequestResult parsed = parse_chat_request(body, config_.schema);
   if (const auto* error = std::get_if<ChatRequestError>(&parsed)) return make_error_response(error->error, {.param = error->param});

@@ -36,15 +36,19 @@ std::variant<ComposedLaunch, LaunchFailure> expert_launch(const FrontendConfig& 
   const auto arguments_profile =
       profile == EngineProfile::glm53 ? EngineArgumentsProfile::lighttransport_glm53 : EngineArgumentsProfile::strata_0143;
   auto args = build_engine_arguments(arguments_profile, *selected, config.roots.models, config.engine.args,
-                                     config.engine.gpus);
+                                     config.engine.gpus, config.engine.mtp);
   if (const auto* failure = std::get_if<EngineArgumentsError>(&args)) {
     return config_failure({"Engine arguments rejected: " + failure->message});
   }
   std::vector<std::string> served;  // SP1's /v1/models lists the whole inventory; --expert keeps that (SP3 decides later)
   served.reserve(list.size());
   for (const auto& model : list) served.push_back(model.id);
+  // SP5 M1 Task 6 (parity row mtp): the removals can only come from the operator args.
+  // The GLM profile keeps its arguments verbatim (its runner does not speak these flags).
+  std::vector<std::string> mtp_removed;
+  if (!config.engine.mtp && profile != EngineProfile::glm53) mtp_removed = draft_layer_removed(config.engine.args);
   return ComposedLaunch{profile, std::get<std::vector<std::string>>(std::move(args)), *config.roots.tokenizer_pack, id,
-                        std::move(served), false};
+                        std::move(served), false, std::move(mtp_removed)};
 }
 
 // <models>/<version_dir>/<relative> through the P1 grammar; nullopt if the joined path is not P1-valid.
@@ -124,6 +128,11 @@ std::variant<ComposedLaunch, LaunchFailure> compose_engine_launch(const Frontend
     return config_failure({"engine.args: " + rejected->message});
   }
   args.insert(args.end(), config.engine.args.begin(), config.engine.args.end());
+  // SP5 M1 Task 6 (parity row mtp; pin :2922 "applied at every start"): an explicit
+  // false drops the draft layer's own options from the composed argv, and the removed
+  // flags are reported once at startup.
+  std::vector<std::string> mtp_removed;
+  if (!config.engine.mtp) mtp_removed = strip_draft_layer_arguments(args);
   // SP2 spec §3.9: GPUs come only from the typed engine.gpu list (--gpu is
   // frontend-owned, so validate_engine_user_arguments refused it in engine.args).
   if (!config.engine.gpus.empty()) {
@@ -142,7 +151,8 @@ std::variant<ComposedLaunch, LaunchFailure> compose_engine_launch(const Frontend
     return LaunchFailure{ExitCode::verification,
                          {"Unable to load local tokenizer pack: the model's tokenizer directory cannot be opened safely"}};
   }
-  return ComposedLaunch{EngineProfile::qwen, std::move(args), std::move(*root), ref, std::vector<std::string>{ref}, true};
+  return ComposedLaunch{EngineProfile::qwen, std::move(args), std::move(*root), ref, std::vector<std::string>{ref}, true,
+                        std::move(mtp_removed)};
 }
 
 }  // namespace secure_frontend

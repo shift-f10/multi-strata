@@ -4,6 +4,7 @@
 #include "support/cli_harness.hpp"
 #include "support/test_support.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -338,6 +339,44 @@ void reasoning_config_reaches_engine_launch_and_env() {
          "the same fixed fallback line (:2853)");
 }
 
+// SP5 M1 Task 6 (parity row mtp; runconfig.py:36, strata_control/draft_layer.py): an explicit
+// engine.mtp=false strips the draft layer's own options from the engine arguments at every
+// start — MTP_FLAGS verbatim {"--mtp" value, "--spec-min-p" value, "--batch-mtp" no value} —
+// while prompt-lookup --spec stays (draft_layer.py: "why --spec stays"). Absent or true keeps
+// today's launch. Only the strata profile: the GLM runner does not speak these flags.
+void mtp_false_drops_the_mtp_arg() {
+  const auto root = models_root();
+  const std::vector<std::string> user{"--mtp", "mtp/rt", "--spec-min-p", "0.3", "--batch-mtp", "--spec", "4"};
+  const auto on = secure_frontend::build_engine_arguments(kStrata, manifest(), root, user);
+  const auto* kept = std::get_if<std::vector<std::string>>(&on);
+  expect(kept != nullptr, "default mtp composes");
+  if (kept == nullptr) return;
+  expect(std::count(kept->begin(), kept->end(), "--mtp") == 1 && std::count(kept->begin(), kept->end(), "--spec-min-p") == 1 &&
+             std::count(kept->begin(), kept->end(), "--batch-mtp") == 1,
+         "mtp true leaves every flag");
+  const auto off = secure_frontend::build_engine_arguments(kStrata, manifest(), root, user, {}, false);
+  const auto* cut = std::get_if<std::vector<std::string>>(&off);
+  expect(cut != nullptr, "mtp false composes");
+  if (cut == nullptr) return;
+  expect(std::none_of(cut->begin(), cut->end(), [](const std::string& a) { return a == "--mtp" || a == "--spec-min-p" || a == "--batch-mtp"; }),
+         "mtp false drops the draft layer's flags");
+  const auto spec = std::find(cut->begin(), cut->end(), "--spec");
+  expect(spec != cut->end() && std::next(spec) != cut->end() && *std::next(spec) == "4", "--spec and its value stay (prompt lookup)");
+  // The pin consumes the value only when the next token is not another flag (:draft_layer.strip).
+  const auto edge = secure_frontend::build_engine_arguments(kStrata, manifest(), root, {"--mtp", "--spec", "4"}, {}, false);
+  const auto* edge_args = std::get_if<std::vector<std::string>>(&edge);
+  expect(edge_args != nullptr, "flag-after-flag still composes");
+  if (edge_args != nullptr) {
+    expect(std::none_of(edge_args->begin(), edge_args->end(), [](const std::string& a) { return a == "--mtp"; }), "the bare --mtp goes");
+    const auto kept_spec = std::find(edge_args->begin(), edge_args->end(), "--spec");
+    expect(kept_spec != edge_args->end() && std::next(kept_spec) != edge_args->end() && *std::next(kept_spec) == "4",
+           "--spec was not eaten as --mtp's value");
+  }
+  // The composition reports what was removed for the pin's fixed startup line (:2925).
+  const auto removed = secure_frontend::draft_layer_removed(user);
+  expect(removed == std::vector<std::string>{"--mtp", "--spec-min-p", "--batch-mtp"}, "the removed list names the flags in order");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -357,5 +396,6 @@ int main(int argc, char** argv) {
       {"launch_refuses_engine_too_old", launch_refuses_engine_too_old},
       {"managed_launch_renders_typed_gpu_list", managed_launch_renders_typed_gpu_list},
       {"reasoning_config_reaches_engine_launch_and_env", reasoning_config_reaches_engine_launch_and_env},
+      {"mtp_false_drops_the_mtp_arg", mtp_false_drops_the_mtp_arg},
   }, failures);
 }

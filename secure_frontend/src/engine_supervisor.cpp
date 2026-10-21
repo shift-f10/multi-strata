@@ -45,6 +45,9 @@ HealthSnapshot health_for(const SupervisorState state) noexcept {
     case SupervisorState::starting: return {state, false, "starting", ""};
     case SupervisorState::ready: return {state, true, "ready", ""};
     case SupervisorState::generating: return {state, true, "generating", ""};
+    // SP5 M1 Task 6: the unloaded engine is served-from-cold — healthy, with the literal
+    // set kept closed: "starting" names the load the next request triggers (Ruling T6-e).
+    case SupervisorState::unloaded: return {state, true, "starting", ""};
     case SupervisorState::stopping:
     case SupervisorState::backoff: return {state, false, "failed", "restarting"};
     case SupervisorState::circuit_open: return {state, false, "failed", "exhausted"};
@@ -164,6 +167,41 @@ EngineSupervisor::~EngineSupervisor() {
 
 void EngineSupervisor::set_on_stopped(std::function<void()> on_stopped) { on_stopped_ = std::move(on_stopped); }
 
+// SP5 M1 Task 6 (idle_unload_s): the serving path brackets every request. Both are
+// no-ops with the pin's "never" default (idle_unload 0).
+void EngineSupervisor::note_request_started() {
+  if (config_.idle_unload.count() == 0) return;
+  ++in_flight_;
+  std::lock_guard lock(mutex_);
+  idle_deadline_.reset();  // a request in flight, even pre-Lease, is activity
+}
+
+void EngineSupervisor::note_request_finished() {
+  if (config_.idle_unload.count() == 0) return;
+  if (in_flight_.load() > 0U) --in_flight_;
+  std::lock_guard lock(mutex_);
+  if (state_ == SupervisorState::ready) idle_deadline_ = clock_->now() + config_.idle_unload;
+  changed_.notify_all();
+}
+
+std::optional<std::chrono::milliseconds> EngineSupervisor::idle_unload_deadline() const {
+  std::lock_guard lock(mutex_);
+  if (!idle_deadline_.has_value()) return std::nullopt;
+  const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(*idle_deadline_ - clock_->now());
+  return remaining > std::chrono::milliseconds(0) ? remaining : std::chrono::milliseconds(0);
+}
+
+void EngineSupervisor::wake_for_request() {
+  {
+    // One latch, one owner: wait_asleep consumes wake_pending_ and clears asleep_;
+    // spawn_generation clears a latch left while a generation was already serving.
+    std::lock_guard lock(mutex_);
+    wake_pending_ = true;
+    changed_.notify_all();
+  }
+  wake_.notify();
+}
+
 bool EngineSupervisor::start() {
   // Without the wake, shutdown() and report_fatal() could never reach the
   // supervisor thread: refuse rather than run a thread nothing can stop (RF4).
@@ -171,7 +209,14 @@ bool EngineSupervisor::start() {
   {
     std::lock_guard lock(mutex_);
     if (thread_.joinable()) return true;
-    state_ = SupervisorState::starting;
+    // SP5 M1 Task 6 (engine.lazy_load, pin :7925 -> StrataEngine(lazy=True) :966-993):
+    // a lazy start never spawns at boot; it sleeps unloaded until the first request.
+    if (config_.lazy_start) {
+      asleep_ = true;
+      state_ = SupervisorState::unloaded;
+    } else {
+      state_ = SupervisorState::starting;
+    }
     changed_.notify_all();
   }
   try {
@@ -187,6 +232,7 @@ std::optional<Lease> EngineSupervisor::acquire() {
   std::lock_guard lock(mutex_);
   if (state_ != SupervisorState::ready || !current_) return std::nullopt;
   state_ = SupervisorState::generating;
+  idle_deadline_.reset();  // the idle window restarts when the Lease comes back
   changed_.notify_all();
   return Lease(lease_link_, current_);
 }
@@ -200,6 +246,8 @@ void EngineSupervisor::release(std::shared_ptr<EngineInstance> instance) noexcep
     std::lock_guard lock(mutex_);
     if (state_ == SupervisorState::generating && current_ == instance) {
       state_ = SupervisorState::ready;
+      // SP5 M1 Task 6 (idle_unload_s): the idle window restarts from the release.
+      if (config_.idle_unload.count() > 0) idle_deadline_ = clock_->now() + config_.idle_unload;
       changed_.notify_all();
     }
     retired = current_ != instance;
@@ -319,6 +367,15 @@ void EngineSupervisor::run() {
   for (;;) {
     sweep_retired();
     if (stop_requested()) break;
+    bool parked = false;
+    {
+      std::lock_guard lock(mutex_);
+      parked = asleep_;  // mutex_-guarded: wake_for_request() flips it from a serving thread
+    }
+    if (parked) {
+      wait_asleep();  // SP5 M1 Task 6: lazy start / idle unload; wakes on a request
+      if (stop_requested()) break;
+    }
     std::chrono::milliseconds healthy_for{0};
     GenerationEnd ended = GenerationEnd::counted;  // a spawn failure counts
     // Scoped to the generation: once retired, only retired_ and Leases hold it,
@@ -328,6 +385,30 @@ void EngineSupervisor::run() {
       if (reason == KillReason::shutdown) {
         shutdown_generation(instance);
         break;
+      }
+      if (reason == KillReason::idle_unload) {
+        // SP5 M1 Task 6 (pin :4100-4109): the teardown was asked for, not a failure:
+        // no failure is recorded, the healthy window is banked, and the supervisor
+        // sleeps unloaded until a request wakes it for the same composed launch.
+        if (!unload_generation(instance)) {
+          if (!schedule_restart(healthy_for, GenerationEnd::unreaped)) {
+            wait_in_circuit_open();
+            break;
+          }
+        } else {
+          tracker_.note_healthy(healthy_for);
+        }
+        if (stop_requested()) break;
+        {
+          // Parked: the state says unloaded again (unload_generation passed through
+          // `stopping` while it reaped), so /health and the gate see the cold engine.
+          std::lock_guard lock(mutex_);
+          asleep_ = true;
+          state_ = SupervisorState::unloaded;
+          idle_deadline_.reset();
+          changed_.notify_all();
+        }
+        continue;
       }
       ended = end_generation(instance, reason);
     }
@@ -353,6 +434,12 @@ std::shared_ptr<EngineInstance> EngineSupervisor::spawn_generation() {
   instance->process = std::move(std::get<std::unique_ptr<SupervisedProcess>>(spawned));
   instance->protocol = std::make_unique<EngineProtocolClient>(instance->process->transport(), EngineProtocolLimits{}, config_.flavor);
   set_state(SupervisorState::starting, instance);
+  {
+    // SP5 M1 Task 6: the spawn itself consumes any wake latched during the unload
+    // window (the request this wake was for is served by this generation).
+    std::lock_guard lock(mutex_);
+    wake_pending_ = false;
+  }
   return instance;
 }
 
@@ -363,6 +450,12 @@ KillReason EngineSupervisor::supervise(EngineInstance& instance, std::chrono::mi
   instance.chat->adopt_ready(ready);
   const auto ready_at = clock_->now();
   set_state(SupervisorState::ready);
+  // SP5 M1 Task 6 (idle_unload_s): the first idle window starts at READY.
+  if (config_.idle_unload.count() > 0) {
+    std::lock_guard lock(mutex_);
+    idle_deadline_ = ready_at + config_.idle_unload;
+    changed_.notify_all();
+  }
   const KillReason reason = watch(instance);
   healthy_for = std::chrono::duration_cast<std::chrono::milliseconds>(clock_->now() - ready_at);
   return reason;
@@ -390,14 +483,34 @@ KillReason EngineSupervisor::watch(EngineInstance& instance) {
     {
       std::lock_guard lock(mutex_);
       if (pending_kill_ != KillReason::none) return std::exchange(pending_kill_, KillReason::none);
+      // SP5 M1 Task 6 (parity row idle_unload_s, pin :4100-4109): with a window armed,
+      // no Lease out, no request in flight and the deadline passed, this generation is
+      // unloaded on purpose. The state flips here so no Lease can slip in afterwards.
+      if (config_.idle_unload.count() > 0 && in_flight_.load() == 0U && state_ == SupervisorState::ready &&
+          idle_deadline_.has_value() && clock_->now() >= *idle_deadline_) {
+        idle_deadline_.reset();
+        state_ = SupervisorState::unloaded;
+        changed_.notify_all();
+        return KillReason::idle_unload;
+      }
     }
     if (stop_requested()) return KillReason::shutdown;
     if (instance.process->try_reap()) return KillReason::none;
     sweep_retired();
     // Spec V4: wait on the child itself, so a death between requests is seen
-    // at once; without a pidfd, poll every monitor_poll.
+    // at once; without a pidfd, poll every monitor_poll. SP5 M1 Task 6: while an
+    // idle window is armed the wait is bounded by the deadline (capped by
+    // monitor_poll), so the unload fires without a wake for pidfd children too.
     const std::intptr_t handle = instance.process->monitor_handle();
-    (void)wake_.wait(handle, handle == kNoMonitorHandle ? config_.monitor_poll : std::chrono::milliseconds(-1));
+    auto slice = handle == kNoMonitorHandle ? config_.monitor_poll : std::chrono::milliseconds(-1);
+    {
+      std::lock_guard lock(mutex_);
+      if (config_.idle_unload.count() > 0 && state_ == SupervisorState::ready && idle_deadline_.has_value())
+        slice = std::min(slice < std::chrono::milliseconds(0) ? config_.monitor_poll : slice,
+                         std::max(std::chrono::milliseconds(1),
+                                  std::chrono::duration_cast<std::chrono::milliseconds>(*idle_deadline_ - clock_->now())));
+    }
+    (void)wake_.wait(handle, slice);
   }
 }
 
@@ -479,6 +592,25 @@ void EngineSupervisor::wait_in_circuit_open() {
   }
 }
 
+// SP5 M1 Task 6: parked while unloaded (lazy start or idle teardown). Sweeps like the
+// circuit wait; leaves on a latched request wake (wake_for_request) or shutdown. The
+// state stays `unloaded` until spawn_generation reports `starting`.
+void EngineSupervisor::wait_asleep() {
+  for (;;) {
+    sweep_retired();
+    {
+      std::lock_guard lock(mutex_);
+      if (stop_requested() || wake_pending_) {
+        wake_pending_ = false;
+        asleep_ = false;
+        changed_.notify_all();
+        return;
+      }
+    }
+    (void)wake_.wait(kNoMonitorHandle, std::chrono::milliseconds(-1));
+  }
+}
+
 // Spec §3.7: EOF first (the engine exits 0 on EOF) unless a Lease still uses
 // engine stdin; then SIGTERM to the group; then always SIGKILL the group
 // (§3.7a); reap, sweep (§3.7b), retire, remove a delegated cgroup (§3.7d).
@@ -528,6 +660,51 @@ void EngineSupervisor::shutdown_generation(const std::shared_ptr<EngineInstance>
   ExitClassification ended = classify_exit(*process.try_reap(), KillReason::shutdown);
   if (ended.kind == ExitKind::clean_exit) ended = {ExitKind::killed_by_supervisor, KillReason::shutdown};
   log_end(instance->number, describe_exit(ended));
+}
+
+// SP5 M1 Task 6 (parity row idle_unload_s; pin :4100-4109 + :6252): the same orderly stop
+// the shutdown path uses — STDIN EOF first, real engine exits 0 — but the supervisor
+// keeps running and parks unloaded. The end is an intentional unload, so the log names
+// it, not the exit classification. Returns false only when even KILL could not reap:
+// the caller routes that through the circuit like any other unreaped end (spec V10).
+bool EngineSupervisor::unload_generation(const std::shared_ptr<EngineInstance>& instance) {
+  bool lease_outstanding = false;
+  {
+    std::lock_guard lock(mutex_);
+    lease_outstanding = state_ == SupervisorState::generating;  // the idle check excludes this; belt-on-braces
+    state_ = SupervisorState::stopping;
+    changed_.notify_all();
+  }
+  SupervisedProcess& process = *instance->process;
+  const auto wait_reaped = [this, &process](const std::chrono::milliseconds limit) {
+    const auto deadline = deadline_after(limit);
+    while (!process.try_reap()) {
+      const auto remaining = remaining_until(deadline);
+      if (remaining.count() == 0) return false;
+      (void)wake_.wait(process.monitor_handle(), std::min(remaining, config_.monitor_poll));
+    }
+    return true;
+  };
+  bool reaped = false;
+  if (!lease_outstanding) {
+    process.close_stdin();
+    reaped = wait_reaped(config_.shutdown_stdin_wait);
+  }
+  if (!reaped) {
+    process.signal_group_terminate();
+    reaped = wait_reaped(config_.shutdown_term_wait);
+  }
+  process.kill_group();  // always, even after the leader has ended
+  if (!reaped) reaped = wait_reaped(config_.shutdown_term_wait);
+  retire(instance, reaped);
+  if (!reaped) {
+    log_end(instance->number, "unreaped");
+    return false;
+  }
+  if (config_.sweep_orphans) (void)sweep_orphans({}, std::chrono::milliseconds(250));
+  process.release_resources(std::chrono::milliseconds(0));
+  log_end(instance->number, "unloaded");
+  return true;
 }
 
 // Takes the ended generation out of service. A reaped one waits in retired_

@@ -311,6 +311,9 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `reasoning.effort_position` | string | `start` | - | - | Where a non-default effort sits in the prompt: start (the pin default) or end; end adds the engine's --tail-role-token. |
 | `reasoning.anthropic_thinking` | string | `model` | - | - | Thinking default for /v1/messages-shaped clients: model (the pin default) or on_request. |
 | `engine.fit_max_tokens` | boolean | `true` | - | - | Fit an over-room max_tokens to the context room (true, the pin default); false answers the §7.2 400 instead. |
+| `engine.lazy_load` | boolean | `false` | - | - | Start with the engine unloaded; the first request loads it (the pin's lazy_load, text only). |
+| `engine.idle_unload_s` | integer | `0` | 0-86400 | - | Seconds without a request before the engine is unloaded (0: never, the pin default); cap added, C-1. |
+| `engine.mtp` | boolean | `true` | - | - | Draft layer (MTP): on unless explicitly false; false drops --mtp/--spec-min-p/--batch-mtp at every start. |
 <!-- config-keys:end -->
 
 `roots.secret` defaults to the config file's directory only for a `file:` token
@@ -423,7 +426,11 @@ The server adds `--serve` and, for this default profile, supplies shard 1 via
 (appended last); never pass `--native` yourself. The expert pack (`--pack DIR`)
 and the other weight sources (`--ple-gguf`, `--embd-gguf`, `--native-head-gguf`,
 `--native-dense-gguf`, `--mtp`) are operator-supplied with `--engine-arg`
-(`engine.args` in the config file) until SP5 models the whole launch. The
+(`engine.args` in the config file) until SP5 models the whole launch. With
+`engine.mtp` set to `false` the draft layer's own options (`--mtp`,
+`--spec-min-p`, `--batch-mtp`) are dropped from the engine's argv at every
+start — the pinned `mtp: false` behaviour (`strata_control/draft_layer.py`);
+prompt-lookup `--spec` stays. The
 engine loads `--pack` unconditionally and its default is the cwd-relative
 `pack/full`, so a real run must pass it. Give every engine switch and value as
 its own `--engine-arg` (its own array element in `engine.args`). With the
