@@ -6,6 +6,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <variant>
@@ -291,6 +292,52 @@ void managed_launch_renders_typed_gpu_list() {
   expected.insert(expected.end(), {"--gpu", "0,2"});
   expect(launch->engine_args == expected, "the typed engine.gpu list becomes the engine's own --gpu");
 }
+// SP5 M1 Task 5 (parity rows reasoning_* / fit_max_tokens). Only ONE of the pin's reasoning values
+// reaches the engine launch: effort_position "end" composes --tail-role-token with the tokenizer's
+// single "system" token id (effort_end_args serve/server.py:2836-2856, appended to the engine argv at
+// :7966/:7977), and its probe rules are the pin's: the engine binary must contain the flag literal,
+// and tok.encode("system") must be exactly one token, else one fixed warning and no argument.
+// The other reasoning rows are service-object values in the pin and reach NOTHING in argv/env:
+// reasoning_effort :8035-8041, reasoning_budget_tokens :8120-8127, reasoning_close_retry :8015,
+// reasoning_loop_recovery :8129-8136, anthropic_thinking :8102-8104, fit_max_tokens :7996.
+void reasoning_config_reaches_engine_launch_and_env() {
+  const auto dir = secure_frontend_test::make_scratch_directory();
+  const auto binary = dir / "strata-engine";
+  const std::string with_flag = std::string("engine-bytes --tail-role-token trailing");
+  const std::string without_flag = std::string("engine-bytes --something-else trailing");
+  {
+    std::ofstream out(binary, std::ios::binary);
+    out.write(with_flag.data(), static_cast<std::streamsize>(with_flag.size()));
+  }
+  secure_frontend::TokenizerPack pack;  // "system" encodes to one token through a merge chain
+  pack.tokens_by_id = {"s", "y", "t", "e", "m", "sy", "sys", "syst", "syste", "system"};
+  pack.merges_by_rank = {{"s", "y"}, {"sy", "s"}, {"sys", "t"}, {"syst", "e"}, {"syste", "m"}};
+  pack.token_types = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+  const auto composed = secure_frontend::compose_effort_end_arguments(binary, pack);
+  expect(composed.arguments == std::vector<std::string>{"--tail-role-token", "9"},
+         "the flag plus the single 'system' token id (:2857)");
+  expect(composed.notice.find("effort_position end:") == 0U, "the pin's fixed success line (:2856)");
+  {
+    std::ofstream out(binary, std::ios::binary);
+    out.write(without_flag.data(), static_cast<std::streamsize>(without_flag.size()));
+  }
+  const auto probe_miss = secure_frontend::compose_effort_end_arguments(binary, pack);
+  expect(probe_miss.arguments.empty(), "an engine without the flag composes nothing (:2849-2855)");
+  expect(probe_miss.notice.find("needs engine 0.1.39 or newer") != std::string_view::npos,
+         "the pin's fixed fallback line (:2853)");
+  secure_frontend::TokenizerPack multi;  // "system" is six ordinary characters: not one token
+  multi.tokens_by_id = {"s", "y", "t", "e", "m"};
+  multi.token_types = {1, 1, 1, 1, 1};
+  {
+    std::ofstream out(binary, std::ios::binary);
+    out.write(with_flag.data(), static_cast<std::streamsize>(with_flag.size()));
+  }
+  const auto role_miss = secure_frontend::compose_effort_end_arguments(binary, multi);
+  expect(role_miss.arguments.empty(), "a multi-token 'system' composes nothing (:2850)");
+  expect(role_miss.notice.find("needs engine 0.1.39 or newer") != std::string_view::npos,
+         "the same fixed fallback line (:2853)");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -309,5 +356,6 @@ int main(int argc, char** argv) {
       {"engine_args_reject_weight_flags_for_managed_model", engine_args_reject_weight_flags_for_managed_model},
       {"launch_refuses_engine_too_old", launch_refuses_engine_too_old},
       {"managed_launch_renders_typed_gpu_list", managed_launch_renders_typed_gpu_list},
+      {"reasoning_config_reaches_engine_launch_and_env", reasoning_config_reaches_engine_launch_and_env},
   }, failures);
 }

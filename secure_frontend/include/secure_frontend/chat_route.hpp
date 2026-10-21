@@ -25,6 +25,7 @@ struct ChatRouteConfig final {
   std::size_t max_completion_tokens;
   std::size_t default_max_tokens;   // 0 = auto (B1)
   SamplingDefaults sampling_default;  // SP5 M1 Task 4: defaults.sampling.* (request fields win)
+  bool fit_max_tokens = true;         // SP5 M1 Task 5: engine.fit_max_tokens (false: over-room 400, pin :4536)
   std::chrono::milliseconds queue_timeout;
   std::chrono::milliseconds write_stall;
   std::chrono::milliseconds response_write_deadline;

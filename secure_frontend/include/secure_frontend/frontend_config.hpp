@@ -177,6 +177,22 @@ struct Roots final {
   // requires it and checks it is an existing owner-only directory (spec §3.9).
   std::optional<std::filesystem::path> state{};
 };
+// SP5 M1 Task 5 (parity rows reasoning_*): the pin's config family. Kinds and defaults at
+// frontend_config.cpp's rows; the pin keeps these as service-object values (serve/server.py:8015,
+// :8102-8104, :8120-8136), except effort_position, which composes an engine argument (:2836-2856).
+enum class ReasoningEffort { none, low, medium, high };      // clean_shared_defaults :7341-7343
+enum class LoopRecovery { off, stop, recover };              // :8129-8136 (false | "stop" | "recover")
+enum class EffortPosition { start, end };                    // :2841-2843
+enum class AnthropicThinking { model, on_request };          // :8102-8104
+struct ReasoningConfig final {
+  std::optional<ReasoningEffort> effort;                     // unset: no config-level level (pin None)
+  std::int64_t budget_tokens = 0;                            // 0 = no budget (pin default)
+  bool close_retry = false;                                  // #1053 opt-in
+  LoopRecovery loop_recovery = LoopRecovery::off;            // #728 opt-in
+  EffortPosition effort_position = EffortPosition::start;
+  AnthropicThinking anthropic_thinking = AnthropicThinking::model;
+};
+
 struct EngineLaunch final {
   std::optional<EngineProfile> profile;  // --expert only; a managed model's manifest sets it (SP4 §4.9 c)
   CanonicalFile executable;
@@ -185,6 +201,7 @@ struct EngineLaunch final {
   std::vector<std::filesystem::path> lib_dirs{};  // engine.lib_dirs, each absolute
   std::vector<unsigned> gpus{};                   // engine.gpu, parsed by parse_gpu_list (empty: unset)
   bool allow_new_privileges{false};               // engine.allow_new_privileges (Linux: no PR_SET_NO_NEW_PRIVS)
+  bool fit_max_tokens{true};                      // engine.fit_max_tokens (pin :3485: false answers 400 over room)
 };
 
 // SP4 §3.9. pull.downloader is only a syntactically absolute path here; the
@@ -216,15 +233,16 @@ class FrontendConfig final {
   const PullSettings pull;
   const LoggingConfig logging;  // SP3 §8
   const SamplingDefaults sampling;  // SP5 M1 Task 4: defaults.sampling.*
+  const ReasoningConfig reasoning;  // SP5 M1 Task 5: reasoning.*
 
  private:
   friend std::variant<ValidatedConfig, std::vector<ConfigIssue>> validate(const FrontendConfigDraft& draft);
   FrontendConfig(ListenerConfig listener_value, Limits limits_value, Roots roots_value, SecretSource token_value,
                  EngineLaunch engine_value, PullSettings pull_value, LoggingConfig logging_value,
-                 SamplingDefaults sampling_value)
+                 SamplingDefaults sampling_value, ReasoningConfig reasoning_value)
       : listener(std::move(listener_value)), limits(limits_value), roots(std::move(roots_value)),
         token(std::move(token_value)), engine(std::move(engine_value)), pull(std::move(pull_value)),
-        logging(logging_value), sampling(std::move(sampling_value)) {}
+        logging(logging_value), sampling(std::move(sampling_value)), reasoning(reasoning_value) {}
 };
 
 // Immutable after validation; subsystems derive their limits from it once.

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <fstream>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -90,6 +91,44 @@ EngineArgumentsResult build_engine_arguments(const EngineArgumentsProfile profil
   // page, and the engine launcher decodes every argument as UTF-8.
   arguments.push_back(path_to_utf8(models_root.join(*relative)));
   return arguments;
+}
+
+EffortEndArguments compose_effort_end_arguments(const std::filesystem::path& engine_binary, const TokenizerPack& tokenizer) {
+  // The pin greps the engine binary for the flag literal (:2849) and encodes "system" expecting a
+  // single token (:2850); either failure means the pin's one fixed fallback line and no argument.
+  constexpr std::string_view kFlag = "--tail-role-token";
+  constexpr std::string_view kFallback =
+      "effort_position \"end\" needs engine 0.1.39 or newer (--tail-role-token): the reasoning effort stays at the top of the prompt";
+  constexpr std::string_view kSuccess =
+      "effort_position end: a request's non-default reasoning effort goes right before the answer, so changing it keeps the cached conversation";
+  EffortEndArguments result;
+  bool known = false;
+  std::ifstream in(engine_binary, std::ios::binary);
+  if (in) {
+    std::string window;
+    std::vector<char> block(64U * 1024U);
+    while (!known && in) {
+      in.read(block.data(), static_cast<std::streamsize>(block.size()));
+      const std::streamsize got = in.gcount();
+      if (got <= 0) break;
+      window.append(block.data(), static_cast<std::size_t>(got));
+      if (window.find(kFlag) != std::string::npos) {
+        known = true;
+        break;
+      }
+      // Keep the overlap so a flag literal split across block boundaries is still found.
+      if (window.size() >= kFlag.size()) window.erase(0, window.size() - (kFlag.size() - 1U));
+    }
+  }
+  const auto encoded = encode_text(tokenizer, "system");
+  const auto* ids = std::get_if<std::vector<std::size_t>>(&encoded);
+  if (!known || ids == nullptr || ids->size() != 1U) {
+    result.notice = kFallback;
+    return result;
+  }
+  result.arguments = {std::string(kFlag), std::to_string((*ids)[0])};
+  result.notice = kSuccess;
+  return result;
 }
 
 std::optional<std::vector<unsigned>> parse_gpu_list(const std::string_view value) {

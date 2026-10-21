@@ -677,6 +677,18 @@ void prompt_alone_over_context_is_400() {
   expect(gen_lines(record_of(r.record)).empty(), "no GEN was written");
 }
 
+// SP5 M1 Task 5 (parity row fit_max_tokens, serve/server.py:4526-4544): a configured false turns an
+// over-room request into the §7.2 400 instead of shortening it; the default true keeps SP3's B2 clamp
+// (covered by max_tokens_clamped_to_context_room).
+void fit_max_tokens_false_returns_400_like_the_pin() {
+  auto r = start_recorded("fitoff", {{"engine.fit_max_tokens", "false"}}, {"--ready-context=200"});
+  if (!r.server) return;
+  const auto response = raw(*r.server, chat_request(*r.server, chat_body(R"("max_tokens":1000)")));
+  expect(response && response->status == 400 && response->body.find("context_length_exceeded") != std::string::npos,
+         "400 like the pin's over-room refusal (:4536-4543)");
+  expect(gen_lines(record_of(r.record)).empty(), "no GEN is written when fit_max_tokens is false");
+}
+
 void absent_max_tokens_uses_auto() {
   auto r = start_recorded("mt4");
   if (!r.server) return;
@@ -1441,6 +1453,7 @@ int main(int argc, char** argv) {
       {"max_tokens_above_limit_is_clamped", max_tokens_above_limit_is_clamped},
       {"max_tokens_clamped_to_context_room", max_tokens_clamped_to_context_room},
       {"prompt_alone_over_context_is_400", prompt_alone_over_context_is_400},
+      {"fit_max_tokens_false_returns_400_like_the_pin", fit_max_tokens_false_returns_400_like_the_pin},
       {"absent_max_tokens_uses_auto", absent_max_tokens_uses_auto},
       {"sampling_passthrough_reaches_gen", sampling_passthrough_reaches_gen},
       {"dos01_context_rule_is_400_without_gen", dos01_context_rule_is_400_without_gen},

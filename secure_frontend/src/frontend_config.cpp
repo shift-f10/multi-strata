@@ -35,7 +35,7 @@ std::string decimal_text(const double value) {
   return ec == std::errc{} ? std::string{buffer, end} : std::string{"?"};
 }
 
-constexpr std::array<ConfigKey, 43 + 7 + 3 + 9> kSchema{{
+constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7> kSchema{{
     {"schema_version", T::integer, false, 1, 1, d::kSchemaVersion, false, "", "",
      "Config format version; must be 1. Required in a config file."},
     {"listener.host", T::string, false, 0, 0, 0, false, "127.0.0.1", "--host",
@@ -158,6 +158,26 @@ constexpr std::array<ConfigKey, 43 + 7 + 3 + 9> kSchema{{
      "Penalty window; unset means the pin default of 64 when any penalty is on (cap added, C-1).", 0.0, 0.0, kUnsetDecimal, false},
     {"defaults.sampling.seed", T::integer, false, 1, 4294967295, -1, false, "", "",
      "Request default sampling seed (pin: a positive integer; 32-bit cap added, C-1).", 0.0, 0.0, kUnsetDecimal, false},
+    // SP5 M1 Task 5 (parity rows reasoning_* / fit_max_tokens): kinds and defaults copied from the
+    // pin — effort clean_shared_defaults serve/server.py:7341-7343; budget_tokens :8120-8127 and
+    // reasoning_budget :3794-3807 (a whole number, 0 = no budget; the 0..4294967295 bounds are ADDED
+    // security bounds, C-1); close_retry :8015; loop_recovery :8129-8136 (the pin also takes bools,
+    // the typed row names the three words); effort_position :2841-2843; anthropic_thinking
+    // :8102-8104; fit_max_tokens :3485-3488 read at :7996 (false answers 400 over the room, :4536).
+    {"reasoning.effort", T::string, false, 0, 0, 0, false, "", "",
+     "Thinking level for requests that name none: none, low, medium or high (pin levels); unset names none."},
+    {"reasoning.budget_tokens", T::integer, false, 0, 4294967295, 0, false, "", "",
+     "Default thinking budget in tokens (0 = none, the pin default); bounds added, C-1."},
+    {"reasoning.close_retry", T::boolean, false, 0, 0, 0, false, "", "",
+     "Close an unfinished thinking block once when the reply ends inside it (pin opt-in, off)."},
+    {"reasoning.loop_recovery", T::string, false, 0, 0, 0, false, "off", "",
+     "A reasoning loop ends the reply (off, the pin default), stops (stop) or continues once (recover)."},
+    {"reasoning.effort_position", T::string, false, 0, 0, 0, false, "start", "",
+     "Where a non-default effort sits in the prompt: start (the pin default) or end; end adds the engine's --tail-role-token."},
+    {"reasoning.anthropic_thinking", T::string, false, 0, 0, 0, false, "model", "",
+     "Thinking default for /v1/messages-shaped clients: model (the pin default) or on_request."},
+    {"engine.fit_max_tokens", T::boolean, false, 0, 0, 0, true, "", "",
+     "Fit an over-room max_tokens to the context room (true, the pin default); false answers the §7.2 400 instead."},
 }};
 
 void add(ConfigErrors& errors, std::string key, const ConfigIssueCode code, std::string reason) {
@@ -531,6 +551,34 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
       read.decimal("defaults.sampling.repetition_penalty"), read.decimal("defaults.sampling.frequency_penalty"),
       read.optional_integer("defaults.sampling.top_k"), read.optional_integer("defaults.sampling.penalty_last_n"),
       read.optional_integer("defaults.sampling.seed")};
+  // SP5 M1 Task 5: reasoning.* (pin vocabularies; the string rows carry the pin's defaults).
+  ReasoningConfig reasoning;
+  if (const auto text = read.string("reasoning.effort")) {
+    if (*text == "none") reasoning.effort = ReasoningEffort::none;
+    else if (*text == "low") reasoning.effort = ReasoningEffort::low;
+    else if (*text == "medium") reasoning.effort = ReasoningEffort::medium;
+    else if (*text == "high") reasoning.effort = ReasoningEffort::high;
+    else add(errors, "reasoning.effort", ConfigIssueCode::invalid_value, "must be none, low, medium or high");
+  }
+  reasoning.budget_tokens = read.integer("reasoning.budget_tokens");
+  reasoning.close_retry = read.boolean("reasoning.close_retry");
+  if (const auto text = read.string("reasoning.loop_recovery")) {
+    if (*text == "off") reasoning.loop_recovery = LoopRecovery::off;
+    else if (*text == "stop") reasoning.loop_recovery = LoopRecovery::stop;
+    else if (*text == "recover") reasoning.loop_recovery = LoopRecovery::recover;
+    else add(errors, "reasoning.loop_recovery", ConfigIssueCode::invalid_value, "must be off, stop or recover");
+  }
+  if (const auto text = read.string("reasoning.effort_position")) {
+    if (*text == "start") reasoning.effort_position = EffortPosition::start;
+    else if (*text == "end") reasoning.effort_position = EffortPosition::end;
+    else add(errors, "reasoning.effort_position", ConfigIssueCode::invalid_value, "must be start or end");
+  }
+  if (const auto text = read.string("reasoning.anthropic_thinking")) {
+    if (*text == "model") reasoning.anthropic_thinking = AnthropicThinking::model;
+    else if (*text == "on_request") reasoning.anthropic_thinking = AnthropicThinking::on_request;
+    else add(errors, "reasoning.anthropic_thinking", ConfigIssueCode::invalid_value, "must be model or on_request");
+  }
+  const bool fit_max_tokens = read.boolean("engine.fit_max_tokens");
   const auto max_body = read.integer("limits.chat.max_body_bytes");
   const auto max_messages = read.integer("limits.chat.max_messages");
   const auto max_message = read.integer("limits.chat.max_message_bytes");
@@ -722,13 +770,14 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
       ConcurrencyLimits{u32(concurrent), u32(queued), std::chrono::milliseconds(queue_timeout_ms), u32(remote_cap), !queue_set,
                         !cap_set}};
   Roots roots{*models, tokenizer, secret, logs, cache, state};
-  EngineLaunch engine{profile, *executable, std::move(*model_id), args, std::move(lib_dirs), std::move(gpus), allow_new_privileges};
+  EngineLaunch engine{profile, *executable, std::move(*model_id), args, std::move(lib_dirs), std::move(gpus), allow_new_privileges,
+                      fit_max_tokens};
   return ValidatedConfig{std::shared_ptr<const FrontendConfig>(
       new FrontendConfig(std::move(listener), limits, std::move(roots), std::move(*token), std::move(engine),
                          PullSettings{std::move(downloader), std::move(proxy), allow_private,
                                       static_cast<std::uint64_t>(max_total), std::chrono::seconds(max_duration),
                                       std::chrono::seconds(stall), std::chrono::seconds(connect)},
-                         LoggingConfig{log_requests}, std::move(sampling_defaults)))};
+                         LoggingConfig{log_requests}, std::move(sampling_defaults), reasoning))};
 }
 
 std::string describe(const FrontendConfig& c) {
@@ -830,6 +879,23 @@ std::string describe(const FrontendConfig& c) {
   line("defaults.sampling.top_k", integer_or_unset(c.sampling.top_k));
   line("defaults.sampling.penalty_last_n", integer_or_unset(c.sampling.penalty_last_n));
   line("defaults.sampling.seed", integer_or_unset(c.sampling.seed));
+  // SP5 M1 Task 5: the reasoning.* family and engine.fit_max_tokens.
+  line("reasoning.effort",
+       !c.reasoning.effort.has_value()                  ? std::string{"(unset)"}
+       : *c.reasoning.effort == ReasoningEffort::none   ? "none"
+       : *c.reasoning.effort == ReasoningEffort::low    ? "low"
+       : *c.reasoning.effort == ReasoningEffort::medium ? "medium"
+                                                        : "high");
+  line("reasoning.budget_tokens", std::to_string(c.reasoning.budget_tokens));
+  line("reasoning.close_retry", c.reasoning.close_retry ? "true" : "false");
+  line("reasoning.loop_recovery",
+       c.reasoning.loop_recovery == LoopRecovery::off      ? "off"
+       : c.reasoning.loop_recovery == LoopRecovery::stop   ? "stop"
+                                                           : "recover");
+  line("reasoning.effort_position", c.reasoning.effort_position == EffortPosition::start ? "start" : "end");
+  line("reasoning.anthropic_thinking",
+       c.reasoning.anthropic_thinking == AnthropicThinking::model ? "model" : "on_request");
+  line("engine.fit_max_tokens", c.engine.fit_max_tokens ? "true" : "false");
   return out;
 }
 

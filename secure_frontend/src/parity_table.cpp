@@ -45,7 +45,7 @@ constexpr std::array<ParityRow, 120> kRows{{
     {"command", kRejected, none, "spec §4 MCP command; serve/mcp.py:610"},
     {"cors_origins", kTyped, frontend_behavior, "already typed (SP3 B12: listener.cors_origins); serve/server.py:8063"},
     {"cwd", kRejected, none, "spec §4 free-form process control; serve/mcp.py:106"},
-    {"effort_position", kTyped, config_only, "serve/server.py:2841 (M1 Task 5: reasoning.effort_position)"},
+    {"effort_position", kTyped, engine_arg, "serve/server.py:2836 (M1 Task 5: reasoning.effort_position composes the engine's --tail-role-token)"},
     {"elastic", kTyped, engine_arg, "serve/server.py:2550 (M1 Task 7: engine.elastic)"},
     {"elastic_idle_s", kTyped, engine_arg, "serve/server.py:2552 (M1 Task 7: engine.elastic_idle_s)"},
     {"elastic_mib", kTyped, engine_arg, "serve/server.py:2551 (M1 Task 7: engine.elastic_mib)"},

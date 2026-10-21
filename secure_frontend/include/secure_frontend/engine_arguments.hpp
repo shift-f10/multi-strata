@@ -2,6 +2,7 @@
 
 #include "secure_frontend/canonical_path.hpp"
 #include "secure_frontend/model_inventory.hpp"
+#include "secure_frontend/tokenizer_pack.hpp"
 
 #include <filesystem>
 #include <optional>
@@ -24,6 +25,21 @@ struct EngineArgumentsError final {
 };
 
 using EngineArgumentsResult = std::variant<std::vector<std::string>, EngineArgumentsError>;
+
+// SP5 M1 Task 5 (parity row `effort_position`): reasoning.effort_position "end" composes the
+// engine's --tail-role-token flag with the tokenizer's single "system" token id
+// (effort_end_args serve/server.py:2836-2856, appended to the engine argv at :7966/:7977). The
+// probe rules are the pin's: the engine binary must contain the flag literal, and the tokenizer's
+// plain encoding of "system" must be exactly one token; otherwise nothing composes and `notice`
+// carries the pin's fixed fallback line (:2853). A composed pair comes with the pin's fixed
+// success line (:2856). Neither notice names a path.
+struct EffortEndArguments final {
+  std::vector<std::string> arguments;
+  std::string_view notice;
+};
+
+[[nodiscard]] EffortEndArguments compose_effort_end_arguments(const std::filesystem::path& engine_binary,
+                                                              const TokenizerPack& tokenizer);
 
 // Builds the engine argv tail (everything after `--serve`).
 //

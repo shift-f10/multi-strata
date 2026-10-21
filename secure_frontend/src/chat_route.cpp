@@ -70,7 +70,7 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
     prompt_ids.push_back(static_cast<std::uint32_t>(id));
   }
   if (!resolve_max_tokens(request.max_tokens, prompt_ids.size(), last_context_.load(), config_.max_completion_tokens,
-                          config_.default_max_tokens)) {
+                          config_.default_max_tokens, config_.fit_max_tokens)) {
     return make_error_response(ApiError::context_length_exceeded);
   }
 
@@ -86,7 +86,7 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
   const std::size_t context_tokens = lease->chat().context_tokens();
   last_context_ = context_tokens;
   const auto budget = resolve_max_tokens(request.max_tokens, prompt_ids.size(), context_tokens, config_.max_completion_tokens,
-                                         config_.default_max_tokens);
+                                         config_.default_max_tokens, config_.fit_max_tokens);
   if (budget && request.stream)
     return stream_response(lease, prompt_ids, *budget, plan.sampling, request.include_usage, context);
   if (!budget) {

@@ -342,6 +342,8 @@ target_include_directories(secure_frontend_engine_arguments
 )
 target_link_libraries(secure_frontend_engine_arguments PUBLIC secure_frontend_model_inventory)
 target_link_libraries(secure_frontend_engine_arguments PUBLIC secure_frontend_paths)
+# SP5 M1 Task 5: compose_effort_end_arguments encodes "system" with the tokenizer pack.
+target_link_libraries(secure_frontend_engine_arguments PUBLIC secure_frontend_tokenizer_pack)
 target_compile_features(secure_frontend_json PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_json PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
@@ -882,6 +884,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         dos01_eviction_over_tcp_admits_new_client dos01_slowloris_cannot_starve_a_real_client dos01_slow_body_clients_cannot_starve_a_real_client
         net01_workers_add_no_listener net01_ipv6_loopback_listener_only
         max_tokens_above_limit_is_clamped max_tokens_clamped_to_context_room prompt_alone_over_context_is_400
+        fit_max_tokens_false_returns_400_like_the_pin
         absent_max_tokens_uses_auto sampling_passthrough_reaches_gen dos01_context_rule_is_400_without_gen
         chat_response_has_openai_shape dos02_excess_connections_get_503_retry_after dos02_queue_full_is_503
         dos02_queue_timeout_is_503 dos02_queue_is_fifo dos02_health_answers_while_generation_places_full
@@ -1126,6 +1129,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         engine_args_reject_owned_and_network_flags
         strata_profile_passes_pack_and_weight_flags_through rejects_invalid_relative_artifact_path
         glm_profile_passes_arguments_through_without_native engine_args_render_typed_gpu_and_deny_gpu_passthrough
+        reasoning_config_reaches_engine_launch_and_env
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     # Pure parsing, no canonical root: runs under wine too.
     secure_frontend_add_cases(secure_frontend_engine_arguments_tests gpu_list_rejects_malformed_values)
@@ -1190,7 +1194,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_typed_config_tests typed_config_model_reference_accepts_name_tag
         describe_reports_unset_expert_keys LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     secure_frontend_add_cases(secure_frontend_typed_config_tests each_rejected_upstream_key_errors_at_load_naming_it
-        sampling_defaults_cover_the_pinned_validator)
+        sampling_defaults_cover_the_pinned_validator
+        reasoning_rows_match_the_pinned_validator)
     # SP4 Task 24b (spec §4.9 c/d; F-8): managed-model config errors, also through strata-secure-server --check.
     target_link_libraries(secure_frontend_typed_config_tests PRIVATE secure_frontend_launch secure_frontend_strata_cli)
     add_dependencies(secure_frontend_typed_config_tests strata-secure-server)
@@ -1268,6 +1273,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         health_is_failed_after_engine_closed_mid_generation health_is_failed_when_engine_closes_before_ready
         chat_applies_engine_context_rule_with_eight_token_margin chat_uses_adopted_ready_without_waiting
         resolve_max_tokens_follows_decisions_1_and_2
+        resolve_max_tokens_fit_false_refuses_like_the_pin
         run_generation_reports_finish_usage_and_context run_generation_cancel_sends_stop_and_drains
         run_generation_timeout_stops_and_reports_timed_out run_generation_drain_failure_abandons
         run_generation_shutdown_uses_short_drain run_generation_maps_engine_errors

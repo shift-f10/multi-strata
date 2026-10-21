@@ -70,9 +70,14 @@ enum class EngineHealth { starting, ready, generating, failed };
 // when the prompt alone leaves no room (400 context_length_exceeded).
 // context_tokens 0 = not known yet (no context clamp); default_max_tokens 0 =
 // auto (min(max_completion_tokens, context - prompt - 8)).
+// fit_max_tokens (SP5 M1 Task 5, parity row fit_max_tokens, serve/server.py:4526-4544): true (the
+// pin default) shortens an explicit request over the context room to the room; false answers the
+// §7.2 400 instead. The engine-internal max_completion cap still clamps (B2 is not the pin's room
+// rule); an auto request always fits the room either way.
 [[nodiscard]] std::optional<std::size_t> resolve_max_tokens(std::optional<std::size_t> requested, std::size_t prompt_tokens,
                                                             std::size_t context_tokens, std::size_t max_completion_tokens,
-                                                            std::size_t default_max_tokens) noexcept;
+                                                            std::size_t default_max_tokens,
+                                                            bool fit_max_tokens = true) noexcept;
 
 // SP3 Task 15 (spec §2.6 P6): the concurrent generation path. run_generation
 // owns one engine generation end to end — GEN, 20 ms read slices, and the

@@ -366,6 +366,22 @@ void resolve_max_tokens_follows_decisions_1_and_2() {
   expect(resolve_max_tokens(5U, 100000U, 0U, 4096U, 0U) == std::optional<std::size_t>{5U}, "unknown context: no context clamp");
 }
 
+// SP5 M1 Task 5 (parity row fit_max_tokens): the pin's two behaviours (serve/server.py:4526-4544).
+// fit_max_tokens=false turns an EXPLICIT max_tokens over the room into a refusal instead of a
+// shortening (:4536-4543); an auto request still takes the room (:4526-4540) and the engine-internal
+// max_completion cap still clamps (B2 is not the pin's room rule; C-8 keeps it).
+void resolve_max_tokens_fit_false_refuses_like_the_pin() {
+  using secure_frontend::resolve_max_tokens;
+  expect(resolve_max_tokens(1000U, 50U, 100U, 4096U, 0U, false) == std::nullopt,
+         "fit false: an explicit request over the room is refused, never shortened (:4536)");
+  expect(resolve_max_tokens(std::nullopt, 50U, 100U, 4096U, 0U, false) == std::optional<std::size_t>{42U},
+         "fit false: an auto request still fits the room (:4526)");
+  expect(resolve_max_tokens(16384U, 10U, 100000U, 4096U, 0U, false) == std::optional<std::size_t>{4096U},
+         "fit false: the max_completion cap still clamps (B2)");
+  expect(resolve_max_tokens(1000U, 50U, 100U, 4096U, 0U, true) == std::optional<std::size_t>{42U},
+         "fit true keeps the shortening, today's behaviour (:4545)");
+}
+
 // SP3 Task 15 (run_generation, spec §2.6 P6): a transport that answers STOP
 // with a cancel DONE the next time it is read. Adapted to the re-anchored
 // write_line(line, deadline, error) signature; assertions as planned.
@@ -624,6 +640,7 @@ int main(int argc, char** argv) {
       {"chat_applies_engine_context_rule_with_eight_token_margin", chat_applies_engine_context_rule_with_eight_token_margin},
       {"chat_uses_adopted_ready_without_waiting", chat_uses_adopted_ready_without_waiting},
       {"resolve_max_tokens_follows_decisions_1_and_2", resolve_max_tokens_follows_decisions_1_and_2},
+      {"resolve_max_tokens_fit_false_refuses_like_the_pin", resolve_max_tokens_fit_false_refuses_like_the_pin},
       {"run_generation_reports_finish_usage_and_context", run_generation_reports_finish_usage_and_context},
       {"run_generation_cancel_sends_stop_and_drains", run_generation_cancel_sends_stop_and_drains},
       {"run_generation_timeout_stops_and_reports_timed_out", run_generation_timeout_stops_and_reports_timed_out},

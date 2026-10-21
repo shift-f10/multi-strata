@@ -940,14 +940,84 @@ void sampling_defaults_cover_the_pinned_validator() {
     }
   }
   // Absent sampling rows stay UNSET (never a sent key), and a set row lands in
-  // the typed config.
-  const auto* bare = config_of(with_literals(f, {}));
+  // the typed config. (config_of views into its argument: keep the result alive
+  // for the whole read-back — a dangling view here was a latent UAF.)
+  const auto bare_result = with_literals(f, {});
+  const auto* bare = config_of(bare_result);
   expect(bare != nullptr, "a config without sampling rows still validates");
-  const auto* set = config_of(with_literals(f, {{"defaults.sampling.min_p", "0.1"}}));
+  const auto set_result = with_literals(f, {{"defaults.sampling.min_p", "0.1"}});
+  const auto* set = config_of(set_result);
   expect(set != nullptr && set->sampling.min_p.has_value() && *set->sampling.min_p == 0.1,
-         "defaults.sampling.min_p is typed: " + issues_of(with_literals(f, {{"defaults.sampling.min_p", "0.1"}})));
+         "defaults.sampling.min_p is typed: " + issues_of(set_result));
   expect(!set->sampling.temperature.has_value() && !set->sampling.seed.has_value(),
          "unset rows stay unset");
+}
+
+// SP5 M1 Task 5 (parity rows reasoning_* / fit_max_tokens): kinds, bounds and defaults copied from
+// the pin — clean_shared_defaults serve/server.py:7341-7343 (effort none|low|medium|high);
+// reasoning_budget_tokens :8120-8127 with reasoning_budget :3794-3807 ("a whole number", 0: none;
+// the 0..4294967295 bounds are ADDED security bounds, C-1); reasoning_close_retry bool :8015;
+// reasoning_loop_recovery false|"stop"|"recover"|true :8129-8136 (the typed row takes the three
+// string words); effort_position start|end :2841-2843; anthropic_thinking model|on_request
+// :8102-8104; fit_max_tokens bool default true :3485-3488 read at :7996.
+void reasoning_rows_match_the_pinned_validator() {
+  ConfigFixture f;
+  const auto accept = [&](const char* path, const char* value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result),
+           std::string{"accepts "} + value + " for " + path + ": " + issues_of(result));
+  };
+  const auto reject = [&](const char* path, const char* value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ConfigErrors>(result),
+           std::string{"rejects "} + value + " for " + path);
+  };
+  for (const char* v : {"\"none\"", "\"low\"", "\"medium\"", "\"high\""}) accept("reasoning.effort", v);
+  reject("reasoning.effort", "\"max\"");  // not one of the pin's levels (:7342)
+  reject("reasoning.effort", "1");
+  accept("reasoning.budget_tokens", "0");
+  accept("reasoning.budget_tokens", "4294967295");
+  reject("reasoning.budget_tokens", "-1");       // added bound (C-1): the pin treats <= 0 as no budget
+  reject("reasoning.budget_tokens", "4294967296");  // added 32-bit cap (C-1)
+  accept("reasoning.close_retry", "true");
+  accept("reasoning.close_retry", "false");
+  reject("reasoning.close_retry", "1");
+  for (const char* v : {"\"off\"", "\"stop\"", "\"recover\""}) accept("reasoning.loop_recovery", v);
+  reject("reasoning.loop_recovery", "\"retry\"");  // not one of the pin's words (:8134)
+  reject("reasoning.loop_recovery", "true");       // the pin's bool form: the typed row names the strings
+  for (const char* v : {"\"start\"", "\"end\""}) accept("reasoning.effort_position", v);
+  reject("reasoning.effort_position", "\"middle\"");
+  for (const char* v : {"\"model\"", "\"on_request\""}) accept("reasoning.anthropic_thinking", v);
+  reject("reasoning.anthropic_thinking", "\"on\"");
+  accept("engine.fit_max_tokens", "false");
+  reject("engine.fit_max_tokens", "\"false\"");
+  // The typed defaults follow the pin; an unset effort row stays unset. (config_of views into its
+  // argument: the validation result stays alive for the whole read-back.)
+  const auto bare_result = with_literals(f, {});
+  const auto* bare = config_of(bare_result);
+  expect(bare != nullptr, "a config without reasoning rows still validates: " + issues_of(bare_result));
+  if (bare != nullptr) {
+    using namespace secure_frontend;
+    expect(!bare->reasoning.effort.has_value() && bare->reasoning.budget_tokens == 0 && !bare->reasoning.close_retry &&
+               bare->reasoning.loop_recovery == LoopRecovery::off &&
+               bare->reasoning.effort_position == EffortPosition::start &&
+               bare->reasoning.anthropic_thinking == AnthropicThinking::model && bare->engine.fit_max_tokens,
+           "the pin's defaults: budget 0, close_retry false, recovery off, position start, thinking model, fit true");
+    const std::string described = describe(*bare);
+    expect(described.find("reasoning.effort = (unset)") != std::string::npos &&
+               described.find("reasoning.effort_position = start") != std::string::npos &&
+               described.find("engine.fit_max_tokens = true") != std::string::npos,
+           "describe reports the reasoning family");
+  }
+  const auto set_result = with_literals(f, {{"reasoning.effort", "\"low\""},
+                                            {"reasoning.budget_tokens", "2048"},
+                                            {"reasoning.effort_position", "\"end\""}});
+  const auto* set = config_of(set_result);
+  expect(set != nullptr && set->reasoning.effort.has_value() &&
+             *set->reasoning.effort == secure_frontend::ReasoningEffort::low &&
+             set->reasoning.budget_tokens == 2048 &&
+             set->reasoning.effort_position == secure_frontend::EffortPosition::end,
+         "reasoning rows are typed: " + issues_of(set_result));
 }
 }  // namespace
 
@@ -959,6 +1029,7 @@ int main(int argc, char** argv) {
       {"describe_reports_unset_expert_keys", describe_reports_unset_expert_keys},
       {"each_rejected_upstream_key_errors_at_load_naming_it", each_rejected_upstream_key_errors_at_load_naming_it},
       {"sampling_defaults_cover_the_pinned_validator", sampling_defaults_cover_the_pinned_validator},
+      {"reasoning_rows_match_the_pinned_validator", reasoning_rows_match_the_pinned_validator},
       {"typed_config_accepts_minimal_file_and_applies_defaults", typed_config_accepts_minimal_file_and_applies_defaults},
       {"cfg01_unknown_key_rejected", cfg01_unknown_key_rejected},
       {"cfg01_duplicate_key_rejected", cfg01_duplicate_key_rejected},

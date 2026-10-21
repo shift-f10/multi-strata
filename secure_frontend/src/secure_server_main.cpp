@@ -154,6 +154,13 @@ int run(const FrontendConfig& config, const bool expert) {
   const std::string& model_id = launch.model_id;
   const bool glm = launch.profile == EngineProfile::glm53;
   auto* engine_arguments = &launch.engine_args;
+  // SP5 M1 Task 5 (parity row effort_position, serve/server.py:2836-2856): reasoning.effort_position
+  // "end" composes the engine's --tail-role-token checkpoint flag (probe rules in the composer).
+  if (config.reasoning.effort_position == secure_frontend::EffortPosition::end) {
+    const auto tail = secure_frontend::compose_effort_end_arguments(config.engine.executable.path(), *tokenizer);
+    std::cerr << "[strata] " << tail.notice << '\n';
+    engine_arguments->insert(engine_arguments->end(), tail.arguments.begin(), tail.arguments.end());
+  }
 
   // Profile, protocol flavor, chat limits and the READY deadline all come from
   // the validated config (limits.engine.ready_timeout_s drives the policy).
@@ -212,6 +219,7 @@ int run(const FrontendConfig& config, const bool expert) {
                                        .max_completion_tokens = config.limits.chat.max_completion_tokens,
                                        .default_max_tokens = config.limits.chat.default_max_tokens,
                                        .sampling_default = config.sampling,
+                                       .fit_max_tokens = config.engine.fit_max_tokens,
                                        .queue_timeout = config.limits.concurrency.queue_timeout,
                                        .write_stall = config.limits.http.write_stall,
                                        .response_write_deadline = config.limits.http.response_write_deadline,
