@@ -1156,6 +1156,85 @@ void bounds_are_the_pins_at_each_edge() {
              set->engine.vram_elastic,
          "the vram family is typed: " + issues_of(set_result));
 }
+
+// SP5 M1 Task 8 (parity rows engine_silence_s / answer_room / repeat_stop_tokens /
+// max_tokens / min_tokens / model.aliases). Defaults verbatim from the pin: silence 300 s
+// (runconfig.py:39), answer_room true (serve/server.py:8014 `is not False`), repeat 256
+// (REPEAT_STOP_TOKENS :197, :8115), the MiB-style token bounds unset (added rows, C-1),
+// aliases empty; model.aliases grammar is set_aliases' name rule (:3764-3777).
+void timeout_shape_rows_match_the_pin() {
+  ConfigFixture f;
+  const auto bare_result = with_literals(f, {});
+  const auto* bare = config_of(bare_result);
+  expect(bare != nullptr, "a config without the timeout/shape rows still validates: " + issues_of(bare_result));
+  if (bare != nullptr) {
+    expect(bare->engine.silence == std::chrono::seconds(300) && bare->engine.answer_room &&
+               bare->engine.repeat_stop_tokens == 256U && !bare->engine.max_tokens.has_value() &&
+               !bare->engine.min_tokens.has_value() && bare->engine.aliases.empty(),
+           "the pin's defaults: silence 300 s, answer_room on, repeat_stop_tokens 256, unset token bounds");
+    const std::string described = secure_frontend::describe(*bare);
+    expect(described.find("engine.silence_s = 300\n") != std::string::npos &&
+               described.find("engine.answer_room = true\n") != std::string::npos &&
+               described.find("engine.repeat_stop_tokens = 256\n") != std::string::npos,
+           "describe reports the timeout/shape family");
+  }
+  const auto accept = [&](const char* path, const char* value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result),
+           std::string{"accepts "} + value + " for " + path + ": " + issues_of(result));
+  };
+  const auto reject = [&](const char* path, const char* value) {
+    const auto result = with_literals(f, {{path, value}});
+    expect(std::holds_alternative<secure_frontend::ConfigErrors>(result), std::string{"rejects "} + value + " for " + path);
+  };
+  accept("engine.answer_room", "false");
+  reject("engine.answer_room", "\"true\"");
+  accept("model.aliases", R"(["Alt.Model","secondary"])");
+  reject("model.aliases", "[1]");
+  reject("model.aliases", R"([""])");        // set_aliases drops empties; the typed row rejects them outright
+  reject("model.aliases", R"(["bad name"])");  // a name is [A-Za-z0-9._-], like model ids
+  reject("model.aliases", R"(["a:b"])");       // aliases are plain names, not name:tag references
+  reject("model.aliases", R"(["dup","dup"])");  // like every SP3/SP4 list row: no repeats (the pin dedups at :3774; Ruling T8-h)
+  const auto set_result = with_literals(f, {{"engine.silence_s", "0"}, {"engine.repeat_stop_tokens", "0"},
+                                            {"engine.max_tokens", "2048"}, {"engine.min_tokens", "16"},
+                                            {"model.aliases", R"(["Alt.Model","secondary"])"}});
+  const auto* set = config_of(set_result);
+  expect(set != nullptr && set->engine.silence == std::chrono::seconds(0) && set->engine.repeat_stop_tokens == 0U &&
+             set->engine.max_tokens.has_value() && *set->engine.max_tokens == 2048 && set->engine.min_tokens.has_value() &&
+             *set->engine.min_tokens == 16 && set->engine.aliases.size() == 2U,
+         "0 = off for silence/repeat (the pin's), token bounds and aliases typed: " + issues_of(set_result));
+}
+
+// SP5 M1 Task 8: edge behaviour of the new rows — the added caps (C-1) accept their max
+// and reject one past it; the silence row keeps the pin's num>=0 shape with an added cap.
+void timeout_shape_rows_at_each_edge() {
+  ConfigFixture f;
+  const auto accept = [&](const char* path, const std::string& value) {
+    const auto result = with_literals(f, {{path, value.c_str()}});
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(result),
+           std::string{"accepts "} + value + " for " + path + ": " + issues_of(result));
+  };
+  const auto reject = [&](const char* path, const std::string& value) {
+    const auto result = with_literals(f, {{path, value.c_str()}});
+    expect(std::holds_alternative<secure_frontend::ConfigErrors>(result), std::string{"rejects "} + value + " for " + path);
+  };
+  accept("engine.silence_s", "0");
+  accept("engine.silence_s", "86400");
+  reject("engine.silence_s", "86401");
+  reject("engine.silence_s", "-1");  // the pin rejects negatives too (engine_silence_s() :2864)
+  accept("engine.repeat_stop_tokens", "0");
+  accept("engine.repeat_stop_tokens", "65536");
+  reject("engine.repeat_stop_tokens", "65537");
+  reject("engine.repeat_stop_tokens", "-1");
+  accept("engine.max_tokens", "1");
+  accept("engine.max_tokens", "1048576");
+  reject("engine.max_tokens", "1048577");
+  reject("engine.max_tokens", "0");
+  accept("engine.min_tokens", "1");
+  reject("engine.min_tokens", "0");
+  accept("model.aliases", "[\"" + std::string(64, 'a') + "\"]");
+  reject("model.aliases", "[\"" + std::string(65, 'a') + "\"]");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1169,6 +1248,8 @@ int main(int argc, char** argv) {
       {"reasoning_rows_match_the_pinned_validator", reasoning_rows_match_the_pinned_validator},
       {"lifecycle_rows_match_the_pin", lifecycle_rows_match_the_pin},
       {"vram_family_rows_match_the_pin", vram_family_rows_match_the_pin},
+      {"timeout_shape_rows_match_the_pin", timeout_shape_rows_match_the_pin},
+      {"timeout_shape_rows_at_each_edge", timeout_shape_rows_at_each_edge},
       {"bounds_are_the_pins_at_each_edge", bounds_are_the_pins_at_each_edge},
       {"typed_config_accepts_minimal_file_and_applies_defaults", typed_config_accepts_minimal_file_and_applies_defaults},
       {"cfg01_unknown_key_rejected", cfg01_unknown_key_rejected},

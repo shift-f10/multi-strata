@@ -229,6 +229,15 @@ struct EngineLaunch final {
   bool split_skip_if_fits{false};                 // engine.split_skip_if_fits -> --split-skip-if-fits (:2941)
   std::optional<std::int64_t> hip_ordinal;        // engine.hip_ordinal: wins over one (or zero) GPUs (:3023-3029)
   bool uma{false};                                // engine.uma: an APU shares RAM either way (images.py:23/334)
+  // SP5 M1 Task 8 (parity rows engine_silence_s / answer_room / repeat_stop_tokens /
+  // max_tokens / min_tokens + model.aliases). Kinds and defaults verbatim from the pin
+  // (runconfig.py:34/:39; serve/server.py:197-199/:8014/:8115/:4908); added bounds marked C-1.
+  std::chrono::seconds silence{300};              // engine.silence_s (default 300, 0 = wait; :274-276/:2861-2868)
+  bool answer_room{true};                         // engine.answer_room (pin `is not False`, :8014)
+  std::size_t repeat_stop_tokens{256};            // engine.repeat_stop_tokens (REPEAT_STOP_TOKENS 256, :197/:8115; 0: off)
+  std::optional<std::size_t> max_tokens;          // engine.max_tokens: ceiling on the request output budget (added, C-1)
+  std::optional<std::size_t> min_tokens;          // engine.min_tokens: floor on the request output budget (added, C-1)
+  std::vector<std::string> aliases{};             // model.aliases (set_aliases :3764-3777)
 };
 
 // SP4 §3.9. pull.downloader is only a syntactically absolute path here; the

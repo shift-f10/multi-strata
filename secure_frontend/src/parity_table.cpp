@@ -26,9 +26,9 @@ using enum ParityDestination;
 
 constexpr std::array<ParityRow, 121> kRows{{
     // ---- config keys, alphabetical (the generated inventory) --------------
-    {"aliases", kTyped, config_only, "serve/server.py:8046 (M1 Task 8: model.aliases)"},
+    {"aliases", kTyped, frontend_behavior, "serve/server.py:8046, set_aliases :3764-3777; runconfig.py:34 (M1 Task 8: model.aliases — /v1/models lists them, chat matches exactly)"},
     {"allowed_hosts", kTyped, frontend_behavior, "already typed (SP1/SP3 listen); serve/server.py:8066"},
-    {"answer_room", kTyped, frontend_behavior, "serve/server.py:8014 (M1 Task 8)"},
+    {"answer_room", kTyped, config_only, "serve/server.py:8014 (`is not False`), formula :4704-4716; typed only: the pin's formula sits in its thinking parser, not in our §7.2 room rule (Ruling T8-d, Task 15)"},
     {"anthropic_thinking", kTyped, config_only, "serve/server.py:8102 (M1 Task 5: reasoning.anthropic_thinking)"},
     {"api_key", kMapped, none, "SP1 token store is the only auth source (CFG-06: no secret in config); serve/server.py:7869"},
     {"api_monitor", kRejected, none, "spec §4 web/desktop/telemetry; serve/server.py:8072"},
@@ -51,7 +51,7 @@ constexpr std::array<ParityRow, 121> kRows{{
     {"elastic", kTyped, frontend_behavior, "serve/server.py:2550, :7927 (M1 Task 7: engine.elastic; Tasks 11-12 consume it)"},
     {"elastic_idle_s", kTyped, frontend_behavior, "serve/server.py:2552, :3854 (M1 Task 7: engine.elastic_idle_s)"},
     {"elastic_mib", kTyped, frontend_behavior, "serve/server.py:2551, :3832 (M1 Task 7: engine.elastic_mib; /v1/vram headroom)"},
-    {"engine_silence_s", kTyped, frontend_behavior, "serve/server.py:941, default 300.0 at serve/server.py:276 (M1 Task 8)"},
+    {"engine_silence_s", kTyped, frontend_behavior, "serve/server.py:941, default 300 at :276, engine_silence_s() :2861-2868; runconfig.py:39 (M1 Task 8: the pump's silence watchdog)"},
     {"env", kRejected, none, "spec §4 raw env dict; serve/server.py:3228"},
     {"env_to_user", kTyped, config_only, "serve/server.py:8110 (M1 Task 9: session.env_to_user)"},
     {"exe", kRejected, none, "spec §4 free-form process control (engine identity comes from the SP4 manifest); serve/server.py:7674"},
@@ -74,15 +74,15 @@ constexpr std::array<ParityRow, 121> kRows{{
     {"lib_dirs", kRejected, none, "spec §4 free-form process control; serve/images.py:135"},
     {"log", kRejected, none, "spec §4 free-form process control; serve/replicas.py:99"},
     {"max_n", kTyped, frontend_behavior, "serve/images.py:103 (M1 Tasks 11-12: vision.max_n; the pin's cap lives on the images block)"},
-    {"max_queue", kTyped, frontend_behavior, "serve/server.py:7833, bound 0..4096 at serve/server.py:7835 (M1 Task 8)"},
+    {"max_queue", kMapped, none, "the SP3 row limits.concurrency.max_queued_generations already carries queue admission (pin bound 0..4096 at serve/server.py:7835, derived default :3602-3604; Ruling T8-a)"},
     {"max_side", kTyped, frontend_behavior, "serve/images.py:102 (M1 Task 12: vision.max_side pre-decode cap)"},
-    {"max_tokens", kTyped, request_rule, "serve/server.py:2564 (vision block at the pin); engine.max_tokens is the added frontend bound per C-1 (M1 Task 8)"},
+    {"max_tokens", kTyped, request_rule, "serve/server.py:2564 (vision encoder at the pin); engine.max_tokens re-scoped as the request output ceiling (added, C-1; Ruling T8-e: caps at the §7.2 resolve site)"},
     {"mcp", kRejected, none, "spec §4 MCP; serve/mcp.py:632"},
     {"mcp_servers", kRejected, none, "spec §4 MCP; serve/mcp.py:651"},
     // Ruling T7-c (Task 7): the svc-side pre-load gate (no argv; the driver check runs
     // only where a GPU box can answer it).
     {"min_free_vram_mib", kTyped, frontend_behavior, "serve/server.py:8083 (M1 Task 7: engine.min_free_vram_mib)"},
-    {"min_tokens", kTyped, request_rule, "serve/server.py:2566 (vision block at the pin); engine.min_tokens is the added frontend bound per C-1 (M1 Task 8)"},
+    {"min_tokens", kTyped, request_rule, "serve/server.py:2566 (vision encoder at the pin); engine.min_tokens re-scoped as the request output floor (added, C-1; Ruling T8-e: lifts at the §7.2 resolve site)"},
     {"model_name", kMapped, none, "served-model identity comes from the SP4 manifest; serve/images.py:183"},
     // The pin reads this one through strata_control/draft_layer.is_off, which the Task-2
     // inventory greps do not see; the row keeps the parity spine complete (extra rule row).
@@ -94,13 +94,13 @@ constexpr std::array<ParityRow, 121> kRows{{
     {"parallel", kTyped, engine_arg, "serve/server.py:2963, bound 1..1024 at serve/server.py:7844 (M1 Task 10: replicas.parallel)"},
     {"prevent_sleep", kRejected, none, "spec §4 desktop; serve/server.py:8031"},
     {"quant", kMapped, none, "quant identity comes from the SP4 manifest; serve/images.py:282"},
-    {"queue_timeout", kTyped, frontend_behavior, "serve/server.py:7837, bound 0.1..600 at serve/server.py:7839 (M1 Task 8: engine.queue_timeout_s)"},
+    {"queue_timeout", kMapped, none, "the SP3 row limits.concurrency.queue_timeout_ms already carries admission waiting (pin bound 0.1..600 at serve/server.py:7839; Ruling T8-a)"},
     {"reasoning_budget_tokens", kTyped, config_only, "serve/server.py:8120 (M1 Task 5: reasoning.budget_tokens)"},
     {"reasoning_close_retry", kTyped, config_only, "serve/server.py:8015 (M1 Task 5: reasoning.close_retry)"},
     {"reasoning_effort", kTyped, config_only, "serve/server.py:7433 (M1 Task 5: reasoning.effort)"},
     {"reasoning_loop_recovery", kTyped, config_only, "serve/server.py:8129 (M1 Task 5: reasoning.loop_recovery)"},
     {"reload", kMapped, none, "image-generation card reload mode (spec D-9); the vision child's lifecycle follows the vision/elastic rows; serve/images.py:176"},
-    {"repeat_stop_tokens", kTyped, engine_arg, "serve/server.py:8115 (M1 Task 8: GEN keys)"},
+    {"repeat_stop_tokens", kTyped, frontend_behavior, "serve/server.py:197 (REPEAT_STOP_TOKENS 256), the pin's detector is frontend-side at :4908, notice :5088, 0 = off :8115 (Ruling T8-f: no GEN key)"},
     {"replica_cpus", kRejected, none, "spec C-4: N-child replica scheduling is the accepted narrowing; serve/server.py:7549"},
     {"replica_load_tokens", kRejected, none, "spec C-4: N-child replica scheduling is the accepted narrowing; serve/server.py:7583"},
     {"replicas", kRejected, none, "spec C-4: N-child replica scheduling is the accepted narrowing; serve/replicas.py:44"},
@@ -111,7 +111,7 @@ constexpr std::array<ParityRow, 121> kRows{{
     {"steps", kMapped, none, "spec D-9 image generation is out; serve/images.py:104"},
     {"telemetry_read_key", kRejected, none, "spec §4 telemetry endpoints; serve/server.py:8053"},
     {"threads", kTyped, engine_arg, "serve/server.py:2562 (M1 Task 7: engine.threads)"},
-    {"timeout_s", kTyped, frontend_behavior, "serve/images.py:226 (generation job timeout at the pin); engine.timeout_s is the added frontend deadline per C-1 (M1 Task 8)"},
+    {"timeout_s", kMapped, none, "the SP3 row limits.engine.generation_timeout_s already carries the generation deadline (pin: generation job timeout at serve/images.py:226; Ruling T8-b)"},
     {"tokenizer", kMapped, none, "the SP4 manifest carries the tokenizer; serve/server.py:7883"},
     {"tool_call_recovery", kTyped, config_only, "serve/server.py:8106 (M1 Task 9: session.tool_call_recovery)"},
     {"trusted_origins", kTyped, frontend_behavior, "already typed (SP3 origins family); serve/server.py:8064"},
@@ -127,7 +127,7 @@ constexpr std::array<ParityRow, 121> kRows{{
 
     // ---- env knobs (the generated inventory; semantics typed or excluded,
     //      never honored raw from the process environment — spec §4) --------
-    {"STRATA_ADMIT_MAX_WAIT_S", kTyped, frontend_behavior, "serve/server.py:311; admission waiting is typed as engine.queue_timeout_s (M1 Task 8)"},
+    {"STRATA_ADMIT_MAX_WAIT_S", kMapped, none, "serve/server.py:311; admission waiting is already carried by limits.concurrency.queue_timeout_ms (Ruling T8-a)"},
     {"STRATA_ADMIT_SHORT_FIRST", kMapped, none, "SP3 admission ordering is the pool policy (B8); serve/server.py:314"},
     {"STRATA_ALLOWED_HOSTS", kTyped, frontend_behavior, "same semantics as allowed_hosts, already typed; serve/server.py:3516"},
     {"STRATA_API_KEY", kMapped, none, "SP1 token store is the only auth source; serve/server.py:7216"},

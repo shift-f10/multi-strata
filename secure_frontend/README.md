@@ -327,6 +327,12 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `engine.split_skip_if_fits` | boolean | `false` | - | - | Let an auto split run on the first card alone when it holds every expert and the KV (renders --split-skip-if-fits). |
 | `engine.hip_ordinal` | integer | unset | 0-127 | - | The HIP number of the discrete card (setup-recorded); wins over one (or zero) configured GPUs. |
 | `engine.uma` | boolean | `false` | - | - | An APU: engine and image turn share the RAM either way, so a picture never needs the engine moved. |
+| `engine.silence_s` | integer | `300` | 0-86400 | - | End a request when the engine says nothing valid for this long (pin default 300 s; 0: wait, still bounded by the total generation timeout). |
+| `engine.answer_room` | boolean | `true` | - | - | Close a long un-budgeted thinking reply early enough to leave the answer room (true, the pin default). |
+| `engine.repeat_stop_tokens` | integer | `256` | 0-65536 | - | One token this many times in a row ends a reply as length (pin default 256; 0: off). Cap added, C-1. |
+| `engine.max_tokens` | integer | unset | 1-1048576 | - | Ceiling on a request's output budget (unset: the completion cap; an added frontend bound, C-1). |
+| `engine.min_tokens` | integer | unset | 1-1048576 | - | Floor on a request's output budget (unset: none; an added frontend bound, C-1). |
+| `model.aliases` | string array | `[]` | - | - | Other model names the server lists and answers to (exact match only, like the pin's set_aliases). |
 <!-- config-keys:end -->
 
 `roots.secret` defaults to the config file's directory only for a `file:` token

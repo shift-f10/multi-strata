@@ -731,8 +731,59 @@ void absent_max_tokens_uses_auto() {
          "auto = min(max_completion_tokens, ctx - n - 8) (B1)");
 }
 
-void sampling_passthrough_reaches_gen() {
-  auto r = start_recorded("smp");
+// SP5 M1 Task 8 (parity rows engine.max_tokens / engine.min_tokens re-scoped as request
+// output bounds per the Task-2 rows and Ruling T8-e, and the answer_room typed row): the
+// configured ceiling/floor ride the GEN budget at admission — cap wins downward, floor
+// lifts upward, and answer_room=false changes nothing on a path with no thinking parser
+// (Ruling T8-d).
+void queue_and_answer_room_limits_are_enforced() {
+  auto ceiling = start_recorded("shape_c", {{"engine.max_tokens", "8"}});
+  if (!ceiling.server) return;
+  const auto over = raw(*ceiling.server, chat_request(*ceiling.server, chat_body(R"("max_tokens":64)")));
+  expect(over && over->status == 200, "an over-ceiling request is capped, not refused");
+  const auto ceiling_gens = gen_lines(record_of(ceiling.record));
+  expect(ceiling_gens.size() == 1U && gen_max(ceiling_gens.front()) == 8U,
+         "engine.max_tokens caps the GEN budget: " + (ceiling_gens.empty() ? "<none>" : ceiling_gens.front()));
+  auto floor = start_recorded("shape_f", {{"engine.min_tokens", "16"}});
+  if (!floor.server) return;
+  const auto tiny = raw(*floor.server, chat_request(*floor.server, chat_body(R"("max_tokens":2)")));
+  expect(tiny && tiny->status == 200, "a below-floor request is lifted, not refused");
+  const auto floor_gens = gen_lines(record_of(floor.record));
+  expect(floor_gens.size() == 1U && gen_max(floor_gens.front()) == 16U,
+         "engine.min_tokens lifts the GEN budget: " + (floor_gens.empty() ? "<none>" : floor_gens.front()));
+  auto room = start_recorded("shape_a", {{"engine.answer_room", "false"}});
+  if (!room.server) return;
+  const auto still = raw(*room.server, chat_request(*room.server, chat_body(R"("max_tokens":64)")));
+  expect(still && still->status == 200, "answer_room false changes nothing on this path (T8-d)");
+}
+
+// SP5 M1 Task 8 (parity row aliases, runconfig.py:34 + set_aliases :3764-3777): a
+// configured alias is a served name — listed by /v1/models, answered by chat; matching is
+// exact (§4: never empty or partial) and an alias equal to the model is dropped (:3775).
+void aliases_answer_like_the_primary_model() {
+  auto r = start_recorded("aliases", {{"model.aliases", R"(["Alt.Model","fake-model","secondary"])"}});
+  if (!r.server) return;
+  const auto list = raw(*r.server, raw_http::request("GET", "/v1/models", authority(*r.server), {raw_http::bearer(token())}));
+  expect(list && list->status == 200, "the model list answers");
+  if (list) {
+    expect(list->body.find("\"fake-model\"") != std::string::npos && list->body.find("\"Alt.Model\"") != std::string::npos &&
+               list->body.find("\"secondary\"") != std::string::npos,
+           "the list names the model and both aliases: " + list->body);
+    std::size_t ids = 0;
+    for (std::size_t at = list->body.find("\"id\":\""); at != std::string::npos; at = list->body.find("\"id\":\"", at + 1)) ++ids;
+    expect(ids == 3U, "the alias equal to the model is dropped (:3775): " + list->body);
+  }
+  const auto by_alias = raw(*r.server, raw_http::request("GET", "/v1/models/Alt.Model", authority(*r.server), {raw_http::bearer(token())}));
+  expect(by_alias && by_alias->status == 200, "GET /v1/models/<alias> finds the served model");
+  const auto alt = raw(*r.server, chat_request(*r.server, R"({"model":"Alt.Model","messages":[{"role":"user","content":"Hi"}]})"));
+  expect(alt && alt->status == 200, "an alias answers like the primary model");
+  const auto miss = raw(*r.server, chat_request(*r.server, R"({"model":"Alt.Mod","messages":[{"role":"user","content":"Hi"}]})"));
+  expect(miss && miss->status == 404, "a prefix of an alias is not a match (§4: never partial)");
+  const auto empty = raw(*r.server, chat_request(*r.server, R"({"model":"","messages":[{"role":"user","content":"Hi"}]})"));
+  expect(empty && empty->status != 200, "an empty model name never matches (§4)");
+}
+
+void sampling_passthrough_reaches_gen() {  auto r = start_recorded("smp");
   if (!r.server) return;
   const auto response = raw(*r.server, chat_request(*r.server, chat_body(R"("max_tokens":2,"temperature":0.5,"top_p":0.9,"seed":42,"presence_penalty":0)")));
   expect(response && response->status == 200, "sampling accepted");
@@ -1227,8 +1278,11 @@ void ext01_extension_fields_rejected_on_stream_path() {
 }
 
 void dos02_slow_reader_never_backpressures_engine() {
+  // engine.repeat_stop_tokens 0 (SP5 M1 Task 8): the filler token repeats 1024 times, so the
+  // pin's default runaway rule (256) would legitimately cut this reply; this test is about
+  // reader backpressure, not the repeat rule.
   auto server = test_support::start_stream_server({long_token_ids(), "--tokens=1024", "--ready-context=65536"},
-                                           {{"limits.chat.max_completion_tokens", "8192"}});
+                                           {{"limits.chat.max_completion_tokens", "8192"}, {"engine.repeat_stop_tokens", "0"}});
   expect(server != nullptr, "server ready");
   if (!server) return;
   auto slow = test_support::open_raw(*server, test_support::chat_body(R"("stream":true,"max_tokens":1024)"), 4096);
@@ -1321,7 +1375,10 @@ struct StalledStream final {
     server = test_support::start_stream_server({long_token_ids(), "--tokens=16384", "--burst-tokens=15360", "--token-interval-ms=50", "--ready-context=65536",
                                          "--record-file=" + test_support::utf8_path(record)},
                                         {{"limits.http.write_stall_ms", "500"}, {"limits.chat.max_completion_tokens", "16384"},
-                                         {"limits.chat.max_generated_bytes", "16777216"}});
+                                         {"limits.chat.max_generated_bytes", "16777216"},
+                                         // SP5 M1 Task 8: the filler repeats far past the pin's 256-token runaway bound;
+                                         // this fixture is about the write-stall cut, so the rule is off here.
+                                         {"engine.repeat_stop_tokens", "0"}});
     if (server) slow = test_support::open_raw(*server, test_support::chat_body(R"("stream":true,"max_tokens":16384)"), 4096);
   }
 };
@@ -1487,6 +1544,8 @@ int main(int argc, char** argv) {
       {"prompt_alone_over_context_is_400", prompt_alone_over_context_is_400},
       {"fit_max_tokens_false_returns_400_like_the_pin", fit_max_tokens_false_returns_400_like_the_pin},
       {"idle_unload_respawns_before_the_next_request", idle_unload_respawns_before_the_next_request},
+      {"queue_and_answer_room_limits_are_enforced", queue_and_answer_room_limits_are_enforced},
+      {"aliases_answer_like_the_primary_model", aliases_answer_like_the_primary_model},
       {"absent_max_tokens_uses_auto", absent_max_tokens_uses_auto},
       {"sampling_passthrough_reaches_gen", sampling_passthrough_reaches_gen},
       {"dos01_context_rule_is_400_without_gen", dos01_context_rule_is_400_without_gen},

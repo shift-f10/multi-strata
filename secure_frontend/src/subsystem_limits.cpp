@@ -31,6 +31,10 @@ ChatExecutionLimits chat_execution_limits(const FrontendConfig& c) {
   limits.ready_timeout = c.limits.engine.ready_timeout;
   limits.generation_timeout = c.limits.engine.generation_timeout;
   limits.stop_drain_timeout = c.limits.engine.stop_drain_timeout;
+  // SP5 M1 Task 8 (engine_silence_s / engine.repeat_stop_tokens): the watchdog and the
+  // runaway rule ride the same limits into both generation pumps.
+  limits.silence_timeout = c.engine.silence;
+  limits.repeat_stop_tokens = c.engine.repeat_stop_tokens;
   return limits;
 }
 

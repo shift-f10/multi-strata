@@ -38,6 +38,13 @@ struct ChatExecutionLimits final {
   std::chrono::milliseconds stop_drain_timeout{std::chrono::seconds(config_defaults::kEngineStopDrainTimeoutS)};
   // SP3 §3.4: the generated text is capped on a code-point boundary at this many bytes.
   std::size_t max_generated_bytes{static_cast<std::size_t>(config_defaults::kChatMaxGeneratedBytes)};
+  // SP5 M1 Task 8 (parity row engine_silence_s, runconfig.py:39 + serve/server.py:274-276):
+  // an engine that says nothing valid for this long reaches the stall path at the silence
+  // bound (0: only the total generation deadline, like the pin's 0 = wait).
+  std::chrono::milliseconds silence_timeout{0};
+  // SP5 M1 Task 8 (parity row repeat_stop_tokens, serve/server.py:197/:4908): one token this
+  // many times in a row ends a reply as length (0: off, the pin's opt-out, :8115).
+  std::size_t repeat_stop_tokens{0};
 };
 
 enum class ChatExecutionErrorCode {
@@ -76,8 +83,9 @@ enum class EngineHealth { starting, ready, generating, failed };
 // rule); an auto request always fits the room either way.
 [[nodiscard]] std::optional<std::size_t> resolve_max_tokens(std::optional<std::size_t> requested, std::size_t prompt_tokens,
                                                             std::size_t context_tokens, std::size_t max_completion_tokens,
-                                                            std::size_t default_max_tokens,
-                                                            bool fit_max_tokens = true) noexcept;
+                                                            std::size_t default_max_tokens, bool fit_max_tokens = true,
+                                                            std::size_t minimum_tokens = 0,
+                                                            std::size_t maximum_tokens = 0) noexcept;
 
 // SP3 Task 15 (spec §2.6 P6): the concurrent generation path. run_generation
 // owns one engine generation end to end — GEN, 20 ms read slices, and the

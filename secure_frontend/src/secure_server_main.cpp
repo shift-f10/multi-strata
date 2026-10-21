@@ -26,6 +26,7 @@
 #include "secure_frontend/tokenizer_pack.hpp"
 #include "secure_frontend/utf8_argv.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -162,6 +163,14 @@ int run(const FrontendConfig& config, const bool expert) {
     return EXIT_FAILURE;
   }
   const std::string& model_id = launch.model_id;
+  // SP5 M1 Task 8 (model.aliases; set_aliases :3774-3777): drop an alias equal to the
+  // served name, keep order, dedup — the route and /v1/models share one effective list.
+  std::vector<std::string> model_aliases;
+  for (const auto& alias : config.engine.aliases) {
+    if (alias != model_id &&
+        std::find(model_aliases.begin(), model_aliases.end(), alias) == model_aliases.end())
+      model_aliases.push_back(alias);
+  }
   const bool glm = launch.profile == EngineProfile::glm53;
   auto* engine_arguments = &launch.engine_args;
   // SP5 M1 Task 5 (parity row effort_position, serve/server.py:2836-2856): reasoning.effort_position
@@ -230,6 +239,9 @@ int run(const FrontendConfig& config, const bool expert) {
                                        .default_max_tokens = config.limits.chat.default_max_tokens,
                                        .sampling_default = config.sampling,
                                        .fit_max_tokens = config.engine.fit_max_tokens,
+                                       .minimum_output_tokens = config.engine.min_tokens.value_or(0U),
+                                       .maximum_output_tokens = config.engine.max_tokens.value_or(0U),
+                                       .model_aliases = model_aliases,
                                        .queue_timeout = config.limits.concurrency.queue_timeout,
                                        .write_stall = config.limits.http.write_stall,
                                        .response_write_deadline = config.limits.http.response_write_deadline,
@@ -245,6 +257,7 @@ int run(const FrontendConfig& config, const bool expert) {
       .validator = secure_frontend::make_bearer_validator(verifier),
       .model_id = model_id,
       .owned_by = "local",
+      .aliases = model_aliases,
       .chat_body_limit = config.limits.chat.max_body_bytes,
       .health = [&port] {
         const auto s = port.snapshot();

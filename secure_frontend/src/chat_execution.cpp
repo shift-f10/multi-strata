@@ -34,7 +34,8 @@ struct ControlObserver final : GenerationObserver {
 
 std::optional<std::size_t> resolve_max_tokens(const std::optional<std::size_t> requested, const std::size_t prompt_tokens,
                                               const std::size_t context_tokens, const std::size_t max_completion_tokens,
-                                              const std::size_t default_max_tokens, const bool fit_max_tokens) noexcept {
+                                              const std::size_t default_max_tokens, const bool fit_max_tokens,
+                                              const std::size_t minimum_tokens, const std::size_t maximum_tokens) noexcept {
   // The engine's rule (generate.cpp): n + max_new + kContextMarginTokens <= ctx.
   constexpr std::size_t kMargin = api_constants::kContextMarginTokens;
   std::size_t room = max_completion_tokens;
@@ -43,12 +44,17 @@ std::optional<std::size_t> resolve_max_tokens(const std::optional<std::size_t> r
     if (prompt_tokens >= context_tokens || context_tokens - prompt_tokens <= kMargin) return std::nullopt;
     room = context_tokens - prompt_tokens - kMargin;
   }
-  const std::size_t base = requested.has_value() ? *requested
-                           : (default_max_tokens == 0U ? max_completion_tokens : default_max_tokens);
+  std::size_t base = requested.has_value() ? *requested
+                                           : (default_max_tokens == 0U ? max_completion_tokens : default_max_tokens);
   // SP5 M1 Task 5 (parity row fit_max_tokens, serve/server.py:4536-4543): with the pin's
   // fit_max_tokens false, an explicit max_tokens over the context room is refused, never shortened.
   if (!fit_max_tokens && requested.has_value() && context_clamp && base > room) return std::nullopt;
-  const std::size_t resolved = std::min({base, max_completion_tokens, room});
+  // SP5 M1 Task 8 (parity rows engine.min_tokens / engine.max_tokens, added frontend bounds
+  // per the Task-2 rows and Ruling T8-e): the floor lifts the base after the §7.2 room rule
+  // (our bound never turns a request into a refusal), the ceiling caps last (0 = unset).
+  if (minimum_tokens != 0U) base = std::max(base, minimum_tokens);
+  std::size_t resolved = std::min({base, max_completion_tokens, room});
+  if (maximum_tokens != 0U) resolved = std::min(resolved, maximum_tokens);
   if (resolved == 0U) return std::nullopt;
   return resolved;
 }
@@ -204,6 +210,9 @@ GenerationRunLimits ChatExecutionService::drive_limits(const std::size_t max_tok
   limits.stop_drain_timeout = limits_.stop_drain_timeout;
   limits.max_generated_bytes = limits_.max_generated_bytes;
   limits.max_tokens = max_tokens;
+  // SP5 M1 Task 8: the silence watchdog and the repeat-stop rule ride both pumps.
+  limits.silence = limits_.silence_timeout;
+  limits.repeat_stop_tokens = limits_.repeat_stop_tokens;
   return limits;
 }
 

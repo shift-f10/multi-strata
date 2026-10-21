@@ -35,7 +35,7 @@ std::string decimal_text(const double value) {
   return ec == std::errc{} ? std::string{buffer, end} : std::string{"?"};
 }
 
-constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13> kSchema{{
+constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6> kSchema{{
     {"schema_version", T::integer, false, 1, 1, d::kSchemaVersion, false, "", "",
      "Config format version; must be 1. Required in a config file."},
     {"listener.host", T::string, false, 0, 0, 0, false, "127.0.0.1", "--host",
@@ -223,6 +223,26 @@ constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13> kSchema{{
      "The HIP number of the discrete card (setup-recorded); wins over one (or zero) configured GPUs."},
     {"engine.uma", T::boolean, false, 0, 0, 0, false, "", "",
      "An APU: engine and image turn share the RAM either way, so a picture never needs the engine moved."},
+    // SP5 M1 Task 8 (the timeout / queue / request-shape family). engine_silence_s:
+    // runconfig.py:39 "num>=0 ... default 300 s, 0 = wait" (cap added, C-1); the watchdog
+    // is serve/server.py:274-276/:2861-2868. answer_room: :3490/:8014 `is not False`
+    // (default true). repeat_stop_tokens: :8115-8118 whole number >= 0, default
+    // REPEAT_STOP_TOKENS=256 (:197; 0 = off; cap added, C-1). max/min tokens: the pin's
+    // keys bound the vision encoder (:2564-2567); the typed rows re-scope to request
+    // output bounds (added, C-1; Ruling T8-e). model.aliases: runconfig.py:34 +
+    // set_aliases :3764-3777.
+    {"engine.silence_s", T::integer, false, 0, 86400, 300, false, "", "",
+     "End a request when the engine says nothing valid for this long (pin default 300 s; 0: wait, still bounded by the total generation timeout)."},
+    {"engine.answer_room", T::boolean, false, 0, 0, 0, true, "", "",
+     "Close a long un-budgeted thinking reply early enough to leave the answer room (true, the pin default)."},
+    {"engine.repeat_stop_tokens", T::integer, false, 0, 65536, 256, false, "", "",
+     "One token this many times in a row ends a reply as length (pin default 256; 0: off). Cap added, C-1."},
+    {"engine.max_tokens", T::integer, false, 1, 1048576, -1, false, "", "",
+     "Ceiling on a request's output budget (unset: the completion cap; an added frontend bound, C-1)."},
+    {"engine.min_tokens", T::integer, false, 1, 1048576, -1, false, "", "",
+     "Floor on a request's output budget (unset: none; an added frontend bound, C-1)."},
+    {"model.aliases", T::string_array, false, 0, 0, 0, false, "", "",
+     "Other model names the server lists and answers to (exact match only, like the pin's set_aliases)."},
 }};
 
 void add(ConfigErrors& errors, std::string key, const ConfigIssueCode code, std::string reason) {
@@ -414,11 +434,25 @@ const ConfigKey* find_config_key(const std::string_view path) noexcept {
 }
 
 namespace {
-constexpr std::array<ConfigKeyExtension, 4> kSchemaExtensions{{
+
+// SP5 M1 Task 8 (parity row aliases): the entry grammar is SP1's one model-ID grammar
+// (validate_model_id) with an added 64-character cap (C-1); aliases join /v1/models and
+// must stay inside the JSON model-field bounds. set_aliases (:3764-3777) drops empties
+// and duplicates at use; the typed row rejects an empty entry outright.
+bool is_valid_model_alias(const std::string_view value) noexcept {
+  return !value.empty() && value.size() <= 64U && std::holds_alternative<std::string>(validate_model_id(value));
+}
+
+constexpr std::array<ConfigKeyExtension, 5> kSchemaExtensions{{
     {"listener.cors_origins", static_cast<std::size_t>(config_defaults::kMaxListEntries), &is_valid_cors_origin,
      "each entry must be http:// or https://, a lower-case host, an optional port and no path; * and null are not allowed", ""},
     {"listener.host_aliases", static_cast<std::size_t>(config_defaults::kMaxListEntries), &is_valid_host_alias,
      "each entry must be a host or host:port", ""},
+    // SP5 M1 Task 8 (parity row aliases): the entry grammar is SP1's one model-ID grammar
+    // (validate_model_id) with an added 64-character cap (C-1). set_aliases (:3764-3777)
+    // strips and drops empties and duplicates at use; the typed row rejects outright.
+    {"model.aliases", static_cast<std::size_t>(config_defaults::kMaxListEntries), &is_valid_model_alias,
+     "each entry must be a model name: ASCII letters, digits, dot, underscore or hyphen, at most 64 characters", ""},
     {"limits.concurrency.max_queued_generations", 0U, nullptr, "", "derived: min(4, max(0, workers-2))"},
     {"limits.concurrency.max_connections_per_remote_address", 0U, nullptr, "", "derived: min(4, workers)"},
 }};
@@ -842,6 +876,15 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   const bool split_skip_if_fits = read.boolean("engine.split_skip_if_fits");
   const auto hip_ordinal = read.optional_integer("engine.hip_ordinal");
   const bool uma = read.boolean("engine.uma");
+  // SP5 M1 Task 8: the timeout / request-shape family. silence 0 = wait (the pin's),
+  // repeat 0 = off (:8115); the token bounds stay unset until configured; aliases keep
+  // set_aliases' grammar (dedup and dropping the model's own name happen at wiring).
+  const std::int64_t silence_s = read.integer("engine.silence_s");
+  const bool answer_room = read.boolean("engine.answer_room");
+  const std::int64_t repeat_stop_tokens = read.integer("engine.repeat_stop_tokens");
+  const auto max_output = read.optional_integer("engine.max_tokens");
+  const auto min_output = read.optional_integer("engine.min_tokens");
+  const std::vector<std::string> aliases = read_bounded_strings(read, errors, "model.aliases");
 
   // pull (SP4 §3.9)
   std::filesystem::path downloader = default_downloader_path();
@@ -906,7 +949,15 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
                       layer_split.empty() ? std::string{"auto"} : layer_split,
                       split_skip_if_fits,
                       hip_ordinal,
-                      uma};
+                      uma,
+                      std::chrono::seconds(silence_s),
+                      answer_room,
+                      static_cast<std::size_t>(repeat_stop_tokens),
+                      max_output.has_value() ? std::optional<std::size_t>{static_cast<std::size_t>(*max_output)}
+                                             : std::optional<std::size_t>{},
+                      min_output.has_value() ? std::optional<std::size_t>{static_cast<std::size_t>(*min_output)}
+                                             : std::optional<std::size_t>{},
+                      std::move(aliases)};
   return ValidatedConfig{std::shared_ptr<const FrontendConfig>(
       new FrontendConfig(std::move(listener), limits, std::move(roots), std::move(*token), std::move(engine),
                          PullSettings{std::move(downloader), std::move(proxy), allow_private,
@@ -1053,6 +1104,13 @@ std::string describe(const FrontendConfig& c) {
   line("engine.split_skip_if_fits", c.engine.split_skip_if_fits ? "true" : "false");
   line("engine.hip_ordinal", integer_or_unset(c.engine.hip_ordinal));
   line("engine.uma", c.engine.uma ? "true" : "false");
+  // SP5 M1 Task 8: the timeout / request-shape family.
+  line("engine.silence_s", std::to_string(c.engine.silence.count()));
+  line("engine.answer_room", c.engine.answer_room ? "true" : "false");
+  line("engine.repeat_stop_tokens", std::to_string(c.engine.repeat_stop_tokens));
+  line("engine.max_tokens", c.engine.max_tokens ? std::to_string(*c.engine.max_tokens) : std::string{"unset"});
+  line("engine.min_tokens", c.engine.min_tokens ? std::to_string(*c.engine.min_tokens) : std::string{"unset"});
+  line("model.aliases", list_text(c.engine.aliases));
   return out;
 }
 

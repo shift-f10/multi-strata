@@ -7,6 +7,7 @@
 #include <functional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace secure_frontend {
 
@@ -29,6 +30,9 @@ struct ApiRouterConfig final {
   BearerTokenValidator validator;
   std::string model_id;   // the one served id; /v1/models lists only it (spec §3.6, E9)
   std::string owned_by;
+  // SP5 M1 Task 8 (model.aliases; runconfig.py:34 "lists and answers to"): /v1/models
+  // lists the served id and these aliases, and GET /v1/models/<alias> finds the model.
+  std::vector<std::string> aliases{};
   std::size_t chat_body_limit;
   HealthProvider health;
   ChatHandler chat;

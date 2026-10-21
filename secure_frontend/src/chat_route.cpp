@@ -7,6 +7,7 @@
 #include "secure_frontend/shutdown_signal.hpp"
 #include "secure_frontend/token_generator.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <limits>
@@ -59,7 +60,12 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
   const ChatRequestResult parsed = parse_chat_request(body, config_.schema);
   if (const auto* error = std::get_if<ChatRequestError>(&parsed)) return make_error_response(error->error, {.param = error->param});
   const ChatCompletionRequest& request = std::get<ChatCompletionRequest>(parsed);
-  if (request.model != config_.model_id) return make_error_response(ApiError::model_not_found);
+  // SP5 M1 Task 8 (model.aliases; set_aliases :3764-3777): the served id plus the
+  // configured aliases answer; matching is exact (§4: an empty or partial name never
+  // matches — an empty request.model is refused by the schema before this line).
+  if (request.model != config_.model_id &&
+      std::find(config_.model_aliases.begin(), config_.model_aliases.end(), request.model) == config_.model_aliases.end())
+    return make_error_response(ApiError::model_not_found);
   const auto plan_result = config_.profile == NativeChatProfile::qwen
                                ? make_qwen_chat_generation_plan(request, tokenizer_, config_.max_prompt_tokens, 1U,
                                                                 config_.sampling_default)
@@ -93,7 +99,8 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
   const std::size_t context_tokens = lease->chat().context_tokens();
   last_context_ = context_tokens;
   const auto budget = resolve_max_tokens(request.max_tokens, prompt_ids.size(), context_tokens, config_.max_completion_tokens,
-                                         config_.default_max_tokens, config_.fit_max_tokens);
+                                         config_.default_max_tokens, config_.fit_max_tokens, config_.minimum_output_tokens,
+                                         config_.maximum_output_tokens);
   if (budget && request.stream)
     return stream_response(lease, prompt_ids, *budget, plan.sampling, request.include_usage, context);
   if (!budget) {

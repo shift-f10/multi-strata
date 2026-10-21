@@ -886,6 +886,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         max_tokens_above_limit_is_clamped max_tokens_clamped_to_context_room prompt_alone_over_context_is_400
         fit_max_tokens_false_returns_400_like_the_pin
         idle_unload_respawns_before_the_next_request
+        queue_and_answer_room_limits_are_enforced
+        aliases_answer_like_the_primary_model
         absent_max_tokens_uses_auto sampling_passthrough_reaches_gen dos01_context_rule_is_400_without_gen
         chat_response_has_openai_shape dos02_excess_connections_get_503_retry_after dos02_queue_full_is_503
         dos02_queue_timeout_is_503 dos02_queue_is_fifo dos02_health_answers_while_generation_places_full
@@ -1202,6 +1204,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         reasoning_rows_match_the_pinned_validator
         lifecycle_rows_match_the_pin
         vram_family_rows_match_the_pin
+        timeout_shape_rows_match_the_pin
+        timeout_shape_rows_at_each_edge
         bounds_are_the_pins_at_each_edge)
     # SP4 Task 24b (spec §4.9 c/d; F-8): managed-model config errors, also through strata-secure-server --check.
     target_link_libraries(secure_frontend_typed_config_tests PRIVATE secure_frontend_launch secure_frontend_strata_cli)
@@ -1281,6 +1285,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         chat_applies_engine_context_rule_with_eight_token_margin chat_uses_adopted_ready_without_waiting
         resolve_max_tokens_follows_decisions_1_and_2
         resolve_max_tokens_fit_false_refuses_like_the_pin
+        min_and_max_tokens_bounds_clamp_at_resolve engine_silence_s_sets_the_stall_watchdog
+        repeat_stop_tokens_ends_a_runaway_reply
         run_generation_reports_finish_usage_and_context run_generation_cancel_sends_stop_and_drains
         run_generation_timeout_stops_and_reports_timed_out run_generation_drain_failure_abandons
         run_generation_shutdown_uses_short_drain run_generation_maps_engine_errors

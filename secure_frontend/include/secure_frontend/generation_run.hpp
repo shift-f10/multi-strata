@@ -30,6 +30,11 @@ struct GenerationRunLimits final {
   std::size_t max_tokens{0};  // the GEN max_new; 0 = unchecked
   std::chrono::milliseconds slice{api_constants::kStreamPollSlice};
   std::chrono::milliseconds shutdown_drain{api_constants::kShutdownDrainBudget};  // drain cap when cancel == shutting_down
+  // SP5 M1 Task 8 (engine_silence_s / repeat_stop_tokens; serve/server.py:274-276, :197/:4908):
+  // the silence watchdog ends a stalled generation at the silence bound (0: off — the total
+  // deadline alone), and a run of this many equal token ids ends a reply as length (0: off).
+  std::chrono::milliseconds silence{0};
+  std::size_t repeat_stop_tokens{0};
 };
 
 struct GenerationRunResult final {
