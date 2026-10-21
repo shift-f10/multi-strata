@@ -888,7 +888,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
 
     # SP3 §9.5: test-only probe for the offline GPU kit. Never installed.
     add_executable(strata-api-probe tests/api_probe_main.cpp)
-    target_link_libraries(strata-api-probe PRIVATE secure_frontend_api_client secure_frontend_json secure_frontend_utf8_stream)
+    target_link_libraries(strata-api-probe PRIVATE secure_frontend_api_client secure_frontend_json secure_frontend_utf8_stream secure_frontend_sha256)
     target_compile_features(strata-api-probe PRIVATE cxx_std_20)
     secure_frontend_set_warnings(strata-api-probe)
 

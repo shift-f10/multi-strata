@@ -293,6 +293,13 @@ vendoring pulls forward only the reference-source piece of SP6 — no SP6
 engine work happens in SP5, and nothing here comes out of this submodule
 into our binaries.
 
+**SP5 parity acceptance kit (placeholder, SP5 M2):** the kit procedure is
+`docs/validation/sp5-parity-kit.md` (corpus: `docs/validation/sp5-parity-corpus.txt`);
+the GPU run happens on the owner's box. When it runs, record here: the
+release commit, both servers' full command lines, both engine versions, the
+model pack SHA-256, and the SHA-256 of both results files and of the corpus.
+**No GLM parity claim is made until this entry exists.**
+
 License: the GitHub API (`gh api repos/mw00/project-maya`, queried 2026-10-14,
 default branch) returns SPDX id `MIT`. Its `LICENSE` file carries the copyright
 line "Copyright (c) 2026 Niko1221 and the Strata contributors". It bundles
