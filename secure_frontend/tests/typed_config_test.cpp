@@ -11,6 +11,7 @@
 #include "support/test_support.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -63,6 +64,14 @@ std::string issues_of(const secure_frontend::ConfigValidationResult& result) {
 std::string valid_sample(const secure_frontend::ConfigKey& key) {
   switch (key.type) {
     case ConfigValueType::integer: return std::to_string(key.minimum);
+    case ConfigValueType::decimal: {
+      // The midpoint is inside every decimal bound pair this schema uses,
+      // including the pin's open bounds.
+      const double mid = (key.minimum_decimal + key.maximum_decimal) / 2.0;
+      char buffer[32];
+      const auto [end, ec] = std::to_chars(buffer, buffer + sizeof(buffer), mid);
+      return ec == std::errc{} ? std::string{buffer, end} : std::string{"0.5"};
+    }
     case ConfigValueType::boolean: return "false";
     case ConfigValueType::string_array: return "[]";
     case ConfigValueType::string: return key.default_string.empty() ? "\"x\"" : "\"" + std::string{key.default_string} + "\"";
@@ -73,6 +82,7 @@ std::string valid_sample(const secure_frontend::ConfigKey& key) {
 std::vector<std::string> wrong_type_samples(const ConfigValueType type) {
   switch (type) {
     case ConfigValueType::integer: return {"\"8080\"", "true", "[1]", "null"};
+    case ConfigValueType::decimal: return {"\"1.5\"", "true", "[1]", "null"};
     case ConfigValueType::boolean: return {"1", "\"true\"", "null"};
     case ConfigValueType::string: return {"1", "true", "[\"x\"]", "{}"};
     case ConfigValueType::string_array: return {"\"x\"", "[1]", "{}", "true"};
@@ -895,6 +905,50 @@ void each_rejected_upstream_key_errors_at_load_naming_it() {
   expect(std::holds_alternative<secure_frontend::ValidatedConfig>(typed),
          "engine.lib_dirs remains a typed key: " + issues_of(typed));
 }
+// SP5 M1 Task 4: config defaults.sampling.* carry the pin's kinds and bounds.
+// Wire form / clamps: serve/server.py:1360-1394 (sampling_keys). Config bounds
+// copied from clean_shared_defaults serve/server.py:7331-7367 (temperature
+// 0..2, top_p 0<x<=1, top_k int 1..64, seed a positive integer); min_p
+// (0,1] from the wire condition at :1372-1374; the caps on presence/frequency
+// (2) and penalty_last_n (8192) and the 32-bit seed cap are ADDED security
+// bounds (C-1) — the pin validates none.
+void sampling_defaults_cover_the_pinned_validator() {
+  ConfigFixture f;
+  struct Row { const char* path; const char* low_ok; const char* high_ok; const char* below; const char* above; };
+  const Row rows[] = {
+      {"defaults.sampling.temperature", "0", "2", "-0.1", "2.1"},
+      {"defaults.sampling.top_p", "0.5", "1", "0", "1.5"},
+      {"defaults.sampling.top_k", "1", "64", "0", "65"},
+      {"defaults.sampling.min_p", "0", "1", "-0.1", "1.1"},
+      {"defaults.sampling.presence_penalty", "0", "2", "-0.1", "2.1"},
+      {"defaults.sampling.repetition_penalty", "0.5", "2", "0", "2.1"},
+      {"defaults.sampling.frequency_penalty", "0", "2", "-0.1", "2.1"},
+      {"defaults.sampling.penalty_last_n", "0", "8192", "-1", "8193"},
+      {"defaults.sampling.seed", "1", "4294967295", "0", "4294967296"},
+  };
+  for (const auto& row : rows) {
+    const auto* key = secure_frontend::find_config_key(row.path);
+    expect(key != nullptr, std::string{"schema row exists: "} + row.path);
+    for (const char* accept : {row.low_ok, row.high_ok}) {
+      const auto* c = config_of(with_literals(f, {{row.path, accept}}));
+      expect(c != nullptr, std::string{"accepts "} + accept + " for " + row.path + ": " + issues_of(with_literals(f, {{row.path, accept}})));
+    }
+    for (const char* reject : {row.below, row.above}) {
+      const auto result = with_literals(f, {{row.path, reject}});
+      expect(std::holds_alternative<secure_frontend::ConfigErrors>(result),
+             std::string{"rejects "} + reject + " for " + row.path);
+    }
+  }
+  // Absent sampling rows stay UNSET (never a sent key), and a set row lands in
+  // the typed config.
+  const auto* bare = config_of(with_literals(f, {}));
+  expect(bare != nullptr, "a config without sampling rows still validates");
+  const auto* set = config_of(with_literals(f, {{"defaults.sampling.min_p", "0.1"}}));
+  expect(set != nullptr && set->sampling.min_p.has_value() && *set->sampling.min_p == 0.1,
+         "defaults.sampling.min_p is typed: " + issues_of(with_literals(f, {{"defaults.sampling.min_p", "0.1"}})));
+  expect(!set->sampling.temperature.has_value() && !set->sampling.seed.has_value(),
+         "unset rows stay unset");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -904,6 +958,7 @@ int main(int argc, char** argv) {
       {"cfg01_model_reference_rejected_for_managed_model", cfg01_model_reference_rejected_for_managed_model},
       {"describe_reports_unset_expert_keys", describe_reports_unset_expert_keys},
       {"each_rejected_upstream_key_errors_at_load_naming_it", each_rejected_upstream_key_errors_at_load_naming_it},
+      {"sampling_defaults_cover_the_pinned_validator", sampling_defaults_cover_the_pinned_validator},
       {"typed_config_accepts_minimal_file_and_applies_defaults", typed_config_accepts_minimal_file_and_applies_defaults},
       {"cfg01_unknown_key_rejected", cfg01_unknown_key_rejected},
       {"cfg01_duplicate_key_rejected", cfg01_duplicate_key_rejected},

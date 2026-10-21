@@ -8,6 +8,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <charconv>
+#include <limits>
 #include <set>
 #include <string>
 #include <utility>
@@ -21,7 +24,18 @@ namespace {
 namespace d = config_defaults;
 using T = ConfigValueType;
 
-constexpr std::array<ConfigKey, 43 + 7 + 3> kSchema{{
+// SP5 M1 Task 4: a decimal row with this default has no default — an absent
+// entry stays unset (never sent to the engine).
+constexpr double kUnsetDecimal = std::numeric_limits<double>::quiet_NaN();
+
+// Shortest round-trip decimal text (shared by issue messages and --check).
+std::string decimal_text(const double value) {
+  char buffer[32];
+  const auto [end, ec] = std::to_chars(buffer, buffer + sizeof(buffer), value);
+  return ec == std::errc{} ? std::string{buffer, end} : std::string{"?"};
+}
+
+constexpr std::array<ConfigKey, 43 + 7 + 3 + 9> kSchema{{
     {"schema_version", T::integer, false, 1, 1, d::kSchemaVersion, false, "", "",
      "Config format version; must be 1. Required in a config file."},
     {"listener.host", T::string, false, 0, 0, 0, false, "127.0.0.1", "--host",
@@ -122,6 +136,28 @@ constexpr std::array<ConfigKey, 43 + 7 + 3> kSchema{{
     {"pull.connect_timeout_s", T::integer, false, 1, 300, 30, false, "", "", "TCP/TLS connect timeout per request."},
     {"logging.requests", T::boolean, false, 0, 0, 0, false, "", "",
      "One line per request to stderr: route, status, code, time, bytes, loopback or remote; never paths, headers, tokens or text."},
+    // SP5 M1 Task 4 (parity row `sampling`): bounds copied from the pin —
+    // clean_shared_defaults (serve/server.py:7331-7367) and the wire conditions
+    // (serve/server.py:1360-1394). Unset rows are never sent. The 2.0 caps,
+    // the 8192 window cap and the 32-bit seed cap are added security bounds (C-1).
+    {"defaults.sampling.temperature", T::decimal, false, 0, 0, 0, false, "", "",
+     "Request default temperature (pin: 0..2); unset keeps the engine default.", 0.0, 2.0, kUnsetDecimal, false},
+    {"defaults.sampling.top_p", T::decimal, false, 0, 0, 0, false, "", "",
+     "Request default top_p (pin: 0 < top_p <= 1); unset keeps the engine default.", 0.0, 1.0, kUnsetDecimal, true},
+    {"defaults.sampling.top_k", T::integer, false, 1, 64, -1, false, "", "",
+     "Request default top_k candidates (pin: an integer 1..64); unset keeps the engine default.", 0.0, 0.0, kUnsetDecimal, false},
+    {"defaults.sampling.min_p", T::decimal, false, 0, 0, 0, false, "", "",
+     "Request default min_p (pin wire: only 0 < min_p <= 1 is sent; 0 stays off).", 0.0, 1.0, kUnsetDecimal, false},
+    {"defaults.sampling.presence_penalty", T::decimal, false, 0, 0, 0, false, "", "",
+     "Request default presence penalty (0 off; cap 2 added, C-1).", 0.0, 2.0, kUnsetDecimal, false},
+    {"defaults.sampling.repetition_penalty", T::decimal, false, 0, 0, 0, false, "", "",
+     "Request default repetition penalty (pin wire: only != 1.0 is sent; cap 2 added, C-1).", 0.0, 2.0, kUnsetDecimal, true},
+    {"defaults.sampling.frequency_penalty", T::decimal, false, 0, 0, 0, false, "", "",
+     "Request default frequency penalty (0 off; cap 2 added, C-1).", 0.0, 2.0, kUnsetDecimal, false},
+    {"defaults.sampling.penalty_last_n", T::integer, false, 0, 8192, -1, false, "", "",
+     "Penalty window; unset means the pin default of 64 when any penalty is on (cap added, C-1).", 0.0, 0.0, kUnsetDecimal, false},
+    {"defaults.sampling.seed", T::integer, false, 1, 4294967295, -1, false, "", "",
+     "Request default sampling seed (pin: a positive integer; 32-bit cap added, C-1).", 0.0, 0.0, kUnsetDecimal, false},
 }};
 
 void add(ConfigErrors& errors, std::string key, const ConfigIssueCode code, std::string reason) {
@@ -172,6 +208,43 @@ class DraftReader final {
     const auto* value = std::get_if<std::vector<std::string>>(&entry->value);
     if (value == nullptr) return wrong_type(key), std::vector<std::string>{};
     return *value;
+  }
+  // SP5 M1 Task 4: an optional integer row (default_integer outside the range
+  // = unset); range-checked when present.
+  std::optional<std::int64_t> optional_integer(const std::string_view path) {
+    const ConfigKey& key = *find_config_key(path);
+    const auto* entry = lookup(key);
+    if (entry == nullptr) return std::nullopt;
+    const auto* value = std::get_if<std::int64_t>(&entry->value);
+    if (value == nullptr) return wrong_type(key), std::nullopt;
+    if (*value < key.minimum || *value > key.maximum) {
+      add(errors_, std::string{path}, ConfigIssueCode::out_of_range,
+          "must be between " + std::to_string(key.minimum) + " and " + std::to_string(key.maximum));
+      return std::nullopt;
+    }
+    return *value;
+  }
+  // SP5 M1 Task 4: a decimal row; integers are accepted (JSON "1" is a valid
+  // number); the NaN default means "unset".
+  std::optional<double> decimal(const std::string_view path) {
+    const ConfigKey& key = *find_config_key(path);
+    const auto* entry = lookup(key);
+    if (entry == nullptr) {
+      if (std::isnan(key.default_decimal)) return std::nullopt;
+      return key.default_decimal;
+    }
+    double value = 0.0;
+    if (const auto* i = std::get_if<std::int64_t>(&entry->value)) value = static_cast<double>(*i);
+    else if (const auto* dp = std::get_if<double>(&entry->value)) value = *dp;
+    else return wrong_type(key), std::nullopt;
+    if (value < key.minimum_decimal || value > key.maximum_decimal ||
+        (key.minimum_exclusive && value == key.minimum_decimal)) {
+      add(errors_, std::string{path}, ConfigIssueCode::out_of_range,
+          (key.minimum_exclusive ? "must be greater than " : "must be at least ") + decimal_text(key.minimum_decimal) +
+          (key.minimum_exclusive ? " and at most " : " and at most ") + decimal_text(key.maximum_decimal));
+      return std::nullopt;
+    }
+    return value;
   }
   bool present(const std::string_view path) const { return draft_.entries.find(path) != draft_.entries.end(); }
 
@@ -341,6 +414,7 @@ std::string_view type_reason(const ConfigValueType type) noexcept {
     case ConfigValueType::integer: return "must be an integer";
     case ConfigValueType::string: return "must be a string";
     case ConfigValueType::string_array: return "must be an array of strings";
+    case ConfigValueType::decimal: return "must be a number";
   }
   return "has the wrong type";
 }
@@ -358,7 +432,9 @@ std::string render_config_schema_markdown() {
         break;
       case ConfigValueType::integer:
         type = "integer";
-        fallback = "`" + std::to_string(key.default_integer) + "`";
+        fallback = (key.default_integer < key.minimum || key.default_integer > key.maximum)
+                       ? "unset"
+                       : "`" + std::to_string(key.default_integer) + "`";
         if (const auto* ext = find_config_key_extension(key.path); ext != nullptr && !ext->derived_default.empty()) {
           fallback = "`" + std::string{ext->derived_default} + "`";
         }
@@ -373,6 +449,12 @@ std::string render_config_schema_markdown() {
       case ConfigValueType::string_array:
         type = "string array";
         fallback = "`[]`";
+        break;
+      case ConfigValueType::decimal:
+        type = "number";
+        fallback = std::isnan(key.default_decimal) ? "unset" : "`" + decimal_text(key.default_decimal) + "`";
+        range = (key.minimum_exclusive ? ">" : "") + decimal_text(key.minimum_decimal) + "-" +
+                decimal_text(key.maximum_decimal);
         break;
     }
     const std::string option = key.flag.empty() ? "-" : "`" + std::string{key.flag} + "`";
@@ -442,6 +524,13 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   const auto response_deadline_ms = read.integer("limits.http.response_write_deadline_ms");
   const auto keepalive_ms = read.integer("limits.http.stream_keepalive_ms");
   const bool log_requests = read.boolean("logging.requests");
+  // SP5 M1 Task 4: defaults.sampling.* (unset rows stay unset).
+  SamplingDefaults sampling_defaults{
+      read.decimal("defaults.sampling.temperature"), read.decimal("defaults.sampling.top_p"),
+      read.decimal("defaults.sampling.min_p"), read.decimal("defaults.sampling.presence_penalty"),
+      read.decimal("defaults.sampling.repetition_penalty"), read.decimal("defaults.sampling.frequency_penalty"),
+      read.optional_integer("defaults.sampling.top_k"), read.optional_integer("defaults.sampling.penalty_last_n"),
+      read.optional_integer("defaults.sampling.seed")};
   const auto max_body = read.integer("limits.chat.max_body_bytes");
   const auto max_messages = read.integer("limits.chat.max_messages");
   const auto max_message = read.integer("limits.chat.max_message_bytes");
@@ -639,7 +728,7 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
                          PullSettings{std::move(downloader), std::move(proxy), allow_private,
                                       static_cast<std::uint64_t>(max_total), std::chrono::seconds(max_duration),
                                       std::chrono::seconds(stall), std::chrono::seconds(connect)},
-                         LoggingConfig{log_requests}))};
+                         LoggingConfig{log_requests}, std::move(sampling_defaults)))};
 }
 
 std::string describe(const FrontendConfig& c) {
@@ -724,6 +813,23 @@ std::string describe(const FrontendConfig& c) {
   line("pull.stall_timeout_s", std::to_string(c.pull.stall_timeout.count()));
   line("pull.connect_timeout_s", std::to_string(c.pull.connect_timeout.count()));
   line("logging.requests", c.logging.requests ? "true" : "false");
+  // SP5 M1 Task 4: the defaults.sampling.* rows; an unset row stays unset and
+  // is never sent (the engine keeps its own default).
+  const auto decimal_or_unset = [](const std::optional<double>& value) {
+    return value.has_value() ? decimal_text(*value) : std::string{"(unset)"};
+  };
+  const auto integer_or_unset = [](const std::optional<std::int64_t>& value) {
+    return value.has_value() ? std::to_string(*value) : std::string{"(unset)"};
+  };
+  line("defaults.sampling.temperature", decimal_or_unset(c.sampling.temperature));
+  line("defaults.sampling.top_p", decimal_or_unset(c.sampling.top_p));
+  line("defaults.sampling.min_p", decimal_or_unset(c.sampling.min_p));
+  line("defaults.sampling.presence_penalty", decimal_or_unset(c.sampling.presence_penalty));
+  line("defaults.sampling.repetition_penalty", decimal_or_unset(c.sampling.repetition_penalty));
+  line("defaults.sampling.frequency_penalty", decimal_or_unset(c.sampling.frequency_penalty));
+  line("defaults.sampling.top_k", integer_or_unset(c.sampling.top_k));
+  line("defaults.sampling.penalty_last_n", integer_or_unset(c.sampling.penalty_last_n));
+  line("defaults.sampling.seed", integer_or_unset(c.sampling.seed));
   return out;
 }
 

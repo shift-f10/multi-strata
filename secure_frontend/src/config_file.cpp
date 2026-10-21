@@ -17,7 +17,10 @@ namespace secure_frontend {
 namespace {
 
 constexpr JsonLimits kConfigJsonLimits{.max_bytes = kMaxConfigFileBytes, .max_depth = 4U,
-                                       .max_container_entries = 256U, .max_string_bytes = 4096U};
+                                       .max_container_entries = 256U, .max_string_bytes = 4096U,
+                                       // SP5 M1 Task 4: defaults.sampling.* rows are decimal; integer
+                                       // rows still reject fractions in the schema reader.
+                                       .allow_fractions = true};
 
 // SP5 M1 (spec D-3): document-order walk for the first member whose parity row
 // is `rejected`. Paths the schema knows (a key or a section) never match: the
@@ -40,9 +43,36 @@ bool walk_rejected(const std::vector<JsonMember>& members, const std::string& pr
   return false;
 }
 
+// SP5 M1 Task 4: with allow_fractions the parser admits fraction/exponent
+// literals, but SP1's schema contract stands — outside a decimal row a
+// fraction is the same malformed document the strict parser used to reject at
+// its byte, and it wins over excluded-name and unknown-key detection exactly
+// like the old parse-time failure did.
+bool walk_fraction_outside_decimal(const std::vector<JsonMember>& members, const std::string& prefix) {
+  for (const auto& member : members) {
+    const std::string path = prefix.empty() ? member.key : prefix + "." + member.key;
+    if (const auto* inner = member.value.if_object()) {
+      if (walk_fraction_outside_decimal(*inner, path)) return true;
+      continue;
+    }
+    const auto is_decimal = [](const JsonValue& value) { return value.if_decimal() != nullptr; };
+    if (const auto* items = member.value.if_array()) {
+      for (const auto& item : *items) {
+        if (is_decimal(item)) return true;  // no array row is decimal-valued
+      }
+      continue;
+    }
+    if (!is_decimal(member.value)) continue;
+    const auto* key = find_config_key(path);
+    if (key == nullptr || key->type != ConfigValueType::decimal) return true;
+  }
+  return false;
+}
+
 std::optional<ConfigDraftValue> draft_value(const JsonValue& value) {
   if (const auto* b = value.if_boolean()) return ConfigDraftValue{*b};
   if (const auto* i = value.if_integer()) return ConfigDraftValue{*i};
+  if (const auto* d = value.if_decimal()) return ConfigDraftValue{*d};
   if (const auto* s = value.if_string()) return ConfigDraftValue{*s};
   if (const auto* items = value.if_array()) {
     std::vector<std::string> strings;
@@ -106,6 +136,11 @@ std::variant<FrontendConfigDraft, ConfigErrors> parse_config_text(const std::str
   const auto* members = std::get<JsonValue>(parsed).if_object();
   if (members == nullptr) {
     return ConfigErrors{ConfigIssue{"config file", ConfigIssueCode::malformed_document, "must be a JSON object"}};
+  }
+  // SP5 M1 Task 4: a fraction outside a decimal row is malformed at the whole-
+  // document level, before name-based checks (see walk_fraction_outside_decimal).
+  if (walk_fraction_outside_decimal(*members, "")) {
+    return ConfigErrors{ConfigIssue{"config file", ConfigIssueCode::malformed_document, "has a number that is not an integer"}};
   }
   // SP5 M1 Task 3: an excluded upstream option is named with its rule before
   // generic unknown-key detection (spec D-3).

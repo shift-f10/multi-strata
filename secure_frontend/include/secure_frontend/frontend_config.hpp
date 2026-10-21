@@ -3,6 +3,7 @@
 #include "secure_frontend/acquire_url.hpp"
 #include "secure_frontend/canonical_path.hpp"
 #include "secure_frontend/config.hpp"
+#include "secure_frontend/sampling_params.hpp"
 #include "secure_frontend/secret_source.hpp"
 
 #include <chrono>
@@ -10,6 +11,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -21,7 +23,7 @@
 
 namespace secure_frontend {
 
-enum class ConfigValueType { boolean, integer, string, string_array };
+enum class ConfigValueType { boolean, integer, string, string_array, decimal };
 
 // One row per configuration key: the single source of truth for the JSON
 // reader, the command line, --check output and the README key table.
@@ -36,6 +38,13 @@ struct ConfigKey final {
   std::string_view default_string;  // empty = no default
   std::string_view flag;            // strata-secure-server option(s) for the README; empty = file only
   std::string_view description;
+  // SP5 M1 Task 4 (decimal rows): bounds below; default_decimal NaN = "unset"
+  // (the row stays absent); minimum_exclusive models the pin's open bounds.
+  // Defaults keep every pre-Task-4 positional row valid under -Werror.
+  double minimum_decimal = 0.0;
+  double maximum_decimal = 0.0;
+  double default_decimal = std::numeric_limits<double>::quiet_NaN();
+  bool minimum_exclusive = false;
 };
 
 [[nodiscard]] std::span<const ConfigKey> config_schema() noexcept;
@@ -57,7 +66,7 @@ struct ConfigKeyExtension final {
 [[nodiscard]] std::string render_config_schema_markdown();
 
 enum class ConfigSource { file, command_line };
-using ConfigDraftValue = std::variant<bool, std::int64_t, std::string, std::vector<std::string>>;
+using ConfigDraftValue = std::variant<bool, std::int64_t, std::string, std::vector<std::string>, double>;
 struct ConfigDraftEntry final {
   ConfigDraftValue value;
   ConfigSource source;
@@ -206,14 +215,16 @@ class FrontendConfig final {
   const EngineLaunch engine;
   const PullSettings pull;
   const LoggingConfig logging;  // SP3 §8
+  const SamplingDefaults sampling;  // SP5 M1 Task 4: defaults.sampling.*
 
  private:
   friend std::variant<ValidatedConfig, std::vector<ConfigIssue>> validate(const FrontendConfigDraft& draft);
   FrontendConfig(ListenerConfig listener_value, Limits limits_value, Roots roots_value, SecretSource token_value,
-                 EngineLaunch engine_value, PullSettings pull_value, LoggingConfig logging_value)
+                 EngineLaunch engine_value, PullSettings pull_value, LoggingConfig logging_value,
+                 SamplingDefaults sampling_value)
       : listener(std::move(listener_value)), limits(limits_value), roots(std::move(roots_value)),
         token(std::move(token_value)), engine(std::move(engine_value)), pull(std::move(pull_value)),
-        logging(logging_value) {}
+        logging(logging_value), sampling(std::move(sampling_value)) {}
 };
 
 // Immutable after validation; subsystems derive their limits from it once.

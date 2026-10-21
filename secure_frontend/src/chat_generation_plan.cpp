@@ -13,11 +13,38 @@ ChatGenerationPlanError error(const ChatGenerationPlanErrorCode code,
   return ChatGenerationPlanError{code, message};
 }
 
+// SP5 M1 Task 4 (parity row `sampling`): the plan's sampling is the request's
+// own fields first, with unset entries filled from the defaults.sampling.*
+// config rows.  A request field always wins; an unset config row stays unset
+// so the engine keeps its own default.
+SamplingParams merge_sampling(const SamplingParams& request, const SamplingDefaults& defaults) {
+  SamplingParams out = request;
+  const auto fill = [](std::optional<double>& field, const std::optional<double>& fallback) {
+    if (!field.has_value()) field = fallback;
+  };
+  fill(out.temperature, defaults.temperature);
+  fill(out.top_p, defaults.top_p);
+  fill(out.min_p, defaults.min_p);
+  fill(out.presence_penalty, defaults.presence_penalty);
+  fill(out.repetition_penalty, defaults.repetition_penalty);
+  fill(out.frequency_penalty, defaults.frequency_penalty);
+  const auto fill_int = [](std::optional<std::int64_t>& field, const std::optional<std::int64_t>& fallback) {
+    if (!field.has_value()) field = fallback;
+  };
+  fill_int(out.top_k, defaults.top_k);
+  fill_int(out.penalty_last_n, defaults.penalty_last_n);
+  // Config seed rows are validated positive and 32-bit capped (C-1), so the
+  // widening cast to the wire's unsigned form is exact.
+  if (!out.seed.has_value() && defaults.seed.has_value()) out.seed = static_cast<std::uint64_t>(*defaults.seed);
+  return out;
+}
+
 }  // namespace
 
 ChatGenerationPlanResult make_qwen_chat_generation_plan(
     const ChatCompletionRequest& request, const TokenizerPack& tokenizer,
-    const std::size_t maximum_prompt_tokens, const std::size_t default_max_tokens) {
+    const std::size_t maximum_prompt_tokens, const std::size_t default_max_tokens,
+    const SamplingDefaults& defaults) {
   if (request.model.empty() || request.messages.empty() || maximum_prompt_tokens == 0U ||
       (request.max_tokens.has_value() && *request.max_tokens == 0U)) {
     return error(ChatGenerationPlanErrorCode::invalid_request,
@@ -43,12 +70,14 @@ ChatGenerationPlanResult make_qwen_chat_generation_plan(
                  "encoded chat prompt exceeds native serving limits");
   }
 
-  return ChatGenerationPlan{request.model, *token_ids, request.max_tokens.value_or(default_max_tokens)};
+  return ChatGenerationPlan{request.model, *token_ids, request.max_tokens.value_or(default_max_tokens),
+                            merge_sampling(request.sampling, defaults)};
 }
 
 ChatGenerationPlanResult make_glm53_chat_generation_plan(
     const ChatCompletionRequest& request, const TokenizerPack& tokenizer,
-    const std::size_t maximum_prompt_tokens, const std::size_t default_max_tokens) {
+    const std::size_t maximum_prompt_tokens, const std::size_t default_max_tokens,
+    const SamplingDefaults& defaults) {
   if (request.model.empty() || request.messages.empty() || maximum_prompt_tokens == 0U ||
       (request.max_tokens.has_value() && *request.max_tokens == 0U)) {
     return error(ChatGenerationPlanErrorCode::invalid_request,
@@ -65,7 +94,8 @@ ChatGenerationPlanResult make_glm53_chat_generation_plan(
     return error(ChatGenerationPlanErrorCode::prompt_too_large,
                  "encoded chat prompt exceeds native serving limits");
   }
-  return ChatGenerationPlan{request.model, *token_ids, request.max_tokens.value_or(default_max_tokens)};
+  return ChatGenerationPlan{request.model, *token_ids, request.max_tokens.value_or(default_max_tokens),
+                            merge_sampling(request.sampling, defaults)};
 }
 
 }  // namespace secure_frontend

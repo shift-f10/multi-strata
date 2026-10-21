@@ -162,6 +162,35 @@ void does_not_parse_arbitrary_special_literals() {
          "the Qwen encoder must not grant generic special-token parsing");
 }
 
+// SP5 M1 Task 4: config defaults fill the plan's sampling; request fields win.
+void sampling_defaults_merge_under_request_overrides() {
+  const auto request = secure_frontend::parse_chat_completion_request(
+      R"({"model":"qwen-local","messages":[{"role":"user","content":"Hi"}],"max_tokens":12,"temperature":0.5})");
+  expect(request.has_value(), "test request must pass the strict chat schema");
+  if (!request) return;
+  const std::string expected_prompt = "<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n";
+  const auto pack = tokenizer_for(expected_prompt, true);
+  secure_frontend::SamplingDefaults defaults;
+  defaults.temperature = 0.9;
+  defaults.top_k = 32;
+  defaults.seed = 7;
+  const auto result = secure_frontend::make_qwen_chat_generation_plan(
+      *request, pack, static_cast<std::size_t>(secure_frontend::config_defaults::kChatMaxPromptTokens),
+      static_cast<std::size_t>(secure_frontend::config_defaults::kChatDefaultMaxTokens), defaults);
+  const auto* plan = std::get_if<secure_frontend::ChatGenerationPlan>(&result);
+  expect(plan != nullptr, "the plan must still compose: plan errors are not sampling's fault");
+  if (plan == nullptr) return;
+  expect(plan->sampling.temperature.has_value() && *plan->sampling.temperature == 0.5, "the request's temperature wins");
+  expect(plan->sampling.top_k.has_value() && *plan->sampling.top_k == 32, "the config default fills top_k");
+  expect(plan->sampling.seed.has_value() && *plan->sampling.seed == 7U, "the config default fills seed");
+  expect(!plan->sampling.top_p.has_value(), "an unset default stays unset");
+  const auto no_defaults = secure_frontend::make_qwen_chat_generation_plan(*request, pack);
+  const auto* bare = std::get_if<secure_frontend::ChatGenerationPlan>(&no_defaults);
+  expect(bare != nullptr && bare->sampling.temperature.has_value() && *bare->sampling.temperature == 0.5 &&
+             !bare->sampling.top_k.has_value(),
+         "without config defaults the request alone drives GEN");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -170,5 +199,6 @@ int main(int argc, char** argv) {
       {"defaults_output_limit_and_rejects_unsafe_inputs", defaults_output_limit_and_rejects_unsafe_inputs},
       {"rejects_missing_or_non_control_framing_tokens", rejects_missing_or_non_control_framing_tokens},
       {"does_not_parse_arbitrary_special_literals", does_not_parse_arbitrary_special_literals},
+      {"sampling_defaults_merge_under_request_overrides", sampling_defaults_merge_under_request_overrides},
   }, failures);
 }

@@ -295,6 +295,15 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `pull.stall_timeout_s` | integer | `120` | 10-3600 | - | Abort a transfer slower than 1024 B/s for this long. |
 | `pull.connect_timeout_s` | integer | `30` | 1-300 | - | TCP/TLS connect timeout per request. |
 | `logging.requests` | boolean | `false` | - | - | One line per request to stderr: route, status, code, time, bytes, loopback or remote; never paths, headers, tokens or text. |
+| `defaults.sampling.temperature` | number | unset | 0-2 | - | Request default temperature (pin: 0..2); unset keeps the engine default. |
+| `defaults.sampling.top_p` | number | unset | >0-1 | - | Request default top_p (pin: 0 < top_p <= 1); unset keeps the engine default. |
+| `defaults.sampling.top_k` | integer | unset | 1-64 | - | Request default top_k candidates (pin: an integer 1..64); unset keeps the engine default. |
+| `defaults.sampling.min_p` | number | unset | 0-1 | - | Request default min_p (pin wire: only 0 < min_p <= 1 is sent; 0 stays off). |
+| `defaults.sampling.presence_penalty` | number | unset | 0-2 | - | Request default presence penalty (0 off; cap 2 added, C-1). |
+| `defaults.sampling.repetition_penalty` | number | unset | >0-2 | - | Request default repetition penalty (pin wire: only != 1.0 is sent; cap 2 added, C-1). |
+| `defaults.sampling.frequency_penalty` | number | unset | 0-2 | - | Request default frequency penalty (0 off; cap 2 added, C-1). |
+| `defaults.sampling.penalty_last_n` | integer | unset | 0-8192 | - | Penalty window; unset means the pin default of 64 when any penalty is on (cap added, C-1). |
+| `defaults.sampling.seed` | integer | unset | 1-4294967295 | - | Request default sampling seed (pin: a positive integer; 32-bit cap added, C-1). |
 <!-- config-keys:end -->
 
 `roots.secret` defaults to the config file's directory only for a `file:` token

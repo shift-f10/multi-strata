@@ -24,6 +24,7 @@ struct ChatRouteConfig final {
   std::size_t max_prompt_tokens;
   std::size_t max_completion_tokens;
   std::size_t default_max_tokens;   // 0 = auto (B1)
+  SamplingDefaults sampling_default;  // SP5 M1 Task 4: defaults.sampling.* (request fields win)
   std::chrono::milliseconds queue_timeout;
   std::chrono::milliseconds write_stall;
   std::chrono::milliseconds response_write_deadline;
@@ -42,7 +43,8 @@ class ChatRoute final {
   [[nodiscard]] HttpResponse refusal(GateRefusal refusal);
   [[nodiscard]] HttpResponse engine_unavailable();
   [[nodiscard]] RouteResult stream_response(std::optional<Lease>& lease, const std::vector<std::uint32_t>& prompt_ids,
-                                            std::size_t max_tokens, const ChatCompletionRequest& request, const RequestContext& context);
+                                            std::size_t max_tokens, const SamplingParams& sampling, bool include_usage,
+                                            const RequestContext& context);
   ChatRouteConfig config_;
   SupervisorPort& port_;
   GenerationGate& gate_;

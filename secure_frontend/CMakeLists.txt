@@ -1095,6 +1095,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         prefill_progress_is_bounded_in_both_profiles
         resume_and_reused_progress_is_consumed_in_the_strata_profile
         gen_carries_bounded_sampling_keys
+        sampling_defaults_reach_gen_request
         generation_total_deadline_is_enforced
         gen_line_fits_max_prompt_tokens derived_line_cap_is_clamped_to_protocol_max stop_cause_and_completed_generations
         next_event_yields_tokens_progress_and_done next_event_timeout_keeps_generation_active
@@ -1188,7 +1189,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # SP4 §4.9 c, d: engine.model_id is name or name:tag; roots.tokenizer_pack is optional.
     secure_frontend_add_cases(secure_frontend_typed_config_tests typed_config_model_reference_accepts_name_tag
         describe_reports_unset_expert_keys LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
-    secure_frontend_add_cases(secure_frontend_typed_config_tests each_rejected_upstream_key_errors_at_load_naming_it)
+    secure_frontend_add_cases(secure_frontend_typed_config_tests each_rejected_upstream_key_errors_at_load_naming_it
+        sampling_defaults_cover_the_pinned_validator)
     # SP4 Task 24b (spec §4.9 c/d; F-8): managed-model config errors, also through strata-secure-server --check.
     target_link_libraries(secure_frontend_typed_config_tests PRIVATE secure_frontend_launch secure_frontend_strata_cli)
     add_dependencies(secure_frontend_typed_config_tests strata-secure-server)
@@ -1253,7 +1255,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         secure_frontend_chat_generation_plan)
     secure_frontend_add_cases(secure_frontend_chat_generation_plan_tests
         composes_schema_prompt_and_tokenizer defaults_output_limit_and_rejects_unsafe_inputs
-        rejects_missing_or_non_control_framing_tokens does_not_parse_arbitrary_special_literals)
+        rejects_missing_or_non_control_framing_tokens does_not_parse_arbitrary_special_literals
+        sampling_defaults_merge_under_request_overrides)
 
     secure_frontend_add_test_executable(secure_frontend_chat_execution_tests tests/chat_execution_test.cpp
         secure_frontend_chat_execution)

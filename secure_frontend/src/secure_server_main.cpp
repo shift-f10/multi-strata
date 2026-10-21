@@ -211,6 +211,7 @@ int run(const FrontendConfig& config, const bool expert) {
                                        .max_prompt_tokens = config.limits.chat.max_prompt_tokens,
                                        .max_completion_tokens = config.limits.chat.max_completion_tokens,
                                        .default_max_tokens = config.limits.chat.default_max_tokens,
+                                       .sampling_default = config.sampling,
                                        .queue_timeout = config.limits.concurrency.queue_timeout,
                                        .write_stall = config.limits.http.write_stall,
                                        .response_write_deadline = config.limits.http.response_write_deadline,

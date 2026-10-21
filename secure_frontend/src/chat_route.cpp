@@ -54,8 +54,10 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
   const ChatCompletionRequest& request = std::get<ChatCompletionRequest>(parsed);
   if (request.model != config_.model_id) return make_error_response(ApiError::model_not_found);
   const auto plan_result = config_.profile == NativeChatProfile::qwen
-                               ? make_qwen_chat_generation_plan(request, tokenizer_, config_.max_prompt_tokens, 1U)
-                               : make_glm53_chat_generation_plan(request, tokenizer_, config_.max_prompt_tokens, 1U);
+                               ? make_qwen_chat_generation_plan(request, tokenizer_, config_.max_prompt_tokens, 1U,
+                                                                config_.sampling_default)
+                               : make_glm53_chat_generation_plan(request, tokenizer_, config_.max_prompt_tokens, 1U,
+                                                                 config_.sampling_default);
   if (const auto* plan_error = std::get_if<ChatGenerationPlanError>(&plan_result)) {
     return make_error_response(plan_error->code == ChatGenerationPlanErrorCode::prompt_too_large ? ApiError::context_length_exceeded
                                                                                                   : ApiError::invalid_request);
@@ -85,11 +87,12 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
   last_context_ = context_tokens;
   const auto budget = resolve_max_tokens(request.max_tokens, prompt_ids.size(), context_tokens, config_.max_completion_tokens,
                                          config_.default_max_tokens);
-  if (budget && request.stream) return stream_response(lease, prompt_ids, *budget, request, context);
+  if (budget && request.stream)
+    return stream_response(lease, prompt_ids, *budget, plan.sampling, request.include_usage, context);
   if (!budget) {
     context_refused = true;
   } else {
-    outcome = lease->chat().run_generation(prompt_ids, {.max_tokens = *budget, .sampling = request.sampling},
+    outcome = lease->chat().run_generation(prompt_ids, {.max_tokens = *budget, .sampling = plan.sampling},
                                            {.cancelled = context.client_gone, .shutting_down = context.shutting_down,
                                             .shutdown_requested = [] { return shutdown_signalled(); }},
                                            tokenizer_);
@@ -125,7 +128,7 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
 }
 
 RouteResult ChatRoute::stream_response(std::optional<Lease>& lease, const std::vector<std::uint32_t>& prompt_ids, const std::size_t max_tokens,
-                                       const ChatCompletionRequest& request, const RequestContext& context) {
+                                       const SamplingParams& sampling, const bool include_usage, const RequestContext& context) {
   const std::atomic<bool>* flag = context.shutting_down;
   std::function<bool()> shutting_down = [flag] { return (flag != nullptr && flag->load()) || shutdown_signalled(); };  // R-H
   auto hold = std::make_shared<LeaseHold>(std::move(*lease), gate_, port_, shutting_down);
@@ -135,7 +138,7 @@ RouteResult ChatRoute::stream_response(std::optional<Lease>& lease, const std::v
     hold->end_generation();
     return make_error_response(ApiError::internal_error);
   }
-  if (const auto failure = hold->lease().chat().begin(prompt_ids, {.max_tokens = max_tokens, .sampling = request.sampling})) {
+  if (const auto failure = hold->lease().chat().begin(prompt_ids, {.max_tokens = max_tokens, .sampling = sampling})) {
     hold->end_generation();  // reports a closed protocol through the port
     return *failure == GenerationFailure::engine_error ? make_error_response(ApiError::engine_error) : engine_unavailable();
   }
@@ -146,7 +149,7 @@ RouteResult ChatRoute::stream_response(std::optional<Lease>& lease, const std::v
   settings.write_stall = config_.write_stall;
   settings.tail_deadline = config_.response_write_deadline;
   settings.keepalive = config_.stream_keepalive;
-  settings.include_usage = request.include_usage;
+  settings.include_usage = include_usage;
   settings.prompt_tokens = prompt_ids.size();
   const TokenizerPack* tokenizer = &tokenizer_;
   return StreamHandler{[hold, identity = std::move(identity), settings, tokenizer, shutting_down](StreamSink& sink) {
