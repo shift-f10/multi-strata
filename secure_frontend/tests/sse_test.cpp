@@ -1,15 +1,21 @@
 #include "secure_frontend/api_constants.hpp"
+#include "secure_frontend/chat_stream.hpp"
 #include "secure_frontend/chunked_stream_sink.hpp"
 #include "secure_frontend/sse_encoder.hpp"
 #include "secure_frontend/utf8_stream_decoder.hpp"
 #include "support/test_support.hpp"
+#include "support/test_tokenizer.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <deque>
 #include <iostream>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -201,6 +207,184 @@ void sink_send_failure_and_peer_probe_are_gone() {
   expect(sink.client_gone(), "peer EOF, reset or a stray byte is gone");
 }
 
+// SP3 M2 Task 8: the stream pump. Ruling t8-test (as t4-test/t5-test): M1's
+// write_line carries the absolute write deadline and begin_generation the GEN
+// write deadline; the brief's shorter helper signatures are adapted, assertions unchanged.
+
+// Thread-safe (mandatory: test threads append while the pump reads). "<close>" reads as an engine exit.
+class ScriptedTransport final : public secure_frontend::EngineLineTransport {
+ public:
+  void push(std::string line) {
+    std::lock_guard lock(mutex_);
+    lines_.push_back(std::move(line));
+  }
+  [[nodiscard]] std::size_t stop_count() const {
+    std::lock_guard lock(mutex_);
+    return static_cast<std::size_t>(std::count(writes_.begin(), writes_.end(), "STOP"));
+  }
+  bool write_line(const std::string_view line, const secure_frontend::MonotonicClock::time_point, std::string&) override {
+    std::lock_guard lock(mutex_);
+    writes_.emplace_back(line);
+    return true;
+  }
+  secure_frontend::EngineReadResult read_line(const std::chrono::milliseconds timeout) override {
+    std::string line;
+    {
+      std::lock_guard lock(mutex_);
+      if (!lines_.empty()) {
+        line = std::move(lines_.front());
+        lines_.pop_front();
+      }
+    }
+    if (line.empty()) {
+      std::this_thread::sleep_for(std::min(timeout, std::chrono::milliseconds(5)));
+      return {secure_frontend::EngineReadKind::timeout, {}, {}};
+    }
+    if (line == "<close>") return {secure_frontend::EngineReadKind::closed, {}, {}};
+    return {secure_frontend::EngineReadKind::line, std::move(line), {}};
+  }
+
+ private:
+  mutable std::mutex mutex_;
+  std::deque<std::string> lines_;
+  std::vector<std::string> writes_;
+};
+
+// Records accepted events; `blocked_polls` makes writable() report false that many times.
+class RecordingSink final : public secure_frontend::StreamSink {
+ public:
+  std::vector<std::string> events;
+  bool headers{false};
+  bool finished{false};
+  std::atomic<int> blocked_polls{0};
+  std::atomic<bool> gone{false};
+  bool violated{false};      // send_event after writable() returned false
+  bool last_writable{true};
+  bool send_headers(const secure_frontend::HttpHead& head) override { headers = head.status == 200; return true; }
+  bool send_event(const std::string_view event) override {
+    if (!last_writable) violated = true;
+    events.emplace_back(event);
+    return !gone;
+  }
+  bool writable(const std::chrono::milliseconds wait) override {
+    if (blocked_polls > 0) {
+      --blocked_polls;
+      std::this_thread::sleep_for(wait);
+      return last_writable = false;
+    }
+    return last_writable = !gone;
+  }
+  bool client_gone() override { return gone; }
+  void finish() override { finished = true; }
+};
+
+struct StreamRun final {
+  ScriptedTransport transport;
+  secure_frontend::EngineProtocolClient protocol{transport};
+  secure_frontend::TokenizerPack pack = test_support::byte_tokenizer();
+  RecordingSink sink;
+  int ended_calls{0};
+  explicit StreamRun(std::vector<std::string> records) {
+    transport.push("READY 4096 stop");
+    secure_frontend::EngineReady ready{};
+    (void)protocol.await_ready(std::chrono::seconds(1), ready);
+    (void)protocol.begin_generation(64, {1, 2, 3}, secure_frontend::deadline_after(std::chrono::seconds(5)));
+    for (auto& record : records) transport.push(std::move(record));
+  }
+  secure_frontend::ChatStreamOutcome run(secure_frontend::ChatStreamSettings settings = {},
+                                         std::function<bool()> shutting_down = [] { return false; }) {
+    const secure_frontend::TokenByteDecoder decoder(pack);
+    return secure_frontend::run_chat_stream(sink, protocol, decoder, kIdentity, settings, shutting_down,
+                                            [this](const secure_frontend::GenerationRunResult&) { ++ended_calls; });
+  }
+  [[nodiscard]] std::string text() const {
+    std::string all;
+    for (const auto& event : sink.events) {
+      const auto marker = event.find(R"("delta":{"content":")");
+      if (marker == std::string::npos) continue;
+      const auto start = marker + 20U;
+      all += event.substr(start, event.find('"', start) - start);  // the tests use plain ASCII text
+    }
+    return all;
+  }
+};
+
+std::string tok(const unsigned char byte) { return "T " + std::to_string(test_support::id_for_byte(byte)); }
+
+void sse_role_content_final_done_sequence() {
+  StreamRun stream({tok('H'), tok('i'), "DONE 2 3 1.0 1.0 stop"});
+  const auto outcome = stream.run();
+  const auto& events = stream.sink.events;
+  expect(stream.sink.headers && events.size() >= 4U, "head, role, content, final, DONE");
+  expect(events.front() == secure_frontend::render_role_event(kIdentity), "role chunk first");
+  expect(events[events.size() - 2U] == secure_frontend::render_final_event(kIdentity, "stop"), "final chunk with stop");
+  expect(events.back() == secure_frontend::kSseDoneEvent, "[DONE] last");
+  expect(stream.text() == "Hi", "content deltas in order: " + stream.text());
+  expect(stream.sink.finished && outcome.terminal_chunk_sent && outcome.end == secure_frontend::RunEnd::stop, "terminal chunk");
+  expect(stream.ended_calls == 1 && !stream.sink.violated, "engine released once; never sent while unwritable");
+}
+
+void sse_include_usage_adds_usage_chunk() {
+  StreamRun stream({tok('H'), tok('i'), "DONE 2 3 1.0 1.0 length"});
+  secure_frontend::ChatStreamSettings settings;
+  settings.include_usage = true;
+  settings.prompt_tokens = 3U;
+  (void)stream.run(settings);
+  const auto& events = stream.sink.events;
+  expect(events.size() >= 5U && events[events.size() - 2U] == secure_frontend::render_usage_event(kIdentity, 3U, 2U), "usage before [DONE]");
+  expect(events[events.size() - 3U] == secure_frontend::render_final_event(kIdentity, "length"), "final chunk before usage");
+  expect(events[events.size() - 2U].find(R"("choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5})") != std::string::npos,
+         "OpenAI usage chunk shape");
+}
+
+void sse_ids_and_created_constant_per_stream() {
+  StreamRun stream({tok('a'), tok('b'), tok('c'), "DONE 3 3 1.0 1.0 stop"});
+  (void)stream.run();
+  const std::string id = R"("id":")" + kIdentity.id + R"(","object":"chat.completion.chunk","created":1760000000,"model":"fake-model")";
+  for (std::size_t index = 0; index + 1U < stream.sink.events.size(); ++index) {
+    expect(stream.sink.events[index].find(id) != std::string::npos, "same id, created and model in every chunk");
+  }
+}
+
+void stream_with_no_tokens_has_role_final_done() {
+  StreamRun stream({"DONE 0 3 1.0 1.0 stop"});
+  const auto outcome = stream.run();
+  const auto& events = stream.sink.events;
+  expect(events.size() == 3U && events[0] == secure_frontend::render_role_event(kIdentity) &&
+             events[1] == secure_frontend::render_final_event(kIdentity, "stop") && events[2] == secure_frontend::kSseDoneEvent,
+         "role, final stop, [DONE]; no empty content chunk");
+  expect(outcome.terminal_chunk_sent, "a zero-token stream is a normal end");
+}
+
+void stream_slow_reader_coalesces_deltas() {
+  std::vector<std::string> records;
+  for (int index = 0; index < 200; ++index) records.push_back(tok('a'));
+  records.emplace_back("DONE 200 3 1.0 1.0 stop");
+  StreamRun stream(std::move(records));
+  stream.sink.blocked_polls = 1000000;  // the reader takes nothing while the engine runs ...
+  std::thread reader([&stream] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    stream.sink.blocked_polls = 0;    // ... then drains
+  });
+  const auto outcome = stream.run();
+  reader.join();
+  std::size_t content = 0;
+  for (const auto& event : stream.sink.events) content += event.find(R"("delta":{"content")") != std::string::npos ? 1U : 0U;
+  expect(stream.text() == std::string(200U, 'a'), "all text delivered");
+  expect(content <= 2U, "200 tokens coalesce into at most 2 content events: " + std::to_string(content));
+  expect(stream.ended_calls == 1 && outcome.terminal_chunk_sent && !stream.sink.violated, "normal end");
+}
+
+void stream_tail_deadline_cuts_without_terminal_chunk() {
+  StreamRun stream({tok('a'), "DONE 1 3 1.0 1.0 stop"});
+  stream.sink.blocked_polls = 1000000;
+  secure_frontend::ChatStreamSettings settings;
+  settings.tail_deadline = std::chrono::milliseconds(100);
+  const auto outcome = stream.run(settings);
+  expect(!outcome.terminal_chunk_sent && !stream.sink.finished, "tail deadline passed: no terminal chunk");
+  expect(stream.ended_calls == 1, "the engine was released before the tail");
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -217,6 +401,12 @@ int main(int argc, char* argv[]) {
                                              {"sink_buffers_on_would_block_and_flushes_later", sink_buffers_on_would_block_and_flushes_later},
                                              {"sink_write_stall_marks_client_gone", sink_write_stall_marks_client_gone},
                                              {"sink_send_failure_and_peer_probe_are_gone", sink_send_failure_and_peer_probe_are_gone},
+                                             {"sse_role_content_final_done_sequence", sse_role_content_final_done_sequence},
+                                             {"sse_include_usage_adds_usage_chunk", sse_include_usage_adds_usage_chunk},
+                                             {"sse_ids_and_created_constant_per_stream", sse_ids_and_created_constant_per_stream},
+                                             {"stream_with_no_tokens_has_role_final_done", stream_with_no_tokens_has_role_final_done},
+                                             {"stream_slow_reader_coalesces_deltas", stream_slow_reader_coalesces_deltas},
+                                             {"stream_tail_deadline_cuts_without_terminal_chunk", stream_tail_deadline_cuts_without_terminal_chunk},
                                          },
                                          failures);
 }
