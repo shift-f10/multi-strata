@@ -273,7 +273,7 @@ target_include_directories(secure_frontend_http_socket_server
         $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(secure_frontend_http_socket_server PUBLIC secure_frontend_socket_io secure_frontend_http_request_handler
-    secure_frontend_config secure_frontend_api_core)
+    secure_frontend_config secure_frontend_api_core secure_frontend_sse)
 # SP3 Task 11: admission state (§2.3) and the lingering-close list (§2.4).
 # Task 12: the pool itself (§2.1, §2.8) — accept thread + fixed workers.
 secure_frontend_add_library(secure_frontend_connection_pool
@@ -288,6 +288,7 @@ secure_frontend_add_library(secure_frontend_chat_route
     SOURCES src/chat_route.cpp
     LINKS secure_frontend_generation_gate secure_frontend_chat_execution secure_frontend_chat_schema
           secure_frontend_chat_generation_plan secure_frontend_secrets secure_frontend_api_core)
+target_link_libraries(secure_frontend_chat_route PUBLIC secure_frontend_chat_stream)
 
 secure_frontend_add_library(secure_frontend_request_log
     SOURCES src/request_log.cpp
@@ -627,8 +628,8 @@ secure_frontend_set_warnings(strata)
 secure_frontend_add_library(secure_frontend_utf8_stream SOURCES src/utf8_stream_decoder.cpp)
 secure_frontend_add_library(secure_frontend_sse SOURCES src/sse_encoder.cpp src/stream_socket.cpp src/chunked_stream_sink.cpp
     LINKS secure_frontend_json secure_frontend_api_core secure_frontend_utf8_stream secure_frontend_socket_io)
-secure_frontend_add_library(secure_frontend_chat_stream SOURCES src/chat_stream.cpp
-    LINKS secure_frontend_sse secure_frontend_generation_run)
+secure_frontend_add_library(secure_frontend_chat_stream SOURCES src/chat_stream.cpp src/lease_hold.cpp
+    LINKS secure_frontend_sse secure_frontend_generation_run secure_frontend_engine_supervisor secure_frontend_generation_gate secure_frontend_chat_execution)
 # SP3 M2 (R-B): loopback-only client for strata run, the tests and strata-api-probe. Never linked into the serve path.
 secure_frontend_add_library(secure_frontend_api_client SOURCES src/loopback_address.cpp src/api_client.cpp
     LINKS secure_frontend_config secure_frontend_socket_io secure_frontend_api_core)
@@ -851,7 +852,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     endif()
 
     secure_frontend_add_test_executable(secure_frontend_api_server_tests tests/api_server_test.cpp
-        secure_frontend_test_support secure_frontend_api_core secure_frontend_socket_io)
+        secure_frontend_test_support secure_frontend_api_core secure_frontend_socket_io secure_frontend_api_client)
     secure_frontend_test_paths(secure_frontend_api_server_tests)
     set(SECURE_FRONTEND_API_SERVER_CASES
         dos01_body_over_limit_is_413_before_reading dos01_content_length_over_request_limit_is_413_before_auth
@@ -891,7 +892,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # SP3 M2 end-to-end cases (real sockets, ServerProcess): windows-runtime on Windows (R-J).
     target_link_libraries(secure_frontend_api_server_tests PRIVATE secure_frontend_json)
     set(SECURE_FRONTEND_API_SERVER_M2_CASES
-        utf8_non_stream_max_tokens_cut_mid_character_returns_length generation_timeout_returns_text_with_length)
+        utf8_non_stream_max_tokens_cut_mid_character_returns_length generation_timeout_returns_text_with_length
+        stream_matches_non_stream_text dos02_queue_full_with_streams_is_503_before_headers ext01_extension_fields_rejected_on_stream_path
+        dos02_slow_reader_never_backpressures_engine finish_stop_length_and_generated_bytes_cap utf8_timeout_cut_mid_character_returns_length)
     secure_frontend_add_cases(secure_frontend_api_server_tests ${SECURE_FRONTEND_API_SERVER_M2_CASES}
         TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
@@ -988,7 +991,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         dos01_transfer_encoding_variants_are_411 dos01_content_length_variants head_request_line_and_header_syntax
         wire_head_has_no_content_length route_result_seam_returns_complete_response
         dos01_status_matrix_415_417_505 content_type_variants_accepted auth_and_route_order_follows_spec
-        dos01_json_depth_5_is_400 dos01_json_limits dos01_content_array_is_unsupported_parameter
+        dos01_json_depth_5_is_400 dos01_json_limits dos01_content_array_is_unsupported_parameter stream_flag_type_and_options_rules
         sampling_neutral_values_are_no_ops sampling_bounds_rejected sampling_integer_forms_accepted)
     target_link_libraries(secure_frontend_http_parser_tests PRIVATE
         secure_frontend_api_router secure_frontend_secrets secure_frontend_http_policy secure_frontend_chat_schema)

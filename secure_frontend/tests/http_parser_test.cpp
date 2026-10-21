@@ -464,9 +464,26 @@ void dos01_content_array_is_unsupported_parameter() {
     expect(fails_with(parse(body_with(std::string{"\""} + key + "\":null,\"zzz\":1")), ApiError::extension_disabled, key),
            std::string{"extension key wins over an unknown key: "} + key);
   }
-  expect(fails_with(parse(body_with(R"("stream":true)")), ApiError::unsupported_parameter, "stream"), "stream:true is M2");
+  expect(ok(parse(body_with(R"("stream":true)"))) != nullptr, "stream:true is a streamed response since M2");
   expect(ok(parse(body_with(R"("stream":false)"))) != nullptr, "stream:false is the complete response");
   expect(fails_with(parse(body_with(R"("stream_options":{"include_usage":true})")), ApiError::invalid_request), "stream_options without stream");
+}
+
+void stream_flag_type_and_options_rules() {
+  const auto* streaming = ok(parse(body_with(R"("stream":true)")));
+  expect(streaming != nullptr && streaming->stream, "stream:true is accepted (M2)");
+  expect(ok(parse(body_with(R"("stream":false)"))) != nullptr && !ok(parse(body_with(R"("stream":false)")))->stream, "stream:false is a complete response");
+  for (const char* bad : {R"("stream":"true")", R"("stream":1)", R"("stream":null)"}) {
+    expect(fails_with(parse(body_with(bad)), ApiError::invalid_request), std::string{"stream must be a boolean: "} + bad);
+  }
+  const auto* usage = ok(parse(body_with(R"("stream":true,"stream_options":{"include_usage":true})")));
+  expect(usage != nullptr && usage->include_usage, "include_usage parsed");
+  expect(ok(parse(body_with(R"("stream":true,"stream_options":{})"))) != nullptr, "empty stream_options is a no-op");
+  for (const char* bad : {R"("stream_options":{"include_usage":true})", R"("stream":false,"stream_options":{"include_usage":true})",
+                          R"("stream":true,"stream_options":{"include_usage":"yes"})", R"("stream":true,"stream_options":{"other":true})",
+                          R"("stream":true,"stream_options":[])"}) {
+    expect(fails_with(parse(body_with(bad)), ApiError::invalid_request), std::string{"invalid stream_options: "} + bad);
+  }
 }
 
 void sampling_neutral_values_are_no_ops() {
@@ -526,6 +543,7 @@ int main(int argc, char** argv) {
       {"dos01_json_depth_5_is_400", dos01_json_depth_5_is_400},
       {"dos01_json_limits", dos01_json_limits},
       {"dos01_content_array_is_unsupported_parameter", dos01_content_array_is_unsupported_parameter},
+      {"stream_flag_type_and_options_rules", stream_flag_type_and_options_rules},
       {"sampling_neutral_values_are_no_ops", sampling_neutral_values_are_no_ops},
       {"sampling_bounds_rejected", sampling_bounds_rejected},
       {"sampling_integer_forms_accepted", sampling_integer_forms_accepted},

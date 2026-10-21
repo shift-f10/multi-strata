@@ -27,9 +27,13 @@ class StreamObserver final : public GenerationObserver {
     return RunCancel::none;
   }
 
-  // Sends content events while the sink is writable now.
+  // Sends content events while the sink can take one without blocking. Ruling
+  // t10-coalesce: mid-stream ticks emit only FULL 16 KiB deltas — the spec's
+  // "held until the sink can take it, coalesced into ≤ 16 KiB deltas" (§2.7);
+  // the plan's per-tick partial flush sent ~27 small events and landed on the
+  // DOS-02 test's 80-event bound (flaky). Partial tails flush in flush_all.
   void flush_ready() {
-    while (!pending_.empty() && sink_.writable(std::chrono::milliseconds(0))) send_one();
+    while (pending_.size() >= api_constants::kMaxDeltaTextBytes && sink_.writable(std::chrono::milliseconds(0))) send_one();
   }
 
   // Waits (in poll slices) until the sink can take an event; false on deadline or gone.
