@@ -351,6 +351,29 @@ licensed under the ISC license and that this covers only components provided
 by llvm-mingw directly (the bundled LLVM, mingw-w64 and other components keep
 their own licenses).
 
+## Vendored crypto (SP7 M2, spec D-2)
+
+The release trust chain deliberately adds **no third-party crypto
+dependency**. `secure_frontend/src/ed25519_verify.{hpp,cpp}` (lib
+`secure_frontend_ed25519`) is our own dependency-free implementation of the
+RFC 8032 §5.1.7 **verification path only** (strict verification equation as
+the RFC's §6 reference, canonical-S rejection per §8.4, no cofactor
+multiplication — the C++ never signs), with `sha512.{hpp,cpp}` alongside.
+The release-side signer `scripts/release/sign.py` embeds the RFC 8032 §6
+reference code **verbatim** (only page headers removed) from the text fetched
+from rfc-editor.org on 2026-10-22. Test provenance follows the same rule:
+every vector in `secure_frontend/tests/fixtures/release/rfc8032-vectors.json`
+was fetched from the RFC's own §7.1/§7.2 listings and cryptographically
+re-derived with the RFC's own code before being committed — no hex in this
+repository's crypto tests is hand-transcribed.
+
+License of the source material: RFC 8032 (and RFCs generally) is published
+under the IETF Trust's legal provisions (Simplified BSD-style for the code
+components); no copyright restriction conflicts with this repository's MIT.
+Cited document: `RFC 8032, "Edwards-curve Digital Signature Algorithm
+(EdDSA)"` (Josefsson & Liusvaara, January 2017), sections 5.1.7, 6, 7, 8.4
+(<https://www.rfc-editor.org/rfc/rfc8032>).
+
 ## Release evidence (SP7 M2 — placeholder)
 
 The SP7 offline release validation kit is `docs/validation/sp7-offline-kit.md`
