@@ -1472,6 +1472,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         tampered_manifest_rejected tampered_signature_rejected wrong_pinned_key_rejected
         no_pinned_key_refuses_exact_line malformed_envelopes_rejected schema_violations_rejected
         LABELS release-also TIMEOUT 120)
+    # SP7 M2 Task 4: the C++ verifier must accept the Python signer's committed fixture.
+    secure_frontend_add_cases(secure_frontend_release_manifest_tests python_signed_fixture_verifies
+        ARGS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures LABELS release-also TIMEOUT 120)
 
     # SP7 M2 Task 3: the `strata update` verb — golden install/flip flow, refusals,
     # tamper, digest mismatch, mirror fallback and rollback over the scripted transport.
