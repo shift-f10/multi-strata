@@ -1013,6 +1013,62 @@ void err_no_token_prompt_or_path_in_any_body_or_log() {
   expect(log.find(marker) == std::string::npos && log.find(token()) == std::string::npos && log.find(root) == std::string::npos,
          "stderr (with logging.requests=true) has no marker, token or path");
 }
+
+// SP3 Task 22 (spec §10 Windows parity): these three exercise the Winsock paths;
+// they are registered on Windows only, but compiled and runnable everywhere —
+// on Linux they exercise the same pool code and must pass by hand.
+void win_refusal_is_read_not_reset() {
+  auto server = start_server({{"limits.concurrency.max_concurrent_requests", "1"}});
+  if (!server) return;
+  auto holder = raw_http::Connection::open("127.0.0.1", server->port());
+  expect(holder && holder->send("POST /v1/chat/completions HTTP/1.1\r\nHost: " + authority(*server) + "\r\n" + raw_http::bearer(token()) +
+                                "\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{"), "the only worker is held in P3");
+  std::this_thread::sleep_for(200ms);
+  int complete = 0;
+  std::vector<std::thread> flood;
+  std::mutex m;
+  for (int i = 0; i < 30; ++i) {
+    flood.emplace_back([&] {
+      auto c = raw_http::Connection::open("127.0.0.1", server->port());
+      if (!c || !c->send(raw_http::request("GET", "/health", authority(*server), {raw_http::bearer(token())}))) return;
+      const auto r = raw_http::parse_response(c->read_until_close(5s));
+      std::lock_guard g(m);
+      if (r && r->status == 503 && r->body == secure_frontend::render_error_body(secure_frontend::ApiError::server_busy)) ++complete;
+    });
+  }
+  for (auto& t : flood) t.join();
+  expect(complete == 30, "every refused client read the whole 503 (lingering close, no RST): " + std::to_string(complete));
+}
+
+void win_eviction_wakes_worker_within_one_slice() {
+  auto server = start_server({{"limits.concurrency.max_concurrent_requests", "1"}, {"limits.http.header_deadline_ms", "30000"}});
+  if (!server) return;
+  auto slow = raw_http::Connection::open("127.0.0.1", server->port());
+  expect(slow && slow->send("GET /health HTTP/1.1\r\nHost: "), "P1 holder");
+  std::this_thread::sleep_for(200ms);
+  const auto started = std::chrono::steady_clock::now();
+  const auto r = raw(*server, raw_http::request("GET", "/health", authority(*server), {raw_http::bearer(token())}), 5s);
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  expect(r && r->status == 200, "the new client is served");
+  expect(elapsed < 250ms, "the evicted worker woke within one 20 ms slice plus slack (" +
+                          std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()) + " ms)");
+}
+
+void win_disconnect_detected_by_peek() {
+  auto r = start_recorded("wpeek", {}, {"--tokens=10000", "--token-interval-ms=5"});
+  if (!r.server) return;
+  {
+    auto c = raw_http::Connection::open("127.0.0.1", r.server->port());
+    expect(c && c->send(chat_request(*r.server, chat_body(""))), "long chat");
+    std::this_thread::sleep_for(300ms);
+  }
+  bool stopped = false;
+  for (int i = 0; i < 50 && !stopped; ++i) {
+    stopped = record_of(r.record).find("\nSTOP\n") != std::string::npos;
+    if (!stopped) std::this_thread::sleep_for(20ms);
+  }
+  expect(stopped, "recv(MSG_PEEK) saw the close on Winsock and STOP was sent within 1 s");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1061,6 +1117,9 @@ int main(int argc, char** argv) {
       {"ext02_http_headers_cannot_enable_extensions", ext02_http_headers_cannot_enable_extensions},
       {"log_line_format_and_rate_limit", log_line_format_and_rate_limit},
       {"err_no_token_prompt_or_path_in_any_body_or_log", err_no_token_prompt_or_path_in_any_body_or_log},
+      {"win_refusal_is_read_not_reset", win_refusal_is_read_not_reset},
+      {"win_eviction_wakes_worker_within_one_slice", win_eviction_wakes_worker_within_one_slice},
+      {"win_disconnect_detected_by_peek", win_disconnect_detected_by_peek},
       {"dos01_slowloris_cannot_starve_a_real_client", dos01_slowloris_cannot_starve_a_real_client},
       {"dos01_slow_body_clients_cannot_starve_a_real_client", dos01_slow_body_clients_cannot_starve_a_real_client},
       {"net01_workers_add_no_listener", net01_workers_add_no_listener},
