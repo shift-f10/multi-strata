@@ -1,6 +1,9 @@
 #include "secure_frontend/api_client.hpp"
 #include "secure_frontend/config.hpp"
+#include "secure_frontend/engine_process.hpp"
 #include "secure_frontend/run_target.hpp"
+#include "support/chat_json.hpp"
+#include "support/test_paths.hpp"
 #include "support/test_support.hpp"
 
 #include <atomic>
@@ -179,6 +182,23 @@ void run_refuses_non_loopback_server_json() {
   expect(std::holds_alternative<RunTarget>(target) && std::get<RunTarget>(target).port == 8080U, "port carried");
 }
 
+void probe_modes_pass_against_fake_engine() {
+  auto server = test_support::start_stream_server({"--tokens=200", "--token-interval-ms=5"});
+  expect(server != nullptr, "server ready");
+  if (!server) return;
+  const auto dir = test_support::make_temp_dir("probe");
+  const auto token_file = dir / "token";
+  secure_frontend_test::write_file(token_file, test_support::kHarnessToken, 0600);
+  for (const std::string mode : {"stream", "nonstream", "cancel-after=2", "utf8", "seed", "concurrent=3"}) {
+    secure_frontend::EngineProcess probe;
+    const bool started = !probe.start({.executable = STRATA_API_PROBE_PATH,
+                                       .arguments = {"--port", std::to_string(server->port()), "--token-file", test_support::utf8_path(token_file),
+                                                     "--model", "fake-model", mode},
+                                       .environment = {}}).has_value();
+    expect(started && probe.wait_for(60s) == 0, "strata-api-probe " + mode + " passes against the fake engine");
+  }
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -192,6 +212,7 @@ int main(int argc, char* argv[]) {
                                              {"client_rejects_event_over_cap", client_rejects_event_over_cap},
                                              {"client_accepts_only_loopback_address", client_accepts_only_loopback_address},
                                              {"run_refuses_non_loopback_server_json", run_refuses_non_loopback_server_json},
+                                             {"probe_modes_pass_against_fake_engine", probe_modes_pass_against_fake_engine},
                                          },
                                          failures);
 }

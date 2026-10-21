@@ -651,15 +651,6 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         stream_shutdown_sends_error_event_and_done)
     secure_frontend_add_cases(secure_frontend_sse_tests ${SECURE_FRONTEND_SSE_CASES} TIMEOUT 120)
 
-    secure_frontend_add_test_executable(secure_frontend_api_client_tests tests/api_client_test.cpp secure_frontend_api_client)
-    if(WIN32)
-        target_link_libraries(secure_frontend_api_client_tests PRIVATE ws2_32)
-    endif()
-    # Real loopback sockets: windows-runtime on Windows.
-    set(SECURE_FRONTEND_API_CLIENT_CASES client_reads_chunked_stream_and_requires_done_and_terminal_chunk client_rejects_event_over_cap
-        client_accepts_only_loopback_address run_refuses_non_loopback_server_json)
-    secure_frontend_add_cases(secure_frontend_api_client_tests ${SECURE_FRONTEND_API_CLIENT_CASES} TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
-
     secure_frontend_add_test_executable(secure_frontend_paths_tests tests/paths_test.cpp secure_frontend_paths)
     secure_frontend_add_cases(secure_frontend_paths_tests
         relative_path_accepts_portable_forms cfg02_rejects_traversal_and_absolute cfg02_rejects_nul_and_control_bytes
@@ -852,6 +843,26 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     if(WIN32)
         target_link_libraries(secure_frontend_server_tests PRIVATE iphlpapi)  # SP3 Task 20: SocketScan reads the iphlpapi tables
     endif()
+
+    # SP3 §9.5: test-only probe for the offline GPU kit. Never installed.
+    add_executable(strata-api-probe tests/api_probe_main.cpp)
+    target_link_libraries(strata-api-probe PRIVATE secure_frontend_api_client secure_frontend_json secure_frontend_utf8_stream)
+    target_compile_features(strata-api-probe PRIVATE cxx_std_20)
+    secure_frontend_set_warnings(strata-api-probe)
+
+    secure_frontend_add_test_executable(secure_frontend_api_client_tests tests/api_client_test.cpp
+        secure_frontend_api_client secure_frontend_test_support secure_frontend_engine_process)
+    secure_frontend_test_paths(secure_frontend_api_client_tests)
+    target_compile_definitions(secure_frontend_api_client_tests PRIVATE
+        STRATA_API_PROBE_PATH="$<TARGET_FILE:strata-api-probe>")
+    add_dependencies(secure_frontend_api_client_tests strata-api-probe)
+    if(WIN32)
+        target_link_libraries(secure_frontend_api_client_tests PRIVATE ws2_32)
+    endif()
+    # Real loopback sockets: windows-runtime on Windows.
+    set(SECURE_FRONTEND_API_CLIENT_CASES client_reads_chunked_stream_and_requires_done_and_terminal_chunk client_rejects_event_over_cap
+        client_accepts_only_loopback_address run_refuses_non_loopback_server_json probe_modes_pass_against_fake_engine)
+    secure_frontend_add_cases(secure_frontend_api_client_tests ${SECURE_FRONTEND_API_CLIENT_CASES} TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     secure_frontend_add_test_executable(secure_frontend_api_server_tests tests/api_server_test.cpp
         secure_frontend_test_support secure_frontend_api_core secure_frontend_socket_io secure_frontend_api_client)
