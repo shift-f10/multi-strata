@@ -327,27 +327,27 @@ std::unique_ptr<ServerProcess> ServerProcess::start(const ServerOptions& options
 #endif
   server->port_ = secure_frontend_test::pick_free_port();  // SP1's helper (support/http_client.hpp)
   if (options.managed_vision) {
-    // Ruling T11-y: the encoder exe is OUR distribution's — strata-vision beside the
+    // Ruling T11-y: the encoder exe is OUR distribution's — maya-vision beside the
     // engine executable. The fake child stands in, copied under that exact name.
     const auto vision_source = fake_vision_child_path();
-    const auto vision_exe = bin / "strata-vision";
+    const auto vision_exe = bin / "maya-vision";
     std::error_code vision_error;
     std::filesystem::copy_file(vision_source, vision_exe, std::filesystem::copy_options::overwrite_existing, vision_error);
     if (vision_error) {
-      std::cerr << "harness: could not copy strata-vision into " << utf8_path(bin) << ": " << vision_error.message() << '\n';
+      std::cerr << "harness: could not copy maya-vision into " << utf8_path(bin) << ": " << vision_error.message() << '\n';
       return nullptr;
     }
 #if defined(_WIN32)
-    // The server looks for strata-vision.exe; Windows execution needs the suffix.
+    // The server looks for maya-vision.exe; Windows execution needs the suffix.
     std::error_code rename_error;
     std::filesystem::rename(vision_exe, vision_exe.string() + ".exe", rename_error);
     if (rename_error) {
-      std::cerr << "harness: could not name strata-vision.exe\n";
+      std::cerr << "harness: could not name maya-vision.exe\n";
       return nullptr;
     }
 #else
     if (chmod(vision_exe.c_str(), 0700) != 0) {
-      std::cerr << "harness: chmod 0700 failed on the strata-vision copy\n";
+      std::cerr << "harness: chmod 0700 failed on the maya-vision copy\n";
       return nullptr;
     }
 #endif

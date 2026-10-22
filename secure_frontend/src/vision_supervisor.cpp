@@ -1,4 +1,4 @@
-// SP5 M1 Task 11 (D-9, Ruling T11-w): the supervised strata-vision role.
+// SP5 M1 Task 11 (D-9, Ruling T11-w): the supervised maya-vision role.
 // The READY gate mirrors the pin (serve/server.py:2599-2612): the first stdout
 // line must start with "READY"; any other line, an oversize line (the shared
 // 8192-byte bound, engine_stdio_process.hpp), a closed stdout or the 300 s
@@ -27,10 +27,9 @@ std::vector<std::string> compose_vision_arguments(const VisionChildSpec& spec) {
     args.emplace_back("--max-tokens");
     args.emplace_back(std::to_string(*spec.max_tokens));
   }
-  if (spec.min_tokens.has_value()) {
-    args.emplace_back("--min-tokens");
-    args.emplace_back(std::to_string(*spec.min_tokens));
-  }
+  // SP5-P2 Task 6: no --min-tokens — the maya-vision grammar at the pin (its argument
+  // loop, tools/vision/strata_vision.cpp:61-79 at 451f9cb6) has no such slot and exits
+  // 2 on an unknown argument.
   if (spec.no_flash_attn) args.emplace_back("--no-flash-attn");
   return args;
 }

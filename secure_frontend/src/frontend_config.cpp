@@ -294,7 +294,7 @@ constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 
     // the pin's eager encoder (server.py:2511/:2552; false: the first image wakes it);
     // threads 0 = the pin's unset (truthy -> --threads, server.py:2562).
     {"vision.enabled", T::boolean, false, 0, 0, 0, false, "", "",
-     "Read images: a supervised strata-vision child encodes image_url parts for the engine."},
+     "Read images: a supervised maya-vision child encodes image_url parts for the engine."},
     {"vision.max_side", T::integer, false, 1, 16384, 2048, false, "", "",
      "Largest image side accepted before decoding (pin default 2048; cap added, C-1)."},
     {"vision.max_n", T::integer, false, 1, 64, 4, false, "", "",

@@ -872,7 +872,7 @@ std::string vision_body(const std::string& parts, const std::string& model_id = 
 }
 
 // Boots the managed vision server: fx m:t (mmproj + byte tokenizer pack) installed in
-// the harness, strata-vision (the fake child) beside the engine, and the fake engine
+// the harness, maya-vision (the fake child) beside the engine, and the fake engine
 // recording its stdin to `record`. Returns nullopt-style on boot failure (expect fires).
 std::unique_ptr<test_support::ServerProcess> start_vision_server(const std::filesystem::path& state,
                                                                  const std::filesystem::path& record,

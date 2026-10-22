@@ -1273,7 +1273,7 @@ void glm_vision_flags_reach_both_children() {
   // The encoder child: Maya's form (server.py:1047-1055) — --mmproj/--model first,
   // the threads/max-tokens pair in the same shape, --no-flash-attn when configured (:1055).
   const secure_frontend::VisionChildSpec spec{
-      .mmproj = "/p/mmproj.gguf", .model = "/p/model.gguf", .threads = 4, .max_tokens = std::nullopt, .min_tokens = std::nullopt, .no_flash_attn = true};
+      .mmproj = "/p/mmproj.gguf", .model = "/p/model.gguf", .threads = 4, .max_tokens = std::nullopt, .no_flash_attn = true};
   expect(secure_frontend::compose_vision_arguments(spec) ==
              std::vector<std::string>{"--mmproj", "/p/mmproj.gguf", "--model", "/p/model.gguf", "--threads", "4",
                                       "--no-flash-attn"},

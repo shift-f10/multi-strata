@@ -288,10 +288,10 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
   secure_frontend::GenerationGate gate({.max_queued = config.limits.concurrency.max_queued_generations,
                                         .queue_timeout = config.limits.concurrency.queue_timeout});
   // SP5 M1 Task 11 (D-9 vision split; Rulings T11-y/T11-ee/T11-z) and Task 12 (C-9):
-  // the supervised strata-vision child and the route's encoder service. Construction
+  // the supervised maya-vision child and the route's encoder service. Construction
   // spawns nothing — the resident start below runs only after bind, so a listener that
   // cannot bind still never leaves an encoder child behind (CFG-01 family). The exe is
-  // OUR distribution's — strata-vision beside the engine executable (the pin's
+  // OUR distribution's — maya-vision beside the engine executable (the pin's
   // vision-exe-from-config stays kRejected, spec §4); the mmproj artifact and the
   // weights come from compose (the manifest's launch.mmproj).
   std::optional<secure_frontend::VisionSupervisor> vision;
@@ -316,17 +316,20 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
       std::cerr << "vision: unable to prepare the image scratch directory.\n";
       return EXIT_FAILURE;
     }
-    std::filesystem::path vision_exe = config.engine.executable.path().parent_path() / "strata-vision";
+    // SP5-P2 Task 6 (issue 27): the engine distribution's vision encoder is named
+    // `maya-vision` at 451f9cb6 (maya.py:86 VEXE); the kit places it beside the engine
+    // executable, where the supervisor looks.
+    std::filesystem::path vision_exe = config.engine.executable.path().parent_path() / "maya-vision";
 #if defined(_WIN32)
     vision_exe += L".exe";
 #endif
     if (std::error_code ec; !std::filesystem::exists(vision_exe, ec) || ec) {
-      std::cerr << "vision: no strata-vision beside the engine executable.\n";
+      std::cerr << "vision: no maya-vision beside the engine executable.\n";
       return EXIT_FAILURE;
     }
     const auto argv = secure_frontend::compose_vision_arguments(secure_frontend::VisionChildSpec{
         .mmproj = *launch.vision_mmproj, .model = *launch.vision_model, .threads = config.vision.threads,
-        .max_tokens = config.engine.max_tokens, .min_tokens = config.engine.min_tokens,
+        .max_tokens = config.engine.max_tokens,
         .no_flash_attn = config.vision.no_flash_attn});
     // The engine's confinement family minus the per-generation cgroup delegation
     // (recorded M1 gap, AGENT_HANDOFF); the environment stays an empty allowlist and

@@ -17,7 +17,7 @@
 
 namespace secure_frontend {
 
-// SP5 M1 Task 11 (D-9 vision split, Ruling T11-w): the supervised `strata-vision`
+// SP5 M1 Task 11 (D-9 vision split, Ruling T11-w): the supervised `maya-vision`
 // encoder child. A separate role, not a second EngineSupervisor: the engine role
 // is chat-protocol shaped (READY <ctx> <mode>, GEN/T/DONE, leases), while the
 // pin's vision child speaks its own lifecycle — the first stdout line must start
@@ -29,17 +29,19 @@ namespace secure_frontend {
 // exchange lock — concurrent serving threads serialize exactly like the pin's
 // vision.lock around encode_all (serve/server.py:4489): one ENC at a time.
 
-// The child's argv tail (the pin's reader_args, serve/server.py:2556-2568):
-// --mmproj and --model first, then the optional --threads / --max-tokens /
-// --min-tokens. --gpu is not typed for the vision child in M1 (the GPU stays
-// with the owner's box, cf. Rulings T7-c/T11-ee). no_flash_attn is an added
-// flag from the spec §5.1 family (not read by this pin; the kit proves it).
+// The child's argv tail, re-anchored by SP5-P2 Task 6 on the engine's own maya-vision
+// at 451f9cb6 (tools/vision/strata_vision.cpp:61-79): --mmproj and --model first, then
+// the optional --threads / --max-tokens; the grammar REJECTS --min-tokens (upstream
+// v0.2.2's reader_args, serve/server.py:2566-2567, carried the #767 hand-edit; the
+// engine's encoder dropped it), so engine.min_tokens never reaches this child. --gpu is
+// not typed for the vision child in M1 (the GPU stays with the owner's box, cf. Rulings
+// T7-c/T11-ee). no_flash_attn is the added flag from the spec §5.1 family — maya-vision
+// reads it at the pin (strata_vision.cpp:74).
 struct VisionChildSpec final {
   std::string mmproj;                       // the manifest's encoder artifact (absolute UTF-8)
   std::string model;                        // the weights the encoder reads (its --native)
   std::int64_t threads{0};                  // vision.threads (0: the pin's truthy skip, :2562)
   std::optional<std::int64_t> max_tokens;   // engine.max_tokens, when set (:2564-2565)
-  std::optional<std::int64_t> min_tokens;   // engine.min_tokens, when set (:2566-2567)
   bool no_flash_attn{false};                // vision.no_flash_attn (added; spec §5.1)
 };
 
