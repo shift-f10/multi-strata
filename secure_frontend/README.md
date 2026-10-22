@@ -448,21 +448,21 @@ consumer is out of M1 — every request cleans up after itself instead.
 | `codex_compaction_cache` | typed config | serve/server.py:8261 (M1 Task 9: session.codex_compaction_cache) |
 | `codex_thread_titles` | typed config | serve/server.py:8260 (M1 Task 9: session.codex_thread_titles) |
 | `cors_origins` | frontend behaviour | already typed (SP3 B12: listener.cors_origins); serve/server.py:8280 |
-| `effort_position` | engine argv | serve/server.py:2880 (M1 Task 5: reasoning.effort_position composes the engine's --tail-role-token; session log step 16: then a low or medium level's sentence goes right before the answer, :4557 render_prompt) |
+| `effort_position` | engine argv | serve/server.py:2885 (M1 Task 5: reasoning.effort_position composes the engine's --tail-role-token; session log step 16: then a low or medium level's sentence goes right before the answer, :4557 render_prompt) |
 | `elastic` | frontend behaviour | serve/server.py:2557, :8138 (M1 Task 7: engine.elastic; Tasks 11-12 consume it) |
 | `elastic_idle_s` | frontend behaviour | serve/server.py:2559, :4041 (M1 Task 7: engine.elastic_idle_s) |
 | `elastic_mib` | frontend behaviour | serve/server.py:2558, :4019 (M1 Task 7: engine.elastic_mib; /v1/vram headroom) |
 | `engine_silence_s` | frontend behaviour | serve/server.py:942, default 300 at :277, engine_silence_s() :2905-2912; runconfig.py:39 (M1 Task 8: the pump's silence watchdog) |
 | `env_to_user` | typed config | serve/server.py:8327 (M1 Task 9: session.env_to_user) |
-| `expert_profile_save` | engine argv | serve/server.py:3071-3076 (M1 Task 9: --expert-profile-save; an operator-owned flag wins, :3072) |
-| `expert_profile_save_every` | engine argv | serve/server.py:3075-3076, default 10 at :3067 (M1 Task 9: --expert-profile-save-every; rides the save, :3072) |
+| `expert_profile_save` | engine argv | serve/server.py:3070 (M1 Task 9: --expert-profile-save; an operator-owned flag wins, :3071) |
+| `expert_profile_save_every` | engine argv | serve/server.py:3074, default 10 documented at :3066 (M1 Task 9: --expert-profile-save-every; rides the save, :3073) |
 | `fit_max_tokens` | frontend behaviour | serve/server.py:8213 (M1 Task 5: engine.fit_max_tokens) |
 | `gpu` | engine argv | already typed (SP2 engine.gpu; compose renders --gpu); serve/server.py:2826 (gpu_list :2819-2826: a set `gpu` wins; unset, a saved `gpu_roles` picks the cards, Main last, :2822-2825 — see the gpu_roles row) |
 | `gpu_order` | engine argv | serve/server.py:3224 (M1 Task 7: `as_given` keeps the order; at v0.2.2 active `gpu_roles` keep it too and a HIP built-in Radeon goes first before the speed sort, :3230-3247 — the typed auto or as_given vocabulary is unchanged) |
 | `gpu_policy` | typed config | serve/images.py:174 (M1 Task 7: engine.gpu_policy, re-scoped to the vision child's GPU turn; the pin's use is the image-generation turn) |
 | `hip_ordinal` | engine argv | serve/server.py:3094 (M1 Task 7) |
 | `host` | frontend behaviour | already typed (SP1 listen.host); serve/server.py:8071 |
-| `idle_unload_s` | frontend behaviour | serve/server.py:4287-4296, :8298 (M1 Task 6: supervisor idle timer) |
+| `idle_unload_s` | frontend behaviour | serve/server.py:4288, :8298 (M1 Task 6: supervisor idle timer) |
 | `keep_files` | typed config | serve/images.py:189 (`or 64`); typed only: the consumer is the pin's ImageService and D-9 keeps image generation out (Ruling T9-e, M1 Task 9) |
 | `layer_split` | engine argv | serve/server.py:2921 (M1 Task 7) |
 | `lazy_load` | frontend behaviour | serve/server.py:8134, :967-994 (M1 Task 6: the first request spawns the same composed launch) |
@@ -473,12 +473,12 @@ consumer is out of M1 — every request cleans up after itself instead.
 | `min_tokens` | request rule | serve/server.py:2573 (vision encoder at the pin); engine.min_tokens re-scoped as the request output floor (added, C-1; Ruling T8-e: lifts at the §7.2 resolve site) |
 | `mtp` | engine argv | strata_control/draft_layer.py is_off; serve/server.py:2966-2969 (M1 Task 6: engine.mtp drops --mtp/--spec-min-p/--batch-mtp at every start) |
 | `need_mib` | frontend behaviour | serve/images.py:157 (M1 Task 11: vision.need_mib; added security bound) |
-| `parallel` | engine argv | serve/server.py:3000-3020 (replicas.parallel renders --batch N, :3020; window PARALLEL_MAX 8 at :2999; cap 1024 from the pin's own bound :8054, M1 Task 10) |
+| `parallel` | engine argv | serve/server.py:3008 (replicas.parallel renders --batch N, :3020; window PARALLEL_MAX 8 at :2999; cap 1024 from the pin's own bound :8054, M1 Task 10) |
 | `reasoning_budget_tokens` | typed config | serve/server.py:8337 (M1 Task 5: reasoning.budget_tokens) |
 | `reasoning_close_retry` | typed config | serve/server.py:8232 (M1 Task 5: reasoning.close_retry) |
 | `reasoning_effort` | frontend behaviour | serve/server.py:7642 (M1 Task 5: reasoning.effort; the qwen think tail, issue 19: none writes the closed block, unset/low/medium/high open it; session log step 14: the same words per request on the qwen profile; step 16: low and high (unset) write the template's effort sentence, medium none) |
 | `reasoning_loop_recovery` | typed config | serve/server.py:8346 (M1 Task 5: reasoning.loop_recovery) |
-| `repeat_stop_tokens` | frontend behaviour | serve/server.py:198 (REPEAT_STOP_TOKENS 256), the pin's detector is frontend-side at :5098, notice :5278, 0 = off :8332 (Ruling T8-f: no GEN key) |
+| `repeat_stop_tokens` | frontend behaviour | serve/server.py:8332 (REPEAT_STOP_TOKENS 256 at :198, the pin's detector is frontend-side at :5098, notice :5278, 0 = off at :8334; Ruling T8-f: no GEN key) |
 | `sampling` | typed config | serve/server.py:7691 (M1 Task 4: defaults.sampling.*) |
 | `slot_save_path` | typed config | serve/server.py:8311 + slot_save_dir :3656-3668; the pin uses it FRONTEND-side for its /slots file store (:3885-3902) — no argv append (Ruling T9-a, M1 Task 9) |
 | `split_skip_if_fits` | engine argv | serve/server.py:2985 (M1 Task 7) |
