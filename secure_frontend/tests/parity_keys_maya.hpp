@@ -1,44 +1,45 @@
 // parity_keys_maya.hpp — the option-surface inventory of the vendored Project
-// Maya reference, generated once and committed (SP5 M2 Task 2). The GLM parity
-// table gives every name here exactly one disposition (meta-tests).
+// Maya reference, regenerated at the pin by SP5-P2 Task 2 (plan
+// 2026-10-22-sp5-p2). The GLM parity table gives every name here exactly one
+// disposition (meta-tests); the scan tripwires in parity_table_test.cpp
+// re-enumerate the CURRENT tree at run time, so the table and this list cannot
+// silently drift.
 //
-// Pin: the inventory was generated at engines/maya-ref commit 5c970a863ce2fdd87b6e23ffb4822f6d76522b1c (tag v1.1.8) and is kept as that set; the citations below follow tag v1.1.21 (commit 451f9cb6a21ea65673bdde2e57b4a670ae2b8859).
-// At v1.1.21 the documented greps no longer apply: docs/SETTINGS.md spells every setting MAYA_* (its lines 6-8), so regenerating the inventory is an open item (docs/validation/2026-10-21-windows-gpu-session.md, issue 27).
-// Config keys (37) — generating commands, run in the repository root, lists
+// Pin: engines/maya-ref commit 451f9cb6a21ea65673bdde2e57b4a670ae2b8859 (tag
+// v1.1.21). The v1.1.8 freeze note is gone: the regeneration IS the scan.
+// Config keys (38) — generating commands, run in the repository root, lists
 // verbatim (no edits, no additions):
-//   grep -rhoE 'cfg\.get\("[a-z_0-9]+"' engines/maya-ref/serve/*.py engines/maya-ref/maya.py | sort -u | sed 's/cfg\.get("//;s/"$//'
+//   grep -rhoE 'cfg.get\("[a-z_0-9]+"' engines/maya-ref/serve/*.py engines/maya-ref/maya.py | sort -u | sed 's/cfg.get\("//;s/"$//'
 //   plus the shared-settings names the validator enumerates at
-//   engines/maya-ref/serve/server.py:3787-3824 (its elif chain):
+//   engines/maya-ref/serve/server.py:3788-3824 (its elif key == chain):
 //   experimental_speed_projection, min_p, seed, temperature, top_k, top_p
 //   (reasoning_effort and max_tokens are already in the grep).
 // NOTE: the flat grep mixes names read inside config *blocks* (the `sampling`
 // and `vision` dicts, `mcp_servers` entries). Names the grep cannot see —
-// mcpServers (camelCase, serve/mcp.py:646), the vision block's mmproj/model
+// mcpServers (camelCase, serve/mcp.py:643), the vision block's mmproj/model
 // (serve/server.py:1221), and the sampling block's presence_penalty,
 // repetition_penalty, frequency_penalty, penalty_last_n (serve/server.py:263-265,
 // :3829-3834) — are extra rule rows in the table. The `installer` block's
-// sub-keys (models_dir, quant, gguf, draft, data_dir, speed_calibration —
-// maya.py:1200, :2298, :2541, :2560, :3280-3281) ride its rejected parent row.
+// sub-keys (models_dir, quant, gguf, draft, data_dir, speed_calibration) ride
+// its rejected parent row.
 //
-// Env knobs (119) — the documented engine/server env surface:
-//   sed -n '26,101p' engines/maya-ref/docs/SETTINGS.md | grep -ohE 'STRATA_GLM_[A-Z0-9_]+' | sort -u    (103)
-//   grep -ohE 'STRATA_GLM_[A-Z0-9_]+' engines/maya-ref/docs/SETTINGS.md | sort -u                       (105; adds STRATA_GLM_DFLASH, STRATA_GLM_DFLASH_MIN)
-//   grep -rhoE 'STRATA_GLM_[A-Z0-9_]+' engines/maya-ref/serve/*.py engines/maya-ref/maya.py | sort -u   (12; adds STRATA_GLM_RESERVE_MB, STRATA_GLM_VISION_LEND_MB)
-//   grep -rhoE 'environ\.get\("STRATA_[A-Z0-9_]+' engines/maya-ref/serve/server.py | sort -u            (the nine server names)
-//   plus STRATA_WATCHDOG_S (engine-side: engines/maya-ref/src/program/generate.cpp:747, docs/SETTINGS.md:143)
-//   and the updater's MAYA_UPDATE_CHECK (serve/update.py:75) / MAYA_RESTART_ON_UPDATE (maya.py:2809).
-// Excluded from the inventory as launcher internals, not engine/server knobs
-// (Ruling T2-b, lane ledger): MAYA_SH (maya.py:3934 — maya.sh's self-detection
-// marker), MAYA_VERSION (serve/server.py:66 — a module constant read from
-// VERSION), and the engine-BUILD env names maya.py passes to a *build*
-// (STRATA_BUILD_TESTS, STRATA_ENABLE_CUDA, STRATA_ENABLE_HIP, STRATA_GGML_DIR,
-// STRATA_NATIVE_EXPERTS, STRATA_PORTABLE, STRATA_GGUF_PY, STRATA_HIPBLASLT_TUNING,
-// STRATA_VISION_CUDA, STRATA_PREFILL_MMQ, STRATA_TOKENIZER — maya.py:1371-1373,
-// 1546-1554, 2061, 2130, 2265; STRATA_TOKENIZER only in serve/test_detok.py:21;
-// maya.py is the launcher the SP4 manifest replaces). The engine's
-// undocumented src-internal getenv names (STRATA_GLM_DEV1 and friends) sit
-// outside the documented surface; the closed child-env allowlist (Task 4)
-// renders only table names, so no name outside this table can reach a child.
+// Env knobs (575) — the engine/server env surface as the engine reads it,
+// per the canonized scan rules (ledger R-T1-a):
+//   grep -rhoE 'environ.get\("(STRATA|MAYA)_[A-Z0-9_]+"' engines/maya-ref/serve/*.py engines/maya-ref/maya.py | sort -u
+//   grep -rhoE '"(STRATA|MAYA)_[A-Z0-9_]+"' engines/maya-ref/serve/*.py engines/maya-ref/maya.py | sort -u
+//   grep -rhoE '"(STRATA|DS4)_[A-Z0-9_]+"' (every source file under engines/maya-ref/src and engines/maya-ref/include) | sort -u
+//   grep -ohE '`MAYA_[A-Z0-9_]+`' engines/maya-ref/docs/SETTINGS.md | sort -u
+//   plus the constructed per-GPU pair STRATA_GLM_CPU_LANE0/1: getenv of a built
+//   name at src/core/glm_fast_path.cu:2735, invisible to a literal grep.
+// docs/SETTINGS.md spells every setting MAYA_*; include/strata/platform/
+// env_alias.hpp maps every MAYA_X to STRATA_X at engine start — the engine
+// reads the STRATA_ spelling, so every documented MAYA_ name keeps its own
+// table row, carrying the engine row in target.
+// The engine's undocumented src-internal names ARE in the inventory (the
+// engine reads them) and carry out_of_scope rows: the closed child-env
+// allowlist renders only typed table rows, so an out-of-scope name can never
+// reach a child. The DS4_* family is the DeepSeek path — out of scope for GLM
+// parity (plan §Non-goals), never typed config.
 
 #ifndef SECURE_FRONTEND_TESTS_PARITY_KEYS_MAYA_HPP
 #define SECURE_FRONTEND_TESTS_PARITY_KEYS_MAYA_HPP
@@ -47,166 +48,164 @@
 
 namespace secure_frontend::parity {
 
-inline constexpr std::string_view kMayaConfigKeys[] = {
-    "api_key",
-    "args",
-    "backend",
-    "command",
-    "cors_origins",
-    "cwd",
-    "env",
-    "exe",
-    "experimental_speed_projection",
-    "fit_max_tokens",
-    "gpu",
-    "headers",
-    "host",
-    "installer",
-    "layer_split",
-    "lib_dirs",
-    "log",
-    "max_tokens",
-    "mcp",
-    "mcp_servers",
-    "min_p",
-    "model_name",
-    "no_flash_attn",
-    "port",
-    "reasoning_effort",
-    "resident",
-    "sampling",
-    "seed",
-    "temperature",
-    "thinking_budget",
-    "threads",
-    "tokenizer",
-    "top_k",
-    "top_p",
-    "type",
-    "url",
-    "vision",
+inline constexpr std::string_view kMayaConfigKeys[] {
+    "api_key", "args", "backend", "command",
+    "cors_origins", "cwd", "env", "exe",
+    "experimental_speed_projection", "fit_max_tokens", "gpu", "headers",
+    "host", "idle_unload_s", "installer", "layer_split",
+    "lib_dirs", "log", "max_tokens", "mcp",
+    "mcp_servers", "min_p", "model_name", "no_flash_attn",
+    "port", "reasoning_effort", "resident", "sampling",
+    "seed", "temperature", "thinking_budget", "threads",
+    "tokenizer", "top_k", "top_p", "type",
+    "url", "vision",
 };
 
-inline constexpr std::string_view kMayaEnvKnobs[] = {
-    "MAYA_RESTART_ON_UPDATE",
-    "MAYA_UPDATE_CHECK",
-    "STRATA_API_KEY",
-    "STRATA_DEBUG",
-    "STRATA_ENGINE_QUIT_S",
-    "STRATA_ENGINE_STALL_S",
-    "STRATA_ENGINE_WRAP_S",
-    "STRATA_FAIR_SLICE_S",
-    "STRATA_GLM_AHEAD",
-    "STRATA_GLM_CKPT_EVERY",
-    "STRATA_GLM_CKPTS",
-    "STRATA_GLM_CPU_1T",
-    "STRATA_GLM_CPU_CAL",
-    "STRATA_GLM_CPU_LANE",
-    "STRATA_GLM_CPU_LANE0",
-    "STRATA_GLM_CPU_LANE1",
-    "STRATA_GLM_CPU_MT",
-    "STRATA_GLM_CPU_PIN",
-    "STRATA_GLM_CPU_PLAN",
-    "STRATA_GLM_CPU_RETIME",
-    "STRATA_GLM_CPU_SHARED",
-    "STRATA_GLM_CPU_SPLIT",
-    "STRATA_GLM_DFLASH",
-    "STRATA_GLM_DFLASH_MIN",
-    "STRATA_GLM_DFLASH_PROF",
-    "STRATA_GLM_DFLASH_STATS",
-    "STRATA_GLM_DISK_QD",
-    "STRATA_GLM_DISK_READERS",
-    "STRATA_GLM_DISK_SKIP_FROM",
-    "STRATA_GLM_DISK_SKIP_W",
-    "STRATA_GLM_DROP_CACHE",
-    "STRATA_GLM_DSA_SCORE",
-    "STRATA_GLM_EXL3_MMA_ROWS",
-    "STRATA_GLM_KDA_GRAPH",
-    "STRATA_GLM_KQ",
-    "STRATA_GLM_KV_INT8",
-    "STRATA_GLM_KV_PREFETCH",
-    "STRATA_GLM_KV_RESIDENT",
-    "STRATA_GLM_LOOP_ANSWER",
-    "STRATA_GLM_LOOP_THINK",
-    "STRATA_GLM_MMQ_GLU",
-    "STRATA_GLM_MTP_GGUF",
-    "STRATA_GLM_MTP_KEEP",
-    "STRATA_GLM_MTP_MISS",
-    "STRATA_GLM_MULTI_BENCH",
-    "STRATA_GLM_MULTI_BOUNDARY",
-    "STRATA_GLM_MULTI_ROOM",
-    "STRATA_GLM_MULTI_SPEC",
-    "STRATA_GLM_MV_RDNA",
-    "STRATA_GLM_NO_MTP",
-    "STRATA_GLM_NO_SPEC",
-    "STRATA_GLM_NUMA",
-    "STRATA_GLM_PARALLEL_LOAD",
-    "STRATA_GLM_PCIE_SHARE",
-    "STRATA_GLM_POOL_STATS",
-    "STRATA_GLM_PREFETCH_AT",
-    "STRATA_GLM_PREFETCH_BLOCKS",
-    "STRATA_GLM_PREFETCH_N",
-    "STRATA_GLM_PREFETCH_RANK",
-    "STRATA_GLM_PREFILL_ATTN",
-    "STRATA_GLM_PREFILL_ATTN_CHECK",
-    "STRATA_GLM_PREFILL_CHUNK",
-    "STRATA_GLM_PREFILL_CPU",
-    "STRATA_GLM_PREFILL_CPU_ROW_MS",
-    "STRATA_GLM_PREFILL_MB",
-    "STRATA_GLM_PREFILL_SUB",
-    "STRATA_GLM_PREFILL_TAIL_SKIP",
-    "STRATA_GLM_PREFILL_TRACE",
-    "STRATA_GLM_PREFILL_WINDOW",
-    "STRATA_GLM_PRESTAGE",
-    "STRATA_GLM_PRESTAGE_ADAPT",
-    "STRATA_GLM_PROFILE_WEIGHT",
-    "STRATA_GLM_PROMOTE",
-    "STRATA_GLM_PROMOTE_FILL",
-    "STRATA_GLM_PROMOTE_MIN",
-    "STRATA_GLM_RAM_GB",
-    "STRATA_GLM_RAM_HEADROOM_GB",
-    "STRATA_GLM_RAM_RESIDENT",
-    "STRATA_GLM_RAM_SLACK",
-    "STRATA_GLM_READ_CHUNKS",
-    "STRATA_GLM_RESERVE_MB",
-    "STRATA_GLM_ROUTE_LOG",
-    "STRATA_GLM_SCORE",
-    "STRATA_GLM_SCORE_PREFILL",
-    "STRATA_GLM_SEQ_CTX",
-    "STRATA_GLM_SEQS",
-    "STRATA_GLM_SERVICE_IDLE_MS",
-    "STRATA_GLM_SLOT_DAYS",
-    "STRATA_GLM_SLOT_DIR",
-    "STRATA_GLM_SLOT_GB",
-    "STRATA_GLM_SLOT_KEEP",
-    "STRATA_GLM_SLOT_MIN",
-    "STRATA_GLM_SLOTS",
-    "STRATA_GLM_SPEC_CANCEL",
-    "STRATA_GLM_SPEC_HEAD",
-    "STRATA_GLM_SPEC_SAMPLE",
-    "STRATA_GLM_SPLIT",
-    "STRATA_GLM_SPLIT_LAYER_MS",
-    "STRATA_GLM_SPLIT_LOG",
-    "STRATA_GLM_THINK_RESERVE",
-    "STRATA_GLM_TIMING",
-    "STRATA_GLM_TRUNK_KEEP",
-    "STRATA_GLM_TRUNK_KEEP_MAP",
-    "STRATA_GLM_USAGE",
-    "STRATA_GLM_VISION_LEND_MB",
-    "STRATA_GLM_VRAM_EVICT",
-    "STRATA_GLM_WIN_ALLCPU",
-    "STRATA_GLM_WIN_CPU",
-    "STRATA_GLM_WIN_LANES",
-    "STRATA_GLM_WIN_PIPE",
-    "STRATA_GLM_WIN_SKIP",
-    "STRATA_GLM_WIN_STAGGER",
-    "STRATA_GLM_WIN_THREADS",
-    "STRATA_GLM_WIN_X3",
-    "STRATA_GLM_WIN_X3_POOLS",
-    "STRATA_HTTP_BACKLOG",
-    "STRATA_MAX_BODY_MIB",
-    "STRATA_MOCK_RELOAD_S",
-    "STRATA_WATCHDOG_S",
+inline constexpr std::string_view kMayaEnvKnobs[] {
+    "DS4_AHEAD", "DS4_AHEAD_EXTRA", "DS4_AHEAD_ORDER", "DS4_APU_DEDICATED_GB",
+    "DS4_AR_F16", "DS4_ASYNC_T", "DS4_ATTN_SLAB_MB", "DS4_ATTN_WMMA",
+    "DS4_BORROW", "DS4_CACHE_BONUS", "DS4_CACHE_DECAY", "DS4_CACHE_INFLIGHT",
+    "DS4_CACHE_MARGIN", "DS4_CACHE_THREADS", "DS4_CHECK_LEND", "DS4_CHECK_SWAPS",
+    "DS4_CHUNK", "DS4_CHUNK_MIN", "DS4_COMMIT_CAP_GB", "DS4_COPY_GB",
+    "DS4_COPY_NUMA", "DS4_DEBUG_DROP_BEFORE_REQ", "DS4_DSPARK_CONF", "DS4_DSPARK_DUMP",
+    "DS4_DSPARK_MAX", "DS4_DSPARK_QTEMP", "DS4_DSPARK_SAMPLE", "DS4_DUMP_H",
+    "DS4_DUMP_L", "DS4_DUMP_R", "DS4_DUMP_Y", "DS4_ENGRAM_CACHE_MB",
+    "DS4_ENGRAM_THREADS", "DS4_FLOW", "DS4_FLOW_BUFFERED", "DS4_FLOW_STATS",
+    "DS4_FLOW_TP", "DS4_HOST_FREE", "DS4_IQ_AVX2", "DS4_IQ_GATHER",
+    "DS4_IQ_OWN", "DS4_IQ_Q8K", "DS4_IQ_VERBOSE", "DS4_LANE_CAL",
+    "DS4_LANE_CHECK", "DS4_LAST_WINDOW", "DS4_LAYER_CACHE_MB", "DS4_LAYER_MAJOR",
+    "DS4_LT", "DS4_LT_VERBOSE", "DS4_MK_SPLIT", "DS4_MOE_TOKEN",
+    "DS4_MX_PF", "DS4_MX_TIER", "DS4_PATH_PICK", "DS4_PF_ALL",
+    "DS4_PROF", "DS4_READAHEAD_MB", "DS4_READERS", "DS4_RING_MB",
+    "DS4_ROUTER_ROWS", "DS4_SERVE_DUMP", "DS4_SPEC_Q", "DS4_SPEC_WASTE",
+    "DS4_SPLIT", "DS4_STREAM", "DS4_STREAM_DIRECT", "DS4_STREAM_FORCE",
+    "DS4_STREAM_THREADS", "DS4_SYNC", "DS4_W16_MB", "DS4_WARM_GB",
+    "DS4_WARM_MIN", "DS4_YOCO", "DS4_YOCO_KEEP", "MAYA_DS4_CPU_LANE",
+    "MAYA_DS4_DISK_SKIP_AUTO", "MAYA_DS4_DISK_SKIP_BUDGET", "MAYA_DS4_DISK_SKIP_FROM", "MAYA_DS4_DISK_SKIP_W",
+    "MAYA_DS4_DSPARK_CUM", "MAYA_DS4_PROMPT_SKIP", "MAYA_DS4_STREAM", "MAYA_ENGINE_QUIT_S",
+    "MAYA_ENGINE_STALL_S", "MAYA_ENGINE_WRAP_S", "MAYA_FAIR_SLICE_S", "MAYA_GLM_AHEAD",
+    "MAYA_GLM_CKPTS", "MAYA_GLM_CKPT_EVERY", "MAYA_GLM_COMPLETE_POOL", "MAYA_GLM_CPU_1T",
+    "MAYA_GLM_CPU_CAL", "MAYA_GLM_CPU_CONCURRENT", "MAYA_GLM_CPU_LANE", "MAYA_GLM_CPU_MT",
+    "MAYA_GLM_CPU_PIN", "MAYA_GLM_CPU_PLAN", "MAYA_GLM_CPU_RETIME", "MAYA_GLM_CPU_SHARED",
+    "MAYA_GLM_CPU_SPLIT", "MAYA_GLM_DFLASH", "MAYA_GLM_DFLASH_AHEAD", "MAYA_GLM_DFLASH_HEAD_SPLIT",
+    "MAYA_GLM_DFLASH_INJ_OVERLAP", "MAYA_GLM_DFLASH_MIN", "MAYA_GLM_DFLASH_PRIO", "MAYA_GLM_DFLASH_PROF",
+    "MAYA_GLM_DFLASH_STATS", "MAYA_GLM_DFLASH_TL", "MAYA_GLM_DISK_QD", "MAYA_GLM_DISK_READERS",
+    "MAYA_GLM_DISK_SKIP_FROM", "MAYA_GLM_DISK_SKIP_W", "MAYA_GLM_DROP_CACHE", "MAYA_GLM_DSA_ALL",
+    "MAYA_GLM_DSA_SCORE", "MAYA_GLM_DUAL_PREFILL", "MAYA_GLM_EVEN_GROUPS", "MAYA_GLM_EXL3_DECODE",
+    "MAYA_GLM_EXL3_MMA_ROWS", "MAYA_GLM_EXL3_ROT", "MAYA_GLM_EXPERT_CACHE", "MAYA_GLM_EXPERT_HELPER",
+    "MAYA_GLM_FLUSH", "MAYA_GLM_GROUP_EXPERTS", "MAYA_GLM_GU_STAGE", "MAYA_GLM_HEAD_SPLIT",
+    "MAYA_GLM_HEAD_SPLIT_CHECK", "MAYA_GLM_KDA_GRAPH", "MAYA_GLM_KQ", "MAYA_GLM_KV_INT8",
+    "MAYA_GLM_KV_RESIDENT", "MAYA_GLM_LOOP_ANSWER", "MAYA_GLM_LOOP_THINK", "MAYA_GLM_MISS_SKIP_FROM",
+    "MAYA_GLM_MISS_SKIP_W", "MAYA_GLM_MLA_MMA", "MAYA_GLM_MMQ_GLU", "MAYA_GLM_MMQ_RESERVE_MB",
+    "MAYA_GLM_MTP_DECODE", "MAYA_GLM_MTP_GGUF", "MAYA_GLM_MTP_KEEP", "MAYA_GLM_MULTI_BENCH",
+    "MAYA_GLM_MULTI_BOUNDARY", "MAYA_GLM_MULTI_ROOM", "MAYA_GLM_MULTI_SPEC", "MAYA_GLM_MV_P100",
+    "MAYA_GLM_MV_P100_R", "MAYA_GLM_MV_RDNA", "MAYA_GLM_NUMA", "MAYA_GLM_PARALLEL_LOAD",
+    "MAYA_GLM_PCIE_SHARE", "MAYA_GLM_POOL_STATS", "MAYA_GLM_PREFETCH_AT", "MAYA_GLM_PREFETCH_BLOCKS",
+    "MAYA_GLM_PREFETCH_N", "MAYA_GLM_PREFETCH_RANK", "MAYA_GLM_PREFILL_ATTN", "MAYA_GLM_PREFILL_CALC",
+    "MAYA_GLM_PREFILL_CHUNK", "MAYA_GLM_PREFILL_CPU", "MAYA_GLM_PREFILL_CPU_ROW_MS", "MAYA_GLM_PREFILL_FLUSH",
+    "MAYA_GLM_PREFILL_FUSED", "MAYA_GLM_PREFILL_KEEP", "MAYA_GLM_PREFILL_MB", "MAYA_GLM_PREFILL_STAGES",
+    "MAYA_GLM_PREFILL_SUB", "MAYA_GLM_PREFILL_TAIL_SKIP", "MAYA_GLM_PREFILL_TRACE", "MAYA_GLM_PREFILL_WINDOW",
+    "MAYA_GLM_PRESTAGE", "MAYA_GLM_PROFILE_WEIGHT", "MAYA_GLM_PROMOTE", "MAYA_GLM_PROMOTE_FILL",
+    "MAYA_GLM_PROMOTE_MIN", "MAYA_GLM_RAM_GB", "MAYA_GLM_RAM_HEADROOM_GB", "MAYA_GLM_RAM_RESIDENT",
+    "MAYA_GLM_RAM_SLACK", "MAYA_GLM_READ_CHUNKS", "MAYA_GLM_RESERVE_LATER_MB", "MAYA_GLM_RESERVE_MB",
+    "MAYA_GLM_RESIDENT_SKIP", "MAYA_GLM_RESPONSES_CACHE_ENTRIES", "MAYA_GLM_ROUTE_LOG", "MAYA_GLM_SCORE_PREFILL",
+    "MAYA_GLM_SEQS", "MAYA_GLM_SEQ_CTX", "MAYA_GLM_SERVICE_IDLE_MS", "MAYA_GLM_SKIP_EMPTY",
+    "MAYA_GLM_SLOTS", "MAYA_GLM_SLOT_DAYS", "MAYA_GLM_SLOT_DIR", "MAYA_GLM_SLOT_GB",
+    "MAYA_GLM_SLOT_KEEP", "MAYA_GLM_SLOT_MIN", "MAYA_GLM_SPEC_CANCEL", "MAYA_GLM_SPEC_FOLLOW",
+    "MAYA_GLM_SPEC_FOLLOW_SAVE", "MAYA_GLM_SPEC_HEAD", "MAYA_GLM_SPEC_SAMPLE", "MAYA_GLM_SPLIT",
+    "MAYA_GLM_SPLIT_LAYER_MS", "MAYA_GLM_SPLIT_ROWS", "MAYA_GLM_THINK_RESERVE", "MAYA_GLM_TIMING",
+    "MAYA_GLM_TRUNK_KEEP", "MAYA_GLM_TRUNK_KEEP_MAP", "MAYA_GLM_USAGE", "MAYA_GLM_VRAM_EVICT",
+    "MAYA_GLM_WARM_PROMPT", "MAYA_GLM_WIN_ALLCPU", "MAYA_GLM_WIN_BATCH", "MAYA_GLM_WIN_COMMIT_WAIT",
+    "MAYA_GLM_WIN_CPU", "MAYA_GLM_WIN_LANES", "MAYA_GLM_WIN_MULTI", "MAYA_GLM_WIN_PIPE",
+    "MAYA_GLM_WIN_REPLAY", "MAYA_GLM_WIN_SKIP", "MAYA_GLM_WIN_STAGGER", "MAYA_GLM_WIN_THREADS",
+    "MAYA_GLM_WIN_X3", "MAYA_GLM_WIN_X3_POOLS", "MAYA_HTTP_BACKLOG", "MAYA_MAX_BODY_MIB",
+    "MAYA_PACK_TEMPLATE", "MAYA_PF_WMMA", "MAYA_PREFILL_LEND_PCT", "MAYA_RESTART_ON_UPDATE",
+    "MAYA_SH", "MAYA_SPLIT_COVER_B", "MAYA_UPDATE_CHECK", "MAYA_WATCHDOG_S",
+    "STRATA_API_KEY", "STRATA_ARENA_LOCK", "STRATA_CKPT_REREAD", "STRATA_COMMIT_GROWTH",
+    "STRATA_CPU_YMM", "STRATA_DBG_NAN", "STRATA_DEBUG", "STRATA_DECODE_TIMING",
+    "STRATA_DEC_BATCH", "STRATA_DS4_CPU_LANE", "STRATA_DS4_DISK_SKIP_AUTO", "STRATA_DS4_DISK_SKIP_BUDGET",
+    "STRATA_DS4_DISK_SKIP_FROM", "STRATA_DS4_DISK_SKIP_SETTLE", "STRATA_DS4_DISK_SKIP_W", "STRATA_DS4_DISK_SKIP_WINDOW",
+    "STRATA_DS4_DSPARK_CUM", "STRATA_DS4_NO_LIGHT", "STRATA_DS4_NO_TC", "STRATA_DS4_PROMPT_SKIP",
+    "STRATA_DS4_RAM_TIER", "STRATA_DS4_STREAM", "STRATA_ENGINE_QUIT_S", "STRATA_ENGINE_STALL_S",
+    "STRATA_ENGINE_WRAP_S", "STRATA_FAIR_SLICE_S", "STRATA_FORCE_AVX2", "STRATA_GDN_CONV_SERIAL",
+    "STRATA_GDN_REC_HEADS", "STRATA_GLM_AHEAD", "STRATA_GLM_AHEAD_READ", "STRATA_GLM_APU_DEDICATED_GB",
+    "STRATA_GLM_BOUNCE", "STRATA_GLM_CKPTS", "STRATA_GLM_CKPT_EVERY", "STRATA_GLM_CKPT_TURN",
+    "STRATA_GLM_COMMIT_CAP_GB", "STRATA_GLM_COMPLETE_POOL", "STRATA_GLM_CPU_1T", "STRATA_GLM_CPU_CAL",
+    "STRATA_GLM_CPU_COLD", "STRATA_GLM_CPU_CONCURRENT", "STRATA_GLM_CPU_EXPERTS", "STRATA_GLM_CPU_LANE",
+    "STRATA_GLM_CPU_LANE0", "STRATA_GLM_CPU_LANE1", "STRATA_GLM_CPU_LANE_CHECK", "STRATA_GLM_CPU_LANE_VERIFY",
+    "STRATA_GLM_CPU_MT", "STRATA_GLM_CPU_PIN", "STRATA_GLM_CPU_PLAN", "STRATA_GLM_CPU_RETIME",
+    "STRATA_GLM_CPU_SHARED", "STRATA_GLM_CPU_SPLIT", "STRATA_GLM_DEFER_CPU", "STRATA_GLM_DEV1",
+    "STRATA_GLM_DEVS", "STRATA_GLM_DFLASH", "STRATA_GLM_DFLASH_AHEAD", "STRATA_GLM_DFLASH_ATTN",
+    "STRATA_GLM_DFLASH_CTX", "STRATA_GLM_DFLASH_CUM", "STRATA_GLM_DFLASH_DUMP", "STRATA_GLM_DFLASH_EXPLORE",
+    "STRATA_GLM_DFLASH_HEAD_MMA", "STRATA_GLM_DFLASH_HEAD_SPLIT", "STRATA_GLM_DFLASH_INJ_OVERLAP", "STRATA_GLM_DFLASH_MIN",
+    "STRATA_GLM_DFLASH_PRIO", "STRATA_GLM_DFLASH_PROF", "STRATA_GLM_DFLASH_STATS", "STRATA_GLM_DFLASH_TL",
+    "STRATA_GLM_DISK_QD", "STRATA_GLM_DISK_READERS", "STRATA_GLM_DISK_SKIP_FROM", "STRATA_GLM_DISK_SKIP_W",
+    "STRATA_GLM_DROP_CACHE", "STRATA_GLM_DSA_ALL", "STRATA_GLM_DSA_SCORE", "STRATA_GLM_DUAL_PREFILL",
+    "STRATA_GLM_EMB_PROBE", "STRATA_GLM_EVEN_GROUPS", "STRATA_GLM_EXL3_DECODE", "STRATA_GLM_EXL3_MMA_ROWS",
+    "STRATA_GLM_EXL3_ROT", "STRATA_GLM_EXPERT_CACHE", "STRATA_GLM_EXPERT_HELPER", "STRATA_GLM_FLUSH",
+    "STRATA_GLM_GROUP_EXPERTS", "STRATA_GLM_GU_STAGE", "STRATA_GLM_HC1", "STRATA_GLM_HC2",
+    "STRATA_GLM_HEAD_SPLIT", "STRATA_GLM_HEAD_SPLIT_CHECK", "STRATA_GLM_KDA_GRAPH", "STRATA_GLM_KDA_SPLIT",
+    "STRATA_GLM_KDA_SPLIT_CHECK", "STRATA_GLM_KEEP_MAP", "STRATA_GLM_KL_DUMP", "STRATA_GLM_KQ",
+    "STRATA_GLM_KV_INT8", "STRATA_GLM_KV_PREFETCH", "STRATA_GLM_KV_RESIDENT", "STRATA_GLM_LEND_DROP",
+    "STRATA_GLM_LOOP_ANSWER", "STRATA_GLM_LOOP_THINK", "STRATA_GLM_MISS_SKIP_FROM", "STRATA_GLM_MISS_SKIP_W",
+    "STRATA_GLM_MLA1", "STRATA_GLM_MLA_ATTN1", "STRATA_GLM_MLA_F16", "STRATA_GLM_MLA_MMA",
+    "STRATA_GLM_MLA_WMMA", "STRATA_GLM_MMQ_GLU", "STRATA_GLM_MMQ_RESERVE_MB", "STRATA_GLM_MTP",
+    "STRATA_GLM_MTP_ACC_WINDOW", "STRATA_GLM_MTP_ADAPT", "STRATA_GLM_MTP_CHAIN", "STRATA_GLM_MTP_DECODE",
+    "STRATA_GLM_MTP_DRAFT", "STRATA_GLM_MTP_DRAFT_VOCAB", "STRATA_GLM_MTP_FIXED", "STRATA_GLM_MTP_GGUF",
+    "STRATA_GLM_MTP_KEEP", "STRATA_GLM_MTP_MISS", "STRATA_GLM_MTP_START", "STRATA_GLM_MTP_TRACE",
+    "STRATA_GLM_MULTI_BENCH", "STRATA_GLM_MULTI_BOUNDARY", "STRATA_GLM_MULTI_DUMP", "STRATA_GLM_MULTI_ROOM",
+    "STRATA_GLM_MULTI_SPEC", "STRATA_GLM_MV_APPROX", "STRATA_GLM_MV_GENERIC", "STRATA_GLM_MV_MMA",
+    "STRATA_GLM_MV_P100", "STRATA_GLM_MV_P100_R", "STRATA_GLM_MV_RDNA", "STRATA_GLM_MV_TILED",
+    "STRATA_GLM_NO_MTP", "STRATA_GLM_NO_PREFILL", "STRATA_GLM_NO_REUSE", "STRATA_GLM_NO_SPEC",
+    "STRATA_GLM_NO_STAGE", "STRATA_GLM_NSYS", "STRATA_GLM_NUMA", "STRATA_GLM_PARALLEL_LOAD",
+    "STRATA_GLM_PCIE_SHARE", "STRATA_GLM_PIN_CAP_MB", "STRATA_GLM_PIPE", "STRATA_GLM_POOL_CHECK",
+    "STRATA_GLM_POOL_CHECK_TEST_MB", "STRATA_GLM_POOL_GB", "STRATA_GLM_POOL_SLOTS0", "STRATA_GLM_POOL_STATS",
+    "STRATA_GLM_PREFETCH", "STRATA_GLM_PREFETCH_AT", "STRATA_GLM_PREFETCH_BLOCKS", "STRATA_GLM_PREFETCH_N",
+    "STRATA_GLM_PREFETCH_RANK", "STRATA_GLM_PREFETCH_RANKS", "STRATA_GLM_PREFILL", "STRATA_GLM_PREFILL_ATTN",
+    "STRATA_GLM_PREFILL_ATTN_CHECK", "STRATA_GLM_PREFILL_BLAS", "STRATA_GLM_PREFILL_CALC", "STRATA_GLM_PREFILL_CALC_CHECK",
+    "STRATA_GLM_PREFILL_CALC_SHARE", "STRATA_GLM_PREFILL_CHUNK", "STRATA_GLM_PREFILL_CPU", "STRATA_GLM_PREFILL_CPU_ROW_MS",
+    "STRATA_GLM_PREFILL_FLUSH", "STRATA_GLM_PREFILL_FUSED", "STRATA_GLM_PREFILL_KEEP", "STRATA_GLM_PREFILL_LAND",
+    "STRATA_GLM_PREFILL_LIGHT", "STRATA_GLM_PREFILL_LIGHT_CHECK", "STRATA_GLM_PREFILL_LIGHT_LAYER", "STRATA_GLM_PREFILL_MB",
+    "STRATA_GLM_PREFILL_MIN", "STRATA_GLM_PREFILL_PRED_T", "STRATA_GLM_PREFILL_PROF", "STRATA_GLM_PREFILL_SERIAL",
+    "STRATA_GLM_PREFILL_SH_SUB", "STRATA_GLM_PREFILL_STAGES", "STRATA_GLM_PREFILL_SUB", "STRATA_GLM_PREFILL_TAIL_SKIP",
+    "STRATA_GLM_PREFILL_TRACE", "STRATA_GLM_PREFILL_VERBOSE", "STRATA_GLM_PREFILL_WINDOW", "STRATA_GLM_PRESTAGE",
+    "STRATA_GLM_PRESTAGE_ADAPT", "STRATA_GLM_PROF", "STRATA_GLM_PROFILE_WEIGHT", "STRATA_GLM_PROMOTE",
+    "STRATA_GLM_PROMOTE_FILL", "STRATA_GLM_PROMOTE_MIN", "STRATA_GLM_RAM_EVICT", "STRATA_GLM_RAM_FREE",
+    "STRATA_GLM_RAM_GB", "STRATA_GLM_RAM_HEADROOM_GB", "STRATA_GLM_RAM_PROTECT", "STRATA_GLM_RAM_RESIDENT",
+    "STRATA_GLM_RAM_SLACK", "STRATA_GLM_READ_CHUNKS", "STRATA_GLM_RESERVE_LATER_MB", "STRATA_GLM_RESERVE_MB",
+    "STRATA_GLM_RESIDENT_SKIP", "STRATA_GLM_RESPONSES_", "STRATA_GLM_RESPONSES_CACHE_BYTES", "STRATA_GLM_RESPONSES_CACHE_ENTRIES",
+    "STRATA_GLM_RESPONSES_OWNER_ENTRIES", "STRATA_GLM_ROUTE_AFFINITY", "STRATA_GLM_ROUTE_LOG", "STRATA_GLM_SCORE",
+    "STRATA_GLM_SCORE_DUMP", "STRATA_GLM_SCORE_PREFILL", "STRATA_GLM_SCORE_REF", "STRATA_GLM_SCORE_TOPK",
+    "STRATA_GLM_SEQS", "STRATA_GLM_SEQ_CTX", "STRATA_GLM_SERVICE_IDLE_MS", "STRATA_GLM_SKIP_EMPTY",
+    "STRATA_GLM_SLOTS", "STRATA_GLM_SLOT_DAYS", "STRATA_GLM_SLOT_DIR", "STRATA_GLM_SLOT_GB",
+    "STRATA_GLM_SLOT_KEEP", "STRATA_GLM_SLOT_MIN", "STRATA_GLM_SLOT_RAM_GB", "STRATA_GLM_SLOT_ROUNDTRIP",
+    "STRATA_GLM_SLOT_TIMING", "STRATA_GLM_SLOW", "STRATA_GLM_SPEC_CANCEL", "STRATA_GLM_SPEC_FOLLOW",
+    "STRATA_GLM_SPEC_FOLLOW_SAVE", "STRATA_GLM_SPEC_HEAD", "STRATA_GLM_SPEC_PROF", "STRATA_GLM_SPEC_SAMPLE",
+    "STRATA_GLM_SPLIT", "STRATA_GLM_SPLIT_LAYER_MS", "STRATA_GLM_SPLIT_LOG", "STRATA_GLM_SPLIT_ROWS",
+    "STRATA_GLM_STALL_TEST", "STRATA_GLM_SVC_TRACE", "STRATA_GLM_TEST_PIPE", "STRATA_GLM_THINK_RESERVE",
+    "STRATA_GLM_TIER_DIAG", "STRATA_GLM_TIER_GC", "STRATA_GLM_TIMING", "STRATA_GLM_TRACE",
+    "STRATA_GLM_TRUNK_KEEP", "STRATA_GLM_TRUNK_KEEP_MAP", "STRATA_GLM_UNIFORM_SLOTS", "STRATA_GLM_USAGE",
+    "STRATA_GLM_VISION_LEND_MB", "STRATA_GLM_VRAM_EVICT", "STRATA_GLM_VRAM_GB", "STRATA_GLM_WARM",
+    "STRATA_GLM_WARM_PROMPT", "STRATA_GLM_WIN_ALLCPU", "STRATA_GLM_WIN_BATCH", "STRATA_GLM_WIN_COMMIT_WAIT",
+    "STRATA_GLM_WIN_CPU", "STRATA_GLM_WIN_L3", "STRATA_GLM_WIN_LANES", "STRATA_GLM_WIN_MLA",
+    "STRATA_GLM_WIN_MULTI", "STRATA_GLM_WIN_PIPE", "STRATA_GLM_WIN_PROF", "STRATA_GLM_WIN_REPLAY",
+    "STRATA_GLM_WIN_SKIP", "STRATA_GLM_WIN_STAGGER", "STRATA_GLM_WIN_THREADS", "STRATA_GLM_WIN_UNION",
+    "STRATA_GLM_WIN_X3", "STRATA_GLM_WIN_X3_POOLS", "STRATA_GROUP_COPY", "STRATA_GR_UNFUSED",
+    "STRATA_HIPBLASLT_TUNING", "STRATA_HIPBLASLT_TUNING_V1", "STRATA_HIPBLASLT_VERBOSE", "STRATA_HIP_EXPERTS_LEGACY",
+    "STRATA_HTTP_BACKLOG", "STRATA_IDX_FP16_CHECK", "STRATA_INDEXER_PER_TOKEN", "STRATA_IO_THREADS",
+    "STRATA_IQ_GATHER", "STRATA_IQ_PREFETCH", "STRATA_KV_MAIN_OFF", "STRATA_KV_RING_OFF",
+    "STRATA_KV_STAGE_OWN", "STRATA_MAX_BODY_MIB", "STRATA_MOCK_RELOAD_S", "STRATA_MTP_BATCH",
+    "STRATA_MTP_BATCH_F16", "STRATA_MTP_PREFILL_SYNC", "STRATA_NO_IQ256", "STRATA_NO_IQ4NL",
+    "STRATA_NO_IQ512", "STRATA_NO_LARGEPAGES", "STRATA_PF_WMMA", "STRATA_PLE_BATCH",
+    "STRATA_PLE_GGUF", "STRATA_POOL_SPIN_US", "STRATA_POOL_TRACE", "STRATA_PREFILL_DUMP_R",
+    "STRATA_PREFILL_ISSUER", "STRATA_PREFILL_LEND_PCT", "STRATA_PREFILL_MMQ", "STRATA_PREFILL_RING",
+    "STRATA_PREFILL_TIMING", "STRATA_PROMPT_ATTN_OLD", "STRATA_PROMPT_ATTN_V1", "STRATA_QSA_DUMP",
+    "STRATA_QSA_DUMP_LAST", "STRATA_REFILL_BLOCKING", "STRATA_REMOTE_SPIN", "STRATA_REMOTE_ZEROCOPY",
+    "STRATA_SELECT_OLD", "STRATA_SEL_OVERLAP", "STRATA_SPLIT_COVER_B", "STRATA_SPLIT_MISS_MS",
+    "STRATA_SPLIT_TIMING", "STRATA_STAGER_RING", "STRATA_STAGER_THREADS", "STRATA_STATE_HASH",
+    "STRATA_STATE_HASH_GDN", "STRATA_TEST_CACHE_FAIL", "STRATA_TG_FLUSH_US", "STRATA_TOKENIZER",
+    "STRATA_TOPK_OLD", "STRATA_TRACE", "STRATA_VERIFY_DEBUG", "STRATA_VERIFY_DEVICE_PLAN",
+    "STRATA_VERIFY_NODES", "STRATA_VERIFY_PROFILE", "STRATA_WATCHDOG_S",
 };
 
 } // namespace secure_frontend::parity

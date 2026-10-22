@@ -10,10 +10,12 @@ import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-ROW = re.compile(r'^\s*\{"([^"]+)", (kTyped|kRejected|kMapped), ([a-z_]+), "(.*)"\},?$', re.M)
+ROW = re.compile(r'^\s*\{"([^"]+)", (kTyped|kRejected|kMapped|kOut), ([a-z_]+), "(.*)"\},?$', re.M)
 ARRAY = re.compile(r"kUpstream(?:ConfigKeys|EnvKnobs)\[\] = \{(.*?)\};", re.S)
 NAME = re.compile(r'"([^"]+)"')
 BLOCK = {"kTyped": "parity-typed", "kRejected": "parity-rejected", "kMapped": "parity-mapped"}
+MAYA_BLOCK = {"kTyped": "maya-typed", "kRejected": "maya-rejected", "kMapped": "maya-mapped",
+              "kOut": "maya-out"}
 
 
 def region(readme: str, marker: str) -> str:
@@ -36,11 +38,13 @@ def test_parity_readme_coverage() -> None:
     # rule rows +gpu_none, +gpu_roles (read through strata_control/gpu_roles.py), all mapped -> 127.
     assert len(rows) == 127, f"the parity table shape changed ({len(rows)} rows parsed) — update this gate and the README"
 
-    # SP5 M2 Task 10: the GLM (Maya) table mirrors into its own README blocks,
-    # every row in the block for its disposition — the count is the non-vacuity
-    # guard for this table too (178 rows; no strata-style floor, it must be whole).
+    # SP5 M2 Task 10 / SP5-P2 Task 2: the GLM (Maya) table mirrors into its own
+    # README blocks, every row in the block for its disposition — the count is the
+    # non-vacuity guard for this table too (730 rows after the regeneration at
+    # 451f9cb6 v1.1.21: 137 typed, 50 rejected, 73 mapped, 470 out of scope; no
+    # strata-style floor, it must be whole).
     maya_rows = ROW.findall(array_body(table, "kMayaRows{{"))
-    assert len(maya_rows) == 178, f"the GLM table changed ({len(maya_rows)} rows) — extend the README mirror and this gate together"
+    assert len(maya_rows) == 730, f"the GLM table changed ({len(maya_rows)} rows) — extend the README mirror and this gate together"
 
 
     inventory = (REPO / "secure_frontend/tests/parity_keys_upstream.hpp").read_text(encoding="utf-8")
@@ -66,10 +70,10 @@ def test_parity_readme_coverage() -> None:
     # must also be present here as a real table; the floor catches a truncated paste.
     assert len(re.findall(r"^\| `", region(readme, "config-keys"), re.M)) >= 100, "the config table looks truncated"
 
-    # SP5 M2 Task 10: every Maya row lands in the README block for its disposition;
-    # all 178 must be found — the mirror is proven non-vacuous by the full count.
-    maya_blocks = {"kTyped": region(readme, "maya-typed"), "kRejected": region(readme, "maya-rejected"),
-                   "kMapped": region(readme, "maya-mapped")}
+    # SP5 M2 Task 10 / SP5-P2 Task 2: every Maya row lands in the README block for
+    # its disposition, including the out_of_scope rows in the maya-out block; all
+    # 730 must be found — the mirror is proven non-vacuous by the full count.
+    maya_blocks = {disp: region(readme, marker) for disp, marker in MAYA_BLOCK.items()}
     maya_found = 0
     maya_missing = []
     for name, disposition, _destination, _citation in maya_rows:

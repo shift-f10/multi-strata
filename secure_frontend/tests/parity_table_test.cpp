@@ -63,6 +63,7 @@ std::size_t maya_row_count_named(std::string_view name) {
 void every_upstream_key_has_exactly_one_disposition() {
   const auto keys = upstream_config_keys();
   expect(keys.size() == 88U, "the generated config-key inventory holds the pin's 88 keys");
+
   for (const auto key : keys) {
     expect(row_count_named(key) == 1U,
            std::string("config key '") + std::string(key) + "' must have exactly one parity row");
@@ -123,7 +124,7 @@ void typed_rows_name_a_destination() {
 
 void every_maya_key_has_exactly_one_disposition() {
   const auto keys = maya_config_keys();
-  expect(keys.size() == 37U, "the generated Maya config-key inventory holds the vendored pin's 37 keys");
+  expect(keys.size() == 38U, "the generated Maya config-key inventory holds the vendored pin's 38 keys");
   for (const auto key : keys) {
     expect(maya_row_count_named(key) == 1U,
            std::string("Maya config key '") + std::string(key) + "' must have exactly one parity row");
@@ -145,7 +146,7 @@ void every_maya_key_has_exactly_one_disposition() {
 
 void every_maya_env_knob_is_dispositioned() {
   const auto knobs = maya_env_knobs();
-  expect(knobs.size() == 119U, "the generated Maya env-knob inventory holds the pin's 119 names");
+  expect(knobs.size() == 575U, "the generated Maya env-knob inventory holds the pin's 575 names");
   for (const auto knob : knobs) {
     expect(maya_row_count_named(knob) == 1U,
            std::string("Maya env knob '") + std::string(knob) + "' must have exactly one parity row");
