@@ -2,7 +2,7 @@
 // Never installed. (SP1's tests/fake_engine_main.cpp is a different, simpler fake.) It speaks the solo serve protocol the frontend uses
 // (READY, GEN -> T/DONE, STOP, QUIT) and adds the failure modes the
 // supervision tests need; see the mode list in the SP2 plan header. SP5 M2
-// Task 6 adds --dialect=maya: the same payloads with Project Maya v1.1.8's
+// Task 6 adds --dialect=maya: the same payloads with Project Maya v1.1.21's
 // engine cadence (NOTE after GEN, 5-field PP, STAT every few tokens).
 // Unknown arguments (--serve, --native PATH, --pack DIR, --gpu LIST, ...) are
 // accepted and ignored, as the real engine accepts them.
@@ -80,11 +80,13 @@ struct Options final {
   std::optional<unsigned long> err_mid_gen;      // "ERR test" after this many T records, then idle
   unsigned long burst_tokens{0};                 // first n tokens without the token-interval pause
   bool stream_modes{false};
-  // SP5 M2 Task 6: --dialect=maya makes the fake speak Project Maya v1.1.8's engine
-  // framing on top of the same T/DONE payloads — NOTE right after GEN (generate.cpp:1245),
-  // the 5-field PP per prefill chunk (:5546), and a STAT cadence every few tokens
-  // (:1799). maya_118 consumes them (Task 5); the other flavors must fail closed.
+  // SP5 M2 Task 6: --dialect=maya makes the fake speak Project Maya v1.1.21's engine
+  // framing on top of the same T/DONE payloads — NOTE right after GEN (generate.cpp:1347),
+  // the 5-field PP per prefill chunk (:6102), and a STAT cadence every few tokens
+  // (:2014). maya_118 consumes them (Task 5); the other flavors must fail closed.
   std::string dialect;
+  // Issue 27: with --dialect=maya, --maya-vram adds Maya v1.1.21's pre-READY startup records.
+  bool maya_vram{false};
   int fail_first{0};
   std::string counter_file;
   std::string record_file;
@@ -118,6 +120,7 @@ Options parse_options(const int argc, char** argv) {
     if (argument == "--ignore-term") options.ignore_term = true;
     else if (argument == "--spew") options.spew = true;
     else if (argument == "--split-ready") options.split_ready = true;
+    else if (argument == "--maya-vram") options.maya_vram = true;
     else if (argument == "--hang-before-ready") options.hang_before_ready = true;
     else if (argument == "--hang-in-gen") options.hang_in_gen = true;
     else if (argument == "--abort-in-gen") options.abort_in_gen = true;
@@ -522,7 +525,7 @@ void run_generation(const Options& options, const std::string& line, StdinReader
   }
   const unsigned long total = options.tokens.value_or(options.token_ids.size());
   bool stopped = false;
-  // The maya dialect's conversation note right after GEN (generate.cpp:1245 prints
+  // The maya dialect's conversation note right after GEN (generate.cpp:1347 prints
   // "NOTE sessions: ..." in serve mode); NOTE/PP/STAT are cadence records only —
   // the token payloads stay the strata T/DONE records.
   const bool maya = options.dialect == "maya";
@@ -543,7 +546,7 @@ void run_generation(const Options& options, const std::string& line, StdinReader
     if (options.crash_mid_gen && generated == *options.crash_mid_gen) { std::cout << std::flush; std::_Exit(1); }
     if (options.err_mid_gen && generated == *options.err_mid_gen) { std::cout << "ERR test\n" << std::flush; return; }
     std::cout << "T " << options.token_ids[generated % options.token_ids.size()] << '\n' << std::flush;
-    if (maya && generated % 3U == 2U)  // the expert-tier cadence, every few tokens (generate.cpp:1799)
+    if (maya && generated % 3U == 2U)  // the expert-tier cadence, every few tokens (generate.cpp:2014)
       std::cout << "STAT tok_s=40.00 ms_tok=25.00 vram_hit=0.7500 ram_fetch=0.2500 disk=0.000 promo=0.010 "
                    "vram_used=8192 vram_slots=256 ram_used=4096 ram_slots=1024 ram_gb=8.0 vram_gb=12.0\n"
                 << std::flush;
@@ -586,6 +589,15 @@ int serve(const Options& options) {
   if (options.hang_before_ready) sleep_forever();
   if (options.echo_cmdline) echo_cmdline();
   if (options.ready_delay_ms > 0) sleep_ms(options.ready_delay_ms);
+  // Maya v1.1.21's fast path: the startup INFO, then one VRAM record per GPU part before
+  // READY (maya-ref src/program/generate.cpp:1044, :1054-1062).
+  if (options.dialect == "maya" && options.maya_vram) {
+    std::cout << "INFO context=" << options.ready_context << " kv=int8 engine_kind=glm-fast\n"
+              << "VRAM dev=0 pci=0000:01:00.0 total=17163091968 free=1073741824 weights=9000000000 kv=1 kv_ram=0 act=1 "
+                 "drafter=0 window=0 pool=2 tail=0 borrow=0 vision=0 slots=0 ctx="
+              << options.ready_context << " layers=0-77\n"
+              << std::flush;
+  }
   const std::string ready = "READY " + std::to_string(options.ready_context) + " stop\n";
   if (options.split_ready) {
     std::cout << ready.substr(0, 3) << std::flush;

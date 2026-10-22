@@ -45,8 +45,8 @@ struct EngineEnvironment final {
   std::vector<unsigned> glm_gpus{};
   std::vector<ForcedEnvironmentValue> glm_knobs{};
   // SP5 M2 Task 8 (D-8): a GLM vision turn (vision.enabled, encoder not resident —
-  // maya-ref serve/server.py:3385). The VLEND-family row (STRATA_GLM_VISION_LEND_MB,
-  // :3396) reaches the engine only with a turn configured; without one the render
+  // maya-ref serve/server.py:4015). The VLEND-family row (STRATA_GLM_VISION_LEND_MB,
+  // :4026) reaches the engine only with a turn configured; without one the render
   // suppresses it even if the knob channel carries it (fail closed).
   bool glm_vision_turn{false};
 };

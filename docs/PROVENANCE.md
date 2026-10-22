@@ -3,14 +3,23 @@
 ## Baseline
 
 Upstream [Niko1221/Strata][strata] is the git submodule `upstream/`, pinned by
-its gitlink at the annotated release tag `v0.2.1.3`.
+its gitlink at the annotated release tag `v0.2.2`.
 
 - Submodule (`.gitmodules`): path `upstream`, URL
   `https://github.com/Niko1221/Strata.git`, no branch tracking.
-- Pinned commit (the gitlink): `cbfd5b926b794b356195d3cb600191b0c3567540`
-- Tag object: `1ab44ace2e4db985503ab9388b65405a63600dd7`
+- Pinned commit (the gitlink): `011c9e600a93bbc9fd451c563501b5831c32bbca`
+- Tag object: `e6fff4ad12908de74952abe53b2bade45a68aa0f`
 - Check: `git submodule status` prints
-  ` cbfd5b926b794b356195d3cb600191b0c3567540 upstream (v0.2.1.3)`.
+  ` 011c9e600a93bbc9fd451c563501b5831c32bbca upstream (v0.2.2)`.
+- Supply-chain review of `v0.2.1.3..v0.2.2` ([contract](security/engine-supply-chain.md), C9):
+  rulings `security/engine-reviews/strata-v0.2.1.3-v0.2.2.json` (58 findings, 0 refused;
+  SHA-256 `dfdf7e6b655977b1b2d4bbee1f824d3fb274f400a59cf8b5559efc5fea9510f7`), compiled-diff
+  read `security/engine-reviews/strata-v0.2.1.3-v0.2.2-compiled-read.md` (0 concern; SHA-256
+  `65e26faa115427e4181341341c30417a36f69cbab41d01fb12aaabd4f128aaa0`), binary gate PASS
+  against `security/engine-binary-allowlist.json` (SHA-256
+  `999d465a956e5a1087f41fbc10491240c6550a18ecf48912c1f2d2151200837f`), llama.cpp fetch
+  `3cf03257` clean. Signed off by the owner on 2026-10-21. The review followed the build
+  (the contract postdates it; C2).
 
 The gitlink is the baseline record. Nothing under `upstream/` is edited and no
 upstream file exists outside it; the repository root holds only our code (see
@@ -20,7 +29,7 @@ different behavior we wrap upstream from our own tree
 none. `git -C upstream status --porcelain` is empty.
 
 Everything under `upstream/` is under upstream's license
-([`LICENSE` at `v0.2.1.3`](https://github.com/Niko1221/Strata/blob/v0.2.1.3/LICENSE);
+([`LICENSE` at `v0.2.2`](https://github.com/Niko1221/Strata/blob/v0.2.2/LICENSE);
 offline: `upstream/LICENSE` in a checkout with the submodule initialized). The
 root [`LICENSE`](../LICENSE)
 is the MIT text with the retained "Copyright (c) 2026 Niko1221 and the Strata
@@ -43,7 +52,7 @@ An upstream update moves the gitlink; it is never a merge into our tree.
 This is the only copy of the runbook; [`AGENT_HANDOFF.md`](AGENT_HANDOFF.md)
 and [`secure-frontend-ci.md`](secure-frontend-ci.md) link here instead of
 repeating it. `<old tag>` / `<old short sha>` / `<old tag object>` are the
-current pin (today `v0.2.1.3` / `cbfd5b92` / `1ab44ace`), `<new tag>` the
+current pin (today `v0.2.2` / `011c9e60` / `e6fff4ad`), `<new tag>` the
 target. `<L>` is a label unique to the run (for example `old-<old tag>` and
 `new-<new tag>`): build directories and venvs are never reused or deleted
 between runs, so every run uses its own `out/<name>-<L>`.
@@ -56,9 +65,18 @@ For direct wine calls (not the test preset, which sets it) prefix
 1. **Gates at the old pin first** (the gate list in step 3, with
    `<L>` = `old-<old tag>`), and record every count. Without this baseline a
    changed count cannot be attributed to the bump.
-2. `git -C upstream fetch --tags origin && git -C upstream checkout --detach <new tag>`
+2. Fetch only: `git -C upstream fetch --tags origin`. Then the
+   [engine supply-chain contract](security/engine-supply-chain.md) C1–C4 on
+   `<old tag>..<new tag>` with read-only git: the diff scan with a ruling per
+   finding (`scripts/security/engine_review.py diff`, rulings in
+   `security/engine-reviews/`) and the full read of the compiled and build diff.
+   Nothing from the new tree is configured, built, installed or run before both
+   records exist. Then `git -C upstream checkout --detach <new tag>`.
 3. Gates at the new pin (`<L>` = `new-<new tag>`), each with its working
-   directory:
+   directory (plus, on any engine build made for the bump, the contract's C5
+   binary gate — `engine_review.py binary` against
+   `security/engine-binary-allowlist.json` — and the C1 check that the fetched
+   `_deps` checkout equals the pinned commit and is clean):
    - `pytest -q` (repo root): our `tools/secure/` tests.
    - In `secure_frontend/`: `cmake --preset linux-gcc && cmake --build
      --preset linux-gcc && ctest --preset linux-gcc`, and the same three
@@ -95,6 +113,13 @@ For direct wine calls (not the test preset, which sets it) prefix
 
      The subshell keeps the shell at the repo root for the later steps.
 
+     At `v0.2.2` the Linux counts are not recorded yet: the bump was made on
+     the owner's Windows box (2026-10-21), where the same commands give
+     `1027 passed, 11 failed, 30 skipped, 6 deselected` and `905 passed,
+     23 skipped, 1 deselected` (at `v0.2.1.3` there: 1004/12 failed/24/6 and
+     865/27/1; the 11 failures are Windows-host ones present at both tags —
+     `docs/validation/2026-10-21-windows-gpu-session.md`, step 6). Run the
+     Linux gate before treating the `v0.2.2` row as complete.
      At `v0.2.1.3`: `1027 passed, 13 skipped, 6 deselected` and `878 passed,
      14 skipped, 1 deselected`. At `v0.1.44.1`: `760 passed, 2 skipped,
      5 deselected` and `774 passed, 11 skipped` (at `v0.1.43`, with the first
@@ -178,7 +203,7 @@ For direct wine calls (not the test preset, which sets it) prefix
    its facts hold for the new tag: re-check each row against the new source
    first and add rows for new behavior.
    `upstream.version` (repository root, one line: the tag itself, today
-   `v0.2.1.3`) is a pin site — bump it with the gitlink; configure fails
+   `v0.2.2`) is a pin site — bump it with the gitlink; configure fails
    when a reachable submodule tag disagrees with it. It is the source of the
    SP4 engine version `kEngineVersion` (`secure_frontend/CMakeLists.txt`); the
    `SECURE_STRATA_ENGINE_VERSION` cache override is for local experiments
@@ -188,7 +213,10 @@ For direct wine calls (not the test preset, which sets it) prefix
    `docs/AGENT_HANDOFF.md`, `docs/secure-frontend-ci.md`); one commit:
    `upstream: bump to <new tag>`, whose body lists each gate with its counts
    (old → new), any exclusion added, and the upstream changes that matter to
-   the frontend.
+   the frontend. The commit also carries the contract's review records
+   (`docs/security/engine-reviews/<engine>-<old>-<new>.{json,md}` and the
+   `-compiled-read.md` notes) and a row in the contract's Record table; the
+   body cites their SHA-256 and the owner's sign-off (C9).
 
 After a `git pull` that moves the gitlink, run `git submodule update --init`
 (or set `git config submodule.recurse true` once). A `+` in front of the line
@@ -298,6 +326,19 @@ verifiable by opening the cited `file:line` locally. Still: **no code,
 kernel, model or quant has been taken from it**; SP6 import work keeps the
 rules above.
 
+**Bumped 2026-10-21 to tag `v1.1.21`** (owner request, on the owner's Windows
+box): gitlink `451f9cb6a21ea65673bdde2e57b4a670ae2b8859`, tag object
+`ba26442d5c8b833fe8be466277ca52b09bf1ec63` (124 commits; no file renamed or
+deleted). The Maya citations across `secure_frontend` and the kit docs were
+re-pinned to it; the GLM key inventory (`parity_keys_maya.hpp`) is kept as
+generated at `v1.1.8`, because at `v1.1.21` its documented greps no longer apply
+(`docs/SETTINGS.md` respells every setting `MAYA_*`) — regenerating it is open,
+as are the changed GLM penalty semantics
+(`docs/validation/2026-10-21-windows-gpu-session.md`, issue 27). The `maya_118`
+dialect now also accepts the bounded `VRAM`/`NOTE` records `v1.1.21` prints
+before READY. The tag's `VERSION` file is empty, so a built Maya server reports
+no version; record the tag and commit instead.
+
 **SP5 parity acceptance kit (placeholder, SP5 M2):** the kit procedure is
 `docs/validation/sp5-parity-kit.md` (corpus: `docs/validation/sp5-parity-corpus.txt`);
 the GPU run happens on the owner's box. When it runs, record here: the
@@ -306,12 +347,18 @@ model pack SHA-256, and the SHA-256 of both results files and of the corpus.
 **No GLM parity claim is made until this entry exists.**
 
 License: the GitHub API (`gh api repos/mw00/project-maya`, queried 2026-10-14,
-default branch) returns SPDX id `MIT`. Its `LICENSE` file carries the copyright
-line "Copyright (c) 2026 Niko1221 and the Strata contributors". It bundles
-`third_party/ggml` (MIT), `third_party/exllamav3` (MIT, Turboderp) and
-`third_party/beellama.cpp` (MIT); any SP6 import from those paths carries their
-notices. Its optional DFlash2 drafter weights are CC BY-NC-ND 4.0 and are never
-bundled or fetched by this project.
+default branch) returns SPDX id `MIT`. At `v1.1.21` (read from the local tag,
+2026-10-21) its `LICENSE` is still the MIT text and carries two copyright lines:
+"Copyright (c) 2026 Peasant Smith and the Project Maya contributors" (new) and
+"Copyright (c) 2026 Niko1221 and the Strata contributors". It bundles
+`third_party/ggml` (MIT), `third_party/exllamav3` (MIT, Turboderp),
+`third_party/beellama.cpp` (MIT), `LICENSE.deepseek-v41` (MIT, Copyright (c)
+2023 DeepSeek; new at `v1.1.21`, covers `serve/ds41_encoding.py`) and the Outfit
+font (SIL OFL 1.1, `serve/web/fonts/OFL.txt`; present at `v1.1.8` too but not
+recorded here before); any SP6 import from those paths carries their notices.
+Its optional DFlash2 drafter weights are CC BY-NC-ND 4.0 and are never
+bundled or fetched by this project; a tree-wide search at `v1.1.21` finds no
+other non-commercial or copyleft component.
 
 ## ggml / llama.cpp (bundled with upstream)
 
@@ -323,12 +370,12 @@ forms:
   `upstream/third_party/ggml/VERSION.txt` records commit
   `3cf03257f219afbe7334045ff7c6a06ac68c627d`.
 - The llama.cpp checkout fetched by `upstream/CMakeLists.txt`
-  (`FetchContent_Declare(strata_llamacpp ...)`, lines 1552–1555) when
+  (`FetchContent_Declare(strata_llamacpp ...)`, lines 1564–1567) when
   `STRATA_NATIVE_EXPERTS=ON` and `STRATA_GGML_DIR` is unset, pinned to
   `GIT_TAG 3cf03257f219afbe7334045ff7c6a06ac68c627d`.
 
 License: MIT, "Copyright (c) 2023-2026 The ggml authors"
-([`third_party/ggml/LICENSE` at `v0.2.1.3`](https://github.com/Niko1221/Strata/blob/v0.2.1.3/third_party/ggml/LICENSE);
+([`third_party/ggml/LICENSE` at `v0.2.2`](https://github.com/Niko1221/Strata/blob/v0.2.2/third_party/ggml/LICENSE);
 offline: `upstream/third_party/ggml/LICENSE`).
 Our root `CMakeLists.txt` seeds `STRATA_NATIVE_EXPERTS=OFF` and our CI
 (`.github/workflows/secure-frontend.yml`) configures with
@@ -401,9 +448,9 @@ happens on the owner's box, fill this entry — **blank means no claim**:
 exists.** Windows installer runtime waits for the owner's own hardware on the
 same terms (`NSIS_STATUS.txt` records the toolchain state on agent boxes).
 
-[strata]: https://github.com/Niko1221/Strata/tree/v0.2.1.3
+[strata]: https://github.com/Niko1221/Strata/tree/v0.2.2
 [unbiased]: https://github.com/robertkarl/UnbiasedStrata/tree/46c46ecfc11d2315512f21f7549b0a7792ccd2ae
 [lighttransport]: https://github.com/lighttransport/Strata/tree/glm53f
-[maya]: https://github.com/mw00/project-maya/tree/5c970a863ce2fdd87b6e23ffb4822f6d76522b1c
+[maya]: https://github.com/mw00/project-maya/tree/451f9cb6a21ea65673bdde2e57b4a670ae2b8859
 [llamacpp]: https://github.com/ggml-org/llama.cpp/tree/3cf03257f219afbe7334045ff7c6a06ac68c627d
 [llvmmingw]: https://github.com/mstorsjo/llvm-mingw/releases/tag/20261006

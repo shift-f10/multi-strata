@@ -6,7 +6,9 @@
 
 #include <chrono>
 #include <cstddef>
+#include <optional>
 #include <string_view>
+#include <vector>
 
 namespace secure_frontend {
 
@@ -35,6 +37,18 @@ struct GenerationRunLimits final {
   // deadline alone), and a run of this many equal token ids ends a reply as length (0: off).
   std::chrono::milliseconds silence{0};
   std::size_t repeat_stop_tokens{0};
+  // The Qwen3 reasoning split (upstream OutputParser, serve/frontend.py:884, :1245-1284):
+  // with think_tokens set, text before </think> goes to on_reasoning and text after it to
+  // on_text, the newlines right after </think> dropped. The two tags themselves are never
+  // output; a <think> while answering starts a new reasoning span. starts_in_reasoning:
+  // the prompt left a think block open. Without think_tokens both tags fail closed as any
+  // CONTROL/USER_DEFINED token does.
+  std::optional<ThinkTokens> think_tokens{};
+  bool starts_in_reasoning{false};
+  // Issue 26: end-of-turn ids (find_qwen_end_of_turn_tokens). One ends the reply as stop: it
+  // is never output, and anything the engine sends after it before DONE is dropped
+  // (upstream breaks out of its token loop there, serve/server.py:5086-5091).
+  std::vector<std::size_t> stop_tokens{};
 };
 
 struct GenerationRunResult final {
@@ -49,6 +63,9 @@ struct GenerationRunResult final {
 class GenerationObserver {
  public:
   virtual void on_text(std::string_view text) = 0;  // complete UTF-8, never empty
+  // Reasoning text (GenerationRunLimits::think_tokens), complete UTF-8, never empty. An
+  // observer that does not override it drops the reasoning and keeps the answer.
+  virtual void on_reasoning(std::string_view /*text*/) {}
   virtual RunCancel on_tick(bool progress) = 0;     // at least once per slice, and after every PP
   virtual ~GenerationObserver() = default;
 };

@@ -6,8 +6,8 @@
 namespace secure_frontend {
 
 // SP5 M1 Task 4 (parity row `sampling`): the sampling keys the engine's GEN
-// line carries; render_sampling_keys applies the pinned v0.2.1.3 wire rules of
-// serve/server.py:1360-1394 (conditional omission, top_k clamp, the
+// line carries; render_sampling_keys applies the pinned v0.2.2 wire rules of
+// serve/server.py:1367-1401 (conditional omission, top_k clamp, the
 // penalty_repeat/freq/present aliases, the penalty_last_n default of 64).
 // Absent = the engine default.
 struct SamplingParams final {

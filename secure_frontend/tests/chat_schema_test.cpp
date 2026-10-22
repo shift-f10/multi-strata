@@ -164,6 +164,23 @@ void renders_openai_completion_shape() {
                                                    .prompt_tokens = 0U, .completion_tokens = 0U}).has_value(), "invalid UTF-8 is refused");
 }
 
+// Issue 19: a Qwen3 think block comes back as message.reasoning_content beside the
+// answer, written only when non-empty (upstream serve/server.py:5511-5513).
+void renders_reasoning_content_beside_the_answer() {
+  const auto body = secure_frontend::render_chat_completion({.id = "x", .created = 0, .model = "m", .text = "Paris.", .finish_reason = "stop",
+                                                             .prompt_tokens = 1U, .completion_tokens = 2U,
+                                                             .reasoning = "The capital\nis Paris."});
+  expect(body.has_value() && body->find(R"("message":{"role":"assistant","content":"Paris.","reasoning_content":"The capital\nis Paris."})") !=
+                                 std::string::npos,
+         "reasoning_content follows content in the message: " + body.value_or("<nullopt>"));
+  const auto plain = secure_frontend::render_chat_completion({.id = "x", .created = 0, .model = "m", .text = "Paris.", .finish_reason = "stop",
+                                                              .prompt_tokens = 1U, .completion_tokens = 2U});
+  expect(plain.has_value() && plain->find("reasoning_content") == std::string::npos, "no reasoning, no field");
+  expect(!secure_frontend::render_chat_completion({.id = "x", .created = 0, .model = "m", .text = "ok", .finish_reason = "stop",
+                                                   .prompt_tokens = 0U, .completion_tokens = 0U, .reasoning = "\xff"}).has_value(),
+         "invalid UTF-8 reasoning is refused");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -175,5 +192,6 @@ int main(int argc, char** argv) {
       {"rejects_duplicate_and_malformed_json", rejects_duplicate_and_malformed_json},
       {"renders_escaped_minimal_response", renders_escaped_minimal_response},
       {"renders_openai_completion_shape", renders_openai_completion_shape},
+      {"renders_reasoning_content_beside_the_answer", renders_reasoning_content_beside_the_answer},
   }, failures);
 }

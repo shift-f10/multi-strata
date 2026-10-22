@@ -339,6 +339,7 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
                                        .default_max_tokens = config.limits.chat.default_max_tokens,
                                        .sampling_default = config.sampling,
                                        .fit_max_tokens = config.engine.fit_max_tokens,
+                                       .qwen_thinking = config.reasoning.effort != secure_frontend::ReasoningEffort::none,
                                        .minimum_output_tokens = config.engine.min_tokens.value_or(0U),
                                        .maximum_output_tokens = config.engine.max_tokens.value_or(0U),
                                        .model_aliases = model_aliases,

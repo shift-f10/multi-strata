@@ -32,7 +32,9 @@ def test_parity_readme_coverage() -> None:
     table = (REPO / "secure_frontend/src/parity_table.cpp").read_text(encoding="utf-8")
     rows = ROW.findall(array_body(table, "kRows{{"))
     # SP7 M2 Task 3: +update.source (typed) and +STRATA_RELEASE_PUBKEY_HEX (mapped) -> 123.
-    assert len(rows) == 123, f"the parity table shape changed ({len(rows)} rows parsed) — update this gate and the README"
+    # Upstream bump to v0.2.2: +pool_cores, +STRATA_ENGINE_NICE (inventory) and the extra
+    # rule rows +gpu_none, +gpu_roles (read through strata_control/gpu_roles.py), all mapped -> 127.
+    assert len(rows) == 127, f"the parity table shape changed ({len(rows)} rows parsed) — update this gate and the README"
 
     # SP5 M2 Task 10: the GLM (Maya) table mirrors into its own README blocks,
     # every row in the block for its disposition — the count is the non-vacuity
@@ -43,7 +45,7 @@ def test_parity_readme_coverage() -> None:
 
     inventory = (REPO / "secure_frontend/tests/parity_keys_upstream.hpp").read_text(encoding="utf-8")
     names = [name for body in ARRAY.findall(inventory) for name in NAME.findall(body)]
-    assert len(names) == 118, f"the generated inventory changed ({len(names)} names) — re-run the pin greps"
+    assert len(names) == 120, f"the generated inventory changed ({len(names)} names) — re-run the pin greps"
     row_names = {row[0] for row in rows}
     missing_rows = [name for name in names if name not in row_names]
     assert not missing_rows, f"inventory names with no parity row: {missing_rows}"

@@ -90,6 +90,8 @@ struct CompletionView final {
   std::string_view finish_reason;
   std::size_t prompt_tokens;
   std::size_t completion_tokens;
+  // message.reasoning_content, written only when non-empty (upstream serve/server.py:5511-5513).
+  std::string_view reasoning{};
 };
 
 [[nodiscard]] std::optional<std::string> render_chat_completion(const CompletionView& view, const ChatSchemaLimits& limits = {});

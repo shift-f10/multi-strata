@@ -1,4 +1,4 @@
-// parity_table.hpp — SP5 M1: every option the pinned upstream Strata v0.2.1.3
+// parity_table.hpp — SP5 M1: every option the pinned upstream Strata v0.2.2
 // reads has exactly one dispositioned row (spec §3). The row's citation names
 // the governing pinned-source read site (`serve/<file>.py:<line>`) and, for
 // rejected rows, the spec §4 / C-4 rule that excludes it.
@@ -46,7 +46,7 @@ struct ParityRow final {
 // option of the pin and no extra rule row).
 [[nodiscard]] const ParityRow* strata_parity_row(std::string_view key) noexcept;
 
-// ---- GLM profile (SP5 M2): the vendored Project Maya v1.1.8 reference -------
+// ---- GLM profile (SP5 M2): the vendored Project Maya v1.1.21 reference ------
 // The same discipline against `engines/maya-ref/` (D-10): every option the
 // vendored source reads has exactly one dispositioned row, cited file:line.
 

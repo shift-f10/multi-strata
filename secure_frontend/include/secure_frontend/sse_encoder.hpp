@@ -29,6 +29,8 @@ struct SseIdentity final {
 // a code-point boundary.
 [[nodiscard]] std::size_t next_delta_size(std::string_view text) noexcept;
 [[nodiscard]] std::string render_content_event(const SseIdentity& identity, std::string_view text);
+// A reasoning delta: {"reasoning_content": text} (upstream serve/server.py:5449-5450).
+[[nodiscard]] std::string render_reasoning_event(const SseIdentity& identity, std::string_view text);
 [[nodiscard]] std::string render_final_event(const SseIdentity& identity, std::string_view finish_reason);
 [[nodiscard]] std::string render_usage_event(const SseIdentity& identity, std::size_t prompt_tokens, std::size_t completion_tokens);
 [[nodiscard]] std::string render_error_event(ApiError code);

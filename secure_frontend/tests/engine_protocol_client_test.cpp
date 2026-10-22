@@ -230,7 +230,7 @@ void prefill_progress_is_bounded_in_both_profiles() {
 // The main engine's serve loop prints `RESUME <n>` before reading the prompt and
 // `REUSED <n>` once it is read, for EVERY accepted GEN and unconditionally even
 // when nothing is reused (`RESUME 0`): upstream v0.1.44.1 src/program/generate.cpp
-// :11214/:11849, v0.2.1.3 :12809/:13910. They are private progress records like
+// :11214/:11849, v0.2.1.3 :12809/:13910, v0.2.2 :12899/:14006. They are private progress records like
 // PP and must never fail a request. The qwen35moe engine never prints them;
 // YIELDED is unreachable because the frontend refuses the --batch/--slots flags
 // that would produce it. The GLM profile keeps its exact record and refuses them.
@@ -497,13 +497,13 @@ void next_event_finish_forms_and_nonfinite_stays_idle() {
   expect(finish_of("DONE 1 1 1.0 1.0 bogus") == "closed", "unknown finish in a full record is malformed");
 }
 
-// SP5 M2 Task 5 (D-8): the Maya v1.1.8 wire dialect. The vendored pump
-// consumes NOTE (serve/server.py:787 — it prints the kept-conversation note
+// SP5 M2 Task 5 (D-8): the Maya v1.1.21 wire dialect. The vendored pump
+// consumes NOTE (serve/server.py:851 — it prints the kept-conversation note
 // to its own log), the STAT expert-tier cadence every few tokens
-// (:785, _parse_stat :636-649; the engine's print at src/program/
-// generate.cpp:1799) and the five-field PP that the engine prints per prompt
-// chunk (`PP <done> <total> <ms> <tok/s> <reuse>`, generate.cpp:5546, :6111;
-// the pump's tolerant read at server.py:771-783). All are private: consumed
+// (:849, _parse_stat :677-690; the engine's print at src/program/
+// generate.cpp:2014) and the five-field PP that the engine prints per prompt
+// chunk (`PP <done> <total> <ms> <tok/s> <reuse>`, generate.cpp:6102, :6667;
+// the pump's tolerant read at server.py:835-847). All are private: consumed
 // as ProgressEvents, never client output, never a protocol error; anything
 // else stays fail-closed.
 void maya_flavor_consumes_note_and_progress() {
@@ -575,8 +575,8 @@ void strata_flavor_still_fails_closed_on_note() {
 }
 
 // The Maya PP grammar, pinned to the vendored reads: the pump accepts any
-// `PP` with digit fields 1-2 and optional float/reuse tails (server.py:771-
-// 783); the engine prints the five-field form (generate.cpp:5546, :6111).
+// `PP` with digit fields 1-2 and optional float/reuse tails (server.py:835-
+// 847); the engine prints the five-field form (generate.cpp:6102, :6667).
 // Our flavor bounds it like the others: 3 to 6 fields after `PP`, decimal
 // counters, optional non-negative decimal metrics, optional decimal reuse —
 // anything else is unexpected_line and closes the protocol.
@@ -608,8 +608,51 @@ void maya_pp_grammar_is_bounded() {
   }
 }
 
+// Maya v1.1.21 (issue 27 of docs/validation/2026-10-21-windows-gpu-session.md): before READY
+// the GLM fast path prints one `VRAM dev=<n> pci=<bus> total=... layers=<a>-<b>` record per GPU
+// part (maya-ref src/program/generate.cpp:1054-1062) and, on a Windows APU whose page file caps
+// the commit, a `NOTE experts: ...` line plus a second INFO (:1065-1071). Maya's own reader
+// skips them (serve/server.py:456-473). The maya_118 flavor accepts exactly these shapes
+// before READY — VRAM under the STAT rule (at least one pair, every key non-empty before its
+// `=`), NOTE non-empty — and nothing else; the other flavors keep rejecting VRAM.
+void maya_flavor_accepts_vram_and_note_before_ready() {
+  const std::string vram =
+      "VRAM dev=0 pci=0000:01:00.0 total=17163091968 free=1073741824 weights=9000000000 kv=100 kv_ram=0 act=1 "
+      "drafter=0 window=0 pool=2 tail=0 borrow=0 vision=0 slots=0 ctx=32768 layers=0-40";
+  FakeTransport transport;
+  transport.reads = {line("INFO context=32768 kv=int8 engine_kind=glm-fast"), line(vram),
+                     line("VRAM dev=1 pci=- total=1 free=1 layers=41-77"),
+                     line("NOTE experts: 12 GB stay off the GPU - Windows' page file is too small to hold them there"),
+                     line("INFO gpu_commit_capped_gb=12 pagefile_hint_gb=96"), line("READY 32768 stop pause")};
+  EngineProtocolClient client(transport, {}, secure_frontend::EngineProtocolFlavor::maya_118);
+  secure_frontend::EngineReady ready{};
+  const auto started = client.await_ready(std::chrono::seconds(1), ready);
+  expect(!started.has_value() && ready.max_context_tokens == 32768U && ready.supports_stop && client.idle(),
+         "the v1.1.21 startup records before READY are consumed");
+
+  for (const char* bad : {"VRAM", "VRAM dev", "VRAM =0", "VRAM dev=0 =1", "VRAM dev=0 layers", "NOTE",
+                          "STAT tok_s=1", "PP 1 2", "RESUME 0", "BOGUS dev=0"}) {
+    FakeTransport refused;
+    refused.reads = {line("INFO context=64"), line(bad), line("READY 64 stop")};
+    EngineProtocolClient strict(refused, {}, secure_frontend::EngineProtocolFlavor::maya_118);
+    const auto error = strict.await_ready(std::chrono::seconds(1), ready);
+    expect(error.has_value() && error->code == EngineProtocolErrorCode::unexpected_line && strict.closed(),
+           std::string("anything else before READY fails closed under maya_118: ") + bad);
+  }
+  for (const auto flavor : {secure_frontend::EngineProtocolFlavor::strata_0143,
+                            secure_frontend::EngineProtocolFlavor::lighttransport_glm53}) {
+    FakeTransport other;
+    other.reads = {line(vram), line("READY 64 stop")};
+    EngineProtocolClient other_client(other, {}, flavor);
+    const auto error = other_client.await_ready(std::chrono::seconds(1), ready);
+    expect(error.has_value() && error->code == EngineProtocolErrorCode::unexpected_line,
+           "VRAM stays unknown to the other flavors");
+  }
+}
+
 int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
+      {"maya_flavor_accepts_vram_and_note_before_ready", maya_flavor_accepts_vram_and_note_before_ready},
       {"runs_the_solo_protocol", runs_the_solo_protocol},
       {"gen_line_unchanged_without_embeddings_geni_with_them", gen_line_unchanged_without_embeddings_geni_with_them},
       {"stop_and_quit_are_explicit", stop_and_quit_are_explicit},

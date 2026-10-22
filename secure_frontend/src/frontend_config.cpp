@@ -309,7 +309,7 @@ constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 
     {"vision.encode_timeout_s", T::integer, false, 0, 86400, 300, false, "", "",
      "Seconds one image encoding may take (0: wait for ever, as at the pin)."},
     // SP5 M2 Task 3 (spec §D-2; C-3 keeps Maya's names): the engine-side GLM
-    // knobs. Kinds and defaults are Maya v1.1.8's verbatim (parity table rows
+    // knobs. Kinds and defaults are Maya v1.1.21's verbatim (parity table rows
     // cite the vendored pin); the caps and closed sets are added (C-1). The
     // rows are accepted while engine.profile is absent (a managed model's
     // SP4 manifest decides the profile; the launch, Task 7, refuses them for
@@ -331,7 +331,7 @@ constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 
     {"glm.model_name", T::string, false, 0, 0, 0, false, "", "",
      "Served model id for the GLM engine (1-256 characters; a managed model takes its identity from the manifest)."},
     // SP5 M2 Task 7 (D-8): the launcher-managed --max-context becomes typed. The
-    // default is Maya's DEFAULT_CONTEXT (maya.py:2524); the 1-1048576 bound is
+    // default is Maya's DEFAULT_CONTEXT (maya.py:3148); the 1-1048576 bound is
     // added (C-1). Composition lands in engine_arguments (the Task-2 mapped-away
     // --max-context row's destination).
     {"glm.max_context", T::integer, false, 1, 1048576, 32768, false, "", "",
@@ -1051,8 +1051,8 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   vision.encode_timeout_s = read.integer("vision.encode_timeout_s");
 
   // SP5 M2 Task 3 (spec §D-2): the glm.* family. Kinds and defaults are the
-  // vendored pin's (serve/server.py:3440/:3427/:3255/:1210-1213, validators
-  // :3234); the caps, the closed effort vocabulary and the layer_split
+  // vendored pin's (serve/server.py:4090/:4077/:3819/:1274-1277, validators
+  // :3798); the caps, the closed effort vocabulary and the layer_split
   // grammar are added (C-1). The qwen-profile gate mirrors the existing
   // engine.gpu rule the other way: an explicit engine.profile "qwen" refuses
   // every present glm.* row by name (conflicting_values); with no explicit
@@ -1084,7 +1084,7 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   glm.layer_split = read.string("glm.layer_split").value_or("");
   if (glm.layer_split.empty()) glm.layer_split = "auto";
   if (glm.layer_split != "auto") {
-    // The vendored grammar (serve/server.py:1210-1213): the first layer of
+    // The vendored grammar (serve/server.py:1274-1277): the first layer of
     // each later GPU's share, e.g. "18" or "16,32". The rising-numbers check
     // is added (C-1); the count-against-gpus check belongs to the launch
     // (Task 7), because a manifest may name the cards the config does not.
@@ -1411,14 +1411,14 @@ std::string describe(const FrontendConfig& c) {
 
 std::vector<ForcedEnvironmentValue> glm_environment_knobs(const FrontendConfig& config) {
   std::vector<ForcedEnvironmentValue> knobs;
-  // maya-ref docs/SETTINGS.md:31: the config's "layer_split" sets STRATA_GLM_SPLIT
-  // the same way; "auto" (Maya's own default, serve/server.py:1212) leaves the
+  // maya-ref docs/SETTINGS.md:44: the config's "layer_split" sets STRATA_GLM_SPLIT
+  // the same way; "auto" (Maya's own default, serve/server.py:1276) leaves the
   // §4.9 forced single-device default in place — Task 7 renders the split argv
   // and checks the count against the cards.
   if (config.glm.layer_split != "auto") knobs.push_back({std::string{"STRATA_GLM_SPLIT"}, config.glm.layer_split});
   // SP5 M2 Task 8 (D-8): the vision turn — an on-demand encoder (vision.enabled,
-  // not resident; maya-ref serve/server.py:3385) runs in memory the engine lends
-  // from its expert pool, sized by STRATA_GLM_VISION_LEND_MB (server.py:3396).
+  // not resident; maya-ref serve/server.py:4015) runs in memory the engine lends
+  // from its expert pool, sized by STRATA_GLM_VISION_LEND_MB (server.py:4026).
   // The typed source is vision.need_mib (the encoder's VRAM need, images.py:156
   // pattern); unset means the owner-box measurement the kit records, so nothing
   // projects and the render gate (engine_environment) keeps the row out.

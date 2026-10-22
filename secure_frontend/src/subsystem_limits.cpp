@@ -50,7 +50,7 @@ SupervisorConfig supervisor_config(const FrontendConfig& config) {
   supervisor.chat_limits = chat_execution_limits(config);
   supervisor.policy.ready_timeout = std::chrono::duration_cast<std::chrono::milliseconds>(config.limits.engine.ready_timeout);
   supervisor.profile = config.engine.profile == EngineProfile::glm53 ? NativeChatProfile::glm53 : NativeChatProfile::qwen;
-  // SP5 M2 Task 7 (R-T5-b): the glm53 profile speaks Project Maya v1.1.8's wire dialect
+  // SP5 M2 Task 7 (R-T5-b): the glm53 profile speaks Project Maya v1.1.21's wire dialect
   // (Task 5); the selection is pinned by supervisor_flavor_is_the_maya_dialect_for_glm53.
   supervisor.flavor =
       config.engine.profile == EngineProfile::glm53 ? EngineProtocolFlavor::maya_118 : EngineProtocolFlavor::strata_0143;

@@ -232,10 +232,16 @@ Trust boundaries:
 - (SP5 M2) The engine wire protocol is a recorded per-manifest **dialect**
   (`strata` or `maya_118`): a `glm53` manifest's child speaks Maya's framing
   (NOTE/STAT records, 3–6-field PP progress, STOP only when READY advertises
-  it), a qwen manifest's keeps SP2's strict dialect; in either dialect an
-  unknown, out-of-order or unrequested record kills the generation
-  (`fake_maya_dialect_round_trips_only_under_the_maya_dialect`) — a dialect
-  relaxes framing, never what a confused or hostile child may do.
+  it; since Maya v1.1.21 also bounded `VRAM key=value …` and non-empty `NOTE`
+  records before READY), a qwen manifest's keeps SP2's strict dialect; in
+  either dialect an unknown, out-of-order or unrequested record kills the
+  generation or the start (`fake_maya_dialect_round_trips_only_under_the_maya_dialect`,
+  `fake_maya_vram_records_reach_ready_only_under_the_maya_dialect`) — a dialect
+  relaxes framing, never what a confused or hostile child may do. Maya v1.1.21
+  spells its user settings `MAYA_*` and copies each `MAYA_X` over `STRATA_X` at
+  engine start, so a `MAYA_*` name reaching the glm child would override a
+  forced `STRATA_*` safety value; the closed environment allowlist keeps every
+  `MAYA_*` name out (`glm_child_env_is_exactly_the_named_typed_set`).
 - PROC-03 on Linux means "other user context": another uid cannot open the
   engine's stdio (`proc03_other_uid_cannot_open_engine_fd`; it runs only in CI,
   which has not yet run SP2 — pending rflores's push). The

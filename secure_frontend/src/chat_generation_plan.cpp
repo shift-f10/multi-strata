@@ -56,7 +56,8 @@ std::size_t count_image_parts(const ChatCompletionRequest& request) {
 ChatGenerationPlanResult make_qwen_chat_generation_plan(
     const ChatCompletionRequest& request, const TokenizerPack& tokenizer,
     const std::size_t maximum_prompt_tokens, const std::size_t default_max_tokens,
-    const SamplingDefaults& defaults, const std::span<const std::size_t> image_token_counts) {
+    const SamplingDefaults& defaults, const std::span<const std::size_t> image_token_counts,
+    const bool thinking) {
   if (request.model.empty() || request.messages.empty() || maximum_prompt_tokens == 0U ||
       (request.max_tokens.has_value() && *request.max_tokens == 0U)) {
     return error(ChatGenerationPlanErrorCode::invalid_request,
@@ -69,7 +70,11 @@ ChatGenerationPlanResult make_qwen_chat_generation_plan(
                  "image answers do not match the request's image parts");
   }
 
-  const auto prompt = render_qwen_text_prompt(request.messages, image_token_counts);
+  // Issue 19: a Qwen3 pack's think markers select the template's reasoning tail; a pack
+  // without them keeps the plain prompt (the tags then fail closed in output as before).
+  const auto think_tokens = find_qwen_think_tokens(tokenizer);
+  const QwenThinking tail = !think_tokens.has_value() ? QwenThinking::absent : thinking ? QwenThinking::on : QwenThinking::off;
+  const auto prompt = render_qwen_text_prompt(request.messages, image_token_counts, tail);
   if (!prompt) {
     return error(ChatGenerationPlanErrorCode::prompt_render_failed,
                  "chat messages cannot be represented by the fixed prompt format");
@@ -89,7 +94,8 @@ ChatGenerationPlanResult make_qwen_chat_generation_plan(
   }
 
   return ChatGenerationPlan{request.model, *token_ids, request.max_tokens.value_or(default_max_tokens),
-                            merge_sampling(request.sampling, defaults)};
+                            merge_sampling(request.sampling, defaults), think_tokens, tail == QwenThinking::on,
+                            find_qwen_end_of_turn_tokens(tokenizer)};
 }
 
 ChatGenerationPlanResult make_glm53_chat_generation_plan(
@@ -120,7 +126,8 @@ ChatGenerationPlanResult make_glm53_chat_generation_plan(
                  "encoded chat prompt exceeds native serving limits");
   }
   return ChatGenerationPlan{request.model, *token_ids, request.max_tokens.value_or(default_max_tokens),
-                            merge_sampling(request.sampling, defaults)};
+                            merge_sampling(request.sampling, defaults), std::nullopt, false,
+                            std::vector<std::size_t>{}};
 }
 
 }  // namespace secure_frontend

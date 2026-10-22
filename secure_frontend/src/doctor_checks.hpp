@@ -25,7 +25,7 @@ struct CheckResult final {
 
 // The engine profile's expectations (R-T3-a): compiled in per profile from the
 // pinned upstream's own documents — driver >= 580 (upstream/docs/INSTALL.md:29
-// at pin cbfd5b92), unlimited locked memory (upstream/docs/DOCKER.md runs the
+// at pin 011c9e60), unlimited locked memory (upstream/docs/DOCKER.md runs the
 // engine with --ulimit memlock=-1), CUDA 12/13 runtime libraries. Injectable
 // so tests vary them; the doctor never contacts the network or installs.
 struct ProfileExpectations final {

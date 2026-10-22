@@ -89,7 +89,7 @@ enum class ConfigIssueCode {
 
 // SP5 M2: Maya's reasoning-effort vocabulary, spelled exactly as Maya spells it
 // (spec §D-2; the vendored validator accepts only these — maya-ref
-// serve/server.py:3234).
+// serve/server.py:3798).
 enum class GlmReasoningEffort { none, low, high, max };
 
 // key_path names a key ("limits.http.max_request_bytes") or "config file";
@@ -250,21 +250,21 @@ struct VisionConfig final {
 
 // SP5 M2 Task 3 (spec §D-2): the engine-side GLM knobs, kept in Maya's own
 // family so parity is provable by spelling. Kinds, defaults and ranges are
-// Maya v1.1.8's (citations per row in the parity table); the closed
+// Maya v1.1.21's (citations per row in the parity table); the closed
 // vocabularies and caps marked C-1 are ours. They are accepted while
 // engine.profile is absent (a managed model's manifest decides the profile;
 // the launch composition, Task 7, refuses them for a qwen manifest) and
 // refused by name when engine.profile is explicitly "qwen".
 struct GlmSettings final {
-  std::int64_t thinking_budget{32768};              // glm.thinking_budget (server.py:3440 default 32768; cap added, C-1)
-  std::int64_t max_context{32768};                  // glm.max_context (Maya's DEFAULT_CONTEXT, maya.py:2524; bound added, C-1)
-  std::optional<GlmReasoningEffort> reasoning_effort;  // glm.reasoning_effort (unset: the request's; validator server.py:3234)
-  bool fit_max_tokens{false};                       // glm.fit_max_tokens (Maya reads `is True` — server.py:3427; unlike engine's true)
-  bool experimental_speed_projection{false};        // glm.experimental_speed_projection (server.py:3255/3441: truthy or)
-  std::vector<unsigned> gpus{};                     // glm.gpu (parse_gpu_list, same grammar as engine.gpu; :1200/:1216-1224)
-  std::string layer_split{"auto"};                  // glm.layer_split (Maya default "auto"; :1210-1213; closed grammar added, C-1)
-  std::optional<std::string> tokenizer;             // glm.tokenizer (absolute store path, added rule C-1; :3359)
-  std::optional<std::string> model_name;            // glm.model_name (served model id, added bound C-1; :3425)
+  std::int64_t thinking_budget{32768};              // glm.thinking_budget (server.py:4090 default 32768; cap added, C-1)
+  std::int64_t max_context{32768};                  // glm.max_context (Maya's DEFAULT_CONTEXT, maya.py:3148; bound added, C-1)
+  std::optional<GlmReasoningEffort> reasoning_effort;  // glm.reasoning_effort (unset: the request's; validator server.py:3798)
+  bool fit_max_tokens{false};                       // glm.fit_max_tokens (Maya reads `is True` — server.py:4077; unlike engine's true)
+  bool experimental_speed_projection{false};        // glm.experimental_speed_projection (server.py:3819/3877/789: truthy or)
+  std::vector<unsigned> gpus{};                     // glm.gpu (parse_gpu_list, same grammar as engine.gpu; :1264/:1280-1288)
+  std::string layer_split{"auto"};                  // glm.layer_split (Maya default "auto"; :1274-1277; closed grammar added, C-1)
+  std::optional<std::string> tokenizer;             // glm.tokenizer (absolute store path, added rule C-1; :3989)
+  std::optional<std::string> model_name;            // glm.model_name (served model id, added bound C-1; :4075)
   bool rows_present{false};                         // any glm.* row was present in the config (R-T3-a: the launch
                                                     // refuses the rows when a manifest names the qwen profile)
 };
@@ -390,7 +390,7 @@ using ConfigValidationResult = std::variant<ValidatedConfig, ConfigErrors>;
 
 // SP5 M2 Task 4 (D-7): the typed glm.* config projected onto the glm family's
 // closed typed child environment. Today the split row rides glm.layer_split
-// (the config's layer_split sets the same knob, maya-ref docs/SETTINGS.md:31);
+// (the config's layer_split sets the same knob, maya-ref docs/SETTINGS.md:44);
 // the launch composition (Task 7) sets family and glm_gpus, and Task 8 adds
 // the vision rows. Names are checked against the closed allowlist by the
 // merge step; a name's typed row moves that §4.9 forced default.

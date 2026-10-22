@@ -343,9 +343,9 @@ void managed_launch_renders_typed_gpu_list() {
 }
 
 // SP5 M2 Task 7 (D-8): the GLM launch is composed, not passed through — Maya's launcher
-// base (maya.py:1816-1818) plus --parallel last (set_arg :1875; choices 1..8 :2742).
+// base (maya.py:2228-2230) plus --parallel last (set_arg :2291; choices 1..8 :3885).
 // The manifest's model directory is the pack (--glm-pack is the pack root; Maya puts the
-// tokenizer at <pack>/tokenizer, maya.py:1817).
+// tokenizer at <pack>/tokenizer, maya.py:2231).
 void glm_launch_argv_matches_mayas_launcher_form() {
   const auto root = models_root();
   const std::vector<std::string> base{"--glm-pack", secure_frontend::path_to_utf8((root.path() / "qwen").make_preferred()),
@@ -355,7 +355,7 @@ void glm_launch_argv_matches_mayas_launcher_form() {
   const auto* args = std::get_if<std::vector<std::string>>(&result);
   expect(args != nullptr, "the composed GLM launch builds");
   if (args != nullptr) {
-    expect(*args == base, "the argv equals Maya's launcher form (maya.py:1816-1818), --parallel absent at 1");
+    expect(*args == base, "the argv equals Maya's launcher form (maya.py:2228-2230), --parallel absent at 1");
     expect(std::find(args->begin(), args->end(), "--serve") == args->end(), "no --serve in the argv tail (:4 inserts it)");
     for (const std::string owned : {"--native", "--pack", "--gpu", "--dflash", "--expert-profile", "--batch", "--slots"})
       expect(std::find(args->begin(), args->end(), owned) == args->end(), "no owned or §4 flag appears: " + owned);
@@ -367,11 +367,11 @@ void glm_launch_argv_matches_mayas_launcher_form() {
   expected.insert(expected.end(), {"--parallel", "2"});
   expect(std::holds_alternative<std::vector<std::string>>(with_parallel) &&
              std::get<std::vector<std::string>>(with_parallel) == expected,
-         "replicas.parallel 2 renders --parallel last (maya.py:1875)");
+         "replicas.parallel 2 renders --parallel last (maya.py:2291)");
 }
 
 // The bounds Maya's launcher enforces: --context is a positive token count and
-// --parallel only ever reaches its config through choices 1-8 (maya.py:2742).
+// --parallel only ever reaches its config through choices 1-8 (maya.py:3885).
 void glm_context_and_parallel_bounds_enforced() {
   const auto root = models_root();
   for (const std::int64_t count : {0, 9, 100}) {

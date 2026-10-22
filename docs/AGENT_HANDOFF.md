@@ -10,7 +10,7 @@
 
 This repository is a Windows-and-Linux, security- and privacy-first successor
 to Strata. It must retain the model/backend flexibility of upstream Strata
-`v0.2.1.3` while replacing its public service boundary with a small portable
+`v0.2.2` while replacing its public service boundary with a small portable
 native frontend. UnbiasedStrata is a security-design reference, not a direct
 code base.
 
@@ -70,7 +70,7 @@ without asking the owner.
    lands in SP1 and SP7.
 6. **Upstream-trackability.** Upstream Strata is the git submodule `upstream/`
    (`https://github.com/Niko1221/Strata.git`), pinned by its gitlink at
-   `cbfd5b926b794b356195d3cb600191b0c3567540` (tag `v0.2.1.3`) and never
+   `011c9e600a93bbc9fd451c563501b5831c32bbca` (tag `v0.2.2`) and never
    edited, inside or outside the submodule. The repository root holds only our
    code; our additions to upstream behavior are wrappers that import upstream
    (`tools/secure/secure_tokenizer.py`). The upstream Python service stays in
@@ -146,11 +146,11 @@ Approved by rflores during the upstream update; binding.
 ## Current baseline
 
 - Upstream baseline: the `upstream` submodule gitlink, `Niko1221/Strata` tag
-  `v0.2.1.3`, commit `cbfd5b926b794b356195d3cb600191b0c3567540`
+  `v0.2.2`, commit `011c9e600a93bbc9fd451c563501b5831c32bbca`
   (`git submodule status`).
 - Vendored read-only reference (SP5 M2, D-10): the `engines/maya-ref` submodule
-  gitlink, `mw00/project-maya` tag `v1.1.8`, commit
-  `5c970a863ce2fdd87b6e23ffb4822f6d76522b1c`; never built by any preset,
+  gitlink, `mw00/project-maya` tag `v1.1.21`, commit
+  `451f9cb6a21ea65673bdde2e57b4a670ae2b8859`; never built by any preset,
   never packaged (`secure_distribution_check.py` rejects a `maya-ref`
   component), never collected by pytest; cited by `file:line` only.
 - Git remotes: `origin` is the owner's repository. Only the owner pushes. The
@@ -167,7 +167,7 @@ Approved by rflores during the upstream update; binding.
   its observable contracts. The separate GLM engine, CUDA/HIP kernels, and
   remote tensor-parallel worker are not yet ported (SP6).
 - Second GLM-5.3 reference (owner, 2026-10-14): `mw00/project-maya` tag
-  `v1.1.8`, commit `5c970a863ce2fdd87b6e23ffb4822f6d76522b1c` (MIT, Strata
+  `v1.1.21` (pinned 2026-10-21; named at `v1.1.8`), commit `451f9cb6a21ea65673bdde2e57b4a670ae2b8859` (MIT, Strata
   derivative: NVIDIA + AMD HIP, experimental Windows, MTP, quant tooling). No
   code has been taken from it; SP6 planning weighs it against `glm53f`.
 - Supported target platforms: native Windows 10/11 and Linux. The intended
@@ -180,7 +180,7 @@ Approved by rflores during the upstream update; binding.
 Upstream Strata is the git submodule `upstream/`; the repository root holds
 only our code. Deleting `upstream/` leaves exactly our code.
 
-| Ours, at the root | Pristine, under `upstream/` (submodule @ `cbfd5b92`, tag `v0.2.1.3`) |
+| Ours, at the root | Pristine, under `upstream/` (submodule @ `011c9e60`, tag `v0.2.2`) |
 | --- | --- |
 | `CMakeLists.txt` (builds `secure_frontend/` and, by default, the engine from `upstream/`) | `upstream/CMakeLists.txt`, `upstream/src/`, `upstream/include/`, `upstream/cmake/`, `upstream/third_party/`, `upstream/sycl/` |
 | `secure_frontend/` (own `CMakePresets.json`; builds without `upstream/`) | `upstream/serve/`, `upstream/setup.py`, `upstream/setup.sh`, `upstream/requirements.txt`, `upstream/chat.py`, the launchers |
@@ -206,6 +206,54 @@ Ninja && cmake --build out/root && ctest --test-dir out/root`.
 Follow [`PROVENANCE.md`](PROVENANCE.md), "Updating the baseline" (the only copy of the runbook: gates at the old pin, bump, gates, pin sites, one commit).
 
 ## What has changed
+
+### First owner-box Windows GPU session (2026-10-21, base `main` = `e5a5327a`, uncommitted)
+
+Full log with every issue: [`validation/2026-10-21-windows-gpu-session.md`](validation/2026-10-21-windows-gpu-session.md).
+Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
+
+- **Engine built with CUDA on Windows and ran on the GPU** (upstream unmodified, first at
+  `v0.2.1.3`, then `v0.2.2`): one-shot `generate` with the native-expert packs and MTP gave
+  correct answers at 50.8 tok/s (IQ3_S) and 51.2 tok/s (Swift IQ3_S). First GPU evidence.
+- **Two chat blockers found and fixed (owner-approved), GPU-verified:** issue 19 — the Qwen
+  prompt lacked the template's think block and `<think>`/`</think>` (USER_DEFINED) failed
+  closed as output; issue 26 — the end-of-turn token `<|im_end|>` (CONTROL), which the engine
+  prints before `DONE … stop`, failed closed too. Now: the qwen plan writes the template's
+  generation tail when the pack has the markers (`reasoning.effort none` → closed block), the
+  reply is split into `reasoning_content` and `content` (non-stream and stream), and an
+  end-of-turn id ends the reply as `stop`. Through `strata-secure-server` on the `v0.2.2`
+  engine: non-stream and stream chats 200 with `finish_reason: stop`, 68.7 tok/s end to end on
+  a 513-token reply, client disconnect → `client_gone` and the next request served, multi-turn
+  correct, effort `none` → no reasoning. 19 new test cases (TDD, stubs first). RED runs
+  failed exactly on the new tests; the final full MSVC suite (865 tests, Smart App Control
+  off) matches the baseline's 30 Windows-host failures exactly, with every new test passing
+  (session log, "Owner-run results"). The Linux `-Werror` gates have not run. Known parity gaps: the template's effort sentence is not
+  rendered; low/medium/high are not distinguished.
+- **Upstream bumped to `v0.2.2`** (owner request; `011c9e60`, tag object `e6fff4ad`): pin
+  sites, `engine-protocol-limits.md`, comment cites and the parity table (127 rows; new
+  `pool_cores`, `STRATA_ENGINE_NICE`, `gpu_roles`, `gpu_none`) re-pinned. Gates on the
+  Windows box only (session log step 6); the runbook's Linux gates and the
+  `privacy-migration.md` re-review are still owed.
+- **Engine supply-chain contract** (owner decision): [`security/engine-supply-chain.md`](security/engine-supply-chain.md)
+  — rules C1–C9 for every engine we pull or compile (immutable pins, review before
+  execution, `scripts/security/engine_review.py diff` with a ruling per finding, a full read
+  of the compiled diff, the `binary` import gate against
+  `security/engine-binary-allowlist.json`, no foreign executables, dependency review,
+  containment, recorded sign-off), wired into PROVENANCE "Updating the baseline". Applied
+  retroactively to `v0.2.2`: 58 findings ruled (0 refused), binary gate PASS for both
+  builds, llama.cpp fetch clean; compiled-diff read recorded separately; signed off by the
+  owner 2026-10-21 ("yes commit and push"). Gate tests `tools/secure/test_engine_review.py` (7; written after the script, no
+  RED run).
+- **Maya bumped to `v1.1.21`** (owner decision; `451f9cb6`, tag object `ba26442d`):
+  citations re-pinned; the `glm53` READY blocker (`VRAM dev=…` records before READY) fixed
+  test-first in the `maya_118` dialect. Open (session log issue 27): the GLM penalty
+  semantics now differ from ours, and the `MAYA_*` respelling leaves the GLM key inventory at
+  its `v1.1.8` set (50 new knobs, five DFlash, not yet rowed).
+- Frontend built only with MSVC and `SECURE_FRONTEND_WERROR=OFF` (unsupported; MSYS2 /
+  llvm-mingw not on the box). The supported `windows-msvc` preset fails, including real
+  `small`-macro clashes in `tests/manifest_test.cpp:349` and `tests/http_socket_server_test.cpp:837`
+  (issues 10, 23).
+- No Windows-runtime ctest proof was produced.
 
 ### SP7 M2 (branch `sp7-m2-release-side`, base `f4dff56d` — `main` with SP7 M1 merged; the branch waits for the controller's merge gate)
 

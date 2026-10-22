@@ -111,7 +111,7 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
   if (!vision_request) {
     const auto plan_result = config_.profile == NativeChatProfile::qwen
                                  ? make_qwen_chat_generation_plan(request, tokenizer_, config_.max_prompt_tokens, 1U,
-                                                                  config_.sampling_default)
+                                                                  config_.sampling_default, {}, config_.qwen_thinking)
                                  : make_glm53_chat_generation_plan(request, tokenizer_, config_.max_prompt_tokens, 1U,
                                                                   config_.sampling_default);
     if (const auto* plan_error = std::get_if<ChatGenerationPlanError>(&plan_result)) {
@@ -171,7 +171,7 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
     image_counts.reserve(encoded.size());
     for (const auto& entry : encoded) image_counts.push_back(entry.image_tokens);
     const auto plan_result = make_qwen_chat_generation_plan(request, tokenizer_, config_.max_prompt_tokens, 1U,
-                                                            config_.sampling_default, image_counts);
+                                                            config_.sampling_default, image_counts, config_.qwen_thinking);
     if (const auto* plan_error = std::get_if<ChatGenerationPlanError>(&plan_result)) {
       config_.vision->discard(*combined_file);
       lease.reset();
@@ -201,13 +201,15 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
                                          config_.default_max_tokens, config_.fit_max_tokens, config_.minimum_output_tokens,
                                          config_.maximum_output_tokens);
   if (budget && request.stream)
-    return stream_response(lease, prompt_ids, *budget, plan->sampling, request.include_usage, context,
+    return stream_response(lease, prompt_ids, *budget, *plan, request.include_usage, context,
                            std::move(embeddings), combined_file);
   if (!budget) {
     context_refused = true;
   } else {
     outcome = lease->chat().run_generation(
-        prompt_ids, {.max_tokens = *budget, .sampling = plan->sampling, .embeddings = embeddings},
+        prompt_ids,
+        {.max_tokens = *budget, .sampling = plan->sampling, .embeddings = embeddings, .think_tokens = plan->think_tokens,
+         .starts_in_reasoning = plan->starts_in_reasoning, .stop_tokens = plan->stop_tokens},
         {.cancelled = context.client_gone, .shutting_down = context.shutting_down,
          .shutdown_requested = [] { return shutdown_signalled(); }},
         tokenizer_);
@@ -235,7 +237,8 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
   const auto created = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
   const auto rendered = render_chat_completion({.id = *id, .created = created, .model = config_.model_id, .text = result.text,
                                                 .finish_reason = result.finish == FinishReason::length ? "length" : "stop",
-                                                .prompt_tokens = result.prompt_tokens, .completion_tokens = result.completion_tokens},
+                                                .prompt_tokens = result.prompt_tokens, .completion_tokens = result.completion_tokens,
+                                                .reasoning = result.reasoning},
                                                config_.schema);
   if (!rendered) return make_error_response(ApiError::internal_error);
   HttpResponse response{.status = 200, .headers = {{"Content-Type", "application/json; charset=utf-8"}}, .body = *rendered};
@@ -244,7 +247,7 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
 }
 
 RouteResult ChatRoute::stream_response(std::optional<Lease>& lease, const std::vector<std::uint32_t>& prompt_ids, const std::size_t max_tokens,
-                                       const SamplingParams& sampling, const bool include_usage, const RequestContext& context,
+                                       const ChatGenerationPlan& plan, const bool include_usage, const RequestContext& context,
                                        std::string embeddings, std::optional<std::filesystem::path> combined_file) {
   const std::atomic<bool>* flag = context.shutting_down;
   std::function<bool()> shutting_down = [flag] { return (flag != nullptr && flag->load()) || shutdown_signalled(); };  // R-H
@@ -256,7 +259,7 @@ RouteResult ChatRoute::stream_response(std::optional<Lease>& lease, const std::v
     return make_error_response(ApiError::internal_error);
   }
   if (const auto failure =
-          hold->lease().chat().begin(prompt_ids, {.max_tokens = max_tokens, .sampling = sampling, .embeddings = embeddings})) {
+          hold->lease().chat().begin(prompt_ids, {.max_tokens = max_tokens, .sampling = plan.sampling, .embeddings = embeddings})) {
     hold->end_generation();  // reports a closed protocol through the port
     if (combined_file.has_value()) config_.vision->discard(*combined_file);
     return *failure == GenerationFailure::engine_error ? make_error_response(ApiError::engine_error) : engine_unavailable();
@@ -265,6 +268,9 @@ RouteResult ChatRoute::stream_response(std::optional<Lease>& lease, const std::v
   SseIdentity identity{std::move(*id), static_cast<std::int64_t>(created), config_.model_id};
   ChatStreamSettings settings;
   settings.run = hold->lease().chat().drive_limits(max_tokens);
+  settings.run.think_tokens = plan.think_tokens;
+  settings.run.starts_in_reasoning = plan.starts_in_reasoning;
+  settings.run.stop_tokens = plan.stop_tokens;
   settings.write_stall = config_.write_stall;
   settings.tail_deadline = config_.response_write_deadline;
   settings.keepalive = config_.stream_keepalive;

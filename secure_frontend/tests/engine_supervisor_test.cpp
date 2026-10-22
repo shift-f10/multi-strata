@@ -1923,7 +1923,7 @@ void glm_child_env_is_exactly_the_named_typed_set() {
     const auto found = block->find(std::string{name});
     expect(found != block->end() && found->second == "0", "forced default: " + std::string{name});
   }
-  // GPU selection is environment for this family only (serve/server.py:1216-1224,
+  // GPU selection is environment for this family only (serve/server.py:1280-1288,
   // SP6 §4.9 A8): no card named renders device 0.
   expect(block->count("CUDA_DEVICE_ORDER") == 1U && block->at("CUDA_DEVICE_ORDER") == "PCI_BUS_ID" &&
              block->count("CUDA_VISIBLE_DEVICES") == 1U && block->at("CUDA_VISIBLE_DEVICES") == "0",
@@ -1952,7 +1952,7 @@ void glm_child_env_is_exactly_the_named_typed_set() {
 }
 
 // SP6 §4.9's safety values stay forced unless a typed row moves them; the
-// glm family omits the rows MAYA v1.1.8 has no literal for (SP6 §4.9).
+// glm family omits the rows MAYA v1.1.21 has no literal for (SP6 §4.9).
 void forced_defaults_stay_forced_unless_the_table_moves_them() {
   auto environment = secure_frontend::EngineEnvironment{
       .lib_dirs = {},
@@ -1965,7 +1965,7 @@ void forced_defaults_stay_forced_unless_the_table_moves_them() {
   const auto block = secure_frontend::render_family_environment(environment);
   expect(block.has_value(), "the glm family renders");
   if (!block) return;
-  expect(block->count("STRATA_WATCHDOG_IO_S") == 0U, "the glm family suppresses the watchdog-IO row (SP6 §4.9: MAYA v1.1.8 has no such literal)");
+  expect(block->count("STRATA_WATCHDOG_IO_S") == 0U, "the glm family suppresses the watchdog-IO row (SP6 §4.9: MAYA v1.1.21 has no such literal)");
   expect(block->at("STRATA_WATCHDOG_S") == "0", "the engine watchdog stays off (the M5 forced default overrides the generic row)");
   expect(block->at("STRATA_GLM_SLOTS") == "0" && block->at("STRATA_GLM_LOOP_THINK") == "0" &&
              block->at("STRATA_GLM_LOOP_ANSWER") == "0" && block->at("STRATA_GLM_SPLIT") == "0",
@@ -2085,6 +2085,44 @@ void fake_maya_dialect_round_trips_only_under_the_maya_dialect() {
   }
 }
 
+// Issue 27 (docs/validation/2026-10-21-windows-gpu-session.md): Maya v1.1.21 prints its startup
+// INFO and one VRAM record per GPU part before READY (maya-ref src/program/generate.cpp:1044,
+// :1054-1062). Under maya_118 the engine reaches READY and serves; under the strict dialect the
+// unknown record ends the start as protocol_failed and READY is never reported.
+void fake_maya_vram_records_reach_ready_only_under_the_maya_dialect() {
+  const auto tokenizer = test_support::byte_tokenizer();
+  const secure_frontend::ChatCompletionRequest request{"fake-model", {{"user", "Hi"}}, 2U};
+  const std::vector<std::string> argv{"--dialect=maya", "--maya-vram", "--glm-pack", "/models/glm", "--max-context", "32768",
+                                      "--prefill", "auto", "--kv-streaming", "on", "--tokens=4"};
+  {  // strata dialect: the VRAM record before READY is unknown.
+    secure_frontend::SupervisorConfig strict;
+    strict.policy.backoff_initial = 20ms;
+    test_support::LogCapture log;
+    secure_frontend::EngineSupervisor supervisor(strict, secure_frontend::make_stdio_process_factory(fake_plan(argv)),
+                                                 std::make_shared<secure_frontend::SteadySupervisorClock>(), log.sink());
+    expect(supervisor.start(), "the strict supervisor starts");
+    expect(!test_support::wait_generation_ready(supervisor, 1U, 2s), "a strict client never reports READY past a VRAM record");
+    // LogCapture matches whole lines.
+    expect(log.wait_for("engine generation 1 ended: killed_by_supervisor(protocol_failed)", 5s),
+           "the unknown pre-READY record kills the start");
+    supervisor.shutdown(5s);
+  }
+  {  // maya dialect: the same startup reaches READY and serves.
+    secure_frontend::SupervisorConfig maya;
+    maya.flavor = secure_frontend::EngineProtocolFlavor::maya_118;
+    test_support::LogCapture log;
+    secure_frontend::EngineSupervisor supervisor(maya, secure_frontend::make_stdio_process_factory(fake_plan(argv)),
+                                                 std::make_shared<secure_frontend::SteadySupervisorClock>(), log.sink());
+    expect(supervisor.start(), "the maya supervisor starts");
+    expect(test_support::wait_generation_ready(supervisor, 1U, 10s), "the v1.1.21 startup reaches READY under maya_118");
+    const auto outcome = secure_frontend::execute_with_lease(supervisor, request, tokenizer);
+    const auto* completion = outcome ? std::get_if<secure_frontend::ChatExecutionResult>(&*outcome) : nullptr;
+    expect(completion != nullptr && completion->generated_tokens == 2U, "and serves the generation");
+    expect(!log.contains("engine generation 1 ended: killed_by_supervisor(protocol_failed)"), "nothing is unknown under maya_118");
+    supervisor.shutdown(5s);
+  }
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -2138,6 +2176,8 @@ int main(int argc, char* argv[]) {
                                                 {"sp6_env_derived_value_reaches_child", sp6_env_derived_value_reaches_child},
                                                 {"fake_maya_dialect_round_trips_only_under_the_maya_dialect",
                                                  fake_maya_dialect_round_trips_only_under_the_maya_dialect},
+                                                {"fake_maya_vram_records_reach_ready_only_under_the_maya_dialect",
+                                                 fake_maya_vram_records_reach_ready_only_under_the_maya_dialect},
                                                 {"proc02_child_env_is_exact_allowlist", proc02_child_env_is_exact_allowlist},
 #if !defined(_WIN32)
                                                 {"shutdown_signal_preserves_errno", shutdown_signal_preserves_errno},

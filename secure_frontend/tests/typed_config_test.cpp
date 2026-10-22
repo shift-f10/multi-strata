@@ -1021,7 +1021,7 @@ void glm_keys_parse_with_mayas_kinds_and_defaults() {
     expect(std::holds_alternative<secure_frontend::ConfigErrors>(result),
            "rejects a bad glm row: " + issues_of(result));
   };
-  // Maya normalizes "medium" away (vendored serve/frontend.py:94: medium maps to
+  // Maya normalizes "medium" away (vendored serve/frontend.py:124: medium maps to
   // high) — the typed row admits only the four canonical level words.
   rejected({{"glm.reasoning_effort", "\"medium\""}});
   rejected({{"glm.reasoning_effort", "\"ultrathink\""}});
@@ -1029,13 +1029,13 @@ void glm_keys_parse_with_mayas_kinds_and_defaults() {
   rejected({{"glm.thinking_budget", "1000000001"}});  // added bound (C-1)
   rejected({{"glm.thinking_budget", "\"4096\""}});
   rejected({{"glm.experimental_speed_projection", "\"true\""}});
-  rejected({{"glm.layer_split", "\"auto;rm\""}});  // closed grammar (SETTINGS.md:31)
+  rejected({{"glm.layer_split", "\"auto;rm\""}});  // closed grammar (SETTINGS.md:44)
   rejected({{"glm.tokenizer", "\"relative/path\""}});  // absolute like session.slot_save_path
   const auto bare_result = with_literals(f, glm53({}));
   expect(std::holds_alternative<secure_frontend::ValidatedConfig>(bare_result),
          "a glm53 config without glm rows validates: " + issues_of(bare_result));
   const std::string bare = describe_of(bare_result);
-  expect(bare.find("glm.layer_split = \"auto\"") != std::string::npos, "layer_split defaults to auto (serve/server.py:1212)");
+  expect(bare.find("glm.layer_split = \"auto\"") != std::string::npos, "layer_split defaults to auto (serve/server.py:1276)");
 }
 
 void glm_keys_rejected_on_strata_profile_by_name() {
@@ -1061,15 +1061,15 @@ void thinking_budget_default_is_mayas_32768() {
          "the bare glm53 config validates: " + issues_of(result));
   const std::string described = describe_of(result);
   expect(described.find("glm.thinking_budget = 32768") != std::string::npos,
-         "Maya's thinking_budget default is 32768 (vendored serve/server.py:3440; C-3 keeps Maya's name)");
+         "Maya's thinking_budget default is 32768 (vendored serve/server.py:4090; C-3 keeps Maya's name)");
   expect(described.find("glm.fit_max_tokens = false") != std::string::npos,
-         "Maya's fit_max_tokens defaults false (serve/server.py:3427 reads `is True`)");
+         "Maya's fit_max_tokens defaults false (serve/server.py:4077 reads `is True`)");
   expect(described.find("glm.experimental_speed_projection = false") != std::string::npos,
-         "speed projection defaults false (serve/server.py:3255)");
+         "speed projection defaults false (serve/server.py:3819)");
 }
 
 // SP5 M2 Task 7 (D-8, C-5): the GLM launch surface is typed, not passed through.
-// glm.max_context carries Maya's DEFAULT_CONTEXT (maya.py:2524; bound added, C-1)
+// glm.max_context carries Maya's DEFAULT_CONTEXT (maya.py:3148; bound added, C-1)
 // and any engine.args row under glm53 is refused by name at config load.
 void glm_max_context_typed_and_glm53_args_refused() {
   ConfigFixture f;
@@ -1079,7 +1079,7 @@ void glm_max_context_typed_and_glm53_args_refused() {
          "a glm53 config needs no engine argument any more: " + issues_of(accepted));
   if (std::holds_alternative<secure_frontend::ValidatedConfig>(accepted)) {
     const std::string described = describe_of(accepted);
-    expect(described.find("glm.max_context = 32768") != std::string::npos, "Maya's --max-context default is 32768 (maya.py:2524)");
+    expect(described.find("glm.max_context = 32768") != std::string::npos, "Maya's --max-context default is 32768 (maya.py:3148)");
   }
   for (const char* args : {"[\"--max-context\", \"32768\"]", "[\"--model\"]", "[\"--gpu\", \"0\"]", "[\"--serve\"]"}) {
     const auto result = with_literals(f, {{"engine.profile", "\"glm53\""}, {"engine.args", args}});
@@ -1093,8 +1093,8 @@ void glm_max_context_typed_and_glm53_args_refused() {
 
 // SP5 M2 Task 4 (D-7): the config-to-env projection — glm.layer_split moves
 // the STRATA_GLM_SPLIT forced default in the glm child environment
-// (maya-ref docs/SETTINGS.md:31), and glm.gpu renders the family's CUDA
-// selector (serve/server.py:1216-1224); the fixture carries no vision, and
+// (maya-ref docs/SETTINGS.md:44), and glm.gpu renders the family's CUDA
+// selector (serve/server.py:1280-1288); the fixture carries no vision, and
 // Task 8's case pins what a vision turn adds.
 void glm_environment_projection_moves_the_split_default() {
   ConfigFixture f;
@@ -1123,12 +1123,12 @@ void glm_environment_projection_moves_the_split_default() {
 
 // SP5 M2 Task 8 (D-8): the GLM vision rows reach BOTH children. On the engine side
 // the VLEND-family row (STRATA_GLM_VISION_LEND_MB, the typed engine_env row at
-// serve/server.py:3396) projects and renders only when a vision turn is configured
-// — vision.enabled and the encoder not resident (the on-demand flow, server.py:3385,
+// serve/server.py:4026) projects and renders only when a vision turn is configured
+// — vision.enabled and the encoder not resident (the on-demand flow, server.py:4015,
 // where the engine lends the expert-cache tail; resident vision holds its own VRAM
 // and never lends). Without a turn the row never reaches the child, even if the
 // internal knob channel carries one (fail closed). On the encoder side the argv
-// carries Maya's flag form (--no-flash-attn, server.py:991/:1158).
+// carries Maya's flag form (--no-flash-attn, server.py:1055/:1222).
 void glm_vision_flags_reach_both_children() {
   ConfigFixture f;
   const auto on_demand = with_literals(f, {{"engine.profile", "\"glm53\""}, {"glm.gpu", "\"1\""},
@@ -1145,7 +1145,7 @@ void glm_vision_flags_reach_both_children() {
     return row.name == "STRATA_GLM_VISION_LEND_MB";
   });
   expect(lend != knobs.end() && lend->value == "12288",
-         "the vision turn projects the LEND row from vision.need_mib (server.py:3396, images.py:156)");
+         "the vision turn projects the LEND row from vision.need_mib (server.py:4026, images.py:156)");
   secure_frontend::EngineEnvironment environment{
       .lib_dirs = {},
       .temp_dir = "/state/engine-tmp/1",
@@ -1170,22 +1170,22 @@ void glm_vision_flags_reach_both_children() {
   const auto rendered_off = secure_frontend::render_family_environment(off);
   expect(rendered_off != std::nullopt && rendered_off->find("STRATA_GLM_VISION_LEND_MB") == rendered_off->end(),
          "without a vision turn the child never carries the LEND row (fail closed)");
-  // Resident vision holds the encoder's VRAM beside the model (server.py:977's resident
+  // Resident vision holds the encoder's VRAM beside the model (server.py:1041's resident
   // flow): no lending, no row.
   const auto resident = with_literals(f, {{"engine.profile", "\"glm53\""},
                                           {"vision", "{\"enabled\": true, \"need_mib\": 12288}"}});
   const auto* resident_config = config_of(resident);
   expect(resident_config != nullptr, "glm53 with resident vision validates: " + issues_of(resident));
   if (resident_config != nullptr)  // vision.resident defaults true (the SP6 shared key, M1 Task 12)
-    expect(!has_lend(secure_frontend::glm_environment_knobs(*resident_config)), "resident vision does not lend (:3385)");
-  // The encoder child: Maya's form (server.py:983-991) — --mmproj/--model first,
-  // the threads/max-tokens pair in the same shape, --no-flash-attn when configured (:991).
+    expect(!has_lend(secure_frontend::glm_environment_knobs(*resident_config)), "resident vision does not lend (:4015)");
+  // The encoder child: Maya's form (server.py:1047-1055) — --mmproj/--model first,
+  // the threads/max-tokens pair in the same shape, --no-flash-attn when configured (:1055).
   const secure_frontend::VisionChildSpec spec{
       .mmproj = "/p/mmproj.gguf", .model = "/p/model.gguf", .threads = 4, .max_tokens = std::nullopt, .min_tokens = std::nullopt, .no_flash_attn = true};
   expect(secure_frontend::compose_vision_arguments(spec) ==
              std::vector<std::string>{"--mmproj", "/p/mmproj.gguf", "--model", "/p/model.gguf", "--threads", "4",
                                       "--no-flash-attn"},
-         "the encoder argv carries Maya's form (--no-flash-attn: server.py:991, :1158)");
+         "the encoder argv carries Maya's form (--no-flash-attn: server.py:1055, :1222)");
 }
 
 void reasoning_rows_match_the_pinned_validator() {

@@ -5,6 +5,14 @@ in one place, with its current status. Agents prove only the local gates
 (`linux-gcc`, release preset, `windows-llvm-mingw-cross` compile-only, pytest, TSan);
 every claim below waits for the owner's own hardware (owner rulings 2026-10-20/21).
 
+Session logs from the owner's box: [`2026-10-21-windows-gpu-session.md`](2026-10-21-windows-gpu-session.md)
+(first Windows GPU run: engine works; the Qwen think-token and end-of-turn chat blockers fixed
+and GPU-verified; upstream bumped to `v0.2.2`, Maya to `v1.1.21`).
+
+Every engine bump also passes the [engine supply-chain contract](../security/engine-supply-chain.md)
+(review before build, a ruling per scan finding, a full read of the compiled diff, the
+built-binary import gate); its records live in `docs/security/engine-reviews/`.
+
 ## Windows runtime
 
 - **What:** the `windows-runtime`-labelled ctest cases (300+ registered in the cross
@@ -23,7 +31,7 @@ every claim below waits for the owner's own hardware (owner rulings 2026-10-20/2
    `concurrent=<k>`, `utf8`, `seed`). Status: defined, **not yet run**.
 2. **SP5 parity acceptance kit** — `docs/validation/sp5-parity-kit.md` + probe corpus
    mode (delivered by SP5 M2, merged `073af122`). Runs the same corpus against plain upstream
-   `serve` (v0.2.1.3 engine) and `strata serve`, plus the Maya `v1.1.8` side vs our
+   `serve` (v0.2.2 engine) and `strata serve`, plus the Maya `v1.1.21` side vs our
    `glm53` profile; results file is hashed into `docs/PROVENANCE.md` as the SP5
    acceptance entry (row exists as a placeholder — **no GLM parity claim until you run it**).
    Status: ready; **run is owner-side**.

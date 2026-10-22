@@ -17,6 +17,8 @@ constexpr std::string_view kEndMarker = "<|im_end|>";
 constexpr std::string_view kVisionStartMarker = "<|vision_start|>";
 constexpr std::string_view kImagePadMarker = "<|image_pad|>";
 constexpr std::string_view kVisionEndMarker = "<|vision_end|>";
+constexpr std::string_view kThinkOpenMarker = "<think>";
+constexpr std::string_view kThinkCloseMarker = "</think>";
 
 bool valid_utf8(std::string_view value) {
   for (std::size_t index = 0; index < value.size();) {
@@ -100,11 +102,30 @@ bool image_free_parts(const ChatMessage& message) {
   return true;
 }
 
+// With a reasoning tail only the renderer may place the think markers: a client's
+// literal could otherwise open or close the model's think block.
+bool holds_think_marker(const ChatMessage& message) {
+  const auto holds = [](const std::string_view text) {
+    return text.find(kThinkOpenMarker) != std::string_view::npos || text.find(kThinkCloseMarker) != std::string_view::npos;
+  };
+  if (holds(message.content)) return true;
+  for (const auto& part : message.parts) {
+    if (holds(part.text)) return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 std::optional<std::string> render_qwen_text_prompt(const std::vector<ChatMessage>& messages,
-                                                   const std::span<const std::size_t> image_token_counts) {
+                                                   const std::span<const std::size_t> image_token_counts,
+                                                   const QwenThinking thinking) {
   if (messages.empty() || messages.size() > kMaximumMessages) return std::nullopt;
+  if (thinking != QwenThinking::absent) {
+    for (const auto& message : messages) {
+      if (holds_think_marker(message)) return std::nullopt;
+    }
+  }
 
   std::size_t index = 0;
   if (messages.front().role == "system") {
@@ -152,6 +173,9 @@ std::optional<std::string> render_qwen_text_prompt(const std::vector<ChatMessage
   if (!append_bounded(&prompt, kStartMarker) || !append_bounded(&prompt, "assistant\n")) {
     return std::nullopt;
   }
+  // The Qwen3 template's add_generation_prompt tail (tokenizer/chat_template.jinja).
+  if (thinking == QwenThinking::on && !append_bounded(&prompt, "<think>\n")) return std::nullopt;
+  if (thinking == QwenThinking::off && !append_bounded(&prompt, "<think>\n\n</think>\n\n")) return std::nullopt;
   return prompt;
 }
 

@@ -42,6 +42,12 @@ GenerationRunResult drive_generation(EngineProtocolClient& protocol, const Token
   std::size_t run_len = 0;
   Clock::time_point drain_deadline{};
   auto last_tick = Clock::now();
+  // Issue 19, the reasoning split (limits.think_tokens): which channel decoded text goes
+  // to, and whether the newlines right after a </think> are still to be dropped.
+  bool reasoning = limits.think_tokens.has_value() && limits.starts_in_reasoning;
+  bool after_close = false;
+  // Issue 26: an end-of-turn token was seen; the reply is over, the rest until DONE is dropped.
+  bool turn_ended = false;
 
   // false: STOP could not be written (the protocol is abandoned).
   const auto send_stop = [&](const StopCause why) {
@@ -60,16 +66,28 @@ GenerationRunResult drive_generation(EngineProtocolClient& protocol, const Token
     }
     return true;
   };
-  // Releases decoded text within the byte cap; on reaching it, cuts on a code
-  // point and (while the engine still generates) sends STOP.
-  const auto release = [&](std::string text) {
+  // Hands text to the channel it was decoded in (reasoning or the answer).
+  const auto emit = [&](const std::string_view text, const bool as_reasoning) {
+    if (as_reasoning) observer.on_reasoning(text);
+    else observer.on_text(text);
+  };
+  // Releases decoded text within the byte cap (one cap over both channels); on
+  // reaching it, cuts on a code point and (while the engine still generates) sends STOP.
+  const auto release = [&](std::string text, const bool as_reasoning) {
     if (cause != StopCause::none || text.empty()) return true;
+    if (!as_reasoning && after_close) {
+      // Upstream's lead rule (serve/frontend.py:1279-1284): newlines only, spaces stay.
+      const auto first = text.find_first_not_of('\n');
+      if (first == std::string::npos) return true;
+      text.erase(0, first);
+      after_close = false;
+    }
     if (released + text.size() > limits.max_generated_bytes) {
       text.resize(code_point_prefix(text, limits.max_generated_bytes - released));
       result.bytes_capped = true;
       if (!text.empty()) {
         released += text.size();
-        observer.on_text(text);
+        emit(text, as_reasoning);
       }
       if (!protocol.generating()) {
         cause = StopCause::bytes;
@@ -78,7 +96,7 @@ GenerationRunResult drive_generation(EngineProtocolClient& protocol, const Token
       return send_stop(StopCause::bytes);
     }
     released += text.size();
-    observer.on_text(text);
+    emit(text, as_reasoning);
     return true;
   };
 
@@ -118,15 +136,31 @@ GenerationRunResult drive_generation(EngineProtocolClient& protocol, const Token
         result.end = RunEnd::engine_error;
         return result;
       }
-      if (cause == StopCause::none) {
+      const bool end_of_turn = std::find(limits.stop_tokens.begin(), limits.stop_tokens.end(), token->id) != limits.stop_tokens.end();
+      if (cause == StopCause::none && !turn_ended && end_of_turn) {
+        // Never output; a held partial character ends as one U+FFFD, as at a stop end.
+        if (!release(utf8.finish(false), reasoning)) return result;  // engine_unavailable
+        turn_ended = true;
+      } else if (cause == StopCause::none && !turn_ended) {
         if (token->id == run_id) ++run_len;
         else {
           run_id = token->id;
           run_len = 1;
         }
-        const auto bytes = decoder.bytes_for(token->id);
-        const bool ok = std::holds_alternative<std::string>(bytes) ? release(utf8.push(std::get<std::string>(bytes)))
-                                                                   : send_stop(StopCause::undecodable);
+        const bool think_open = limits.think_tokens.has_value() && token->id == limits.think_tokens->open;
+        const bool think_close = limits.think_tokens.has_value() && token->id == limits.think_tokens->close;
+        bool ok = true;
+        if (think_open || think_close) {
+          // A tag is never output. It ends its channel: a held partial character becomes
+          // one U+FFFD there (as at a stop end) and never crosses into the other channel.
+          ok = release(utf8.finish(false), reasoning);
+          reasoning = think_open;
+          after_close = think_close;
+        } else {
+          const auto bytes = decoder.bytes_for(token->id);
+          ok = std::holds_alternative<std::string>(bytes) ? release(utf8.push(std::get<std::string>(bytes)), reasoning)
+                                                          : send_stop(StopCause::undecodable);
+        }
         if (!ok) return result;  // engine_unavailable
         // SP5 M1 Task 8 (repeat_stop_tokens, serve/server.py:4908, :5088): the pin's own
         // runaway detector — this many of one token in a row end the reply. The run is kept
@@ -140,13 +174,13 @@ GenerationRunResult drive_generation(EngineProtocolClient& protocol, const Token
       last_activity = Clock::now();  // a progress line is the engine speaking (pin: "nothing valid")
     } else {
       const auto& done = std::get<DoneEvent>(event);
-      if (cause == StopCause::none) (void)release(utf8.finish(done.finish != "stop"));
+      if (cause == StopCause::none && !turn_ended) (void)release(utf8.finish(done.finish != "stop"), reasoning);
       if (done.finish == "nonfinite") {
         result.end = RunEnd::engine_error;
         return result;
       }
       switch (cause) {
-        case StopCause::none: result.end = done.finish == "stop" ? RunEnd::stop : RunEnd::length; break;
+        case StopCause::none: result.end = turn_ended || done.finish == "stop" ? RunEnd::stop : RunEnd::length; break;
         case StopCause::timeout:
         case StopCause::bytes:
         case StopCause::repeat: result.end = RunEnd::length; break;  // the pin's "ended as length" (:5088)

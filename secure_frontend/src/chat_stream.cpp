@@ -3,6 +3,7 @@
 #include "secure_frontend/api_constants.hpp"
 
 #include <algorithm>
+#include <deque>
 #include <optional>
 #include <string>
 
@@ -24,10 +25,8 @@ class StreamObserver final : public GenerationObserver {
   StreamObserver(StreamSink& sink, const SseIdentity& identity, const ChatStreamSettings& settings, const std::function<bool()>& shutting_down)
       : sink_(sink), identity_(identity), settings_(settings), shutting_down_(shutting_down) {}
 
-  void on_text(const std::string_view text) override {
-    if (pending_.empty()) pending_since_ = Clock::now();
-    pending_ += text;
-  }
+  void on_text(const std::string_view text) override { queue(Channel::content, text); }
+  void on_reasoning(const std::string_view text) override { queue(Channel::reasoning, text); }
 
   RunCancel on_tick(bool /*progress*/) override {
     if (shutting_down_()) {
@@ -53,7 +52,9 @@ class StreamObserver final : public GenerationObserver {
   // while a never-reading client sees full deltas only (the ≤ 80-event DOS-02
   // bound holds deterministically: pending crosses 16 KiB long before the hold
   // expires). Partial tails always flush in flush_all. blocked_since_ tracks
-  // how long output was refused (write_stall vs client_gone).
+  // how long output was refused (write_stall vs client_gone). Issue 19: a
+  // reasoning span followed by answer text (or the reverse) is finished, so it
+  // goes out without waiting for the hold.
   void flush_ready() {
     for (;;) {
       if (!sink_.writable(std::chrono::milliseconds(0))) {
@@ -61,11 +62,9 @@ class StreamObserver final : public GenerationObserver {
         return;
       }
       blocked_since_.reset();
-      if (pending_.size() >= api_constants::kMaxDeltaTextBytes) {
-        send_one();
-        continue;
-      }
-      if (!pending_.empty() && Clock::now() - pending_since_ >= kPartialFlushHold) {
+      if (pending_.empty()) return;
+      if (pending_.front().text.size() >= api_constants::kMaxDeltaTextBytes || pending_.size() > 1U ||
+          Clock::now() - pending_since_ >= kPartialFlushHold) {
         send_one();
         continue;
       }
@@ -104,10 +103,27 @@ class StreamObserver final : public GenerationObserver {
   [[nodiscard]] std::optional<Clock::time_point> shutdown_seen() const { return shutdown_seen_; }
 
  private:
+  enum class Channel { content, reasoning };
+  struct Segment final {
+    Channel channel;
+    std::string text;
+  };
+
+  // Decoded text in arrival order: one segment per run of one channel.
+  void queue(const Channel channel, const std::string_view text) {
+    if (pending_.empty()) pending_since_ = Clock::now();
+    if (pending_.empty() || pending_.back().channel != channel) pending_.push_back(Segment{channel, std::string{}});
+    pending_.back().text += text;
+  }
+
   void send_one() {
-    const std::size_t size = next_delta_size(pending_);
-    (void)sink_.send_event(render_content_event(identity_, std::string_view(pending_).substr(0, size)));
-    pending_.erase(0, size);
+    Segment& front = pending_.front();
+    const std::size_t size = next_delta_size(front.text);
+    const std::string_view delta = std::string_view(front.text).substr(0, size);
+    (void)sink_.send_event(front.channel == Channel::reasoning ? render_reasoning_event(identity_, delta)
+                                                               : render_content_event(identity_, delta));
+    front.text.erase(0, size);
+    if (front.text.empty()) pending_.pop_front();
     last_activity_ = Clock::now();
   }
 
@@ -115,7 +131,7 @@ class StreamObserver final : public GenerationObserver {
   const SseIdentity& identity_;
   const ChatStreamSettings& settings_;
   const std::function<bool()>& shutting_down_;
-  std::string pending_;  // decoded text, bounded by limits.chat.max_generated_bytes
+  std::deque<Segment> pending_;  // decoded text, bounded by limits.chat.max_generated_bytes
   Clock::time_point pending_since_{};
   std::optional<Clock::time_point> blocked_since_;
   std::optional<Clock::time_point> shutdown_seen_;

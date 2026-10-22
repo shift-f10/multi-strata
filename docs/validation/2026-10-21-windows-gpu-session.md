@@ -1,0 +1,491 @@
+# Windows GPU session — 2026-10-21 (owner box, first native run)
+
+Running log of the first build-and-run on the owner's Windows GPU box, using the
+model files in `C:\Strata-data`. Every issue hit is recorded here as it happens,
+with what was done about it. This is a session log, not a PROVENANCE row.
+
+## Host
+
+| Item | Value |
+| --- | --- |
+| OS | Windows 11 Pro 10.0.26200 |
+| CPU | AMD Ryzen 9 3900X (12 cores / 24 threads) |
+| RAM | 63.9 GB |
+| GPU | NVIDIA GeForce RTX 4080 SUPER, 16376 MiB, compute capability 8.9 |
+| Driver | 610.88 (meets the ≥ 580 floor for the cuda13 build) |
+| CUDA toolkit | 13.0 (`C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0`) |
+| Host compiler | VS 2022 Build Tools, MSVC 14.44.35207 (v143) |
+| CMake | 3.31.6-msvc6 (bundled with VS Build Tools only) |
+| Python | 3.12 (`%LOCALAPPDATA%\Programs\Python\Python312`) |
+| Repo | `C:\multi-strata`, `main` = `e5a5327a` (= `origin/main`) |
+| Free disk on C: | 199 GB |
+
+## Data in `C:\Strata-data`
+
+| Path | What |
+| --- | --- |
+| `models\IQ3_S\` | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S, 2 shards (54.8 GB + 28.8 GB), `.done` sha256 sidecars |
+| `models\swift-IQ3_S\` | Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S, 2 shards (44.9 GB + 38.8 GB), `.done` sidecars |
+| `packs\iq3_s\`, `packs\swift-iq3_s\` | `tools/iq_pack.py` native-expert packs (index v3, `dense.bin` 1.54 GB, `native_experts.txt`, tokenizer dir) |
+| `mtp\` | MTP draft head (`mtp-q2_0.gguf`, `rt\` runtime blobs, raw tensors, manifests) |
+
+## Issues
+
+Numbered in the order found. Status: **open**, **worked around**, **fixed**, **note**.
+
+1. **Submodules not checked out** — worked around. `upstream/` and `engines/maya-ref`
+   were empty (`git submodule status` showed `-`), so the root `CMakeLists.txt` would
+   stop at `upstream/ is empty`. Ran `git submodule update --init -- upstream`
+   (checked out `cbfd5b92`, tag `v0.2.1.3`, matching the recorded gitlink).
+   `engines/maya-ref` left uninitialised (not needed for the Qwen models).
+2. **No CMake or Ninja on PATH** — worked around. Only the copies bundled inside VS 2022
+   Build Tools exist; builds must run from a VS developer environment (`vcvars64.bat`).
+3. **Supported frontend Windows toolchains absent** — open. The frontend's supported
+   Windows toolchains are llvm-mingw (cross, from Linux) and MSYS2 clang; neither is on
+   this box (`C:\msys64` missing, no `clang`/`gcc` on PATH). MSVC is documented as
+   "informational, red by design" for the frontend. The engine needs MSVC v143 as the
+   nvcc host anyway.
+4. **Native-expert packs need `STRATA_NATIVE_EXPERTS=ON`** — note. Both packs are
+   `iq_pack.py` *native experts* packs; the root build seeds `STRATA_NATIVE_EXPERTS=OFF`
+   (upstream's default is ON). The engine has to be configured with it ON, which fetches
+   the pinned llama.cpp checkout over the network at configure time.
+5. **Model size vs memory** — note. Each model is ~83.6 GB on disk against 63.9 GB RAM +
+   16 GB VRAM. The native expert blob is 50.3 GB (`native_experts.txt` total), dense pack
+   1.54 GB, so it should fit with experts in RAM; upstream README notes Windows can pin
+   only about half of RAM (`STRATA_PIN_BY_NEED=1`). Watch for pinning/paging limits.
+6. **Docs disagree / stale** — note. `CLAUDE.md` and `AGENTS.md` give different Windows-claim
+   rules (CI job vs owner hardware); the resume doc (2026-10-16) still names upstream
+   `v0.1.44.1` / `296b59d2`, while the checkout pins `v0.2.1.3` / `cbfd5b92`.
+7. **SP7 offline kit is Linux-only** — note. `docs/validation/sp7-offline-kit.md` uses
+   `unshare`, `.deb`, `sha256sum`, `libcudart.so`; there is no Windows procedure, so this
+   session follows the resume doc §8 checklist adapted to Windows instead.
+8. **No git identity configured** — note. `git config user.name/user.email` are unset in
+   this checkout; nothing is committed in this session.
+
+9. **Frontend `windows-msvc` preset fails to build** — open (expected per
+   `docs/secure-frontend-ci.md`: MSVC is informational). Configure OK; build exit 1
+   (`out/frontend-msvc-build.log`). Distinct errors, all from `-Werror` → `/WX`:
+   - C4456 (declaration hides previous local): `src/chat_schema.cpp:216` (`member`),
+     `src/frontend_config.cpp:978` and `:1096` (`token`),
+     `tests/supervision_fake_engine_main.cpp:623` (`line`).
+   - C4996 (`getenv` / `_wgetenv` deprecated): `src/token_reader.cpp:82`, `:97`.
+10. **`tests/manifest_test.cpp:349` does not compile on MSVC** — open, real portability bug.
+    The local `secure_frontend::ManifestRules small;` collides with the Windows SDK macro
+    `#define small char` (`rpcndr.h`, pulled in by `<windows.h>`), giving C2628/C2059/C2062.
+    Renaming the variable fixes it; not changed here (test code, owner has not named it).
+    mingw-w64's `rpcndr.h` has the same macro, so the MSYS2/llvm-mingw builds can hit it too
+    if `<windows.h>` ever reaches that translation unit.
+
+11. **Engine build is warning-heavy** — note. 1126 lines matching `warning` in
+    `out/build-engine-cuda.log` (nvcc `#128-D` unreachable loop, `#177-D` unused function,
+    MSVC C4459 shadowing in `upstream/src/kernels/cuda/iq_kernels.cu`, …). Upstream builds
+    with `STRATA_WERROR=OFF`; not ours to fix (`upstream/` is never modified).
+12. **Engine version string differs from the tag** — note, expected. `strata.exe --version`
+    prints `strata 0.1.46.2`; that is upstream's engine `project(... VERSION 0.1.46.2)`
+    (`upstream/CMakeLists.txt:11`) at app tag `v0.2.1.3`, not a wrong checkout.
+
+13. **Native packs refuse to run without MTP speculation** — note. First one-shot
+    `generate` (no `--spec`) exited 2 in 1 s with
+    `... is a native (IQ) pack: it needs --native SHARD1, --spec T (T >= 2) and --prefill CHUNK`.
+    So the MTP head in `C:\Strata-data\mtp\rt` is mandatory for these packs, not optional.
+    Relevant to the frontend: `engine.mtp:false` strips `--mtp`/`--spec-min-p`, which would
+    make a native-pack profile unlaunchable.
+14. **No Python packages on the system interpreter** — worked around. `regex` (needed by
+    upstream's tokenizer) was missing; created `.venv-dev/` and installed
+    `scripts/dev/requirements-dev.txt` (the only install location the project rules allow).
+    Upstream's own runtime requirements (numpy, jinja2, …) are deliberately not in that file,
+    so upstream's Python server cannot run from `.venv-dev` as-is.
+15. **Engine has no tokenizer** — note. `strata.exe generate` takes token IDs only
+    (`--tokens` / `--tokens-file`); session helper `out/tok.py` wraps
+    `upstream/tools/strata_tokenizer.py` for encode/decode with the pack's tokenizer dir.
+
+16. **Session script bug: `cmd` splits on commas** — fixed (ours, `out/run-generate.bat`).
+    Passing `--tokens "%~2"` through a `.bat` delivered only the first ID (`prompt : 248045`,
+    0 tokens out) because `cmd` treats commas as argument separators. Switched to
+    `--tokens-file`. Also: `cmd` here does not run `strata.exe` from the current directory
+    (`NoDefaultCurrentDirectoryInExePath` behaviour); scripts use the full path.
+17. **Expert arena only partly pinned; Windows commit limit nearly exhausted** — open
+    (performance/stability risk). From the engine log:
+    - `cudaHostRegister of the whole arena FAILED (out of memory); 47 slices pinned (45 GiB)`
+    - `large pages refused for 50295996416 B (... VirtualAlloc error 1314)` — the account
+      lacks `SeLockMemoryPrivilege` ("Lock pages in memory"); falls back to 4 KB pages.
+    - `only 0.5 GiB of the Windows commit limit is left` → the CPU prefill share is not armed.
+    Commit limit is 67.9 GB (63.9 GB RAM + ~4 GB page file); the 46.8 GiB arena plus the
+    mapped model files use nearly all of it. A larger page file and/or the "Lock pages in
+    memory" right are system-settings changes for the owner to decide; not changed here.
+    Upstream README suggests `STRATA_PIN_BY_NEED=1` on Windows (not yet tried).
+
+18. **Frontend refuses the default Windows folder permissions** — open (working as designed,
+    but a first-run usability blocker). `strata-secure-server --check --expert` exit 1:
+    `roots.models` / `roots.tokenizer_pack` / `engine.executable`: "must not be writable by
+    other users". Any folder created under `C:\` inherits
+    `NT AUTHORITY\Authenticated Users:(M)`, so `C:\Strata-data` and `C:\multi-strata\out`
+    fail out of the box. Engine and tokenizer copied into an owner-only folder
+    (`out/serve/`, inheritance removed, current user Full only). The 167 GB models root
+    cannot reasonably be copied: its ACL needs the owner's decision. The product docs should
+    say how to prepare a Windows models folder (e.g. the `icacls` lines) before first serve.
+
+19. **Every Qwen3.8 chat through the secure frontend fails with 500 `internal_error`** —
+    **fixed in the working tree** (see "Fix for issues 19 and 26"; GPU-verified, step 7;
+    C++ RED/GREEN runs owner-side, pending). Was: open, blocking (main finding of this session). Non-streaming and streaming both fail
+    in ~1.6–2 s, even for "Say hello in one word."; the stream sends the role chunk, then an
+    `internal_error` chunk, then `[DONE]`.
+    - Cause: `src/qwen_prompt_renderer.cpp:152` ends the prompt with
+      `<|im_start|>assistant\n` and nothing else. The model's own template
+      (`packs/*/tokenizer/chat_template.jinja`, `add_generation_prompt`) always continues
+      with `<think>\n` (thinking on) or `<think>\n\n</think>\n\n` (`enable_thinking=false`).
+      Without either, the model opens its reply with `<think>` itself.
+    - `<think>` (248068) and `</think>` (248069) have token type 4 in `token_type.json`, and
+      `TokenByteDecoder::bytes_for` (`src/tokenizer_pack.cpp:252-253`) refuses types 3/4 as
+      output → `StopCause::undecodable` (`src/generation_run.cpp:129`) →
+      `GenerationFailure::decode_failed` → 500 (`src/chat_route.cpp:228`,
+      `src/chat_stream.cpp:157-160`).
+    - Proof: the engine run directly on the frontend's exact prompt
+      (`out/prompt-ids-frontend-style.txt`) emits `248068 198 ...` first
+      (`out/confirm-think-token.log`).
+    - `reasoning.effort` unset ("names none") does not render the empty think block, so
+      there is no config workaround; user content cannot carry control literals.
+    - Fix direction (not done here — product code, owner has not named it; needs TDD):
+      render the generation prompt as the template does for the chosen reasoning level, and
+      handle `<think>`/`</think>` in output (strip or route to a reasoning field) instead of
+      failing the request. Compare upstream `serve/server.py`'s Qwen path for parity.
+20. **The 500 carries no cause in the server log** — note (diagnosability). The request log
+    line is `req 12 chat 500 internal_error 1956 460 loopback`; nothing names the
+    undecodable token, so the cause had to be found by reading the source. A fixed, text-free
+    log code (e.g. `undecodable_token`) would keep the privacy rule and save the next person
+    the hunt.
+21. **`/v1/models` lists one model** — note. With `--expert`, the docs say `/v1/models`
+    "lists the whole inventory", but only `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002`
+    is returned although `roots.models` also holds the Swift shard 1. Not investigated.
+22. **Engine outlives a force-killed frontend by a few seconds** — note, not a leak.
+    After `Stop-Process -Force` on `strata-secure-server`, `strata.exe` was still listed for
+    ~3 s, then gone with its VRAM freed.
+
+23. **Second `small`-macro clash: `tests/http_socket_server_test.cpp:837`** — open, same
+    portability bug as issue 10 (`int small = 4096;` next to winsock). With
+    `SECURE_FRONTEND_WERROR=OFF` the full MSVC test tree builds 51 test executables; only
+    `secure_frontend_manifest_tests` and `secure_frontend_http_socket_server_tests` fail to
+    compile (`out/frontend-msvc-tests-old-build.log`).
+24. **Smart App Control blocks locally built test binaries** — first decision: SAC stays
+    on and the owner runs the C++ test binaries (`out/run-frontend-tests.ps1`); later the same
+    day the owner **turned Smart App Control off** so the suites can run in full here.
+    `VerifiedAndReputablePolicyState = 1` (enforce); Code Integrity events 3033/3077 show
+    `ctest.exe` refused `secure_frontend_*_tests.exe` ("did not meet the Enterprise signing
+    level requirements"), so every case reported `BAD_COMMAND`. The engine and
+    `strata-secure-server.exe` built earlier were not blocked.
+25. **Repo pytest on Windows: 7 host failures** — note. Old pin (`v0.2.1.3`, Maya `v1.1.8`
+    checked out): `43 passed, 7 failed, 4 skipped`. All 7 in `tools/secure/test_build_release.py`:
+    six run `bash scripts/release/*.sh` (WSL has no distribution: `execvpe(/bin/bash) failed`),
+    one needs the Linux cross-gate build tree. With `engines/maya-ref` uninitialised, five more
+    fail (`sbom.py` reads `engines/maya-ref/LICENSE`): `38 passed, 12 failed`.
+
+26. **Every Qwen chat ends in 500 at the end-of-turn token** — **fixed in the working tree**
+    with issue 19 (same class, hidden behind it; GPU-verified, step 7). With issue 19 fixed, the stream delivered
+    `reasoning_content` and `content: "The capital of France is Paris."`, then an
+    `internal_error` chunk (`out/serve-iq3s-v0.2.2.log`, v0.2.2 engine). In serve mode the
+    engine prints the end-of-turn token as a `T` line before `DONE … stop`
+    (`generate.cpp:14578-14590`, `eos_ids` 248044/248046 at :700); `<|im_end|>` is CONTROL
+    (type 3), so `TokenByteDecoder` refuses it → undecodable → 500. Upstream's server treats
+    `<|im_end|>`/`<|endoftext|>` as stop ids, never decoded or output (`serve/server.py:3770-3771`,
+    `:5086-5091`). No fake-engine test emits an end-of-turn token, which is why it never showed.
+
+27. **Maya `v1.1.21`** — **bumped (owner decision), READY blocker fixed; open items below.**
+    `engines/maya-ref` `v1.1.8` → `v1.1.21` (commit `451f9cb6`, tag object `ba26442d`,
+    124 commits), after a read-only audit:
+    - **Blocker — fixed test-first:** the fast path prints one `VRAM dev=…` record per GPU
+      part before `READY` (Maya `generate.cpp:1054-1062`; plus `NOTE experts: …` and a second
+      `INFO` on a commit-capped Windows APU, :1065-1071). `await_ready` accepted only `INFO`
+      there, so every glm53 start would have failed. `maya_118` now consumes a bounded `VRAM`
+      record (STAT rule: at least one pair, every key non-empty before `=`) and a non-empty
+      `NOTE` before READY; everything else still fails closed, and the other dialects still
+      reject `VRAM`. Tests: `engine_protocol_client_tests.maya_flavor_accepts_vram_and_note_before_ready`,
+      `engine_supervisor_tests.fake_maya_vram_records_reach_ready_only_under_the_maya_dialect`
+      (the fake gains `--maya-vram`; the existing Maya round-trip test is unchanged). RED tree
+      `out/frontend-msvc-tests-red27`; runs owner-side. The enum keeps the name `maya_118`
+      (the records are additive; a rename would touch 26 sites).
+    - Citations: 606 occurrences (212 unique) re-pinned to `v1.1.21`; pin statements, the
+      threat-model dialect text and PROVENANCE (bump paragraph, both LICENSE copyright lines,
+      `LICENSE.deepseek-v41`, the Outfit font) updated.
+    - **Open — penalties:** the GLM engine now honours the penalty keys (ignored at `v1.1.8`,
+      Maya `generate.cpp:3449-3470`); Maya renders `penalty_last_n` 0 as no penalties at all
+      and −1 as the whole window (4096, `serve/server.py:754-783`, `:260`). Ours renders
+      `penalty_last_n=64` for ≤ 0 whenever a penalty is on and bounds the key to 0–8192, so a
+      configured 0 now penalises on the GLM side where Maya does not, and −1 is refused.
+      Decide: follow Maya `v1.1.21` for glm53, or record a C-6 divergence.
+    - **Open — env names:** Maya's user-facing settings are now spelled `MAYA_*`; the code
+      still reads `STRATA_*`, and the engine copies `MAYA_X` over `STRATA_X` at start
+      (`env_alias.hpp`, `generate.cpp:3591`). Our closed allowlist keeps every `MAYA_*` name
+      out, so the five forced safety values hold (threat model updated). But the GLM key
+      inventory (`parity_keys_maya.hpp`) can no longer be regenerated with its documented
+      greps; it stays the `v1.1.8` set (119 env knobs, 37 config keys) until decided. The
+      adapted inventory has 50 new knobs (five DFlash — must be rejected rows, plus
+      DFlash-window-only ones to re-rule), new config key `idle_unload_s`, new server knob
+      `MAYA_PACK_TEMPLATE`, and three documented non-`_GLM_` names.
+    - Other findings, not acted on: binaries renamed `maya` / `maya-vision`
+      (`server_bootstrap.cpp:293` hard-codes `strata-vision`); `VERSION` is empty at the tag
+      (the kit must record tag + commit); Maya now renders GLM-5 packs with its own shipped
+      template (`serve/server.py:4062-4073`; re-check our renderer with the kit corpus);
+      the "Repeatable answers" doc says text-for-text kit pairs need `--expert-cache N` and
+      `PROMOTE=0`/`CPU_RETIME=0`/`CPU_PLAN` pinned; `WARM_PROMPT` may print before READY
+      (unverified).
+    - License: still MIT; a new first copyright line "Peasant Smith and the Project Maya
+      contributors"; new `LICENSE.deepseek-v41` (MIT, DeepSeek, `serve/ds41_encoding.py`); no
+      new non-commercial component (DFlash2 CC BY-NC-ND unchanged, opt-in); the bundled Outfit
+      font (SIL OFL 1.1) was never recorded in PROVENANCE.
+    - Full audit kept in the session scratchpad (`audit-maya-v1.1.21.md`).
+28. **Excluded upstream tests on Windows at `v0.2.2`** — note. Run alone: the three
+    `test_setup_choices.py` exclusions pass, the five golden-config subtests and the
+    parallel-download test still fail, the lifeline test skips (POSIX path). Whether an
+    exclusion can be dropped is a Linux-host question; the runbook list is unchanged.
+
+## Fix for issues 19 and 26 (owner-approved 2026-10-21)
+
+Behaviour follows upstream `v0.2.1.3` (`serve/frontend.py`, `serve/server.py`), checked by a
+read-only audit:
+
+- **Prompt.** When the tokenizer pack has `<think>` and `</think>` (exactly one CONTROL or
+  USER_DEFINED token each; `find_qwen_think_tokens`), the Qwen renderer ends the prompt as
+  the template does: `<think>\n` (thinking, the default) or `<think>\n\n</think>\n\n` when
+  `reasoning.effort` is `none`. A pack without them keeps the old plain prompt. With a think
+  tail, content holding either literal fails closed, and the encoder accepts the markers
+  only as that exact tail after the final `<|im_start|>assistant\n`.
+- **Output.** `drive_generation` routes text before `</think>` to a reasoning channel and
+  text after it to the answer, dropping only the newlines right after `</think>`. Neither tag
+  is ever output; a `<think>` while answering opens a new reasoning span (upstream would leak
+  it into `content`). A partial UTF-8 character before a tag becomes one U+FFFD in its own
+  channel. One byte cap covers both channels. Other CONTROL/USER_DEFINED tokens still fail
+  closed.
+- **Response.** Non-stream: `message.reasoning_content` after `content`, only when non-empty.
+  Stream: `delta.reasoning_content` events, in arrival order with the content deltas.
+- **End of turn (issue 26).** The plan carries the pack's `<|im_end|>`/`<|endoftext|>` ids
+  (`find_qwen_end_of_turn_tokens`, each exactly one CONTROL token). In `drive_generation` one
+  ends the reply as `stop`: it is never output, a held partial character ends as one U+FFFD,
+  anything before `DONE` is dropped, and no `STOP` is sent (the engine ends the turn itself).
+  Without stop ids a CONTROL token still fails closed.
+- **Files:** `tokenizer_pack.{hpp,cpp}`, `qwen_prompt_renderer.{hpp,cpp}`,
+  `chat_generation_plan.{hpp,cpp}`, `generation_run.{hpp,cpp}`, `chat_execution.{hpp,cpp}`,
+  `chat_schema.{hpp,cpp}`, `sse_encoder.{hpp,cpp}`, `chat_stream.cpp`, `chat_route.{hpp,cpp}`,
+  `server_bootstrap.cpp`; tests in `qwen_prompt_renderer_test.cpp`, `tokenizer_pack_test.cpp`,
+  `chat_generation_plan_test.cpp`, `chat_execution_test.cpp`, `chat_schema_test.cpp`,
+  `sse_test.cpp` (19 new cases: 14 for issue 19, 5 for issue 26, registered in
+  `secure_frontend/CMakeLists.txt`).
+- **TDD.** For each issue the API surface came first with stubs that kept the old behaviour,
+  then the tests, then the implementation. Builds (MSVC, `SECURE_FRONTEND_WERROR=OFF`, because
+  of issues 9/10): RED for issue 19 `out/frontend-msvc-tests-red`, RED for issue 26
+  `out/frontend-msvc-tests-red26`, GREEN (everything, final source) `out/frontend-msvc-tests-green`.
+  No tree adds a warning in the changed files. The Linux `-Werror` gates (gcc/clang/cross)
+  have not run.
+- **Owner-run results (2026-10-21, `out/ctest-*.xml`; compare with `out/compare-ctest.ps1`):**
+  - Baseline, old tree `out/frontend-msvc-tests`: 844 tests — 718 passed, 30 failed, 39
+    blocked by Smart App Control (`BAD_COMMAND`), 57 not run (the two test binaries that do not
+    compile under MSVC, issues 10/23). The 30 failures are Windows-host/MSVC ones unrelated to
+    this work: the update CLI needs the symlink privilege (7), Task Scheduler (2), typed-config
+    cases written with POSIX paths (4), Winsock disconnect timing (7 in `api_server_tests`),
+    vision-child cases (4), the egress import check flagging `WS2_32` in the MSVC server (1),
+    the systemd golden (1), `strata serve` foreground (2), the API probe (1), token store (1).
+  - RED, issue 19 (`frontend-msvc-tests-red`): **13 failed — exactly the new tests**; the 14th,
+    `drive_generation_keeps_other_special_tokens_fail_closed`, is a guard and passed, as meant.
+  - RED, issue 26 (`frontend-msvc-tests-red26`): **5 failed — exactly the 5 new tests.**
+  - GREEN, final issue 19/26 source (`frontend-msvc-tests-green`): **all 19 new tests pass**; no
+    test that ran at the baseline fails for a code reason. One new failure,
+    `acquire_tests.dl04_interrupt_during_download_never_indexed_windows`, is Smart App Control
+    blocking the freshly built `secure_frontend_non_elevated_run.exe` the test starts the
+    downloader through (Code Integrity event 3077). 158 cases did not run (blocked binaries:
+    fetch, bundle, privacy, model_index, update_cli, service_ops, ed25519, release_manifest,
+    sha256 and two server cases) — none on the chat path, but their state at `v0.2.2` is unproven.
+  - Issue 27 (owner-run): RED (`frontend-msvc-tests-red27`, regex `maya`) — both new tests
+    failed, the three existing Maya cases passed; the supervisor test's Maya half failed for
+    the right reason ("the v1.1.21 startup reaches READY under maya_118"). GREEN
+    (`frontend-msvc-tests-maya`) showed one more failure, in that test's strict half: a bug in
+    the test, not the code — `LogCapture::contains` matches whole lines and the assertion
+    passed a fragment (which also made the Maya half's negative check vacuous). Both now name
+    the full line `engine generation 1 ended: killed_by_supervisor(protocol_failed)`; the
+    corrected strict half was not re-run against the unfixed code.
+  - **Final, run here after Smart App Control was turned off (nothing blocked):**
+    baseline `old-full` (old tree, original source): 844 tests — 757 passed, 30 failed,
+    57 not run. GREEN `green-full` (`frontend-msvc-tests-green` rebuilt from the final source:
+    issues 19, 26, 27, the `v0.2.2` and Maya `v1.1.21` re-pins): 865 tests — **778 passed,
+    30 failed, 57 not run. The 30 failures are exactly the baseline's (none new, none fixed);
+    all 21 new tests pass**; the earlier `dl04` failure is gone (it was Smart App Control).
+    Compare: `out/compare-ctest.ps1 -Old old-full -New green-full`.
+- **Parity gaps left on purpose:** the template's effort sentence ("Reasoning effort is set to
+  xhigh…", written as a system turn by default) is not rendered; `reasoning.effort`
+  low/medium/high are not distinguished (all think); `<think>` in content is refused rather
+  than tokenised as upstream does. The M1 `ChatExecutionService::execute` path (tests only,
+  via `execute_with_lease`) and the GLM profile are unchanged. The `reasoning.effort` config
+  description and the parity table row (`config_only`) still need updating to say it now
+  selects the qwen think tail.
+
+## Changes made to this machine
+
+- `C:\Strata-data` ACL tightened (owner-approved in chat): inheritance removed; the current
+  user, Administrators and SYSTEM keep Full, `BUILTIN\Users` keep Read & execute;
+  `Authenticated Users: Modify` is gone. The previous ACLs are saved in
+  `out/strata-data-acl-backup.txt` (79 entries). Restore exactly with
+  `icacls C:\ /restore C:\multi-strata\out\strata-data-acl-backup.txt`.
+- `git submodule update --init -- upstream` (issue 1).
+- `.venv-dev/` created with `scripts/dev/requirements-dev.txt` (issue 14).
+- `git submodule update --init -- engines/maya-ref` (first at its pin `v1.1.8`), then moved to
+  `v1.1.21` (issue 27); `git -C engines/maya-ref status --porcelain` is empty.
+- `upstream/` moved to `v0.2.2` (step 6); `upstream/` itself has no local edits. One slip,
+  corrected: a session edit run from the wrong directory created an empty untracked
+  `upstream/src/chat_generation_plan.cpp` (18:26, after the `v0.2.2` engine build had
+  finished); it was removed and `git -C upstream status --porcelain` is empty again.
+- Build and run output only under `out/` and `secure_frontend/out/` (both gitignored), including
+  the two runbook venvs `out/venv-upstream-{old-v0.2.1.3,new-v0.2.2}`.
+- Tracked files changed (nothing committed): the issue 19/26 fix and tests, the v0.2.2 pin
+  sites and parity re-pin, and these docs.
+
+## Steps and results
+
+### 1. Engine build (CUDA) — PASS
+
+- Script: `out/build-engine-cuda.bat` (vcvars64 → CMake/Ninja), mirroring upstream
+  `setup.py` `build_engine()`: `-DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_TESTS=OFF
+  -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_Q6K_EXPERTS=ON -DSTRATA_MMQ_KQUANTS=ON
+  -DCMAKE_CUDA_ARCHITECTURES=89`, CUDA 13.0, Release, build dir `out/engine-cuda`
+  (outside `upstream/`, which stays unmodified).
+- llama.cpp `3cf03257` fetched by CMake FetchContent at configure time (network).
+- Result: exit 0, 163/163 steps; `out/engine-cuda/strata.exe` (75.8 MB) and
+  `strata_kq.dll` (10.9 MB). Log: `out/build-engine-cuda.log`.
+- `strata.exe --version` → `strata 0.1.46.2`, exit 0.
+
+### 2. Frontend build (`windows-msvc` preset) — FAIL (issues 9, 10)
+
+- Configure exit 0, build exit 1. Logs: `out/frontend-msvc-configure.log`,
+  `out/frontend-msvc-build.log`.
+
+### 3. One-shot GPU generate, original IQ3_S — PASS
+
+- Command: `out/run-generate.bat iq3_s out/prompt-ids.txt 48`, i.e. `strata.exe --pack
+  C:\Strata-data\packs\iq3_s --native <shard1> --ple-gguf <shard2> --expert-profile
+  upstream\data\expert-profile.bin --expert-cache auto --prefill auto --spec 4
+  --spec-min-p 0.5 --mtp C:\Strata-data\mtp\rt --max-new 48 --tokens-file ...`
+  with CUDA 13.0 `bin\x64` on PATH (for `cublas64_13.dll`).
+- Prompt: "What is the capital of France? Answer in one sentence." (Qwen chat template,
+  thinking off), 24 tokens.
+- Output (decoded): `The capital of France is Paris.<|im_end|>` — correct. `generate`
+  then keeps going to `--max-new` (repeats the turn); expected for the one-shot tool,
+  which does not stop at end-of-turn.
+- Wall time 46 s end to end (most of it loading the 46.84 GiB expert arena at 1.67 GiB/s).
+- Expert cache: 4518 slots, 8.62 GiB VRAM; MTP draft head 799 MiB VRAM.
+- Prefill 23 tokens in 532.5 ms (43.2 tok/s), time to first token 1928 ms.
+- **Decode 48 tokens in 944.6 ms → 50.82 tok/s.** Speculation: 14 rounds, drafts
+  accepted 34/41 (0.829), 3.43 tokens/round. (Upstream README quotes 53 tok/s for IQ3_S
+  on an RTX 5070.)
+- Log: `out/smoke-iq3s-generate.log`.
+
+### 4. One-shot GPU generate, Swift IQ3_S — PASS
+
+- `out/run-generate.bat swift out/prompt-ids-swift.txt 48` (no `--ple-gguf`: the engine
+  found the PLE table in Swift's shard 1 by itself). Same prompt IDs as the original.
+- Output: `The capital of France is Paris.<|im_end|>` — correct.
+- Wall 47 s; prefill 23 tokens in 466.7 ms (49.3 tok/s), TTFT 1364 ms;
+  **decode 48 tokens in 938.0 ms → 51.17 tok/s**; drafts accepted 35/41 (0.854),
+  3.69 tokens/round. Same pinning/commit warnings as run 3 (issue 17).
+- Log: `out/smoke-swift-generate.log`.
+
+### 5. Secure frontend serve + HTTP chat, IQ3_S — FAIL (issue 19)
+
+- Frontend built with MSVC **outside the supported toolchains**, as a smoke-only build:
+  `-DSECURE_FRONTEND_WERROR=OFF -DBUILD_TESTING=OFF`, targets `strata-secure-server` and
+  `strata` only, into `out/frontend-msvc-nowerror/` (exit 0). No source changed. Results
+  below are evidence about this machine and the engine path, not a supported-build claim.
+- Config `out/serve/config-iq3s.json` (`--expert`, profile `qwen`, `env:STRATA_API_TOKEN`
+  with a 43-char random token kept in owner-only `out/serve/api-token.txt`, engine and
+  tokenizer copied to owner-only `out/serve/`, state/cache under `out/serve/`).
+  `--check --expert` → `Configuration is valid.` after issue 18 was resolved.
+- Serve: listening on `127.0.0.1:8080`; `/health` 503 while loading, **200 after ~45 s**
+  (engine READY over stdio, well inside `ready_timeout_s` 900).
+- `GET /v1/models` without a token → **401 `invalid_api_key`** (auth enforced on loopback).
+- `GET /v1/models` with the token → 200, one model (issue 21).
+- `POST /v1/chat/completions` (non-stream and stream) → **500 `internal_error`**: issue 19.
+  The engine did start generating (GEN accepted, first `T` line received), so the stdio
+  protocol works up to the first token; the failure is in the frontend's output decoding.
+- Log: `out/serve-iq3s.log`. The Swift model was not served: the same bug would block it.
+
+### 6. Upstream bump `v0.2.1.3` → `v0.2.2` (owner request) — gates on this box
+
+- `git -C upstream checkout --detach v0.2.2` (commit `011c9e60`, tag object `e6fff4ad`,
+  242 commits); `git -C upstream status --porcelain` empty; `upstream.version` → `v0.2.2`.
+  Read-only audit first: CMake, `--serve` protocol and `tools/strata_tokenizer.py` unchanged;
+  one new engine flag (`--pool-cores`); parity inventory 87 → 88 keys, 31 → 32 env knobs.
+- Pin sites, `engine-protocol-limits.md` (every cited line re-checked at v0.2.2, one row
+  added for `--pool-cores`), frontend comment cites and the parity table (127 rows, README
+  mirror re-rendered) updated. `docs/security/privacy-migration.md` still names `v0.2.1.3`: its
+  re-review (new ranged-download path in `setup.py`, new `strata_control` modules) is not done.
+- Gates (Windows host; the runbook's Linux gates were not run):
+
+  | Gate | old `v0.2.1.3` | new `v0.2.2` |
+  | --- | --- | --- |
+  | Repo `pytest -q` (`.venv-dev`) | 43 passed, 7 failed, 4 skipped | 43 passed, 7 failed, 4 skipped (same 7 host failures, issue 25) |
+  | Upstream `tools` suite (runbook deselects) | 1004 passed, 12 failed, 24 skipped, 6 deselected | 1027 passed, 11 failed, 30 skipped, 6 deselected (no new failure; `Resume::test_a_killed_download_continues` now passes) |
+  | Upstream `serve` suite | 865 passed, 27 skipped, 1 deselected | 905 passed, 23 skipped, 1 deselected |
+  | Engine CUDA build | PASS (`strata 0.1.46.2`) | PASS, `out/engine-cuda-v0.2.2` (`strata 0.1.47`, 163/163) |
+  | Frontend C++ ctest (MSVC) | built, run pending (owner) | GREEN tree built, run pending (owner) |
+
+  The 11 remaining upstream failures are Windows-host ones (MCP install/start-stop, SYCL build
+  guard, MTP fetch). Logs: `out/upstream-{tools,serve}-{old-v0.2.1.3,new-v0.2.2}.log`.
+
+### 7. Serve + HTTP chat with the fixes, `v0.2.2` engine, IQ3_S — PASS
+
+- Server rebuilt from the fixed source (MSVC smoke build, test hooks OFF); engine
+  `out/engine-cuda-v0.2.2` copied to owner-only `out/serve/engine/`. `/health` 200 after 39–44 s.
+- Non-stream, "What is the capital of France? Answer in one sentence." → **200**,
+  `content: "The capital of France is Paris."`, `reasoning_content` holding the think block,
+  `finish_reason: "stop"`, 31 completion tokens, 2.3 s.
+- Stream, a Fibonacci function → **200**: one `reasoning_content` delta, then the code as
+  `content` deltas, the `stop` chunk and `[DONE]`; no tag in any event. 3.1 s.
+- Stream with `include_usage`, ~300 words → 513 completion tokens in 7.5 s end to end
+  (**68.7 tok/s** including prefill, MTP speculation on).
+- Client disconnect after 2 s → log `chat_stream 200 client_gone`; the next request was served.
+- Multi-turn with a system turn and assistant history → `content: "Sam"`, stop.
+- `reasoning.effort: "none"` (`out/serve/config-iq3s-nothink.json`) → closed think block:
+  `content: "The capital of France is Paris."`, no `reasoning_content`, 8 tokens, 2.2 s.
+- Request log (`out/serve-iq3s-v0.2.2-fixed.log`): `chat 200`, `chat_stream 200` ×2,
+  `chat_stream 200 client_gone`, `chat 200`. Outputs: `out/serve-v0.2.2-fixed-*.txt`,
+  `out/serve-v0.2.2-nothink.txt`.
+
+### 8. Engine supply-chain contract (owner request) — first application, to `v0.2.2`
+
+- Contract: `docs/security/engine-supply-chain.md` (C1–C9), gate script
+  `scripts/security/engine_review.py` (`diff`, `binary`), allowlist
+  `docs/security/engine-binary-allowlist.json`, tests `tools/secure/test_engine_review.py`
+  (7 passed). Wired into PROVENANCE "Updating the baseline" steps 2, 3 and 6.
+- Order note: this bump built the engine and ran upstream's suites before the review
+  (the contract did not exist yet); C2 forbids that from now on.
+- C1: tags unsigned (`v0.2.1.3`, `v0.2.2`, Maya `v1.1.21`); both builds' fetched llama.cpp
+  is `3cf03257`, clean, and it is the only fetch site in the build.
+- C3: 58 findings (py-exec 15, py-load 12, js-exec 10, digest 6, deps 6, py-net 5, net 3,
+  load 1), each read in context and ruled: 0 refused, 6 accepted (installer download
+  repair and update-feed run in `setup.py`, an install-script test, the NVFP4 torch pin),
+  the rest benign; no new network host in compiled, build or script code; no added binary
+  file; no new third-party dependency. Records: `docs/security/engine-reviews/strata-v0.2.1.3-v0.2.2.{json,md}`.
+- C5: `strata.exe` and `strata_kq.dll` (both pins) PASS: no network library imported or
+  named, no process-launch import; loadable names `nvcuda`, `nvcudart_hybrid64`, `nvldumd`,
+  `nvldumdx`, `dxgi`, `dbghelp`, `strata_kq`. The one `http://` string is the Windows
+  manifest's XML namespace. Negative control: System32 `curl.exe` fails the gate.
+- C4: the full read of the compiled and build diff (33 files, +2991/−110), by an agent
+  reviewer, is recorded in `docs/security/engine-reviews/strata-v0.2.1.3-v0.2.2-compiled-read.md`:
+  **0 concern, 12 note, 21 clean** — no new network/IPC, process launch, code loading,
+  persistence, privilege or system-setting change, time/host-gated behaviour, encoded data or
+  configure/build-time command; serve mode writes nothing new to stdout. Notes worth the
+  owner's eye: the NUMA split is now on by default on Linux boxes with ≥ 2 NUMA nodes (its off
+  switch `STRATA_NUMA_POOL` is not in our allowlist); a test-only `STRATA_TEST_SYSFS_ROOT`
+  read survives in the release binary (Linux, read-only `/sys` redirect, only steers the NUMA
+  decision — kept as "ambiguous", not cleared); the engine now asks Linux to drop the page
+  cache of its own pack/MTP files (read-only); `tq_pascal_bench` joins a full CUDA build (not
+  `--target strata`).
+
+### Not done in this session
+
+- Resume doc §8 items 3–5: `qwen35moe` checks, cgroup proof (Linux only), STOP latency
+  during a long prefill.
+- The Swift model through the frontend (its one-shot engine run passed, step 4).
+- The Maya open items (issue 27): penalty semantics, the `MAYA_*` inventory regeneration and
+  its new rows, the `maya-vision` binary name. No GLM engine was built or run on this box.
+- The supported Windows frontend builds (MSYS2 clang / llvm-mingw) and their
+  `windows-runtime` ctest cases: toolchains not installed (issue 3).
+- SP3 API kit, SP5 parity kit, SP7 offline kit: need a working chat path first.
+- Upstream's own Python server as a baseline: its runtime requirements are not installed
+  (issue 14).

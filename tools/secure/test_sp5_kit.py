@@ -141,7 +141,7 @@ def test_corpus_mode_lands_one_typed_line_per_case(canned_server, kit_inputs, tm
         + ["--command-line", "ref-server --serve --context 32768",
            "--command-line", "strata serve --config parity.toml",
            "--engine-version", "strata-engine v0.2.1.3",
-           "--engine-version", "MAYA v1.1.8",
+           "--engine-version", "MAYA v1.1.21",
            "--results", str(results)]
     )
     assert done.returncode == 0, done.stdout + done.stderr
@@ -152,7 +152,7 @@ def test_corpus_mode_lands_one_typed_line_per_case(canned_server, kit_inputs, tm
     assert header[1] == "# command: ref-server --serve --context 32768"
     assert header[2] == "# command: strata serve --config parity.toml"
     assert header[3] == "# engine-version: strata-engine v0.2.1.3"
-    assert header[4] == "# engine-version: MAYA v1.1.8"
+    assert header[4] == "# engine-version: MAYA v1.1.21"
     rows = result_lines(written)
     assert [row[:3] for row in rows] == [
         ["hello-text", "text", "PASS"],
@@ -219,16 +219,16 @@ def test_dry_run_renders_the_exact_owner_box_commands(tmp_path: Path):
          "--command-line", "ref-server --serve --context 32768",
          "--command-line", "strata serve --config parity.toml",
          "--engine-version", "strata-engine v0.2.1.3",
-         "--engine-version", "MAYA v1.1.8"]
+         "--engine-version", "MAYA v1.1.21"]
     )
     assert done.returncode == 0, done.stdout + done.stderr
     lines = done.stdout.splitlines()
     assert f"'{probe}' --port 8081 --token-file '{token}' --model 'glm-parity' --corpus '{corpus}' " \
            f"--command-line 'ref-server --serve --context 32768' --command-line 'strata serve --config parity.toml' " \
-           f"--engine-version 'strata-engine v0.2.1.3' --engine-version 'MAYA v1.1.8' --results '{tmp_path / 'ref.csv'}'" in lines, done.stdout
+           f"--engine-version 'strata-engine v0.2.1.3' --engine-version 'MAYA v1.1.21' --results '{tmp_path / 'ref.csv'}'" in lines, done.stdout
     assert f"'{probe}' --port 8080 --token-file '{token}' --model 'glm-parity' --corpus '{corpus}' " \
            f"--command-line 'ref-server --serve --context 32768' --command-line 'strata serve --config parity.toml' " \
-           f"--engine-version 'strata-engine v0.2.1.3' --engine-version 'MAYA v1.1.8' --results '{tmp_path / 'ours.csv'}'" in lines, done.stdout
+           f"--engine-version 'strata-engine v0.2.1.3' --engine-version 'MAYA v1.1.21' --results '{tmp_path / 'ours.csv'}'" in lines, done.stdout
     assert f"'{probe}' --compare '{tmp_path / 'ref.csv'}' '{tmp_path / 'ours.csv'}'" in lines, done.stdout
 
 

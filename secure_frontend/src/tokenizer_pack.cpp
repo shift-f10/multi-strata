@@ -302,6 +302,40 @@ TokenizerEncodeResult encode_text(const TokenizerPack& pack, const std::string_v
   return output;
 }
 
+std::optional<ThinkTokens> find_qwen_think_tokens(const TokenizerPack& pack) {
+  // Exactly one entry, typed CONTROL or USER_DEFINED; anything else is no reasoning split.
+  const auto find = [&pack](const std::string_view literal) -> std::optional<std::size_t> {
+    std::optional<std::size_t> found;
+    for (std::size_t id = 0U; id < pack.tokens_by_id.size(); ++id) {
+      if (pack.tokens_by_id[id] != literal) continue;
+      if (found.has_value() || id >= pack.token_types.size() || (pack.token_types[id] != 3 && pack.token_types[id] != 4)) {
+        return std::nullopt;
+      }
+      found = id;
+    }
+    return found;
+  };
+  const auto open = find("<think>");
+  const auto close = find("</think>");
+  if (!open.has_value() || !close.has_value()) return std::nullopt;
+  return ThinkTokens{*open, *close};
+}
+
+std::vector<std::size_t> find_qwen_end_of_turn_tokens(const TokenizerPack& pack) {
+  std::vector<std::size_t> found;
+  for (const std::string_view literal : {"<|im_end|>", "<|endoftext|>"}) {
+    std::optional<std::size_t> id_of;
+    bool unique = true;
+    for (std::size_t id = 0U; id < pack.tokens_by_id.size(); ++id) {
+      if (pack.tokens_by_id[id] != literal) continue;
+      if (id_of.has_value()) unique = false;
+      id_of = id;
+    }
+    if (id_of.has_value() && unique && *id_of < pack.token_types.size() && pack.token_types[*id_of] == 3) found.push_back(*id_of);
+  }
+  return found;
+}
+
 TokenizerEncodeResult encode_qwen_chatml_prompt(const TokenizerPack& pack,
                                                 const std::string_view rendered_prompt) {
   constexpr std::string_view kStartMarker = "<|im_start|>";
@@ -334,6 +368,24 @@ TokenizerEncodeResult encode_qwen_chatml_prompt(const TokenizerPack& pack,
   const auto end_id = find_marker(kEndMarker);
   if (const auto* failure = std::get_if<TokenizerPackError>(&end_id)) return *failure;
 
+  // Issue 19: the Qwen3 reasoning tail (render_qwen_text_prompt with QwenThinking::on or
+  // off) is accepted only as the exact text after the final generation header. Its
+  // markers are never scanned for anywhere else, so every other span keeps
+  // encode_text()'s rejection of special literals.
+  constexpr std::string_view kGenerationHeader = "<|im_start|>assistant\n";
+  constexpr std::string_view kThinkOpenTail = "<think>\n";
+  constexpr std::string_view kThinkClosedTail = "<think>\n\n</think>\n\n";
+  std::string_view body = rendered_prompt;
+  std::string_view think_tail;
+  if (const auto header_at = rendered_prompt.rfind(kGenerationHeader); header_at != std::string_view::npos) {
+    const std::size_t tail_at = header_at + kGenerationHeader.size();
+    const std::string_view tail = rendered_prompt.substr(tail_at);
+    if (tail == kThinkOpenTail || tail == kThinkClosedTail) {
+      think_tail = tail;
+      body = rendered_prompt.substr(0U, tail_at);
+    }
+  }
+
   // SP5 M1 Task 12 (Ruling T12-f): the three Qwen vision markers join the scan ONLY
   // when the rendered prompt actually carries them (a text prompt, and every pack
   // predating images, behave exactly as before). Like the framing markers, each must
@@ -342,7 +394,7 @@ TokenizerEncodeResult encode_qwen_chatml_prompt(const TokenizerPack& pack,
   markers.emplace_back(kStartMarker, std::get<std::size_t>(start_id));
   markers.emplace_back(kEndMarker, std::get<std::size_t>(end_id));
   for (const std::string_view vision_marker : {"<|vision_start|>", "<|image_pad|>", "<|vision_end|>"}) {
-    if (rendered_prompt.find(vision_marker) == std::string_view::npos) continue;
+    if (body.find(vision_marker) == std::string_view::npos) continue;
     const auto vision_id = find_marker(vision_marker);
     if (const auto* failure = std::get_if<TokenizerPackError>(&vision_id)) return *failure;
     markers.emplace_back(vision_marker, std::get<std::size_t>(vision_id));
@@ -350,18 +402,18 @@ TokenizerEncodeResult encode_qwen_chatml_prompt(const TokenizerPack& pack,
 
   std::vector<std::size_t> output;
   std::size_t offset = 0U;
-  while (offset < rendered_prompt.size()) {
+  while (offset < body.size()) {
     std::size_t marker_at = std::string_view::npos;
     std::size_t marker_index = 0U;
     for (std::size_t candidate = 0U; candidate < markers.size(); ++candidate) {
-      const auto at = rendered_prompt.find(markers[candidate].first, offset);
+      const auto at = body.find(markers[candidate].first, offset);
       if (at < marker_at) {
         marker_at = at;
         marker_index = candidate;
       }
     }
     if (marker_at == std::string_view::npos) {
-      const auto ordinary = encode_text(pack, rendered_prompt.substr(offset));
+      const auto ordinary = encode_text(pack, body.substr(offset));
       if (const auto* failure = std::get_if<TokenizerPackError>(&ordinary)) return *failure;
       const auto& ids = std::get<std::vector<std::size_t>>(ordinary);
       if (output.size() > kMaximumVocabularyEntries - ids.size()) {
@@ -372,7 +424,7 @@ TokenizerEncodeResult encode_qwen_chatml_prompt(const TokenizerPack& pack,
       break;
     }
 
-    const auto ordinary = encode_text(pack, rendered_prompt.substr(offset, marker_at - offset));
+    const auto ordinary = encode_text(pack, body.substr(offset, marker_at - offset));
     if (const auto* failure = std::get_if<TokenizerPackError>(&ordinary)) return *failure;
     const auto& ids = std::get<std::vector<std::size_t>>(ordinary);
     if (ids.size() >= kMaximumVocabularyEntries ||
@@ -384,6 +436,35 @@ TokenizerEncodeResult encode_qwen_chatml_prompt(const TokenizerPack& pack,
     output.push_back(markers[marker_index].second);
     offset = marker_at + markers[marker_index].first.size();
   }
+
+  if (think_tail.empty()) return output;
+  const auto think = find_qwen_think_tokens(pack);
+  if (!think.has_value()) {
+    return error(TokenizerPackErrorCode::unsupported_special_token,
+                 "Qwen reasoning markers must be exactly one CONTROL or USER_DEFINED token each");
+  }
+  // The template's spelling: <think> "\n" for the open block, <think> "\n\n" </think> "\n\n" closed.
+  const auto append_text = [&pack, &output](const std::string_view text) -> std::optional<TokenizerPackError> {
+    const auto ordinary = encode_text(pack, text);
+    if (const auto* failure = std::get_if<TokenizerPackError>(&ordinary)) return *failure;
+    const auto& ids = std::get<std::vector<std::size_t>>(ordinary);
+    if (output.size() > kMaximumVocabularyEntries - ids.size() - 1U) {
+      return error(TokenizerPackErrorCode::input_text_too_large, "encoded token count exceeds fixed limit");
+    }
+    output.insert(output.end(), ids.begin(), ids.end());
+    return std::nullopt;
+  };
+  if (output.size() >= kMaximumVocabularyEntries - 2U) {
+    return error(TokenizerPackErrorCode::input_text_too_large, "encoded token count exceeds fixed limit");
+  }
+  output.push_back(think->open);
+  if (think_tail == kThinkOpenTail) {
+    if (const auto failure = append_text("\n")) return *failure;
+    return output;
+  }
+  if (const auto failure = append_text("\n\n")) return *failure;
+  output.push_back(think->close);
+  if (const auto failure = append_text("\n\n")) return *failure;
   return output;
 }
 

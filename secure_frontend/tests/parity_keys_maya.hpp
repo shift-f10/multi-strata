@@ -2,38 +2,40 @@
 // Maya reference, generated once and committed (SP5 M2 Task 2). The GLM parity
 // table gives every name here exactly one disposition (meta-tests).
 //
-// Pin: engines/maya-ref submodule commit 5c970a863ce2fdd87b6e23ffb4822f6d76522b1c (tag v1.1.8).
+// Pin: the inventory was generated at engines/maya-ref commit 5c970a863ce2fdd87b6e23ffb4822f6d76522b1c (tag v1.1.8) and is kept as that set; the citations below follow tag v1.1.21 (commit 451f9cb6a21ea65673bdde2e57b4a670ae2b8859).
+// At v1.1.21 the documented greps no longer apply: docs/SETTINGS.md spells every setting MAYA_* (its lines 6-8), so regenerating the inventory is an open item (docs/validation/2026-10-21-windows-gpu-session.md, issue 27).
 // Config keys (37) — generating commands, run in the repository root, lists
 // verbatim (no edits, no additions):
 //   grep -rhoE 'cfg\.get\("[a-z_0-9]+"' engines/maya-ref/serve/*.py engines/maya-ref/maya.py | sort -u | sed 's/cfg\.get("//;s/"$//'
 //   plus the shared-settings names the validator enumerates at
-//   engines/maya-ref/serve/server.py:3223-3260 (its elif chain):
+//   engines/maya-ref/serve/server.py:3787-3824 (its elif chain):
 //   experimental_speed_projection, min_p, seed, temperature, top_k, top_p
 //   (reasoning_effort and max_tokens are already in the grep).
 // NOTE: the flat grep mixes names read inside config *blocks* (the `sampling`
 // and `vision` dicts, `mcp_servers` entries). Names the grep cannot see —
 // mcpServers (camelCase, serve/mcp.py:646), the vision block's mmproj/model
-// (serve/server.py:1157), and the sampling block's presence_penalty,
-// repetition_penalty, frequency_penalty, penalty_last_n (serve/server.py:250-252,
-// :3265-3270) — are extra rule rows in the table. The `installer` block's
+// (serve/server.py:1221), and the sampling block's presence_penalty,
+// repetition_penalty, frequency_penalty, penalty_last_n (serve/server.py:263-265,
+// :3829-3834) — are extra rule rows in the table. The `installer` block's
 // sub-keys (models_dir, quant, gguf, draft, data_dir, speed_calibration —
-// maya.py:938, :1879, :2093, :2110, :2649-2650) ride its rejected parent row.
+// maya.py:1200, :2298, :2541, :2560, :3280-3281) ride its rejected parent row.
 //
 // Env knobs (119) — the documented engine/server env surface:
 //   sed -n '26,101p' engines/maya-ref/docs/SETTINGS.md | grep -ohE 'STRATA_GLM_[A-Z0-9_]+' | sort -u    (103)
 //   grep -ohE 'STRATA_GLM_[A-Z0-9_]+' engines/maya-ref/docs/SETTINGS.md | sort -u                       (105; adds STRATA_GLM_DFLASH, STRATA_GLM_DFLASH_MIN)
 //   grep -rhoE 'STRATA_GLM_[A-Z0-9_]+' engines/maya-ref/serve/*.py engines/maya-ref/maya.py | sort -u   (12; adds STRATA_GLM_RESERVE_MB, STRATA_GLM_VISION_LEND_MB)
 //   grep -rhoE 'environ\.get\("STRATA_[A-Z0-9_]+' engines/maya-ref/serve/server.py | sort -u            (the nine server names)
-//   plus STRATA_WATCHDOG_S (engine-side: engines/maya-ref/src/program/generate.cpp:727, docs/SETTINGS.md:97)
-//   and the updater's MAYA_UPDATE_CHECK (serve/update.py:74) / MAYA_RESTART_ON_UPDATE (maya.py:2240).
+//   plus STRATA_WATCHDOG_S (engine-side: engines/maya-ref/src/program/generate.cpp:747, docs/SETTINGS.md:143)
+//   and the updater's MAYA_UPDATE_CHECK (serve/update.py:75) / MAYA_RESTART_ON_UPDATE (maya.py:2809).
 // Excluded from the inventory as launcher internals, not engine/server knobs
-// (Ruling T2-b, lane ledger): MAYA_SH (maya.py:2781 — maya.sh's self-detection
-// marker), MAYA_VERSION (serve/server.py:58 — a module constant read from
+// (Ruling T2-b, lane ledger): MAYA_SH (maya.py:3934 — maya.sh's self-detection
+// marker), MAYA_VERSION (serve/server.py:66 — a module constant read from
 // VERSION), and the engine-BUILD env names maya.py passes to a *build*
 // (STRATA_BUILD_TESTS, STRATA_ENABLE_CUDA, STRATA_ENABLE_HIP, STRATA_GGML_DIR,
 // STRATA_NATIVE_EXPERTS, STRATA_PORTABLE, STRATA_GGUF_PY, STRATA_HIPBLASLT_TUNING,
-// STRATA_VISION_CUDA, STRATA_PREFILL_MMQ, STRATA_TOKENIZER — maya.py:2160-2210
-// region; maya.py is the launcher the SP4 manifest replaces). The engine's
+// STRATA_VISION_CUDA, STRATA_PREFILL_MMQ, STRATA_TOKENIZER — maya.py:1371-1373,
+// 1546-1554, 2061, 2130, 2265; STRATA_TOKENIZER only in serve/test_detok.py:21;
+// maya.py is the launcher the SP4 manifest replaces). The engine's
 // undocumented src-internal getenv names (STRATA_GLM_DEV1 and friends) sit
 // outside the documented surface; the closed child-env allowlist (Task 4)
 // renders only table names, so no name outside this table can reach a child.

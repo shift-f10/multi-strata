@@ -3,7 +3,7 @@ name: secure-frontend
 # Blocking: linux-gcc, linux-clang, linux-release, windows-llvm-mingw-cross,
 # windows-msys2-clang, top-level-integration. Non-blocking: windows-msvc (informational),
 # linux-clang-tsan (data races in the SP3 pool, gate, port and logger).
-# Upstream Strata is the git submodule upstream/ (gitlink cbfd5b92, tag v0.2.1.3).
+# Upstream Strata is the git submodule upstream/ (gitlink 011c9e60, tag v0.2.2).
 # Jobs that run pytest or configure our root CMakeLists.txt check it out with
 # `submodules: true` (depth 1: about a 19.7 MB pack, 50.7 MB and 2,976 files
 # checked out); preset-only jobs build secure_frontend/ alone and do not.

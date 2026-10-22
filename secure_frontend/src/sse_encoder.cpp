@@ -44,6 +44,15 @@ std::string render_content_event(const SseIdentity& identity, const std::string_
   return out;
 }
 
+std::string render_reasoning_event(const SseIdentity& identity, const std::string_view text) {
+  std::string out = envelope(identity);
+  out += R"(,"choices":[{"index":0,"delta":{"reasoning_content":)";
+  append_json_string(&out, text);
+  out += '}';
+  out += kChoiceTail;
+  return out;
+}
+
 std::string render_final_event(const SseIdentity& identity, const std::string_view finish_reason) {
   std::string out = envelope(identity);
   out += R"(,"choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":)";

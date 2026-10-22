@@ -19,6 +19,7 @@ ChatExecutionOutcome error(const ChatExecutionErrorCode code, const char* const 
 struct ControlObserver final : GenerationObserver {
   explicit ControlObserver(const ExecutionControl& control) : control_(control) {}
   void on_text(const std::string_view piece) override { text += piece; }
+  void on_reasoning(const std::string_view piece) override { reasoning += piece; }
   RunCancel on_tick(bool) override {
     if ((control_.shutting_down != nullptr && control_.shutting_down->load()) || (control_.shutdown_requested && control_.shutdown_requested())) {
       return RunCancel::shutting_down;
@@ -27,6 +28,7 @@ struct ControlObserver final : GenerationObserver {
     return RunCancel::none;
   }
   std::string text;
+  std::string reasoning;
   const ExecutionControl& control_;
 };
 
@@ -223,14 +225,19 @@ GenerationOutcome ChatExecutionService::run_generation(const std::vector<std::ui
   if (const auto failure = begin(prompt_ids, settings)) return *failure;
   ControlObserver observer(control);
   const TokenByteDecoder decoder(tokenizer);
-  const GenerationRunResult run = drive_generation(protocol_, decoder, drive_limits(settings.max_tokens), observer);
+  GenerationRunLimits limits = drive_limits(settings.max_tokens);
+  limits.think_tokens = settings.think_tokens;
+  limits.starts_in_reasoning = settings.starts_in_reasoning;
+  limits.stop_tokens = settings.stop_tokens;
+  const GenerationRunResult run = drive_generation(protocol_, decoder, limits, observer);
   const bool shutting = (control.shutting_down != nullptr && control.shutting_down->load()) ||
                         (control.shutdown_requested && control.shutdown_requested());
   switch (run.end) {
     case RunEnd::stop:
     case RunEnd::length:
       return GenerationResult{std::move(observer.text), prompt_ids.size(), run.completion_tokens,
-                              run.end == RunEnd::stop ? FinishReason::stop : FinishReason::length, run.timed_out};
+                              run.end == RunEnd::stop ? FinishReason::stop : FinishReason::length, run.timed_out,
+                              std::move(observer.reasoning)};
     case RunEnd::cancelled: return run.cancel == RunCancel::shutting_down ? GenerationFailure::shutting_down : GenerationFailure::cancelled;
     case RunEnd::engine_error: return GenerationFailure::engine_error;
     case RunEnd::undecodable: return GenerationFailure::decode_failed;

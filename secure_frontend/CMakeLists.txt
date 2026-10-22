@@ -720,6 +720,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         sse_role_content_final_done_sequence sse_include_usage_adds_usage_chunk sse_ids_and_created_constant_per_stream
         stream_with_no_tokens_has_role_final_done stream_slow_reader_coalesces_deltas stream_tail_deadline_cuts_without_terminal_chunk
         stream_client_gone_sends_stop keepalive_never_splits_a_pending_event stream_error_events_follow_text_and_end_with_done
+        sse_reasoning_event_shape stream_sends_reasoning_deltas_before_the_answer stream_ends_at_the_end_of_turn_token
         stream_shutdown_sends_error_event_and_done)
     secure_frontend_add_cases(secure_frontend_sse_tests ${SECURE_FRONTEND_SSE_CASES} TIMEOUT 120)
 
@@ -1061,7 +1062,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # fake-engine children. LINUX / WINDOWS: platform-only process cases. Later
     # tasks append case names to these four set() lines only.
     set(SECURE_FRONTEND_SUPERVISOR_UNIT_CASES supervisor_health_literals_per_state proc04_restart_backoff_then_circuit_open proc04_healthy_window_resets_failure_count proc04_missing_engine_opens_circuit_without_spinning proc04_client_err_lines_open_circuit_until_restart supervisor_retires_ended_generation_on_its_own_thread proc04_monitor_fallback_without_pidfd proc04_backoff_survives_stale_wake proc04_fatal_line_before_ready_kills_as_fatal_line proc04_unreaped_child_opens_circuit supervisor_unreaped_at_shutdown_reports_engine_left proc06_nnp_hint_when_exit_status_lags supervisor_exception_opens_circuit supervisor_shutdown_sends_eof_first_then_kills supervisor_lease_outliving_shutdown_is_safe supervisor_wait_wakes_on_lease_release supervisor_wait_wakes_on_shutdown proc06_refuses_privileged_start engine_environment_uses_cache_root_when_set sp3_d2_kill_reason_follows_stop_cause sp3_d2_client_stop_drain_failure_restarts_uncounted sp3_d2_timeout_stop_drain_failure_still_counts sp3_d2_client_stop_counts_when_engine_ended_itself sp3_d2_uncounted_end_resets_count_after_healthy_window sp3_d2_uncounted_streak_is_bounded sp3_d2_done_resets_uncounted_streak sp6_env_strata_family_renders_unchanged sp6_env_forced_values_override_and_add sp6_env_forced_values_reject_never_list sp6_env_forcible_names_are_the_ruled_set sp6_env_hook_derives_values_from_environment sp6_env_hook_suppresses_only_optional_rows sp6_env_refused_family_is_spawn_failure idle_unload_tears_down_then_respawns_on_next_request idle_unload_never_fires_during_a_generation lazy_load_defers_the_first_spawn glm_child_env_is_exactly_the_named_typed_set forced_defaults_stay_forced_unless_the_table_moves_them dflash_never_reaches_the_child)
-    set(SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES proc04_recovers_after_transient_crash proc04_monitor_detects_idle_crash proc04_fatal_prefix_kills_engine proc04_ready_timeout_kills_and_counts proc04_drain_failure_kills_and_restarts proc04_no_leak_across_restarts proc02_child_env_is_exact_allowlist supervisor_serving_api_is_thread_safe proc04_slow_stdin_write_bounded_by_request_deadline sp6_env_derived_value_reaches_child fake_maya_dialect_round_trips_only_under_the_maya_dialect vision_child_launches_with_pinned_args_when_enabled vision_child_respects_resource_limits vision_encode_round_trip_at_the_pin vision_encode_failures_take_the_pinned_paths)
+    set(SECURE_FRONTEND_SUPERVISOR_PROCESS_CASES proc04_recovers_after_transient_crash proc04_monitor_detects_idle_crash proc04_fatal_prefix_kills_engine proc04_ready_timeout_kills_and_counts proc04_drain_failure_kills_and_restarts proc04_no_leak_across_restarts proc02_child_env_is_exact_allowlist supervisor_serving_api_is_thread_safe proc04_slow_stdin_write_bounded_by_request_deadline sp6_env_derived_value_reaches_child fake_maya_dialect_round_trips_only_under_the_maya_dialect fake_maya_vram_records_reach_ready_only_under_the_maya_dialect vision_child_launches_with_pinned_args_when_enabled vision_child_respects_resource_limits vision_encode_round_trip_at_the_pin vision_encode_failures_take_the_pinned_paths)
     set(SECURE_FRONTEND_SUPERVISOR_LINUX_CASES proc05_setsid_grandchild_is_reaped proc05_setsid_grandchild_is_reaped_at_shutdown supervisor_start_refuses_without_wake shutdown_signal_preserves_errno proc05_cgroup_kill_when_delegated)
     set(SECURE_FRONTEND_SUPERVISOR_WINDOWS_CASES proc04_windows_abort_does_not_stall proc04_windows_crash_does_not_stall proc04_windows_write_timeout_kills_engine)
     if(WIN32)
@@ -1185,7 +1186,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         gen_line_fits_max_prompt_tokens derived_line_cap_is_clamped_to_protocol_max stop_cause_and_completed_generations
         next_event_yields_tokens_progress_and_done next_event_timeout_keeps_generation_active
         next_event_finish_forms_and_nonfinite_stays_idle
-        maya_flavor_consumes_note_and_progress strata_flavor_still_fails_closed_on_note maya_pp_grammar_is_bounded)
+        maya_flavor_consumes_note_and_progress strata_flavor_still_fails_closed_on_note maya_pp_grammar_is_bounded
+        maya_flavor_accepts_vram_and_note_before_ready)
 
     secure_frontend_add_test_executable(secure_frontend_model_inventory_tests tests/model_inventory_test.cpp
         secure_frontend_model_inventory)
@@ -1238,7 +1240,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         image_part_caps_and_shape_are_checked_before_decode
         rejects_unsupported_and_unsafe_features rejects_duplicate_and_malformed_json
         renders_escaped_minimal_response
-        renders_openai_completion_shape)
+        renders_openai_completion_shape renders_reasoning_content_beside_the_answer)
 
     # SP5 M1 Task 12: the image_url payload gate — data URL, strict base64, byte caps and
     # the four pass-through formats' dimensions, checked before ANY write (0600 staging).
@@ -1359,7 +1361,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         secure_frontend_tokenizer_pack)
     set(_tokenizer_cases loads_validates_and_decodes_offline_pack rejects_ambiguous_or_incompatible_pack_assets
         rejects_malformed_json_and_special_literals_for_decode encoding_fails_closed_for_special_invalid_and_missing_tokens
-        token_byte_decoder_returns_raw_token_bytes)
+        token_byte_decoder_returns_raw_token_bytes finds_qwen_think_tokens_only_when_unambiguous
+        qwen_encoder_takes_think_markers_only_as_generation_tail finds_qwen_end_of_turn_tokens)
     if(WIN32)
         list(APPEND _tokenizer_cases cfg03_tokenizer_file_swapped_to_junction_rejected)
     else()
@@ -1371,7 +1374,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_test_executable(secure_frontend_qwen_prompt_renderer_tests tests/qwen_prompt_renderer_test.cpp
         secure_frontend_qwen_prompt_renderer)
     secure_frontend_add_cases(secure_frontend_qwen_prompt_renderer_tests
-        renders_fixed_qwen_chatml_prompt accepts_systemless_conversation rejects_unsafe_or_unsupported_conversations)
+        renders_fixed_qwen_chatml_prompt accepts_systemless_conversation rejects_unsafe_or_unsupported_conversations
+        renders_think_block_per_template think_literals_in_content_fail_closed)
 
     secure_frontend_add_test_executable(secure_frontend_glm_profile_tests tests/glm_profile_test.cpp
         secure_frontend_chat_generation_plan)
@@ -1383,7 +1387,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_chat_generation_plan_tests
         composes_schema_prompt_and_tokenizer vision_marker_runs_join_the_prompt_ids defaults_output_limit_and_rejects_unsafe_inputs
         rejects_missing_or_non_control_framing_tokens does_not_parse_arbitrary_special_literals
-        sampling_defaults_merge_under_request_overrides)
+        sampling_defaults_merge_under_request_overrides qwen_plan_writes_the_template_think_block
+        qwen_plan_carries_the_end_of_turn_tokens)
 
     secure_frontend_add_test_executable(secure_frontend_chat_execution_tests tests/chat_execution_test.cpp
         secure_frontend_chat_execution)
@@ -1403,7 +1408,11 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         run_generation_timeout_stops_and_reports_timed_out run_generation_drain_failure_abandons
         run_generation_shutdown_uses_short_drain run_generation_maps_engine_errors
         drive_generation_bytes_cap_cuts_on_code_point drive_generation_drops_tail_on_length_and_replaces_on_stop
-        drive_generation_cancel_sends_stop_and_drains chat_max_tokens_cut_mid_character_returns_length)
+        drive_generation_cancel_sends_stop_and_drains chat_max_tokens_cut_mid_character_returns_length
+        drive_generation_splits_reasoning_at_the_think_close drive_generation_think_open_while_answering_starts_reasoning
+        drive_generation_caps_reasoning_and_answer_together drive_generation_ends_a_split_character_at_the_tag
+        drive_generation_keeps_other_special_tokens_fail_closed run_generation_returns_reasoning_beside_the_answer
+        drive_generation_end_of_turn_ends_the_reply_as_stop run_generation_ends_at_the_end_of_turn)
 
     secure_frontend_add_test_executable(secure_frontend_subsystem_limits_tests tests/subsystem_limits_test.cpp
         secure_frontend_subsystem_limits)

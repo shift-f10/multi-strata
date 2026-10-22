@@ -479,12 +479,77 @@ void stream_shutdown_sends_error_event_and_done() {
   expect(outcome.log_code == "server_shutting_down", "log code");
 }
 
+// Issue 19: a reasoning delta is {"reasoning_content": text} (upstream serve/server.py:5449-5450).
+void sse_reasoning_event_shape() {
+  const auto event = secure_frontend::render_reasoning_event(kIdentity, "a\"b");
+  expect(event == R"(data: {"id":"chatcmpl-0123456789abcdef0123456789abcdef","object":"chat.completion.chunk","created":1760000000,)"
+                  R"("model":"fake-model","choices":[{"index":0,"delta":{"reasoning_content":"a\"b"},"logprobs":null,"finish_reason":null}]})"
+                  "\n\n",
+         "reasoning delta shape: " + event);
+  const std::string worst(secure_frontend::api_constants::kMaxDeltaTextBytes, '\x01');
+  expect(secure_frontend::render_reasoning_event(kIdentity, worst).size() <= secure_frontend::api_constants::kMaxSseEventBytes,
+         "6x escape growth fits the cap for reasoning too");
+}
+
+void stream_sends_reasoning_deltas_before_the_answer() {
+  auto pack = test_support::byte_tokenizer();
+  pack.tokens_by_id.emplace_back("<think>");
+  pack.token_types.push_back(4);
+  pack.tokens_by_id.emplace_back("</think>");
+  pack.token_types.push_back(4);
+  const secure_frontend::ThinkTokens think{pack.tokens_by_id.size() - 2U, pack.tokens_by_id.size() - 1U};
+  StreamRun stream({tok('h'), tok('m'), "T " + std::to_string(think.close), tok('\n'), tok('O'), tok('K'), "DONE 6 3 1.0 1.0 stop"});
+  stream.pack = pack;
+  secure_frontend::ChatStreamSettings settings;
+  settings.run.think_tokens = think;
+  settings.run.starts_in_reasoning = true;
+  const auto outcome = stream.run(settings);
+  std::string reasoning;
+  std::size_t first_reasoning = stream.sink.events.size();
+  std::size_t first_content = stream.sink.events.size();
+  for (std::size_t index = 0; index < stream.sink.events.size(); ++index) {
+    const auto& event = stream.sink.events[index];
+    expect(event.find("think>") == std::string::npos, "no event carries a think tag");
+    const auto marker = event.find(R"("delta":{"reasoning_content":")");
+    if (marker != std::string::npos) {
+      const auto start = marker + 30U;
+      reasoning += event.substr(start, event.find('"', start) - start);
+      first_reasoning = std::min(first_reasoning, index);
+    }
+    if (event.find(R"("delta":{"content":")") != std::string::npos && index > 0U) first_content = std::min(first_content, index);
+  }
+  expect(outcome.end == secure_frontend::RunEnd::stop && outcome.terminal_chunk_sent, "the stream ends normally");
+  expect(reasoning == "hm" && stream.text() == "OK", "reasoning [" + reasoning + "] then answer [" + stream.text() + "]");
+  expect(first_reasoning < first_content, "reasoning deltas go out before the answer's");
+}
+
+// Issue 26: the end-of-turn token ends the stream with a stop chunk, never an error.
+void stream_ends_at_the_end_of_turn_token() {
+  StreamRun probe({});
+  std::size_t im_end = probe.pack.tokens_by_id.size();
+  for (std::size_t id = 0; id < probe.pack.tokens_by_id.size(); ++id) {
+    if (probe.pack.tokens_by_id[id] == "<|im_end|>") im_end = id;
+  }
+  StreamRun stream({tok('H'), tok('i'), "T " + std::to_string(im_end), "DONE 3 3 1.0 1.0 stop"});
+  secure_frontend::ChatStreamSettings settings;
+  settings.run.stop_tokens = {im_end};
+  const auto outcome = stream.run(settings);
+  const auto& events = stream.sink.events;
+  expect(outcome.end == secure_frontend::RunEnd::stop && outcome.terminal_chunk_sent, "the stream ends as stop");
+  expect(stream.text() == "Hi" && events.size() >= 2U && events[events.size() - 2U] == secure_frontend::render_final_event(kIdentity, "stop"),
+         "answer then the stop chunk: " + stream.text());
+  for (const auto& event : events) expect(event.find(R"("error")") == std::string::npos, "no error event");
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
   return secure_frontend_test::run_cases(argc, argv,
                                          {
                                              {"utf8_split_across_tokens_is_held_then_released", utf8_split_across_tokens_is_held_then_released},
+                                             {"sse_reasoning_event_shape", sse_reasoning_event_shape},
+                                             {"stream_sends_reasoning_deltas_before_the_answer", stream_sends_reasoning_deltas_before_the_answer},
+                                             {"stream_ends_at_the_end_of_turn_token", stream_ends_at_the_end_of_turn_token},
                                              {"utf8_invalid_sequence_becomes_replacement_character", utf8_invalid_sequence_becomes_replacement_character},
                                              {"utf8_incomplete_tail_dropped_on_length_and_cancel", utf8_incomplete_tail_dropped_on_length_and_cancel},
                                              {"utf8_incomplete_tail_on_stop_becomes_one_replacement", utf8_incomplete_tail_on_stop_becomes_one_replacement},

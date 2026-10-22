@@ -6,6 +6,7 @@
 #include "secure_frontend/tokenizer_pack.hpp"
 
 #include <cstddef>
+#include <optional>
 #include <span>
 #include <string>
 #include <variant>
@@ -23,6 +24,13 @@ struct ChatGenerationPlan final {
   std::vector<std::size_t> prompt_token_ids;
   std::size_t max_tokens;
   SamplingParams sampling;  // SP5 M1 Task 4: config defaults, request fields win
+  // The reasoning split for the reply: the pack's <think>/</think> ids (nullopt: the pack
+  // has none, the plain prompt) and whether the prompt left a think block open, so the
+  // reply begins as reasoning (upstream OutputParser(thinking=...), serve/frontend.py:884).
+  std::optional<ThinkTokens> think_tokens{};
+  bool starts_in_reasoning{false};
+  // Issue 26: the end-of-turn ids that end the reply as stop (find_qwen_end_of_turn_tokens).
+  std::vector<std::size_t> stop_tokens{};
 };
 
 enum class ChatGenerationPlanErrorCode {
@@ -47,11 +55,15 @@ using ChatGenerationPlanResult = std::variant<ChatGenerationPlan, ChatGeneration
 // capability) render the template's per-image marker runs; image_token_counts carries
 // the encoder's per-image token counts IN PART ORDER and must match the request's
 // image parts exactly — a mismatch is an internal wiring bug, closed here.
+// thinking (reasoning.effort; upstream's default is on, serve/frontend.py:134-148): when
+// the pack carries <think>/</think>, true opens the template's think block and false
+// writes it closed; a pack without them renders the plain prompt either way.
 [[nodiscard]] ChatGenerationPlanResult make_qwen_chat_generation_plan(
     const ChatCompletionRequest& request, const TokenizerPack& tokenizer,
     std::size_t maximum_prompt_tokens = static_cast<std::size_t>(config_defaults::kChatMaxPromptTokens),
     std::size_t default_max_tokens = static_cast<std::size_t>(config_defaults::kChatDefaultMaxTokens),
-    const SamplingDefaults& defaults = {}, std::span<const std::size_t> image_token_counts = {});
+    const SamplingDefaults& defaults = {}, std::span<const std::size_t> image_token_counts = {},
+    bool thinking = true);
 
 // Converts a schema-validated text request using only the fixed GLM-5.3
 // profile. It neither interprets a model template nor contacts the network.

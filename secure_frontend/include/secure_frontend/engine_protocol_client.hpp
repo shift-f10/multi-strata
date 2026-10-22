@@ -107,16 +107,18 @@ struct EngineProtocolLimits final {
 
 // The original Strata profile has no prefill progress record. The separately
 // built LightTransport GLM-5.3 engine may emit its documented PP progress
-// record while it reads a prompt. The Maya v1.1.8 GLM engine frames the same
-// conversation additionally with NOTE conversation notes and the STAT
-// expert-tier cadence, and prints the five-field PP (D-8). These are three
-// explicit engine-wire contracts, one per flavor, selected at construction —
-// never auto-detected from untrusted output, and each flavor fails closed on
-// the other flavors' records.
+// record while it reads a prompt. The Maya GLM engine (v1.1.8 through
+// v1.1.21) frames the same conversation additionally with NOTE conversation
+// notes and the STAT expert-tier cadence, and prints the five-field PP (D-8).
+// These are three explicit engine-wire contracts, one per flavor, selected at
+// construction — never auto-detected from untrusted output, and each flavor
+// fails closed on the other flavors' records.
 enum class EngineProtocolFlavor {
-  strata_0143,           // upstream Strata v0.2.1.3 (RESUME/REUSED, 3-5 field PP)
+  strata_0143,           // upstream Strata v0.2.2 (RESUME/REUSED, 3-5 field PP)
   lighttransport_glm53,  // the SP6-built LightTransport engine (exact 3- or 5-field PP)
-  maya_118,              // Project Maya v1.1.8's engine (NOTE, STAT cadence, 3-6 field PP)
+  maya_118,              // Project Maya's engine, v1.1.8 through v1.1.21 (NOTE, STAT cadence,
+                         // 3-6 field PP; v1.1.21's pre-READY VRAM/NOTE records). The name
+                         // keeps the first pinned version: the v1.1.21 records are additive.
 };
 
 // Who asked for a STOP (SP3 D-2). The frontend's own deadline
@@ -138,9 +140,9 @@ struct EngineGeneration final {
 // READY <context> [stop], GEN <max_new> <comma-separated token ids>, T <id>,
 // DONE ..., ERR ..., STOP and QUIT. The explicitly selected flavor also
 // recognizes its own bounded private progress records — LightTransport GLM
-// the 3/5-field PP heartbeat, Maya v1.1.8 the NOTE and STAT cadence plus its
-// PP form — and nothing else: records unknown to the selected flavor are
-// rejected rather than guessed at.
+// the 3/5-field PP heartbeat, Maya (v1.1.8 through v1.1.21) the NOTE and
+// STAT cadence plus its PP form — and nothing else: records unknown to the
+// selected flavor are rejected rather than guessed at.
 class EngineProtocolClient final {
  public:
   explicit EngineProtocolClient(EngineLineTransport& transport,

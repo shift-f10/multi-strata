@@ -407,8 +407,8 @@ streaming bounds `kMaxDeltaTextBytes` (16 KiB of text per content delta) and
 
 ## Strata option-surface parity (SP5 M1)
 
-The pinned upstream Strata (`upstream.version`, tag `v0.2.1.3`) reads 87 config
-keys and 31 environment knobs (the verbatim grep in
+The pinned upstream Strata (`upstream.version`, tag `v0.2.2`) reads 88 config
+keys and 32 environment knobs (the verbatim grep in
 `secure_frontend/tests/parity_keys_upstream.hpp`); the parity table
 (`secure_frontend/src/parity_table.cpp`) gives each one — plus a few rule rows
 the flat grep cannot see — exactly one disposition, cited to the governing
@@ -431,62 +431,62 @@ consumer is out of M1 — every request cleans up after itself instead.
 <!-- parity-typed:begin -->
 | Upstream option | Destination | Disposition note and the pin read site |
 | --- | --- | --- |
-| `aliases` | frontend behaviour | serve/server.py:8046, set_aliases :3764-3777; runconfig.py:34 (M1 Task 8: model.aliases — /v1/models lists them, chat matches exactly) |
-| `allowed_hosts` | frontend behaviour | already typed (SP1/SP3 listen); serve/server.py:8066 |
-| `answer_room` | typed config | serve/server.py:8014 (`is not False`), formula :4704-4716; typed only: the pin's formula sits in its thinking parser, not in our §7.2 room rule (Ruling T8-d, Task 15) |
-| `anthropic_thinking` | typed config | serve/server.py:8102 (M1 Task 5: reasoning.anthropic_thinking) |
-| `codex_compaction_cache` | typed config | serve/server.py:8044 (M1 Task 9: session.codex_compaction_cache) |
-| `codex_thread_titles` | typed config | serve/server.py:8043 (M1 Task 9: session.codex_thread_titles) |
-| `cors_origins` | frontend behaviour | already typed (SP3 B12: listener.cors_origins); serve/server.py:8063 |
-| `effort_position` | engine argv | serve/server.py:2836 (M1 Task 5: reasoning.effort_position composes the engine's --tail-role-token) |
-| `elastic` | frontend behaviour | serve/server.py:2550, :7927 (M1 Task 7: engine.elastic; Tasks 11-12 consume it) |
-| `elastic_idle_s` | frontend behaviour | serve/server.py:2552, :3854 (M1 Task 7: engine.elastic_idle_s) |
-| `elastic_mib` | frontend behaviour | serve/server.py:2551, :3832 (M1 Task 7: engine.elastic_mib; /v1/vram headroom) |
-| `engine_silence_s` | frontend behaviour | serve/server.py:941, default 300 at :276, engine_silence_s() :2861-2868; runconfig.py:39 (M1 Task 8: the pump's silence watchdog) |
-| `env_to_user` | typed config | serve/server.py:8110 (M1 Task 9: session.env_to_user) |
-| `expert_profile_save` | engine argv | serve/server.py:3000-3005 (M1 Task 9: --expert-profile-save; an operator-owned flag wins, :3001) |
-| `expert_profile_save_every` | engine argv | serve/server.py:3004-3005, default 10 at :2996 (M1 Task 9: --expert-profile-save-every; rides the save, :3001) |
-| `fit_max_tokens` | frontend behaviour | serve/server.py:7996 (M1 Task 5: engine.fit_max_tokens) |
-| `gpu` | engine argv | already typed (SP2 engine.gpu; compose renders --gpu); serve/server.py:2815 |
-| `gpu_order` | engine argv | serve/server.py:3112 (M1 Task 7) |
-| `gpu_policy` | typed config | serve/images.py:173 (M1 Task 7: engine.gpu_policy, re-scoped to the vision child's GPU turn; the pin's use is the image-generation turn) |
-| `hip_ordinal` | engine argv | serve/server.py:3023 (M1 Task 7) |
-| `host` | frontend behaviour | already typed (SP1 listen.host); serve/server.py:7862 |
-| `idle_unload_s` | frontend behaviour | serve/server.py:4100-4109, :8081 (M1 Task 6: supervisor idle timer) |
-| `keep_files` | typed config | serve/images.py:188 (`or 64`); typed only: the consumer is the pin's ImageService and D-9 keeps image generation out (Ruling T9-e, M1 Task 9) |
-| `layer_split` | engine argv | serve/server.py:2877 (M1 Task 7) |
-| `lazy_load` | frontend behaviour | serve/server.py:7925, :966-993 (M1 Task 6: the first request spawns the same composed launch) |
+| `aliases` | frontend behaviour | serve/server.py:8263, set_aliases :3951-3964; runconfig.py:34 (M1 Task 8: model.aliases — /v1/models lists them, chat matches exactly) |
+| `allowed_hosts` | frontend behaviour | already typed (SP1/SP3 listen); serve/server.py:8283 |
+| `answer_room` | typed config | serve/server.py:8231 (`is not False`), formula :4893-4905; typed only: the pin's formula sits in its thinking parser, not in our §7.2 room rule (Ruling T8-d, Task 15) |
+| `anthropic_thinking` | typed config | serve/server.py:8319 (M1 Task 5: reasoning.anthropic_thinking) |
+| `codex_compaction_cache` | typed config | serve/server.py:8261 (M1 Task 9: session.codex_compaction_cache) |
+| `codex_thread_titles` | typed config | serve/server.py:8260 (M1 Task 9: session.codex_thread_titles) |
+| `cors_origins` | frontend behaviour | already typed (SP3 B12: listener.cors_origins); serve/server.py:8280 |
+| `effort_position` | engine argv | serve/server.py:2880 (M1 Task 5: reasoning.effort_position composes the engine's --tail-role-token) |
+| `elastic` | frontend behaviour | serve/server.py:2557, :8138 (M1 Task 7: engine.elastic; Tasks 11-12 consume it) |
+| `elastic_idle_s` | frontend behaviour | serve/server.py:2559, :4041 (M1 Task 7: engine.elastic_idle_s) |
+| `elastic_mib` | frontend behaviour | serve/server.py:2558, :4019 (M1 Task 7: engine.elastic_mib; /v1/vram headroom) |
+| `engine_silence_s` | frontend behaviour | serve/server.py:942, default 300 at :277, engine_silence_s() :2905-2912; runconfig.py:39 (M1 Task 8: the pump's silence watchdog) |
+| `env_to_user` | typed config | serve/server.py:8327 (M1 Task 9: session.env_to_user) |
+| `expert_profile_save` | engine argv | serve/server.py:3071-3076 (M1 Task 9: --expert-profile-save; an operator-owned flag wins, :3072) |
+| `expert_profile_save_every` | engine argv | serve/server.py:3075-3076, default 10 at :3067 (M1 Task 9: --expert-profile-save-every; rides the save, :3072) |
+| `fit_max_tokens` | frontend behaviour | serve/server.py:8213 (M1 Task 5: engine.fit_max_tokens) |
+| `gpu` | engine argv | already typed (SP2 engine.gpu; compose renders --gpu); serve/server.py:2826 (gpu_list :2819-2826: a set `gpu` wins; unset, a saved `gpu_roles` picks the cards, Main last, :2822-2825 — see the gpu_roles row) |
+| `gpu_order` | engine argv | serve/server.py:3224 (M1 Task 7: `as_given` keeps the order; at v0.2.2 active `gpu_roles` keep it too and a HIP built-in Radeon goes first before the speed sort, :3230-3247 — the typed auto or as_given vocabulary is unchanged) |
+| `gpu_policy` | typed config | serve/images.py:174 (M1 Task 7: engine.gpu_policy, re-scoped to the vision child's GPU turn; the pin's use is the image-generation turn) |
+| `hip_ordinal` | engine argv | serve/server.py:3094 (M1 Task 7) |
+| `host` | frontend behaviour | already typed (SP1 listen.host); serve/server.py:8071 |
+| `idle_unload_s` | frontend behaviour | serve/server.py:4287-4296, :8298 (M1 Task 6: supervisor idle timer) |
+| `keep_files` | typed config | serve/images.py:189 (`or 64`); typed only: the consumer is the pin's ImageService and D-9 keeps image generation out (Ruling T9-e, M1 Task 9) |
+| `layer_split` | engine argv | serve/server.py:2921 (M1 Task 7) |
+| `lazy_load` | frontend behaviour | serve/server.py:8134, :967-994 (M1 Task 6: the first request spawns the same composed launch) |
 | `max_n` | frontend behaviour | serve/images.py:103 (M1 Tasks 11-12: vision.max_n; the pin's cap lives on the images block) |
 | `max_side` | frontend behaviour | serve/images.py:102 (M1 Task 12: vision.max_side pre-decode cap) |
-| `max_tokens` | request rule | serve/server.py:2564 (vision encoder at the pin); engine.max_tokens re-scoped as the request output ceiling (added, C-1; Ruling T8-e: caps at the §7.2 resolve site) |
-| `min_free_vram_mib` | frontend behaviour | serve/server.py:8083 (M1 Task 7: engine.min_free_vram_mib) |
-| `min_tokens` | request rule | serve/server.py:2566 (vision encoder at the pin); engine.min_tokens re-scoped as the request output floor (added, C-1; Ruling T8-e: lifts at the §7.2 resolve site) |
-| `mtp` | engine argv | strata_control/draft_layer.py is_off; serve/server.py:2922-2925 (M1 Task 6: engine.mtp drops --mtp/--spec-min-p/--batch-mtp at every start) |
-| `need_mib` | frontend behaviour | serve/images.py:156 (M1 Task 11: vision.need_mib; added security bound) |
-| `parallel` | engine argv | serve/server.py:2955-2975 (replicas.parallel renders --batch N, :2975; window PARALLEL_MAX 8 at :2954; cap 1024 from the pin's own bound :7845, M1 Task 10) |
-| `reasoning_budget_tokens` | typed config | serve/server.py:8120 (M1 Task 5: reasoning.budget_tokens) |
-| `reasoning_close_retry` | typed config | serve/server.py:8015 (M1 Task 5: reasoning.close_retry) |
-| `reasoning_effort` | typed config | serve/server.py:7433 (M1 Task 5: reasoning.effort) |
-| `reasoning_loop_recovery` | typed config | serve/server.py:8129 (M1 Task 5: reasoning.loop_recovery) |
-| `repeat_stop_tokens` | frontend behaviour | serve/server.py:197 (REPEAT_STOP_TOKENS 256), the pin's detector is frontend-side at :4908, notice :5088, 0 = off :8115 (Ruling T8-f: no GEN key) |
-| `sampling` | typed config | serve/server.py:7482 (M1 Task 4: defaults.sampling.*) |
-| `slot_save_path` | typed config | serve/server.py:8094 + slot_save_dir :3469-3481; the pin uses it FRONTEND-side for its /slots file store (:3698-3715) — no argv append (Ruling T9-a, M1 Task 9) |
-| `split_skip_if_fits` | engine argv | serve/server.py:2941 (M1 Task 7) |
-| `threads` | engine argv | serve/server.py:2562 (M1 Task 11: vision.threads; the only pin read of `threads`, inside the vision reader_args — the flag lands on the encoder child's argv) |
-| `tool_call_recovery` | typed config | serve/server.py:8106 (M1 Task 9: session.tool_call_recovery) |
-| `trusted_origins` | frontend behaviour | already typed (SP3 origins family); serve/server.py:8064 |
-| `uma` | frontend behaviour | serve/images.py:23, :334 (M1 Task 7: engine.uma; Tasks 11-12 consume it) |
+| `max_tokens` | request rule | serve/server.py:2571 (vision encoder at the pin); engine.max_tokens re-scoped as the request output ceiling (added, C-1; Ruling T8-e: caps at the §7.2 resolve site) |
+| `min_free_vram_mib` | frontend behaviour | serve/server.py:8300 (M1 Task 7: engine.min_free_vram_mib) |
+| `min_tokens` | request rule | serve/server.py:2573 (vision encoder at the pin); engine.min_tokens re-scoped as the request output floor (added, C-1; Ruling T8-e: lifts at the §7.2 resolve site) |
+| `mtp` | engine argv | strata_control/draft_layer.py is_off; serve/server.py:2966-2969 (M1 Task 6: engine.mtp drops --mtp/--spec-min-p/--batch-mtp at every start) |
+| `need_mib` | frontend behaviour | serve/images.py:157 (M1 Task 11: vision.need_mib; added security bound) |
+| `parallel` | engine argv | serve/server.py:3000-3020 (replicas.parallel renders --batch N, :3020; window PARALLEL_MAX 8 at :2999; cap 1024 from the pin's own bound :8054, M1 Task 10) |
+| `reasoning_budget_tokens` | typed config | serve/server.py:8337 (M1 Task 5: reasoning.budget_tokens) |
+| `reasoning_close_retry` | typed config | serve/server.py:8232 (M1 Task 5: reasoning.close_retry) |
+| `reasoning_effort` | typed config | serve/server.py:7642 (M1 Task 5: reasoning.effort) |
+| `reasoning_loop_recovery` | typed config | serve/server.py:8346 (M1 Task 5: reasoning.loop_recovery) |
+| `repeat_stop_tokens` | frontend behaviour | serve/server.py:198 (REPEAT_STOP_TOKENS 256), the pin's detector is frontend-side at :5098, notice :5278, 0 = off :8332 (Ruling T8-f: no GEN key) |
+| `sampling` | typed config | serve/server.py:7691 (M1 Task 4: defaults.sampling.*) |
+| `slot_save_path` | typed config | serve/server.py:8311 + slot_save_dir :3656-3668; the pin uses it FRONTEND-side for its /slots file store (:3885-3902) — no argv append (Ruling T9-a, M1 Task 9) |
+| `split_skip_if_fits` | engine argv | serve/server.py:2985 (M1 Task 7) |
+| `threads` | engine argv | serve/server.py:2569 (M1 Task 11: vision.threads; the only pin read of `threads`, inside the vision reader_args — the flag lands on the encoder child's argv) |
+| `tool_call_recovery` | typed config | serve/server.py:8323 (M1 Task 9: session.tool_call_recovery) |
+| `trusted_origins` | frontend behaviour | already typed (SP3 origins family); serve/server.py:8281 |
+| `uma` | frontend behaviour | serve/images.py:23, :335 (M1 Task 7: engine.uma; Tasks 11-12 consume it) |
 | `update.source` | typed config | our key (PX §4 reserved; SP7 M2 D-10): the HTTPS mirror list read only by 'strata update' (SP7 M2 Task 3) |
-| `vision` | typed config | serve/server.py:2930 (M1 Task 11: the vision.* block) |
-| `vram_elastic` | engine argv | serve/server.py:2945 (M1 Task 7) |
-| `vram_segment_mib` | engine argv | serve/server.py:2947 (M1 Task 7) |
-| `STRATA_ALLOWED_HOSTS` | frontend behaviour | same semantics as allowed_hosts, already typed; serve/server.py:3516 |
-| `STRATA_BATCH_MTP` | engine argv | serve/server.py:2972; engine.mtp (M1 Task 6) |
-| `STRATA_ENGINE_READY_S` | frontend behaviour | already typed: ready_timeout (SP1); serve/server.py:291 |
-| `STRATA_ENGINE_STALL_S` | frontend behaviour | serve/server.py:307; engine.silence_s (M1 Task 8) |
-| `STRATA_MAX_BODY_MIB` | frontend behaviour | already typed: limits.chat.max_body_bytes (SP1); serve/server.py:5660 |
-| `STRATA_VISION_ENCODE_S` | frontend behaviour | serve/server.py:328 (M1 Task 12: vision encode-timeout row) |
-| `STRATA_VISION_READY_S` | frontend behaviour | serve/server.py:327 (M1 Task 11: vision.ready_timeout_s; 0 = wait for ever, :291) |
+| `vision` | typed config | serve/server.py:2974 (M1 Task 11: the vision.* block) |
+| `vram_elastic` | engine argv | serve/server.py:2989 (M1 Task 7) |
+| `vram_segment_mib` | engine argv | serve/server.py:2991 (M1 Task 7) |
+| `STRATA_ALLOWED_HOSTS` | frontend behaviour | same semantics as allowed_hosts, already typed; serve/server.py:3703 |
+| `STRATA_BATCH_MTP` | engine argv | serve/server.py:3017; engine.mtp (M1 Task 6) |
+| `STRATA_ENGINE_READY_S` | frontend behaviour | already typed: ready_timeout (SP1); serve/server.py:292 |
+| `STRATA_ENGINE_STALL_S` | frontend behaviour | serve/server.py:308; engine.silence_s (M1 Task 8) |
+| `STRATA_MAX_BODY_MIB` | frontend behaviour | already typed: limits.chat.max_body_bytes (SP1); serve/server.py:5869 |
+| `STRATA_VISION_ENCODE_S` | frontend behaviour | serve/server.py:329 (M1 Task 12: vision encode-timeout row) |
+| `STRATA_VISION_READY_S` | frontend behaviour | serve/server.py:328 (M1 Task 11: vision.ready_timeout_s; 0 = wait for ever, :292) |
 | `vram_reserve_mib` | engine argv | serve/runconfig.py:42 renders --vram-reserve-mib (M1 Task 7) |
 <!-- parity-typed:end -->
 
@@ -495,34 +495,38 @@ consumer is out of M1 — every request cleans up after itself instead.
 <!-- parity-mapped:begin -->
 | Upstream option | Where it lives in Strata instead (and the pin read site) |
 | --- | --- |
-| `api_key` | SP1 token store is the only auth source (CFG-06: no secret in config); serve/server.py:7869 |
-| `arch` | model identity comes from the SP4 manifest/GGUF inventory; serve/server.py:7648 |
-| `backend` | engine identity: SP4 manifest + engine gate; serve/server.py:7680 |
-| `images` | spec D-9: image generation is out, the route answers 404 like an unknown route; serve/server.py:8016 |
-| `max_queue` | the SP3 row limits.concurrency.max_queued_generations already carries queue admission (pin bound 0..4096 at serve/server.py:7835, derived default :3602-3604; Ruling T8-a) |
-| `model_name` | served-model identity comes from the SP4 manifest; serve/images.py:183 |
+| `api_key` | SP1 token store is the only auth source (CFG-06: no secret in config); serve/server.py:8078 |
+| `arch` | model identity comes from the SP4 manifest/GGUF inventory; serve/server.py:7857 |
+| `backend` | engine identity: SP4 manifest + engine gate; serve/server.py:7889 |
+| `gpu_none` | strata_control/gpu_roles.py saved_roles :399; serve/server.py:2841 (gpu_all_off), :3353-3355 (every card Off: empty CUDA/HIP_VISIBLE_DEVICES), :2854-2859 (refused at start for a GPU engine); card choice is the typed engine.gpu (SP2 §3.9: rendered as --gpu, never a GPU variable), so the all-Off run has no counterpart |
+| `gpu_roles` | strata_control/gpu_roles.py saved_roles :386-405 (:390); serve/server.py:2822-2825 (gpu_list: the cards, Main last, when `gpu` is unset), :3224 (keeps the given order); card choice and order are the typed engine.gpu (SP2 §3.9: rendered as --gpu), the Main/Helper/Off roles have no typed form |
+| `images` | spec D-9: image generation is out, the route answers 404 like an unknown route; serve/server.py:8233 |
+| `max_queue` | the SP3 row limits.concurrency.max_queued_generations already carries queue admission (pin bound 0..4096 at serve/server.py:8044, derived default :3789-3791; Ruling T8-a) |
+| `model_name` | served-model identity comes from the SP4 manifest; serve/images.py:184 |
 | `native` | the SP4 manifest composes --native (engine_arguments); serve/images.py:126 |
-| `out_dir` | spec D-9 image generation is out; serve/images.py:185 |
-| `quant` | quant identity comes from the SP4 manifest; serve/images.py:282 |
-| `queue_timeout` | the SP3 row limits.concurrency.queue_timeout_ms already carries admission waiting (pin bound 0.1..600 at serve/server.py:7839; Ruling T8-a) |
-| `reload` | image-generation card reload mode (spec D-9); the vision child's lifecycle follows the vision/elastic rows; serve/images.py:176 |
+| `out_dir` | spec D-9 image generation is out; serve/images.py:186 |
+| `pool_cores` | the operator's engine.args carries the engine's own --pool-cores LIST (not frontend-owned and not a mode: engine_arguments.cpp passes it through; no typed row); serve/server.py:3031, pool_cores_args :3026-3046 (experimental, off by default; a --pool-cores already in the args wins, :3034), composed after parallel at :2995 |
+| `quant` | quant identity comes from the SP4 manifest; serve/images.py:283 |
+| `queue_timeout` | the SP3 row limits.concurrency.queue_timeout_ms already carries admission waiting (pin bound 0.1..600 at serve/server.py:8048; Ruling T8-a) |
+| `reload` | image-generation card reload mode (spec D-9); the vision child's lifecycle follows the vision/elastic rows; serve/images.py:177 |
 | `sigmas` | spec D-9 image generation is out; serve/images.py:120 |
 | `steps` | spec D-9 image generation is out; serve/images.py:104 |
-| `timeout_s` | the SP3 row limits.engine.generation_timeout_s already carries the generation deadline (pin: generation job timeout at serve/images.py:226; Ruling T8-b) |
-| `tokenizer` | the SP4 manifest carries the tokenizer; serve/server.py:7883 |
-| `STRATA_ADMIT_MAX_WAIT_S` | serve/server.py:311; admission waiting is already carried by limits.concurrency.queue_timeout_ms (Ruling T8-a) |
-| `STRATA_ADMIT_SHORT_FIRST` | SP3 admission ordering is the pool policy (B8); serve/server.py:314 |
-| `STRATA_API_KEY` | SP1 token store is the only auth source; serve/server.py:7216 |
+| `timeout_s` | the SP3 row limits.engine.generation_timeout_s already carries the generation deadline (pin: generation job timeout at serve/images.py:227; Ruling T8-b) |
+| `tokenizer` | the SP4 manifest carries the tokenizer; serve/server.py:8092 |
+| `STRATA_ADMIT_MAX_WAIT_S` | serve/server.py:312; admission waiting is already carried by limits.concurrency.queue_timeout_ms (Ruling T8-a) |
+| `STRATA_ADMIT_SHORT_FIRST` | SP3 admission ordering is the pool policy (B8); serve/server.py:315 |
+| `STRATA_API_KEY` | SP1 token store is the only auth source; serve/server.py:7425 |
 | `STRATA_DROP_CACHE_ON_EXIT` | the SP2 shutdown order (§3.7) is fixed by the supervisor; serve/cache_drop.py:1 |
-| `STRATA_HTTP_BACKLOG` | the listener backlog is fixed by the SP3 poll design (128 entries); serve/server.py:7021 |
+| `STRATA_ENGINE_NICE` | the SP2 child pre-exec state (§3.12) is fixed by the supervisor, which sets no engine priority; serve/server.py:3161 (engine_nice :3154-3168: Linux only, +5 by default beside a built-in Radeon), applied at spawn :1017-1022 |
+| `STRATA_HTTP_BACKLOG` | the listener backlog is fixed by the SP3 poll design (128 entries); serve/server.py:7230 |
 | `STRATA_KEEP_EMPTY_TURNS` | the frontend serves stateless requests; conversation history is the client's; serve/frontend.py:60 |
-| `STRATA_KEEP_LEFTOVERS` | lifecycle is teardown + respawn (M1 Task 6); serve/server.py:128 |
+| `STRATA_KEEP_LEFTOVERS` | lifecycle is teardown + respawn (M1 Task 6); serve/server.py:129 |
 | `STRATA_LIFELINE` | SP2 supervision replaces the lifeline watcher (pdeathsig, monitor handle); serve/lifeline.py:33 |
-| `STRATA_NO_PRESET` | launch is SP4 manifest-composed; serve/server.py:7448 |
-| `STRATA_OFFLINE` | PRIV-01: the frontend never reaches the network; enforced by design and the DL-01 proof; serve/server.py:3240 |
-| `STRATA_REQUEST_LINES` | the wire record is fixed by docs/security/engine-protocol-limits.md; serve/server.py:639 |
+| `STRATA_NO_PRESET` | launch is SP4 manifest-composed; serve/server.py:7657 |
+| `STRATA_OFFLINE` | PRIV-01: the frontend never reaches the network; enforced by design and the DL-01 proof; serve/server.py:3373 |
+| `STRATA_REQUEST_LINES` | the wire record is fixed by docs/security/engine-protocol-limits.md; serve/server.py:640 |
 | `STRATA_RELEASE_PUBKEY_HEX` | our compile-definition pin of the Ed25519 release public key (SP7 M2 D-2), not an upstream knob: it is read by the release-manifest verifier and reported by 'strata update'; empty refuses every update (SP7 M2 Task 2/3) |
-| `STRATA_START_RETRIES` | respawn retries belong to the SP2 RestartTracker (restart_policy.hpp); serve/server.py:609 |
+| `STRATA_START_RETRIES` | respawn retries belong to the SP2 RestartTracker (restart_policy.hpp); serve/server.py:610 |
 | `STRATA_TOKENIZER` | the SP4 manifest carries the tokenizer; serve/test_detok.py:21 |
 <!-- parity-mapped:end -->
 
@@ -531,53 +535,58 @@ consumer is out of M1 — every request cleans up after itself instead.
 <!-- parity-rejected:begin -->
 | Upstream option | Excluded by (and the pin read site) |
 | --- | --- |
-| `api_monitor` | spec §4 web/desktop/telemetry; serve/server.py:8072 |
-| `args` | spec §4 free-form process control; serve/server.py:3114 |
-| `batch_telemetry` | spec §4 telemetry endpoints; serve/server.py:897 |
-| `before_load` | spec §4 command execution; serve/server.py:7899 |
-| `before_load_ignore_failure` | spec §4 command execution; serve/server.py:8090 |
-| `before_load_strict` | spec §4 command execution; serve/server.py:8091 |
-| `before_load_timeout_s` | spec §4 command execution; serve/server.py:8086 |
+| `api_monitor` | spec §4 web/desktop/telemetry; serve/server.py:8289 |
+| `args` | spec §4 free-form process control; serve/server.py:3226 |
+| `batch_telemetry` | spec §4 telemetry endpoints; serve/server.py:898 |
+| `before_load` | spec §4 command execution; serve/server.py:8108 |
+| `before_load_ignore_failure` | spec §4 command execution; serve/server.py:8307 |
+| `before_load_strict` | spec §4 command execution; serve/server.py:8308 |
+| `before_load_timeout_s` | spec §4 command execution; serve/server.py:8303 |
 | `command` | spec §4 MCP command; serve/mcp.py:610 |
 | `cwd` | spec §4 free-form process control; serve/mcp.py:106 |
-| `env` | spec §4 raw env dict; serve/server.py:3228 |
-| `exe` | spec §4 free-form process control (engine identity comes from the SP4 manifest); serve/server.py:7674 |
+| `env` | spec §4 raw env dict; serve/server.py:3361 |
+| `exe` | spec §4 free-form process control (engine identity comes from the SP4 manifest); serve/server.py:7883 |
 | `headers` | spec §4 MCP headers; serve/mcp.py:257 |
 | `lib_dirs` | spec §4 free-form process control; serve/images.py:135 |
 | `log` | spec §4 free-form process control; serve/replicas.py:99 |
 | `mcp` | spec §4 MCP; serve/mcp.py:632 |
 | `mcp_servers` | spec §4 MCP; serve/mcp.py:651 |
-| `open_browser` | spec §4 web/desktop; serve/server.py:8191 |
-| `prevent_sleep` | spec §4 desktop; serve/server.py:8031 |
-| `replica_cpus` | spec C-4: N-child replica scheduling is the accepted narrowing; serve/server.py:7549 |
-| `replica_load_tokens` | spec C-4: N-child replica scheduling is the accepted narrowing; serve/server.py:7583 |
+| `open_browser` | spec §4 web/desktop; serve/server.py:8408 |
+| `prevent_sleep` | spec §4 desktop; serve/server.py:8248 |
+| `replica_cpus` | spec C-4: N-child replica scheduling is the accepted narrowing; serve/server.py:7758 |
+| `replica_load_tokens` | spec C-4: N-child replica scheduling is the accepted narrowing; serve/server.py:7792 |
 | `replicas` | spec C-4: N-child replica scheduling is the accepted narrowing; serve/replicas.py:44 |
-| `telemetry_read_key` | spec §4 telemetry endpoints; serve/server.py:8053 |
+| `telemetry_read_key` | spec §4 telemetry endpoints; serve/server.py:8270 |
 | `type` | spec §4 MCP entry type; serve/mcp.py:604 |
 | `url` | spec §4 MCP url; serve/mcp.py:384 |
-| `user_args` | spec §4 free-form process control; serve/server.py:2918 |
-| `STRATA_BATCH_TELEMETRY` | spec §4 telemetry endpoints; serve/server.py:899 |
-| `STRATA_BATCH_TRACE` | spec §4 no new web/diagnostics surface; serve/server.py:821 |
+| `user_args` | spec §4 free-form process control; serve/server.py:2962 |
+| `STRATA_BATCH_TELEMETRY` | spec §4 telemetry endpoints; serve/server.py:900 |
+| `STRATA_BATCH_TRACE` | spec §4 no new web/diagnostics surface; serve/server.py:822 |
 | `STRATA_DEBUG` | spec §4 no new web/diagnostics surface; serve/mcp.py:130 |
-| `STRATA_FAIL_ONCE` | spec §4 free-form process control (fault-injection knob); serve/test_server.py:4610 |
-| `STRATA_OWNER_ATTEST_KEY` | spec §4 signing material, deferred to SP7; serve/server.py:7820 |
-| `STRATA_PARALLEL_SOLO` | spec C-4: N-child replica scheduling is the accepted narrowing; serve/server.py:1727 |
-| `STRATA_REPLICA_START` | spec C-4: N-child replica scheduling is the accepted narrowing; serve/server.py:7565 |
+| `STRATA_FAIL_ONCE` | spec §4 free-form process control (fault-injection knob); serve/test_server.py:4722 |
+| `STRATA_OWNER_ATTEST_KEY` | spec §4 signing material, deferred to SP7; serve/server.py:8029 |
+| `STRATA_PARALLEL_SOLO` | spec C-4: N-child replica scheduling is the accepted narrowing; serve/server.py:1734 |
+| `STRATA_REPLICA_START` | spec C-4: N-child replica scheduling is the accepted narrowing; serve/server.py:7774 |
 | `STRATA_RUNTIME_PROFILE` | spec §4 no new web/diagnostics surface; serve/lifeline.py:265 |
-| `STRATA_SYCL_BIN` | spec §4 free-form process control (external binary path); serve/server.py:2824 |
-| `STRATA_TELEMETRY_KEY` | spec §4 telemetry endpoints; serve/server.py:8053 |
-| `STRATA_VERIFY_TRACE` | spec §4 no new web/diagnostics surface; serve/server.py:1213 |
+| `STRATA_SYCL_BIN` | spec §4 free-form process control (external binary path); serve/server.py:2868 |
+| `STRATA_TELEMETRY_KEY` | spec §4 telemetry endpoints; serve/server.py:8270 |
+| `STRATA_VERIFY_TRACE` | spec §4 no new web/diagnostics surface; serve/server.py:1220 |
 | `mcpServers` | spec §4 MCP (Claude Desktop block); serve/mcp.py:648 |
 <!-- parity-rejected:end -->
 
-## MAYA v1.1.8 option-surface parity (SP5 M2)
+## MAYA v1.1.21 option-surface parity (SP5 M2)
 
-The vendored MAYA reference (`engines/maya-ref/`, tag `v1.1.8`, read-only —
+The vendored MAYA reference (`engines/maya-ref/`, tag `v1.1.21`, read-only —
 nothing of it is compiled by our presets; `docs/PROVENANCE.md`) is the
 `glm53` profile's reference surface. Its parity table
 (`secure_frontend/src/parity_table.cpp`, `kMayaRows`) gives all 178 options —
 138 typed, 30 rejected, 10 mapped — exactly one disposition, cited to the
-read site. The blocks below mirror that table for humans; the pytest gate
+read site. The option inventory is the set generated at `v1.1.8`
+(`tests/parity_keys_maya.hpp`; regenerating it at `v1.1.21` is open), while
+the citations follow `v1.1.21`. That tag's `docs/SETTINGS.md` spells every
+setting `MAYA_*`; the rows keep the `STRATA_*` names the engine reads (the
+older spelling still works, its lines 6-8). The blocks below mirror that
+table for humans; the pytest gate
 `tools/secure/test_parity_readme_coverage.py` re-checks them against it. The
 typed **child-env** rows form a closed 100-name allowlist for the glm-family
 child (`kFamilyForcibleEnvironment`): no other `STRATA_*`/`MAYA_*` name can
@@ -591,200 +600,200 @@ both sides: `--expert-profile`, `--expert-profile-save(-every)`,
 ### Kept as typed options
 
 <!-- maya-typed:begin -->
-| Maya option | Destination | Disposition note and the MAYA v1.1.8 read site |
+| Maya option | Destination | Disposition note and the MAYA v1.1.21 read site |
 | --- | --- | --- |
-| `cors_origins` | frontend behaviour | already typed (SP3 B12: listener.cors_origins); serve/server.py:3445 |
-| `experimental_speed_projection` | typed config | serve/server.py:3255 (shared settings, bool); Task 3: glm.experimental_speed_projection |
-| `fit_max_tokens` | typed config | serve/server.py:3427; Task 3: glm.fit_max_tokens (M1 engine.fit_max_tokens pattern) |
-| `gpu` | engine argv | already typed (SP2 engine.gpu renders --gpu); serve/server.py:1200, child_env :1216-1224, maya.py:1981; Task 7 |
-| `host` | frontend behaviour | already typed (SP1 listen.host); serve/server.py:3353, maya.py:2221 |
-| `layer_split` | engine argv | serve/server.py:1210-1213 renders --layer-split; docs/SETTINGS.md:31; Task 7 |
-| `max_tokens` | request rule | serve/server.py:989, :1149 (the vision block), shared settings :3251; engine.max_tokens stays the request output ceiling (M1 Ruling T8-e pattern) |
-| `min_p` | typed config | serve/server.py:3244 (shared settings: 0 <= min_p < 1), sampling-block validator :3284; defaults.sampling.min_p |
-| `model_name` | typed config | serve/server.py:3425, maya.py:2236; Task 3: glm.model_name (Ruling T2-c: managed launches still take served identity from the SP4 manifest) |
-| `no_flash_attn` | frontend behaviour | serve/server.py:991, :1158 (--no-flash-attn on the encoder child); Task 8: vision.no_flash_attn |
-| `port` | frontend behaviour | already typed (SP1 listen port); maya.py:2220, :2508 |
-| `reasoning_effort` | typed config | serve/server.py:3431, shared settings :3234 (none|low|high|max); Task 3: glm.reasoning_effort |
-| `resident` | typed config | serve/server.py:3385 (on-demand vs resident encoder); Task 8: vision.resident |
-| `sampling` | typed config | serve/server.py:3265-3272 (supported keys, validators from :3276); maya.py:91 (SAMPLING defaults); defaults.sampling.* (M1 Task 4) |
-| `seed` | typed config | serve/server.py:3251 (shared settings: positive integer), :252; defaults.sampling.seed (SP3 B9 neutral seed) |
-| `temperature` | typed config | serve/server.py:3238 (shared settings: 0..2), config-block validator :3276 (>= 0, 0 = greedy); defaults.sampling.temperature |
-| `thinking_budget` | typed config | serve/server.py:3440 (default 32768); C-3 keeps Maya's name: Task 3 glm.thinking_budget; STRATA_GLM_THINK_RESERVE rides it (docs/SETTINGS.md:95) |
-| `threads` | engine argv | serve/server.py:987 (the vision block; the flag lands on the encoder child :1157-1158); Task 8 (M1 Task 11 vision.threads pattern) |
-| `top_k` | typed config | serve/server.py:3247 (shared settings: integer 1..64), validator :3288; defaults.sampling.top_k |
-| `top_p` | typed config | serve/server.py:3241 (shared settings: 0 < top_p <= 1), validator :3280; defaults.sampling.top_p |
-| `tokenizer` | typed config | serve/server.py:3359, maya.py:2199, :2520; Task 3: glm.tokenizer — managed launches still compose the tokenizer from the SP4 manifest (Ruling T2-c) |
-| `vision` | typed config | serve/server.py:3378, :3381, :3385; the vision.* block (M1 Task 11); Task 8 the GLM side |
-| `mmproj` | manifest artifact | serve/server.py:1157 (the vision child's --mmproj); M1 Task 11: manifest files[] role mmproj (at most one entry) |
-| `model` | manifest artifact | serve/server.py:1157 (the vision child's --model file); the SP4 manifest composes the vision model artifact (Task 8) |
-| `presence_penalty` | typed config | serve/server.py:250-252 (supported sampling fields), block docstring :3265-3270, validator from :3292; defaults.sampling.presence_penalty |
-| `repetition_penalty` | typed config | serve/server.py:250-252, :261-265 (llama.cpp repeat_penalty is taken as this one); defaults.sampling.repetition_penalty |
-| `frequency_penalty` | typed config | serve/server.py:250-252, :3265-3270; defaults.sampling.frequency_penalty |
-| `penalty_last_n` | typed config | serve/server.py:250-252, :267-268 (repeat_last_n maps; 0/-1 keep the engine's default window); defaults.sampling.penalty_last_n |
-| `STRATA_ENGINE_STALL_S` | frontend behaviour | serve/server.py:326, docs/SETTINGS.md:96 (the pump's silence watchdog — M1 engine.silence_s pattern) |
-| `STRATA_GLM_AHEAD` | typed child env | docs/SETTINGS.md:64 |
-| `STRATA_GLM_CKPT_EVERY` | typed child env | docs/SETTINGS.md:51 |
-| `STRATA_GLM_CKPTS` | typed child env | docs/SETTINGS.md:51 |
-| `STRATA_GLM_CPU_1T` | typed child env | docs/SETTINGS.md:74 |
-| `STRATA_GLM_CPU_LANE` | typed child env | docs/SETTINGS.md:33 |
-| `STRATA_GLM_CPU_LANE0` | typed child env | docs/SETTINGS.md:34 |
-| `STRATA_GLM_CPU_LANE1` | typed child env | docs/SETTINGS.md:34 |
-| `STRATA_GLM_CPU_MT` | typed child env | docs/SETTINGS.md:74 |
-| `STRATA_GLM_CPU_PIN` | typed child env | docs/SETTINGS.md:35 |
-| `STRATA_GLM_CPU_PLAN` | typed child env | docs/SETTINGS.md:40 |
-| `STRATA_GLM_CPU_RETIME` | typed child env | docs/SETTINGS.md:41 |
-| `STRATA_GLM_CPU_SHARED` | typed child env | docs/SETTINGS.md:35 |
-| `STRATA_GLM_CPU_SPLIT` | typed child env | docs/SETTINGS.md:39 |
-| `STRATA_GLM_DISK_QD` | typed child env | docs/SETTINGS.md:71 |
-| `STRATA_GLM_DISK_READERS` | typed child env | docs/SETTINGS.md:71 |
-| `STRATA_GLM_DISK_SKIP_FROM` | typed child env | docs/SETTINGS.md:64 |
-| `STRATA_GLM_DISK_SKIP_W` | typed child env | docs/SETTINGS.md:64 |
-| `STRATA_GLM_DROP_CACHE` | typed child env | docs/SETTINGS.md:83 |
-| `STRATA_GLM_DSA_SCORE` | typed child env | docs/SETTINGS.md:79 |
-| `STRATA_GLM_EXL3_MMA_ROWS` | typed child env | docs/SETTINGS.md:81 |
-| `STRATA_GLM_KDA_GRAPH` | typed child env | docs/SETTINGS.md:38 |
-| `STRATA_GLM_KQ` | typed child env | docs/SETTINGS.md:73 |
-| `STRATA_GLM_KV_INT8` | typed child env | docs/SETTINGS.md:77 |
-| `STRATA_GLM_KV_PREFETCH` | typed child env | docs/SETTINGS.md:78 |
-| `STRATA_GLM_KV_RESIDENT` | typed child env | docs/SETTINGS.md:78 |
-| `STRATA_GLM_LOOP_ANSWER` | typed child env | docs/SETTINGS.md:85 (the loop guard: SP6 §4.9 keeps the guards a forced default the table may move; Task 4) |
-| `STRATA_GLM_LOOP_THINK` | typed child env | docs/SETTINGS.md:85 (the loop guard: SP6 §4.9 keeps the guards a forced default the table may move; Task 4) |
-| `STRATA_GLM_MMQ_GLU` | typed child env | docs/SETTINGS.md:82 |
-| `STRATA_GLM_MTP_KEEP` | typed child env | docs/SETTINGS.md:62 |
-| `STRATA_GLM_MTP_MISS` | typed child env | docs/SETTINGS.md:62 |
-| `STRATA_GLM_MULTI_BENCH` | typed child env | docs/SETTINGS.md:94 |
-| `STRATA_GLM_MULTI_BOUNDARY` | typed child env | docs/SETTINGS.md:55 |
-| `STRATA_GLM_MULTI_ROOM` | typed child env | docs/SETTINGS.md:55 |
-| `STRATA_GLM_MULTI_SPEC` | typed child env | docs/SETTINGS.md:55 |
-| `STRATA_GLM_MV_RDNA` | typed child env | docs/SETTINGS.md:60 |
-| `STRATA_GLM_NO_MTP` | typed child env | docs/SETTINGS.md:61 |
-| `STRATA_GLM_NO_SPEC` | typed child env | docs/SETTINGS.md:65 |
-| `STRATA_GLM_NUMA` | typed child env | docs/SETTINGS.md:43 |
-| `STRATA_GLM_PARALLEL_LOAD` | typed child env | docs/SETTINGS.md:32 |
-| `STRATA_GLM_PCIE_SHARE` | typed child env | docs/SETTINGS.md:40 |
-| `STRATA_GLM_POOL_STATS` | typed child env | docs/SETTINGS.md:91 |
-| `STRATA_GLM_PREFETCH_AT` | typed child env | docs/SETTINGS.md:42 |
-| `STRATA_GLM_PREFETCH_BLOCKS` | typed child env | docs/SETTINGS.md:42 |
-| `STRATA_GLM_PREFETCH_N` | typed child env | docs/SETTINGS.md:42 |
-| `STRATA_GLM_PREFETCH_RANK` | typed child env | docs/SETTINGS.md:42 |
-| `STRATA_GLM_PREFILL_ATTN` | typed child env | docs/SETTINGS.md:80 |
-| `STRATA_GLM_PREFILL_ATTN_CHECK` | typed child env | docs/SETTINGS.md:80 |
-| `STRATA_GLM_PREFILL_CHUNK` | typed child env | docs/SETTINGS.md:45 |
-| `STRATA_GLM_PREFILL_CPU` | typed child env | docs/SETTINGS.md:69 |
-| `STRATA_GLM_PREFILL_CPU_ROW_MS` | typed child env | docs/SETTINGS.md:69 |
-| `STRATA_GLM_PREFILL_MB` | typed child env | docs/SETTINGS.md:46 |
-| `STRATA_GLM_PREFILL_SUB` | typed child env | docs/SETTINGS.md:76 |
-| `STRATA_GLM_PREFILL_TAIL_SKIP` | typed child env | docs/SETTINGS.md:47 |
-| `STRATA_GLM_PREFILL_TRACE` | typed child env | docs/SETTINGS.md:72 |
-| `STRATA_GLM_PREFILL_WINDOW` | typed child env | docs/SETTINGS.md:48 |
-| `STRATA_GLM_PRESTAGE` | typed child env | docs/SETTINGS.md:70 |
-| `STRATA_GLM_PRESTAGE_ADAPT` | typed child env | docs/SETTINGS.md:70 |
-| `STRATA_GLM_PROFILE_WEIGHT` | typed child env | docs/SETTINGS.md:84 |
-| `STRATA_GLM_PROMOTE` | typed child env | docs/SETTINGS.md:56 |
-| `STRATA_GLM_PROMOTE_FILL` | typed child env | docs/SETTINGS.md:58 |
-| `STRATA_GLM_PROMOTE_MIN` | typed child env | docs/SETTINGS.md:57 |
-| `STRATA_GLM_RAM_GB` | typed child env | docs/SETTINGS.md:29 |
-| `STRATA_GLM_RAM_HEADROOM_GB` | typed child env | docs/SETTINGS.md:28 |
-| `STRATA_GLM_RAM_RESIDENT` | typed child env | docs/SETTINGS.md:30 |
-| `STRATA_GLM_RAM_SLACK` | typed child env | docs/SETTINGS.md:30 |
-| `STRATA_GLM_READ_CHUNKS` | typed child env | docs/SETTINGS.md:44 |
-| `STRATA_GLM_RESERVE_MB` | typed child env | maya.py:1829, :1839 (the HIP calibration writes it into the config env; the calibration flow is docs/SETTINGS.md:20) |
-| `STRATA_GLM_SCORE` | typed child env | docs/SETTINGS.md:93 |
-| `STRATA_GLM_SCORE_PREFILL` | typed child env | docs/SETTINGS.md:93 |
-| `STRATA_GLM_SEQ_CTX` | typed child env | docs/SETTINGS.md:54 |
-| `STRATA_GLM_SEQS` | typed child env | docs/SETTINGS.md:54 |
-| `STRATA_GLM_SERVICE_IDLE_MS` | typed child env | docs/SETTINGS.md:68 |
-| `STRATA_GLM_SLOT_DAYS` | typed child env | docs/SETTINGS.md:53 |
-| `STRATA_GLM_SLOT_GB` | typed child env | docs/SETTINGS.md:52 |
-| `STRATA_GLM_SLOT_KEEP` | typed child env | docs/SETTINGS.md:53 |
-| `STRATA_GLM_SLOT_MIN` | typed child env | docs/SETTINGS.md:52 |
-| `STRATA_GLM_SLOTS` | typed child env | docs/SETTINGS.md:50 (SP6 §4.9: slots off is the forced default — the table may move it, nothing unknown is ever sent; Task 4) |
-| `STRATA_GLM_SPEC_CANCEL` | typed child env | docs/SETTINGS.md:66 |
-| `STRATA_GLM_SPEC_HEAD` | typed child env | docs/SETTINGS.md:65 |
-| `STRATA_GLM_SPEC_SAMPLE` | typed child env | docs/SETTINGS.md:66 |
-| `STRATA_GLM_SPLIT` | typed child env | docs/SETTINGS.md:31 (SP6 §4.9: the forced split; glm.layer_split also renders --layer-split, serve/server.py:1210-1213; Task 4/7) |
-| `STRATA_GLM_SPLIT_LAYER_MS` | typed child env | docs/SETTINGS.md:31 |
-| `STRATA_GLM_SPLIT_LOG` | typed child env | docs/SETTINGS.md:31 |
-| `STRATA_GLM_THINK_RESERVE` | typed config | docs/SETTINGS.md:95, serve/server.py:1990 (server-side reserve; rides glm.thinking_budget — C-3; Task 3) |
-| `STRATA_GLM_TIMING` | typed child env | docs/SETTINGS.md:91 |
-| `STRATA_GLM_TRUNK_KEEP` | typed child env | docs/SETTINGS.md:63 |
-| `STRATA_GLM_TRUNK_KEEP_MAP` | typed child env | docs/SETTINGS.md:63 |
-| `STRATA_GLM_VISION_LEND_MB` | typed child env | serve/server.py:3396 (the vision turn lends MB from the expert pool; the flow is docs/SETTINGS.md:20) |
-| `STRATA_GLM_VRAM_EVICT` | typed child env | docs/SETTINGS.md:59 |
-| `STRATA_GLM_WIN_ALLCPU` | typed child env | docs/SETTINGS.md:88 |
-| `STRATA_GLM_WIN_CPU` | typed child env | docs/SETTINGS.md:88 |
-| `STRATA_GLM_WIN_LANES` | typed child env | docs/SETTINGS.md:88 |
-| `STRATA_GLM_WIN_PIPE` | typed child env | docs/SETTINGS.md:86 |
-| `STRATA_GLM_WIN_SKIP` | typed child env | docs/SETTINGS.md:87 |
-| `STRATA_GLM_WIN_STAGGER` | typed child env | docs/SETTINGS.md:88 |
-| `STRATA_GLM_WIN_THREADS` | typed child env | docs/SETTINGS.md:87 |
-| `STRATA_GLM_WIN_X3` | typed child env | docs/SETTINGS.md:89 |
-| `STRATA_GLM_WIN_X3_POOLS` | typed child env | docs/SETTINGS.md:89 |
-| `STRATA_MAX_BODY_MIB` | frontend behaviour | already typed: limits.chat.max_body_bytes (SP1); serve/server.py:2597, docs/SETTINGS.md:98 |
-| `STRATA_WATCHDOG_S` | typed child env | docs/SETTINGS.md:97, src/program/generate.cpp:727 (engine-side watchdog; SP6 §4.9/M5 forces 0 pending the owner's sheet; Task 4) |
-| `--max-context` | engine argv | maya.py:2524 (default 32768 when unset), :1816; Task 7 types glm.max_context at the pin default |
-| `--prefill` | engine argv | maya.py:1816 (auto), :1869 keeps an operator's value; docs/SETTINGS.md:132-136; Task 7 |
-| `--kv-streaming` | engine argv | maya.py:1817 (the KV_STREAMING constant :89), :1869; docs/SETTINGS.md:78; Task 7 |
-| `--kv-resident` | engine argv | maya.py:1870; docs/SETTINGS.md:78 (the window stays at least 20480); Task 7 |
-| `--parallel` | engine argv | maya.py:2742 (choices 1..8), :1875; replicas.parallel renders --parallel N inside the one child (C-4, M1 Task 10 pattern); Task 7 |
-| `--expert-profile-save` | engine argv | docs/SETTINGS.md:118, maya.py:1869 (rides the save; M1 session.expert_profile_save pattern); Task 7 |
-| `--expert-profile-save-every` | engine argv | docs/SETTINGS.md:118 (default 10 minutes), maya.py:1869; Task 7 |
-| `--spec` | engine argv | docs/SETTINGS.md:195 (the verify window's tokens; MTP drafting, the DFlash2 drafter itself stays out per C-5); Task 7 |
-| `--spec-min-p` | engine argv | docs/SETTINGS.md:196 (the confidence cut); Task 7 |
+| `cors_origins` | frontend behaviour | already typed (SP3 B12: listener.cors_origins); serve/server.py:4096 |
+| `experimental_speed_projection` | typed config | serve/server.py:3819 (shared settings, bool); Task 3: glm.experimental_speed_projection |
+| `fit_max_tokens` | typed config | serve/server.py:4077; Task 3: glm.fit_max_tokens (M1 engine.fit_max_tokens pattern) |
+| `gpu` | engine argv | already typed (SP2 engine.gpu renders --gpu); serve/server.py:1264, child_env :1280-1288, maya.py:2429; Task 7 |
+| `host` | frontend behaviour | already typed (SP1 listen.host); serve/server.py:3983, maya.py:2790 |
+| `layer_split` | engine argv | serve/server.py:1274-1277 renders --layer-split; docs/SETTINGS.md:44; Task 7 |
+| `max_tokens` | request rule | serve/server.py:1053, :1213 (the vision block), shared settings :3815; engine.max_tokens stays the request output ceiling (M1 Ruling T8-e pattern) |
+| `min_p` | typed config | serve/server.py:3808 (shared settings: 0 <= min_p < 1), sampling-block validator :3848; defaults.sampling.min_p |
+| `model_name` | typed config | serve/server.py:4075, maya.py:2805; Task 3: glm.model_name (Ruling T2-c: managed launches still take served identity from the SP4 manifest) |
+| `no_flash_attn` | frontend behaviour | serve/server.py:1055, :1222 (--no-flash-attn on the encoder child); Task 8: vision.no_flash_attn |
+| `port` | frontend behaviour | already typed (SP1 listen port); maya.py:2789, :3132 |
+| `reasoning_effort` | typed config | serve/server.py:4081, shared settings :3798 (none|low|high|max); Task 3: glm.reasoning_effort |
+| `resident` | typed config | serve/server.py:4015 (on-demand vs resident encoder); Task 8: vision.resident |
+| `sampling` | typed config | serve/server.py:3829-3836 (supported keys, validators from :3840); maya.py:106 (SAMPLING defaults); defaults.sampling.* (M1 Task 4) |
+| `seed` | typed config | serve/server.py:3815 (shared settings: positive integer), :265; defaults.sampling.seed (SP3 B9 neutral seed) |
+| `temperature` | typed config | serve/server.py:3802 (shared settings: 0..2), config-block validator :3840 (>= 0, 0 = greedy); defaults.sampling.temperature |
+| `thinking_budget` | typed config | serve/server.py:4090 (default 32768); C-3 keeps Maya's name: Task 3 glm.thinking_budget; STRATA_GLM_THINK_RESERVE rides it (docs/SETTINGS.md:141) |
+| `threads` | engine argv | serve/server.py:1051 (the vision block; the flag lands on the encoder child :1221-1222); Task 8 (M1 Task 11 vision.threads pattern) |
+| `top_k` | typed config | serve/server.py:3811 (shared settings: integer 1..64), validator :3852; defaults.sampling.top_k |
+| `top_p` | typed config | serve/server.py:3805 (shared settings: 0 < top_p <= 1), validator :3844; defaults.sampling.top_p |
+| `tokenizer` | typed config | serve/server.py:3989, maya.py:2758, :3144; Task 3: glm.tokenizer — managed launches still compose the tokenizer from the SP4 manifest (Ruling T2-c) |
+| `vision` | typed config | serve/server.py:4008, :4011, :4015; the vision.* block (M1 Task 11); Task 8 the GLM side |
+| `mmproj` | manifest artifact | serve/server.py:1221 (the vision child's --mmproj); M1 Task 11: manifest files[] role mmproj (at most one entry) |
+| `model` | manifest artifact | serve/server.py:1221 (the vision child's --model file); the SP4 manifest composes the vision model artifact (Task 8) |
+| `presence_penalty` | typed config | serve/server.py:263-265 (supported sampling fields), block docstring :3829-3834, validator from :3856; defaults.sampling.presence_penalty |
+| `repetition_penalty` | typed config | serve/server.py:263-265, :274-279 (llama.cpp repeat_penalty is taken as this one); defaults.sampling.repetition_penalty |
+| `frequency_penalty` | typed config | serve/server.py:263-265, :3829-3834; defaults.sampling.frequency_penalty |
+| `penalty_last_n` | typed config | serve/server.py:263-265, :280-283, :305-306 (repeat_last_n maps; 0 = no penalties, -1 = the whole context up to PENALTY_WINDOW_MAX 4096 :260, below -1 refused); defaults.sampling.penalty_last_n |
+| `STRATA_ENGINE_STALL_S` | frontend behaviour | serve/server.py:343, docs/SETTINGS.md:142 (the pump's silence watchdog — M1 engine.silence_s pattern) |
+| `STRATA_GLM_AHEAD` | typed child env | docs/SETTINGS.md:87 |
+| `STRATA_GLM_CKPT_EVERY` | typed child env | docs/SETTINGS.md:69 |
+| `STRATA_GLM_CKPTS` | typed child env | docs/SETTINGS.md:69 |
+| `STRATA_GLM_CPU_1T` | typed child env | docs/SETTINGS.md:104 |
+| `STRATA_GLM_CPU_LANE` | typed child env | docs/SETTINGS.md:46 |
+| `STRATA_GLM_CPU_LANE0` | typed child env | docs/SETTINGS.md:47 |
+| `STRATA_GLM_CPU_LANE1` | typed child env | docs/SETTINGS.md:47 |
+| `STRATA_GLM_CPU_MT` | typed child env | docs/SETTINGS.md:104 |
+| `STRATA_GLM_CPU_PIN` | typed child env | docs/SETTINGS.md:48 |
+| `STRATA_GLM_CPU_PLAN` | typed child env | docs/SETTINGS.md:54 |
+| `STRATA_GLM_CPU_RETIME` | typed child env | docs/SETTINGS.md:55 |
+| `STRATA_GLM_CPU_SHARED` | typed child env | docs/SETTINGS.md:48 |
+| `STRATA_GLM_CPU_SPLIT` | typed child env | docs/SETTINGS.md:53 |
+| `STRATA_GLM_DISK_QD` | typed child env | docs/SETTINGS.md:97 |
+| `STRATA_GLM_DISK_READERS` | typed child env | docs/SETTINGS.md:97 |
+| `STRATA_GLM_DISK_SKIP_FROM` | typed child env | docs/SETTINGS.md:87 |
+| `STRATA_GLM_DISK_SKIP_W` | typed child env | docs/SETTINGS.md:87 |
+| `STRATA_GLM_DROP_CACHE` | typed child env | docs/SETTINGS.md:119 |
+| `STRATA_GLM_DSA_SCORE` | typed child env | docs/SETTINGS.md:109 |
+| `STRATA_GLM_EXL3_MMA_ROWS` | typed child env | docs/SETTINGS.md:115 |
+| `STRATA_GLM_KDA_GRAPH` | typed child env | docs/SETTINGS.md:52 |
+| `STRATA_GLM_KQ` | typed child env | docs/SETTINGS.md:103 |
+| `STRATA_GLM_KV_INT8` | typed child env | docs/SETTINGS.md:107 |
+| `STRATA_GLM_KV_PREFETCH` | typed child env | docs/SETTINGS.md:108 |
+| `STRATA_GLM_KV_RESIDENT` | typed child env | docs/SETTINGS.md:108 |
+| `STRATA_GLM_LOOP_ANSWER` | typed child env | docs/SETTINGS.md:121 (the loop guard: SP6 §4.9 keeps the guards a forced default the table may move; Task 4) |
+| `STRATA_GLM_LOOP_THINK` | typed child env | docs/SETTINGS.md:121 (the loop guard: SP6 §4.9 keeps the guards a forced default the table may move; Task 4) |
+| `STRATA_GLM_MMQ_GLU` | typed child env | docs/SETTINGS.md:118 |
+| `STRATA_GLM_MTP_KEEP` | typed child env | docs/SETTINGS.md:84 |
+| `STRATA_GLM_MTP_MISS` | typed child env | docs/SETTINGS.md:84 |
+| `STRATA_GLM_MULTI_BENCH` | typed child env | docs/SETTINGS.md:140 |
+| `STRATA_GLM_MULTI_BOUNDARY` | typed child env | docs/SETTINGS.md:77 |
+| `STRATA_GLM_MULTI_ROOM` | typed child env | docs/SETTINGS.md:77 |
+| `STRATA_GLM_MULTI_SPEC` | typed child env | docs/SETTINGS.md:77 |
+| `STRATA_GLM_MV_RDNA` | typed child env | docs/SETTINGS.md:82 |
+| `STRATA_GLM_NO_MTP` | typed child env | docs/SETTINGS.md:83 |
+| `STRATA_GLM_NO_SPEC` | typed child env | docs/SETTINGS.md:89 |
+| `STRATA_GLM_NUMA` | typed child env | docs/SETTINGS.md:59 |
+| `STRATA_GLM_PARALLEL_LOAD` | typed child env | docs/SETTINGS.md:45 |
+| `STRATA_GLM_PCIE_SHARE` | typed child env | docs/SETTINGS.md:54 |
+| `STRATA_GLM_POOL_STATS` | typed child env | docs/SETTINGS.md:137 |
+| `STRATA_GLM_PREFETCH_AT` | typed child env | docs/SETTINGS.md:58 |
+| `STRATA_GLM_PREFETCH_BLOCKS` | typed child env | docs/SETTINGS.md:58 |
+| `STRATA_GLM_PREFETCH_N` | typed child env | docs/SETTINGS.md:58 |
+| `STRATA_GLM_PREFETCH_RANK` | typed child env | docs/SETTINGS.md:58 |
+| `STRATA_GLM_PREFILL_ATTN` | typed child env | docs/SETTINGS.md:114 |
+| `STRATA_GLM_PREFILL_ATTN_CHECK` | typed child env | docs/SETTINGS.md:114 |
+| `STRATA_GLM_PREFILL_CHUNK` | typed child env | docs/SETTINGS.md:61 |
+| `STRATA_GLM_PREFILL_CPU` | typed child env | docs/SETTINGS.md:95 |
+| `STRATA_GLM_PREFILL_CPU_ROW_MS` | typed child env | docs/SETTINGS.md:95 |
+| `STRATA_GLM_PREFILL_MB` | typed child env | docs/SETTINGS.md:62 |
+| `STRATA_GLM_PREFILL_SUB` | typed child env | docs/SETTINGS.md:106 |
+| `STRATA_GLM_PREFILL_TAIL_SKIP` | typed child env | docs/SETTINGS.md:63 |
+| `STRATA_GLM_PREFILL_TRACE` | typed child env | docs/SETTINGS.md:98 |
+| `STRATA_GLM_PREFILL_WINDOW` | typed child env | docs/SETTINGS.md:64 |
+| `STRATA_GLM_PRESTAGE` | typed child env | docs/SETTINGS.md:96 |
+| `STRATA_GLM_PRESTAGE_ADAPT` | typed child env | docs/SETTINGS.md:96 |
+| `STRATA_GLM_PROFILE_WEIGHT` | typed child env | docs/SETTINGS.md:120 |
+| `STRATA_GLM_PROMOTE` | typed child env | docs/SETTINGS.md:78 |
+| `STRATA_GLM_PROMOTE_FILL` | typed child env | docs/SETTINGS.md:80 |
+| `STRATA_GLM_PROMOTE_MIN` | typed child env | docs/SETTINGS.md:79 |
+| `STRATA_GLM_RAM_GB` | typed child env | docs/SETTINGS.md:39 |
+| `STRATA_GLM_RAM_HEADROOM_GB` | typed child env | docs/SETTINGS.md:38 |
+| `STRATA_GLM_RAM_RESIDENT` | typed child env | docs/SETTINGS.md:43 |
+| `STRATA_GLM_RAM_SLACK` | typed child env | docs/SETTINGS.md:43 |
+| `STRATA_GLM_READ_CHUNKS` | typed child env | docs/SETTINGS.md:60 |
+| `STRATA_GLM_RESERVE_MB` | typed child env | maya.py:2241 (value from hip_reserve_mib, :642-648; the HIP calibration writes it into the config env); docs/SETTINGS.md:190-193 now documents MAYA_GLM_RESERVE_MB; the calibration flow is docs/SETTINGS.md:29 |
+| `STRATA_GLM_SCORE` | typed child env | docs/SETTINGS.md:139 |
+| `STRATA_GLM_SCORE_PREFILL` | typed child env | docs/SETTINGS.md:139 |
+| `STRATA_GLM_SEQ_CTX` | typed child env | docs/SETTINGS.md:72 |
+| `STRATA_GLM_SEQS` | typed child env | docs/SETTINGS.md:72 |
+| `STRATA_GLM_SERVICE_IDLE_MS` | typed child env | docs/SETTINGS.md:94 |
+| `STRATA_GLM_SLOT_DAYS` | typed child env | docs/SETTINGS.md:71 |
+| `STRATA_GLM_SLOT_GB` | typed child env | docs/SETTINGS.md:70 |
+| `STRATA_GLM_SLOT_KEEP` | typed child env | docs/SETTINGS.md:71 |
+| `STRATA_GLM_SLOT_MIN` | typed child env | docs/SETTINGS.md:70 |
+| `STRATA_GLM_SLOTS` | typed child env | docs/SETTINGS.md:68 (SP6 §4.9: slots off is the forced default — the table may move it, nothing unknown is ever sent; Task 4) |
+| `STRATA_GLM_SPEC_CANCEL` | typed child env | docs/SETTINGS.md:90 |
+| `STRATA_GLM_SPEC_HEAD` | typed child env | docs/SETTINGS.md:89 |
+| `STRATA_GLM_SPEC_SAMPLE` | typed child env | docs/SETTINGS.md:90 |
+| `STRATA_GLM_SPLIT` | typed child env | docs/SETTINGS.md:44 (SP6 §4.9: the forced split; glm.layer_split also renders --layer-split, serve/server.py:1274-1277; Task 4/7) |
+| `STRATA_GLM_SPLIT_LAYER_MS` | typed child env | docs/SETTINGS.md:44 |
+| `STRATA_GLM_SPLIT_LOG` | typed child env | docs/SETTINGS.md:44 |
+| `STRATA_GLM_THINK_RESERVE` | typed config | docs/SETTINGS.md:141, serve/server.py:2279 (server-side reserve; rides glm.thinking_budget — C-3; Task 3) |
+| `STRATA_GLM_TIMING` | typed child env | docs/SETTINGS.md:137 |
+| `STRATA_GLM_TRUNK_KEEP` | typed child env | docs/SETTINGS.md:86 |
+| `STRATA_GLM_TRUNK_KEEP_MAP` | typed child env | docs/SETTINGS.md:86 |
+| `STRATA_GLM_VISION_LEND_MB` | typed child env | serve/server.py:4026 (the vision turn lends MB from the expert pool; the flow is docs/SETTINGS.md:29) |
+| `STRATA_GLM_VRAM_EVICT` | typed child env | docs/SETTINGS.md:81 |
+| `STRATA_GLM_WIN_ALLCPU` | typed child env | docs/SETTINGS.md:130 |
+| `STRATA_GLM_WIN_CPU` | typed child env | docs/SETTINGS.md:130 |
+| `STRATA_GLM_WIN_LANES` | typed child env | docs/SETTINGS.md:130 |
+| `STRATA_GLM_WIN_PIPE` | typed child env | docs/SETTINGS.md:122 |
+| `STRATA_GLM_WIN_SKIP` | typed child env | docs/SETTINGS.md:123 |
+| `STRATA_GLM_WIN_STAGGER` | typed child env | docs/SETTINGS.md:130 |
+| `STRATA_GLM_WIN_THREADS` | typed child env | docs/SETTINGS.md:123 |
+| `STRATA_GLM_WIN_X3` | typed child env | docs/SETTINGS.md:133 |
+| `STRATA_GLM_WIN_X3_POOLS` | typed child env | docs/SETTINGS.md:133 |
+| `STRATA_MAX_BODY_MIB` | frontend behaviour | already typed: limits.chat.max_body_bytes (SP1); serve/server.py:2922, docs/SETTINGS.md:144 |
+| `STRATA_WATCHDOG_S` | typed child env | docs/SETTINGS.md:143, src/program/generate.cpp:747 (engine-side watchdog; SP6 §4.9/M5 forces 0 pending the owner's sheet; Task 4) |
+| `--max-context` | engine argv | maya.py:3148 (default 32768 when unset), :2228; Task 7 types glm.max_context at the pin default |
+| `--prefill` | engine argv | maya.py:2229 (auto), :2284 keeps an operator's value; docs/SETTINGS.md:178-182; Task 7 |
+| `--kv-streaming` | engine argv | maya.py:2229 (the KV_STREAMING constant :104), :2285; docs/SETTINGS.md:108; Task 7 |
+| `--kv-resident` | engine argv | maya.py:2286; docs/SETTINGS.md:108 (the window stays at least 20480); Task 7 |
+| `--parallel` | engine argv | maya.py:3885 (choices 1..8), :2291; replicas.parallel renders --parallel N inside the one child (C-4, M1 Task 10 pattern); Task 7 |
+| `--expert-profile-save` | engine argv | docs/SETTINGS.md:164, maya.py:2285 (rides the save; M1 session.expert_profile_save pattern); Task 7 |
+| `--expert-profile-save-every` | engine argv | docs/SETTINGS.md:164 (default 10 minutes), maya.py:2285; Task 7 |
+| `--spec` | engine argv | docs/SETTINGS.md:323 (the verify window's tokens; MTP drafting, the DFlash2 drafter itself stays out per C-5); Task 7 |
+| `--spec-min-p` | engine argv | docs/SETTINGS.md:324 (the confidence cut); Task 7 |
 <!-- maya-typed:end -->
 
 ### Mapped to a Strata mechanism instead
 
 <!-- maya-mapped:begin -->
-| Maya option | Destination | Disposition note and the MAYA v1.1.8 read site |
+| Maya option | Destination | Disposition note and the MAYA v1.1.21 read site |
 | --- | --- | --- |
-| `api_key` | — | SP1 token store is the only auth source (CFG-06); serve/server.py:3443, maya.py:2222 |
-| `backend` | — | engine identity: the SP4 manifest + engine gate; serve/server.py:1220, maya.py:2195 |
-| `STRATA_API_KEY` | — | SP1 token store is the only auth source (CFG-06); serve/server.py:3342 |
-| `STRATA_ENGINE_QUIT_S` | — | the SP2 shutdown order (§3.7) is fixed by the supervisor; serve/server.py:946, docs/SETTINGS.md:99 |
-| `STRATA_ENGINE_WRAP_S` | — | the SP3 shutdown drain is fixed in the frontend (no per-request wrap-up); serve/server.py:3525, docs/SETTINGS.md:100 |
-| `STRATA_FAIR_SLICE_S` | — | SP3 admission/pool scheduling (B8/B9) is the frontend's policy; serve/server.py:225, docs/SETTINGS.md:101 |
-| `STRATA_HTTP_BACKLOG` | — | the listener backlog is fixed by the SP3 poll design (128 entries); serve/server.py:2588, docs/SETTINGS.md:98 |
-| `--serve` | — | the supervision composes the engine's serve mode at every start; serve/server.py:420, maya.py:2534 |
-| `--glm-pack` | manifest artifact | the SP4 manifest composes the pack role (Task 7); maya.py:1816 (the launcher's form) |
-| `--expert-profile` | manifest artifact | the expert profile is an install/manifest artifact, not an operator path (Task 7); maya.py:1865, :1953-1955 |
+| `api_key` | — | SP1 token store is the only auth source (CFG-06); serve/server.py:4094, maya.py:2791 |
+| `backend` | — | engine identity: the SP4 manifest + engine gate; serve/server.py:1284, maya.py:2752 |
+| `STRATA_API_KEY` | — | SP1 token store is the only auth source (CFG-06); serve/server.py:3967 |
+| `STRATA_ENGINE_QUIT_S` | — | the SP2 shutdown order (§3.7) is fixed by the supervisor; serve/server.py:1010, docs/SETTINGS.md:145 |
+| `STRATA_ENGINE_WRAP_S` | — | the SP3 shutdown drain is fixed in the frontend (no per-request wrap-up); serve/server.py:4172, docs/SETTINGS.md:146 |
+| `STRATA_FAIR_SLICE_S` | — | SP3 admission/pool scheduling (B8/B9) is the frontend's policy; serve/server.py:234, docs/SETTINGS.md:147 |
+| `STRATA_HTTP_BACKLOG` | — | the listener backlog is fixed by the SP3 poll design (128 entries); serve/server.py:2913, docs/SETTINGS.md:144 |
+| `--serve` | — | the supervision composes the engine's serve mode at every start; serve/server.py:437, maya.py:3158 |
+| `--glm-pack` | manifest artifact | the SP4 manifest composes the pack role (Task 7); maya.py:2228 (the launcher's form) |
+| `--expert-profile` | manifest artifact | the expert profile is an install/manifest artifact, not an operator path (Task 7); maya.py:2280, :2372-2374 |
 <!-- maya-mapped:end -->
 
 ### Excluded keys — refused at config load
 
 <!-- maya-rejected:begin -->
-| Maya option | Excluded by (and the MAYA v1.1.8 read site) |
+| Maya option | Excluded by (and the MAYA v1.1.21 read site) |
 | --- | --- |
-| `args` | spec §4 free-form process control (raw engine argv); serve/server.py:3454, engine_args :1210-1213 (Task 7 retires the glm53 pass-through) |
+| `args` | spec §4 free-form process control (raw engine argv); serve/server.py:4106, engine_args :1274-1277 (Task 7 retires the glm53 pass-through) |
 | `command` | spec §4 MCP command; serve/mcp.py:604 |
-| `cwd` | spec §4 free-form process control; serve/server.py:3405, serve/mcp.py:104 |
-| `env` | spec §4 raw env dict (Maya carries engine settings as raw env with no allowlist — the closed typed table replaces it); serve/server.py:1225, :3167 |
-| `exe` | spec §4 free-form process control (engine identity from the SP4 manifest); serve/server.py:3405, maya.py:2198 |
+| `cwd` | spec §4 free-form process control; serve/server.py:4035, serve/mcp.py:104 |
+| `env` | spec §4 raw env dict (Maya carries engine settings as raw env with no allowlist — the closed typed table replaces it); serve/server.py:1289, :3729 |
+| `exe` | spec §4 free-form process control (engine identity from the SP4 manifest); serve/server.py:4035, maya.py:2757 |
 | `headers` | spec §4 MCP headers; serve/mcp.py:251, :601 |
-| `installer` | spec §4 PRIV-01 forbids update checks and self-update (the Maya updater block, serve/update.py); maya.py:1879, :2093, :2110; the block's sub-keys (models_dir, quant, gguf, draft, data_dir, speed_calibration) ride the parent reject |
-| `lib_dirs` | spec §4 free-form process control (library search paths); serve/server.py:1227 |
-| `log` | spec §4 free-form process control (the child's log path); serve/server.py:3379, :3405, maya.py:2055 |
+| `installer` | spec §4 PRIV-01 forbids update checks and self-update (the Maya updater block, serve/update.py); maya.py:2298, :2541, :2560; the block's sub-keys (models_dir, quant, gguf, draft, data_dir, speed_calibration) ride the parent reject |
+| `lib_dirs` | spec §4 free-form process control (library search paths); serve/server.py:1291 |
+| `log` | spec §4 free-form process control (the child's log path); serve/server.py:4009, :4035, maya.py:2503 |
 | `mcp` | spec §4 MCP; serve/mcp.py:626 |
 | `mcp_servers` | spec §4 MCP; serve/mcp.py:645 |
 | `type` | spec §4 MCP entry type; serve/mcp.py:598 |
 | `url` | spec §4 MCP url; serve/mcp.py:378, :597 |
-| `mcpServers` | spec §4 MCP (Claude Desktop block); serve/mcp.py:646, serve/server.py:3345 (--mcp-config) |
-| `MAYA_RESTART_ON_UPDATE` | spec §4 PRIV-01 forbids the self-updater restart; maya.py:2240 |
-| `MAYA_UPDATE_CHECK` | spec §4 PRIV-01 forbids update checks (the Maya self-updater block); serve/update.py:74 |
-| `STRATA_DEBUG` | spec §4 no new diagnostics surface (debug logging switch); serve/server.py:2136, :2170 |
-| `STRATA_GLM_CPU_CAL` | spec §4 free-form process control (the `log` rule: a timing cache in an operator-named file); docs/SETTINGS.md:37 |
-| `STRATA_GLM_DFLASH` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0, docs/SETTINGS.md:165) — not a knob-visibility call; docs/SETTINGS.md:194 |
-| `STRATA_GLM_DFLASH_MIN` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0, docs/SETTINGS.md:165) — not a knob-visibility call; docs/SETTINGS.md:200 |
-| `STRATA_GLM_DFLASH_PROF` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0, docs/SETTINGS.md:165) — not a knob-visibility call; docs/SETTINGS.md:90 |
-| `STRATA_GLM_DFLASH_STATS` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0, docs/SETTINGS.md:165) — not a knob-visibility call; docs/SETTINGS.md:90 |
-| `STRATA_GLM_MTP_GGUF` | spec §4 model files come from the SP4 manifest (a draft GGUF picked by free path); docs/SETTINGS.md:61 |
-| `STRATA_GLM_ROUTE_LOG` | spec §4 free-form process control (the `log` rule: every route written to an operator-named prefix); docs/SETTINGS.md:92 |
-| `STRATA_GLM_SLOT_DIR` | spec §4 free-form process control (the `cwd` rule: the slot folder moves off the pack root); docs/SETTINGS.md:52 |
-| `STRATA_GLM_USAGE` | spec §4 free-form process control (the `log` rule: an operator-named file the engine writes after every request); docs/SETTINGS.md:49 |
-| `STRATA_MOCK_RELOAD_S` | spec §4 the mock engine is excluded (serve/server.py:3324 --engine mock); serve/server.py:1445 |
-| `--dflash` | spec C-5: DFlash2 drafter rejected on the A7 licence ground (CC BY-NC-ND weights, docs/SETTINGS.md:165); maya.py:1882 |
-| `--dump-routing` | spec §4 free-form process control (the trace dump writes an operator-named file); docs/SETTINGS.md:119 |
-| `--engine` | spec §4 free-form process control (server-mode select; the mock engine is excluded, serve/server.py:3324); maya.py:2223 |
+| `mcpServers` | spec §4 MCP (Claude Desktop block); serve/mcp.py:646, serve/server.py:3970 (--mcp-config) |
+| `MAYA_RESTART_ON_UPDATE` | spec §4 PRIV-01 forbids the self-updater restart; maya.py:2809 |
+| `MAYA_UPDATE_CHECK` | spec §4 PRIV-01 forbids update checks (the Maya self-updater block); serve/update.py:75 |
+| `STRATA_DEBUG` | spec §4 no new diagnostics surface (debug logging switch); serve/server.py:2430, :2465 |
+| `STRATA_GLM_CPU_CAL` | spec §4 free-form process control (the `log` rule: a timing cache in an operator-named file); docs/SETTINGS.md:51 |
+| `STRATA_GLM_DFLASH` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0, docs/SETTINGS.md:293) — not a knob-visibility call; docs/SETTINGS.md:322 |
+| `STRATA_GLM_DFLASH_MIN` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0, docs/SETTINGS.md:293) — not a knob-visibility call; docs/SETTINGS.md:328 |
+| `STRATA_GLM_DFLASH_PROF` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0, docs/SETTINGS.md:293) — not a knob-visibility call; docs/SETTINGS.md:134 |
+| `STRATA_GLM_DFLASH_STATS` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0, docs/SETTINGS.md:293) — not a knob-visibility call; docs/SETTINGS.md:134 |
+| `STRATA_GLM_MTP_GGUF` | spec §4 model files come from the SP4 manifest (a draft GGUF picked by free path); docs/SETTINGS.md:83 |
+| `STRATA_GLM_ROUTE_LOG` | spec §4 free-form process control (the `log` rule: every route written to an operator-named prefix); docs/SETTINGS.md:138 |
+| `STRATA_GLM_SLOT_DIR` | spec §4 free-form process control (the `cwd` rule: the slot folder moves off the pack root); docs/SETTINGS.md:70 |
+| `STRATA_GLM_USAGE` | spec §4 free-form process control (the `log` rule: an operator-named file the engine writes after every request); docs/SETTINGS.md:67 |
+| `STRATA_MOCK_RELOAD_S` | spec §4 the mock engine is excluded (serve/server.py:3945 --engine mock); serve/server.py:1587 |
+| `--dflash` | spec C-5: DFlash2 drafter rejected on the A7 licence ground (CC BY-NC-ND weights, docs/SETTINGS.md:293); maya.py:2301 |
+| `--dump-routing` | spec §4 free-form process control (the trace dump writes an operator-named file); docs/SETTINGS.md:165 |
+| `--engine` | spec §4 free-form process control (server-mode select; the mock engine is excluded, serve/server.py:3945); maya.py:2792 |
 <!-- maya-rejected:end -->
 
 ## Run the native inference server

@@ -5,3 +5,6 @@
 /upstream.version -text
 /secure_frontend/catalog/** -text
 /secure_frontend/tests/fixtures/** -text
+# Supply-chain review records whose SHA-256 is cited in docs/PROVENANCE.md (engine-supply-chain.md, C9).
+/docs/security/engine-reviews/** -text
+/docs/security/engine-binary-allowlist.json -text

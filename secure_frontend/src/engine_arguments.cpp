@@ -90,13 +90,13 @@ EngineArgumentsResult build_engine_arguments(const EngineArgumentsProfile profil
   if (auto rejected = validate_engine_user_arguments(profile, user_arguments)) return *rejected;
   std::vector<std::string> arguments = user_arguments;
   if (profile == EngineArgumentsProfile::lighttransport_glm53) {
-    // SP5 M2 Task 7 (D-8): Maya's launcher base (write_config, maya.py:1816-1818) composed
+    // SP5 M2 Task 7 (D-8): Maya's launcher base (write_config, maya.py:2228-2230) composed
     // from the inventory model's directory (its pack — Maya keeps the tokenizer at
-    // <pack>/tokenizer, :1817) plus the typed options. --prefill auto and --kv-streaming on
-    // are every Maya config's fixed base; --parallel renders only for 2..8 (set_arg :1875,
-    // choices :2742). --expert-profile needs a manifest role schema 1 does not carry (ruling:
+    // <pack>/tokenizer, :2231) plus the typed options. --prefill auto and --kv-streaming on
+    // are every Maya config's fixed base; --parallel renders only for 2..8 (set_arg :2291,
+    // choices :3885). --expert-profile needs a manifest role schema 1 does not carry (ruling:
     // omitted until one exists). GPUs stay out of argv (Task 4 puts the typed glm.gpu list
-    // in the child environment); the bounds are Maya's (max_context C-1 added, parallel :2742).
+    // in the child environment); the bounds are Maya's (max_context C-1 added, parallel :3885).
     if (!gpus.empty()) {
       return EngineArgumentsError{EngineArgumentsErrorCode::unsupported_mode,
                                   "GPU selection is not supported by this engine profile"};
@@ -131,7 +131,7 @@ EngineArgumentsResult build_engine_arguments(const EngineArgumentsProfile profil
     return EngineArgumentsError{EngineArgumentsErrorCode::invalid_value, "selected model has an invalid artifact path"};
   }
   // The engine's own --gpu sets CUDA_DEVICE_ORDER/CUDA_VISIBLE_DEVICES (or
-  // HIP) inside the engine (upstream generate.cpp:2334-2352 at v0.2.1.3), so
+  // HIP) inside the engine (upstream generate.cpp:2357-2375 at v0.2.2), so
   // the strata family's environment carries no GPU variable.
   if (!gpus.empty()) {
     std::string list;
@@ -152,7 +152,7 @@ EngineArgumentsResult build_engine_arguments(const EngineArgumentsProfile profil
 }
 
 // SP5 M1 Task 6: the flags an mtp=false composition drops, for the pin's fixed startup
-// line (serve/server.py:2925). The frontend only ever passes user arguments through, so
+// line (serve/server.py:2969). The frontend only ever passes user arguments through, so
 // the removals can only come from them — the same view build_engine_arguments applies.
 std::vector<std::string> strip_draft_layer_arguments(std::vector<std::string>& arguments) {
   std::vector<std::string> removed;
@@ -175,9 +175,9 @@ bool owns_flag(const std::vector<std::string>& user_arguments, const std::string
 
 // SP5 M1 Task 7. Each rendering mirrors the pin branch exactly: the reserve flag unless
 // the operator put one in the args; the elastic branch nests the segment size (and is
-// skipped whole when the operator owns --vram-elastic, :2945-2948); the layer-split
-// pair is gated on several GPUs without --peer-device (layer_split_of, :2896-2899) and
-// skips flags the operator already spelled (:2938, :2942).
+// skipped whole when the operator owns --vram-elastic, :2989-2992); the layer-split
+// pair is gated on several GPUs without --peer-device (layer_split_of, :2940-2943) and
+// skips flags the operator already spelled (:2982, :2986).
 void append_vram_gpu_elastic_arguments(std::vector<std::string>& arguments, const VramGpuElasticArgs& vram,
                                        const std::vector<std::string>& user_arguments, const std::vector<unsigned>& gpus) {
   if (vram.vram_reserve_mib.has_value() && !owns_flag(user_arguments, "--vram-reserve-mib")) {
@@ -201,7 +201,7 @@ void append_vram_gpu_elastic_arguments(std::vector<std::string>& arguments, cons
   }
 }
 
-// SP5 M1 Task 9 (serve/server.py:3000-3005): the pin's guard is literal — a blank path or
+// SP5 M1 Task 9 (serve/server.py:3071-3076): the pin's guard is literal — a blank path or
 // an operator-owned --expert-profile-save returns the args unchanged, before EITHER flag;
 // so the every rides the save, never stands alone.
 void append_expert_profile_save_arguments(std::vector<std::string>& arguments, const ExpertProfileSaveArgs& save,
@@ -216,9 +216,9 @@ void append_expert_profile_save_arguments(std::vector<std::string>& arguments, c
   arguments.push_back(std::to_string(save.every));
 }
 
-// SP5 M1 Task 10 (serve/server.py:2955-2975): the guards are the pin's, in order — operator
-// --batch/--slots first (:2961), then the <=1 no-op (:2968), then the value rides as
-// --batch N even past the 8-row window (:2969-2975).
+// SP5 M1 Task 10 (serve/server.py:3000-3020): the guards are the pin's, in order — operator
+// --batch/--slots first (:3006), then the <=1 no-op (:3013), then the value rides as
+// --batch N even past the 8-row window (:3014-3020).
 void append_parallel_batch_arguments(std::vector<std::string>& arguments, const ParallelBatchArgs& parallel,
                                      const std::vector<std::string>& user_arguments) {
   if (owns_flag(user_arguments, "--batch") || owns_flag(user_arguments, "--slots")) return;
@@ -228,14 +228,14 @@ void append_parallel_batch_arguments(std::vector<std::string>& arguments, const 
 }
 
 std::vector<unsigned> effective_gpu_list(const std::vector<unsigned>& gpus, std::optional<std::int64_t> hip_ordinal) {
-  // hip_visible (:3025): the ordinal wins only while at most one card is configured.
+  // hip_visible (:3096): the ordinal wins only while at most one card is configured.
   if (hip_ordinal.has_value() && gpus.size() <= 1U) return {static_cast<unsigned>(*hip_ordinal)};
   return gpus;
 }
 
 EffortEndArguments compose_effort_end_arguments(const std::filesystem::path& engine_binary, const TokenizerPack& tokenizer) {
-  // The pin greps the engine binary for the flag literal (:2849) and encodes "system" expecting a
-  // single token (:2850); either failure means the pin's one fixed fallback line and no argument.
+  // The pin greps the engine binary for the flag literal (:2893) and encodes "system" expecting a
+  // single token (:2894); either failure means the pin's one fixed fallback line and no argument.
   constexpr std::string_view kFlag = "--tail-role-token";
   constexpr std::string_view kFallback =
       "effort_position \"end\" needs engine 0.1.39 or newer (--tail-role-token): the reasoning effort stays at the top of the prompt";

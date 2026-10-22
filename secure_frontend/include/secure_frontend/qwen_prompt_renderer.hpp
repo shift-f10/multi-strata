@@ -34,7 +34,17 @@ namespace secure_frontend {
 // id per image token, serve/server.py:4488-4505; we compute it up front). The
 // counts are consumed in part order across all messages; a request whose image
 // parts do not match the counts fails closed.
+//
+// The generation tail follows the Qwen3 template's add_generation_prompt block
+// (tokenizer/chat_template.jinja; upstream renders it at serve/server.py:4370-4386):
+// absent writes nothing after "assistant\n" (a pack without reasoning markers), on
+// writes "<think>\n" (thinking, the template default), off writes the closed block
+// "<think>\n\n</think>\n\n" (enable_thinking=false). With on or off, content holding
+// either literal fails closed, so only the renderer places them.
+enum class QwenThinking { absent, on, off };
+
 [[nodiscard]] std::optional<std::string> render_qwen_text_prompt(
-    const std::vector<ChatMessage>& messages, std::span<const std::size_t> image_token_counts = {});
+    const std::vector<ChatMessage>& messages, std::span<const std::size_t> image_token_counts = {},
+    QwenThinking thinking = QwenThinking::absent);
 
 }  // namespace secure_frontend

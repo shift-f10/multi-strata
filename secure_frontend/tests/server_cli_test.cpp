@@ -359,7 +359,7 @@ void auth04_no_switch_disables_auth() {
       // SP5 M1 Task 11: vision.enabled/no_flash_attn/resident are the pin's image-INPUT
       // booleans (serve/server.py:2511, :2930). SP5 M2 Task 3: glm.fit_max_tokens and
       // glm.experimental_speed_projection are Maya's file-only GLM booleans
-      // (serve/server.py:3427, :3255). None touches authentication.
+      // (serve/server.py:4077, :3819). None touches authentication.
       expect(path == "listener.allow_remote" || path == "listener.allow_wildcard_bind" ||
                  path == "engine.allow_new_privileges" || path == "pull.allow_private_addresses" ||
                  path == "logging.requests" || path == "engine.fit_max_tokens" || path == "reasoning.close_retry" ||

@@ -28,6 +28,9 @@ struct ChatRouteConfig final {
   std::size_t default_max_tokens;   // 0 = auto (B1)
   SamplingDefaults sampling_default;  // SP5 M1 Task 4: defaults.sampling.* (request fields win)
   bool fit_max_tokens = true;         // SP5 M1 Task 5: engine.fit_max_tokens (false: over-room 400, pin :4536)
+  // reasoning.effort for the qwen profile: false only for "none" (the template's closed
+  // think block); unset, low, medium and high think (upstream frontend.py:134-148).
+  bool qwen_thinking = true;
   // SP5 M1 Task 8: engine.min_tokens / engine.max_tokens — added frontend bounds on the
   // request output budget (0: unset; Ruling T8-e) — and model.aliases: extra exact model
   // names the chat route answers to (set_aliases :3764-3777; §4: never empty or partial).
@@ -58,9 +61,10 @@ class ChatRoute final {
   [[nodiscard]] HttpResponse engine_unavailable();
   // SP5 M1 Task 12 (T12-i): `embeddings` non-empty begins a GENI generation; the
   // combined file it names must outlive the stream until the engine has run, so its
-  // removal belongs to this closure, not the handle() cleaner.
+  // removal belongs to this closure, not the handle() cleaner. The plan supplies the
+  // sampling and the reasoning split (issue 19).
   [[nodiscard]] RouteResult stream_response(std::optional<Lease>& lease, const std::vector<std::uint32_t>& prompt_ids,
-                                            std::size_t max_tokens, const SamplingParams& sampling, bool include_usage,
+                                            std::size_t max_tokens, const ChatGenerationPlan& plan, bool include_usage,
                                             const RequestContext& context, std::string embeddings = {},
                                             std::optional<std::filesystem::path> combined_file = std::nullopt);
   ChatRouteConfig config_;

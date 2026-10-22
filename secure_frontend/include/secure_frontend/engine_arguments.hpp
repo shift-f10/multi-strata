@@ -44,13 +44,13 @@ struct EffortEndArguments final {
 
 // SP5 M2 Task 7 (D-8): the typed values Maya's launcher composes into the GLM
 // engine's argv. max_context is Maya's --max-context (its DEFAULT_CONTEXT is 32768,
-// maya.py:2524; the 1-1048576 bound is added, C-1). parallel is replicas.parallel
+// maya.py:3148; the 1-1048576 bound is added, C-1). parallel is replicas.parallel
 // rendered --parallel N; Maya's launcher only sets the flag when a value is given
-// (maya.py:1875) and its CLI admits 1-8 (choices=range(1,9), maya.py:2742).
+// (maya.py:2291) and its CLI admits 1-8 (choices=range(1,9), maya.py:3885).
 // --expert-profile stays with a manifest role that schema 1 does not carry (ruling:
 // the composition omits it until a glm53 manifest names one).
 struct Glm53LaunchArgs final {
-  std::int64_t max_context{32768};  // glm.max_context (Maya's DEFAULT_CONTEXT, maya.py:2524)
+  std::int64_t max_context{32768};  // glm.max_context (Maya's DEFAULT_CONTEXT, maya.py:3148)
   std::int64_t parallel{1};         // replicas.parallel (1: the flag is not rendered)
 };
 
@@ -69,7 +69,7 @@ struct Glm53LaunchArgs final {
 // `--gpu` is owned too (spec §3.9): GPUs are selected only by the typed `gpus`
 // list (engine.gpu), rendered `--gpu i,j` before `--native`; the engine sets
 // CUDA_DEVICE_ORDER/CUDA_VISIBLE_DEVICES (or HIP) itself (upstream
-// generate.cpp:2334-2352, usage :797, at v0.2.1.3), so the strata
+// generate.cpp:2357-2375, usage :801, at v0.2.2), so the strata
 // family's environment carries no GPU variable.
 //
 // lighttransport_glm53 (SP5 M2 Task 7, D-8): the pass-through is retired — any
@@ -77,7 +77,7 @@ struct Glm53LaunchArgs final {
 // land here instead). The argv is composed from the selected model's directory
 // (its pack) and the typed Glm53LaunchArgs, in Maya's launcher form:
 // `--glm-pack <pack> --max-context <N> --prefill auto --kv-streaming on`
-// (maya.py:1816-1818), with `--parallel <N>` last only for 2..8 (:1875, :2742).
+// (maya.py:2228-2230), with `--parallel <N>` last only for 2..8 (:2291, :3885).
 // A non-empty `gpus` list stays refused (unsupported_mode): the GLM runner takes
 // no --gpu; the typed glm.gpu list reaches the child's environment (Task 4).
 //

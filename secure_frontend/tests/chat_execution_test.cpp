@@ -206,8 +206,8 @@ void glm_profile_generation_completes_over_maya_dialect() {
   const auto tokenizer = glm_tokenizer_for(prompt + "OK");
   const auto output_o = token_id_for(tokenizer, "O");
   const auto output_k = token_id_for(tokenizer, "K");
-  // Non-stream: Maya's records around the same T payload (generate.cpp:1245 NOTE,
-  // :5546 PP, :1799 STAT; server.py:439/:636-649 the pump's own reads).
+  // Non-stream: Maya's records around the same T payload (generate.cpp:1347 NOTE,
+  // :6102 PP, :2014 STAT; server.py:457/:677-690 the pump's own reads).
   FakeTransport transport;
   transport.reads = {line("READY 512 stop pause"), line("NOTE sessions: 1"),
                      line("PP 8 16 120 33.3 0"),
@@ -272,7 +272,7 @@ void maya_dialect_cancellation_round_trips() {
   const auto output_o = token_id_for(tokenizer, "O");
   const auto output_k = token_id_for(tokenizer, "K");
   FakeTransport transport;
-  // The maya engine advertises `READY <ctx> stop pause` (generate.cpp:2750) —
+  // The maya engine advertises `READY <ctx> stop pause` (generate.cpp:3251) —
   // stop support, like the strata engine's READY, is what makes the STOP round
   // trip legal at all.
   transport.reads = {line("READY 512 stop pause"), line("NOTE sessions: 1")};
@@ -792,6 +792,181 @@ void chat_max_tokens_cut_mid_character_returns_length() {
   }
 }
 
+// Issue 19 (docs/validation/2026-10-21-windows-gpu-session.md): Qwen3.8 emits <think> and
+// </think> as USER_DEFINED tokens, and every chat failed as decode_failed. The reasoning
+// split follows upstream's OutputParser (serve/frontend.py:884, :1245-1284).
+secure_frontend::TokenizerPack think_tokenizer() {
+  auto pack = test_support::byte_tokenizer();
+  pack.tokens_by_id.emplace_back("<think>");
+  pack.token_types.push_back(4);
+  pack.tokens_by_id.emplace_back("</think>");
+  pack.token_types.push_back(4);
+  return pack;
+}
+
+secure_frontend::ThinkTokens think_ids(const secure_frontend::TokenizerPack& pack) {
+  return {pack.tokens_by_id.size() - 2U, pack.tokens_by_id.size() - 1U};
+}
+
+std::string id_line(const std::size_t id) { return "T " + std::to_string(id); }
+
+struct ReasoningCollector final : secure_frontend::GenerationObserver {
+  std::string text;
+  std::string reasoning;
+  std::string order;  // one letter per callback: r(easoning) or c(ontent)
+  void on_text(const std::string_view piece) override {
+    text += piece;
+    order += 'c';
+  }
+  void on_reasoning(const std::string_view piece) override {
+    reasoning += piece;
+    order += 'r';
+  }
+  secure_frontend::RunCancel on_tick(bool) override { return secure_frontend::RunCancel::none; }
+};
+
+void drive_generation_splits_reasoning_at_the_think_close() {
+  const auto pack = think_tokenizer();
+  const auto think = think_ids(pack);
+  const secure_frontend::TokenByteDecoder decoder(pack);
+  Running run({"T " + byte_id('h'), "T " + byte_id('m'), id_line(think.close), "T " + byte_id('\n'), "T " + byte_id('\n'),
+               "T " + byte_id('O'), "T " + byte_id('K'), "DONE 7 1 0 0 stop"});
+  ReasoningCollector collector;
+  const auto result = secure_frontend::drive_generation(
+      run.protocol, decoder, {.max_tokens = 16U, .think_tokens = think, .starts_in_reasoning = true}, collector);
+  expect(result.end == secure_frontend::RunEnd::stop && result.completion_tokens == 7U, "the reply ends normally, every token counted");
+  expect(collector.reasoning == "hm", "text before </think> is reasoning: [" + collector.reasoning + "]");
+  expect(collector.text == "OK", "the tag and the newlines after it are not answer text: [" + collector.text + "]");
+
+  Running spaced({id_line(think.close), "T " + byte_id('\n'), "T " + byte_id(' '), "T " + byte_id('x'), "DONE 4 1 0 0 stop"});
+  ReasoningCollector kept;
+  (void)secure_frontend::drive_generation(spaced.protocol, decoder,
+                                          {.max_tokens = 16U, .think_tokens = think, .starts_in_reasoning = true}, kept);
+  expect(kept.text == " x" && kept.reasoning.empty(), "only newlines are dropped after </think>, spaces stay (frontend.py:1279-1284)");
+}
+
+// Thinking off closes the block in the prompt, yet the model may still open one: the
+// tags never reach the answer (upstream would pass them through as content).
+void drive_generation_think_open_while_answering_starts_reasoning() {
+  const auto pack = think_tokenizer();
+  const auto think = think_ids(pack);
+  const secure_frontend::TokenByteDecoder decoder(pack);
+  Running run({"T " + byte_id('A'), id_line(think.open), "T " + byte_id('x'), id_line(think.close), "T " + byte_id('\n'),
+               "T " + byte_id('B'), "DONE 6 1 0 0 stop"});
+  ReasoningCollector collector;
+  const auto result = secure_frontend::drive_generation(run.protocol, decoder, {.max_tokens = 16U, .think_tokens = think}, collector);
+  expect(result.end == secure_frontend::RunEnd::stop, "a reopened block is not an error");
+  expect(collector.text == "AB" && collector.reasoning == "x" && collector.order == "crc",
+         "answer, reasoning, answer in order: [" + collector.text + "] [" + collector.reasoning + "] " + collector.order);
+}
+
+void drive_generation_caps_reasoning_and_answer_together() {
+  const auto pack = think_tokenizer();
+  const auto think = think_ids(pack);
+  const secure_frontend::TokenByteDecoder decoder(pack);
+  Running run({"T " + byte_id('a'), "T " + byte_id('b'), id_line(think.close), "T " + byte_id('c'), "T " + byte_id('d'),
+               "DONE 5 1 0 0 cancel"});
+  ReasoningCollector collector;
+  const auto result = secure_frontend::drive_generation(
+      run.protocol, decoder, {.max_generated_bytes = 3U, .max_tokens = 16U, .think_tokens = think, .starts_in_reasoning = true},
+      collector);
+  expect(collector.reasoning == "ab" && collector.text == "c", "one byte cap over both: [" + collector.reasoning + "] [" + collector.text + "]");
+  expect(result.end == secure_frontend::RunEnd::length && result.bytes_capped && run.transport.stops() == 1U, "the cap stops once");
+}
+
+void drive_generation_ends_a_split_character_at_the_tag() {
+  const auto pack = think_tokenizer();
+  const auto think = think_ids(pack);
+  const secure_frontend::TokenByteDecoder decoder(pack);
+  Running run({"T " + byte_id('a'), "T " + byte_id(0xE2), id_line(think.close), "T " + byte_id('b'), "DONE 4 1 0 0 stop"});
+  ReasoningCollector collector;
+  (void)secure_frontend::drive_generation(run.protocol, decoder,
+                                          {.max_tokens = 16U, .think_tokens = think, .starts_in_reasoning = true}, collector);
+  expect(collector.reasoning == "a\xEF\xBF\xBD" && collector.text == "b",
+         "an incomplete character before the tag becomes one U+FFFD in its own channel, never crosses it");
+}
+
+void drive_generation_keeps_other_special_tokens_fail_closed() {
+  const auto pack = think_tokenizer();
+  const auto think = think_ids(pack);
+  const secure_frontend::TokenByteDecoder decoder(pack);
+  const auto start = token_id_for(pack, "<|im_start|>");
+  Running run({"T " + byte_id('a'), id_line(start), "DONE 2 1 0 0 cancel"});
+  ReasoningCollector collector;
+  expect(secure_frontend::drive_generation(run.protocol, decoder,
+                                           {.max_tokens = 16U, .think_tokens = think, .starts_in_reasoning = true}, collector)
+                 .end == secure_frontend::RunEnd::undecodable,
+         "a CONTROL token other than the two tags still fails closed");
+  Running unconfigured({id_line(think.close), "DONE 1 1 0 0 cancel"});
+  ReasoningCollector plain;
+  expect(secure_frontend::drive_generation(unconfigured.protocol, decoder, {.max_tokens = 16U}, plain).end ==
+             secure_frontend::RunEnd::undecodable,
+         "without think_tokens the tags fail closed as before");
+}
+
+// Issue 26 (docs/validation/2026-10-21-windows-gpu-session.md): in serve mode the engine
+// prints the end-of-turn token as a T record before DONE ... stop (generate.cpp:14578-14590).
+// It ends the reply and is never output (upstream's stop ids, serve/server.py:5086-5091).
+void drive_generation_end_of_turn_ends_the_reply_as_stop() {
+  const auto pack = think_tokenizer();
+  const auto think = think_ids(pack);
+  const auto im_end = token_id_for(pack, "<|im_end|>");
+  const secure_frontend::TokenByteDecoder decoder(pack);
+  Running run({"T " + byte_id('O'), "T " + byte_id('K'), id_line(im_end), "DONE 3 1 0 0 stop"});
+  ReasoningCollector collector;
+  const auto result = secure_frontend::drive_generation(run.protocol, decoder, {.max_tokens = 16U, .stop_tokens = {im_end}}, collector);
+  expect(result.end == secure_frontend::RunEnd::stop && collector.text == "OK" && result.completion_tokens == 3U,
+         "<|im_end|> ends the reply as stop and is not text: [" + collector.text + "]");
+  expect(run.transport.stops() == 0U && run.protocol.idle(), "the engine ends the turn itself: no STOP");
+
+  Running trailing({"T " + byte_id('O'), id_line(im_end), "T " + byte_id('X'), "DONE 3 1 0 0 length"});
+  ReasoningCollector cut;
+  const auto cut_result = secure_frontend::drive_generation(trailing.protocol, decoder, {.max_tokens = 16U, .stop_tokens = {im_end}}, cut);
+  expect(cut_result.end == secure_frontend::RunEnd::stop && cut.text == "O", "nothing after the end of the turn is output");
+
+  Running thinking({"T " + byte_id('a'), id_line(im_end), "DONE 2 1 0 0 stop"});
+  ReasoningCollector unanswered;
+  const auto thinking_result = secure_frontend::drive_generation(
+      thinking.protocol, decoder,
+      {.max_tokens = 16U, .think_tokens = think, .starts_in_reasoning = true, .stop_tokens = {im_end}}, unanswered);
+  expect(thinking_result.end == secure_frontend::RunEnd::stop && unanswered.reasoning == "a" && unanswered.text.empty(),
+         "a turn may end inside the reasoning");
+
+  Running unconfigured({id_line(im_end), "DONE 1 1 0 0 cancel"});
+  ReasoningCollector plain;
+  expect(secure_frontend::drive_generation(unconfigured.protocol, decoder, {.max_tokens = 16U}, plain).end ==
+             secure_frontend::RunEnd::undecodable,
+         "without stop_tokens a CONTROL token still fails closed");
+}
+
+void run_generation_ends_at_the_end_of_turn() {
+  const auto tokenizer = think_tokenizer();
+  const auto im_end = token_id_for(tokenizer, "<|im_end|>");
+  ReadyService f;
+  f.transport.reads = {"T " + byte_id('H'), "T " + byte_id('i'), id_line(im_end), "DONE 3 3 1.0 1.0 stop"};
+  const auto outcome = f.service.run_generation({1U, 2U, 3U}, {.max_tokens = 8U, .stop_tokens = {im_end}}, {}, tokenizer);
+  const auto* result = std::get_if<secure_frontend::GenerationResult>(&outcome);
+  expect(result != nullptr && result->text == "Hi" && result->finish == secure_frontend::FinishReason::stop &&
+             result->completion_tokens == 3U,
+         "a reply ending in <|im_end|> is a stop result, not decode_failed");
+}
+
+void run_generation_returns_reasoning_beside_the_answer() {
+  const auto tokenizer = think_tokenizer();
+  const auto think = think_ids(tokenizer);
+  ReadyService f;
+  f.transport.reads = {"T " + byte_id('r'), id_line(think.close), "T " + byte_id('\n'), "T " + byte_id('\n'), "T " + byte_id('A'),
+                       "DONE 5 3 1.0 1.0 stop"};
+  const auto outcome = f.service.run_generation(
+      {1U, 2U, 3U}, {.max_tokens = 8U, .think_tokens = think, .starts_in_reasoning = true}, {}, tokenizer);
+  const auto* result = std::get_if<secure_frontend::GenerationResult>(&outcome);
+  expect(result != nullptr, "a reply with a think block is a result, not decode_failed");
+  if (result == nullptr) return;
+  expect(result->text == "A" && result->reasoning == "r" && result->completion_tokens == 5U &&
+             result->finish == secure_frontend::FinishReason::stop,
+         "answer and reasoning come back apart: [" + result->text + "] [" + result->reasoning + "]");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -825,6 +1000,14 @@ int main(int argc, char** argv) {
       {"drive_generation_drops_tail_on_length_and_replaces_on_stop", drive_generation_drops_tail_on_length_and_replaces_on_stop},
       {"drive_generation_cancel_sends_stop_and_drains", drive_generation_cancel_sends_stop_and_drains},
       {"chat_max_tokens_cut_mid_character_returns_length", chat_max_tokens_cut_mid_character_returns_length},
+      {"drive_generation_splits_reasoning_at_the_think_close", drive_generation_splits_reasoning_at_the_think_close},
+      {"drive_generation_think_open_while_answering_starts_reasoning", drive_generation_think_open_while_answering_starts_reasoning},
+      {"drive_generation_caps_reasoning_and_answer_together", drive_generation_caps_reasoning_and_answer_together},
+      {"drive_generation_ends_a_split_character_at_the_tag", drive_generation_ends_a_split_character_at_the_tag},
+      {"drive_generation_keeps_other_special_tokens_fail_closed", drive_generation_keeps_other_special_tokens_fail_closed},
+      {"run_generation_returns_reasoning_beside_the_answer", run_generation_returns_reasoning_beside_the_answer},
+      {"drive_generation_end_of_turn_ends_the_reply_as_stop", drive_generation_end_of_turn_ends_the_reply_as_stop},
+      {"run_generation_ends_at_the_end_of_turn", run_generation_ends_at_the_end_of_turn},
       {"run_generation_maps_engine_errors", run_generation_maps_engine_errors},
   }, failures);
 }

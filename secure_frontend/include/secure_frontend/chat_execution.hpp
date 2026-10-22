@@ -100,6 +100,11 @@ struct GenerationSettings final {
   // SP5 M1 Task 12 (T12-i): the combined vision embeddings file for a GENI line;
   // empty renders a plain GEN (text requests unchanged).
   std::string embeddings{};
+  // The plan's reasoning split (ChatGenerationPlan::think_tokens / starts_in_reasoning),
+  // handed to drive_generation through drive_limits.
+  std::optional<ThinkTokens> think_tokens{};
+  bool starts_in_reasoning{false};
+  std::vector<std::size_t> stop_tokens{};  // ChatGenerationPlan::stop_tokens (issue 26)
 };
 
 struct ExecutionControl final {
@@ -114,6 +119,7 @@ struct GenerationResult final {
   std::size_t completion_tokens;
   FinishReason finish;
   bool timed_out{false};  // B4: a timeout is a result with FinishReason::length, flagged for the log
+  std::string reasoning{};  // the think block's text (message.reasoning_content); empty: none
 };
 
 enum class GenerationFailure { cancelled, engine_error, engine_unavailable, decode_failed, shutting_down };

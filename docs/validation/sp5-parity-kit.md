@@ -2,7 +2,7 @@
 
 This procedure runs **on the owner's GPU box**. It proves the SP5 M2 claim the
 lane can never prove by itself: that `strata serve` on a `glm53` manifest and
-**MAYA v1.1.8's own server** (same engine build, same composed flags) answer
+**MAYA v1.1.21's own server** (same engine build, same composed flags) answer
 the same fixed corpus the same way — text-for-text on greedy/seeded cases,
 finish/usage on schema cases, and recorded shapes where an approved decision
 authorizes a difference (C-6). GitHub Actions are disabled and the dev host
@@ -29,10 +29,10 @@ sides, or comment that corpus line out for a text-only run.
 ## 1. Setup (owner box)
 
 1. **Reference engine + server:** build the upstream Strata reference at the
-   pinned `v0.2.1.3` (the `upstream/` gitlink; sha in `docs/PROVENANCE.md`)
+   pinned `v0.2.2` (the `upstream/` gitlink; sha in `docs/PROVENANCE.md`)
    and use its `serve` verb as the reference server's baseline plumbing.
-2. **Maya engine:** build MAYA v1.1.8 from the vendored
-   `engines/maya-ref/` submodule (gitlink `5c970a86…`, tag `v1.1.8`) exactly
+2. **Maya engine:** build MAYA v1.1.21 from the vendored
+   `engines/maya-ref/` submodule (gitlink `451f9cb6…`, tag `v1.1.21`) exactly
    as the SP6-designed recipe says: `docs/superpowers/specs/2026-10-14-sp6-glm-engine-design.md`
    §5 (manifest/pack layout §5.2, bundle path §5.4) plus MAYA's own
    `docs/SETUP.md`/`docs/SETTINGS.md` build notes. This submodule is a
@@ -56,11 +56,14 @@ strata-api-probe --dry-run \
   --corpus docs/validation/sp5-parity-corpus.txt --token-file T --model M \
   --ref-port 8081 --serve-port 8080 \
   --ref-results ref-results.csv --serve-results ours-results.csv \
-  --command-line '<the exact MAYA v1.1.8 serve command line>' \
+  --command-line '<the exact MAYA v1.1.21 serve command line>' \
   --command-line '<the exact strata serve command line + config>' \
-  --engine-version 'strata v0.2.1.3 (reference)' \
-  --engine-version 'MAYA v1.1.8 <engine build id>'
+  --engine-version 'strata v0.2.2 (reference)' \
+  --engine-version 'MAYA v1.1.21 451f9cb6 <engine build id>'
 ```
+
+Write the Maya version from the tag and commit as above: `VERSION` is empty
+at tag `v1.1.21`, so its server reports no version of its own.
 
 Start the reference side with the flag set the composition produces for the
 `glm53` manifest (`--context` from `glm.max_context`, `--parallel` from

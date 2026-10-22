@@ -73,7 +73,7 @@ void supervisor_policy_follows_config() {
          "the other policy values come from config_defaults.hpp");
 }
 
-// SP5 M2 Task 7 (Ruling R-T5-b): the glm53 profile speaks Project Maya v1.1.8's wire
+// SP5 M2 Task 7 (Ruling R-T5-b): the glm53 profile speaks Project Maya v1.1.21's wire
 // dialect (Task 5), not the uncharacterized lighttransport one; the qwen profile is
 // unchanged. The same selection stands at the bootstrap site (server_bootstrap.cpp).
 void supervisor_flavor_is_the_maya_dialect_for_glm53() {

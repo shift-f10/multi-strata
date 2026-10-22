@@ -94,7 +94,7 @@ std::string render_sampling_keys(const SamplingParams& sampling) {
     out += '=';
     out.append(buffer, end);
   };
-  // The pinned v0.2.1.3 wire rules (serve/server.py:1360-1394), in the pin's
+  // The pinned v0.2.2 wire rules (serve/server.py:1367-1401), in the pin's
   // order: neutral values the engine already defaults to are omitted, top_k
   // clamps wide lists to the engine's 64 candidates, penalties take the
   // engine's alias names, and any penalty without a window gets the engine's
@@ -194,6 +194,24 @@ std::optional<EngineProtocolError> EngineProtocolClient::await_ready(const std::
     }
     const auto parsed = fields(response.line);
     if (parsed.size() >= 2 && parsed.front() == "INFO") continue;
+    if (flavor_ == EngineProtocolFlavor::maya_118 && !parsed.empty() && (parsed.front() == "VRAM" || parsed.front() == "NOTE")) {
+      // Maya v1.1.21's fast path prints one `VRAM key=value ...` record per GPU part
+      // before READY (maya-ref src/program/generate.cpp:1054-1062) and, when Windows'
+      // page file caps the commit, a `NOTE experts: ...` line (:1065-1068); its own
+      // reader skips both (serve/server.py:456-473). Consumed here, never output,
+      // bounded: VRAM under the STAT rule (at least one pair, every key non-empty
+      // before its `=`), NOTE non-empty. Anything else before READY stays unexpected.
+      if (parsed.size() < 2U) return fail(EngineProtocolErrorCode::unexpected_line, "engine emitted an empty startup record");
+      if (parsed.front() == "VRAM") {
+        for (std::size_t i = 1; i < parsed.size(); ++i) {
+          const auto equals = parsed[i].find('=');
+          if (equals == std::string_view::npos || equals == 0U) {
+            return fail(EngineProtocolErrorCode::unexpected_line, "engine emitted a malformed VRAM record");
+          }
+        }
+      }
+      continue;
+    }
     if (parsed.size() < 2 || parsed.front() != "READY") {
       return fail(EngineProtocolErrorCode::unexpected_line, "engine did not report a valid READY line");
     }
@@ -290,11 +308,11 @@ GenerationEvent EngineProtocolClient::next_event(const std::chrono::milliseconds
     // PP is a private prefill-progress heartbeat, never client-visible
     // output. Both engine profiles emit it, with different semantics:
     //
-    // Strata (unchanged from v0.1.44.1 through v0.2.1.3): `generate.cpp`
+    // Strata (unchanged from v0.1.44.1 through v0.2.2): `generate.cpp`
     // prints
     // `PP <position reached> <prompt tokens> <ms> <fresh tokens/s>` after
-    // every batched prompt chunk (`%lld %lld %.0f %.1f`, :9673/:12937/
-    // :12998/:13852 at v0.2.1.3), and the
+    // every batched prompt chunk (`%lld %lld %.0f %.1f`, :9757/:13033/
+    // :13094/:13948 at v0.2.2), and the
     // `qwen35moe` engine (`q36_engine.cu`) prints `PP <done> <fresh> <ms>
     // <tokens/s>` where the second field counts only the tokens not reused
     // from the held state. Upstream's own server accepts any `PP` with two
@@ -316,10 +334,10 @@ GenerationEvent EngineProtocolClient::next_event(const std::chrono::milliseconds
                              parse_decimal(progress[1], first) && parse_decimal(progress[2], second);
     bool accepted = false;
     if (flavor_ == EngineProtocolFlavor::maya_118) {
-      // Maya v1.1.8: the engine prints `PP <done> <total> <ms> <tok/s> <reuse>`
-      // per prompt chunk (maya-ref src/program/generate.cpp:5546, :6111) and
+      // Maya v1.1.21: the engine prints `PP <done> <total> <ms> <tok/s> <reuse>`
+      // per prompt chunk (maya-ref src/program/generate.cpp:6102, :6667) and
       // its own pump accepts any `PP` with decimal fields 1-2 and an optional
-      // float/reuse tail (serve/server.py:771-783). Bounded like the other
+      // float/reuse tail (serve/server.py:835-847). Bounded like the other
       // flavors — 3 to 6 fields, decimal counters, optional non-negative
       // metrics, optional decimal reuse; no ordering between the counters is
       // assumed (Maya assumes none).
@@ -340,7 +358,7 @@ GenerationEvent EngineProtocolClient::next_event(const std::chrono::milliseconds
   }
   if (flavor_ == EngineProtocolFlavor::maya_118 && response.line.rfind("NOTE ", 0) == 0) {
     // Maya prints what happens to the kept conversations as `NOTE <text>`
-    // (maya-ref serve/server.py:787, :439, :537, :964): its own server only
+    // (maya-ref serve/server.py:851, :457, :559, :1028): its own server only
     // logs the text. We consume it as a ProgressEvent — never client output,
     // never a protocol error — bounded: a non-empty record after `NOTE `.
     if (fields(response.line).size() < 2U) {
@@ -350,8 +368,8 @@ GenerationEvent EngineProtocolClient::next_event(const std::chrono::milliseconds
   }
   if (flavor_ == EngineProtocolFlavor::maya_118 && response.line.rfind("STAT ", 0) == 0) {
     // The GLM engine's live expert-tier counters, `STAT key=value ...` every
-    // few tokens (maya-ref src/program/generate.cpp:1799, :2080; the pump's
-    // parse at serve/server.py:636-649, consumed for the Monitor and never
+    // few tokens (maya-ref src/program/generate.cpp:2014, :2360; the pump's
+    // parse at serve/server.py:677-690, consumed for the Monitor and never
     // output). Cadence record: consumed as a ProgressEvent, and fail-closed
     // on shape — at least one pair, every field carrying a non-empty key
     // before its `=`.
@@ -372,7 +390,8 @@ GenerationEvent EngineProtocolClient::next_event(const std::chrono::milliseconds
     // RESUME/REUSED are private prompt-progress records of the main engine
     // family, printed for every accepted GEN and unconditionally: `RESUME <n>`
     // before reading the prompt (v0.1.44.1 generate.cpp:11214, v0.2.1.3
-    // :12809) and `REUSED <n>` once it is read (:11849 / :13910). Upstream's
+    // :12809, v0.2.2 :12899) and `REUSED <n>` once it is read (:11849 / :13910
+    // / :14006). Upstream's
     // own server consumes them (serve/server.py). Like PP they are never
     // client output and must never fail a request; the qwen35moe engine
     // prints neither, and YIELDED needs the --batch/--slots flags the

@@ -1,12 +1,12 @@
 // parity_keys_upstream.hpp — the option-surface inventory of the pinned
 // upstream Strata, generated once and committed (SP5 M1 Task 2).
 //
-// Pin: upstream submodule commit cbfd5b926b794b356195d3cb600191b0c3567540 (tag v0.2.1.3).
+// Pin: upstream submodule commit 011c9e600a93bbc9fd451c563501b5831c32bbca (tag v0.2.2).
 // Generating commands (run in `upstream/`, lists verbatim — no edits, no additions):
 //   grep -rhoE 'cfg\.get\("[a-z_0-9]+"' serve/*.py | sort -u | sed 's/cfg.get("//;s/"//'
 //   grep -rhoE 'STRATA_[A-Z0-9_]+' serve/*.py | sort -u
-// Counts: 87 config keys, 31 env knobs (the spec's "~35" estimate; the grep
-// over serve/*.py at the pin yields 31).
+// Counts: 88 config keys, 32 env knobs (the spec's "~35" estimate; the grep
+// over serve/*.py at the pin yields 32).
 //
 // NOTE: the flat grep mixes names read inside config *blocks* (the `vision`
 // dict, the `images` image-generation dict, `mcp_servers` entries, replica
@@ -77,6 +77,7 @@ inline constexpr std::string_view kUpstreamConfigKeys[] = {
     "open_browser",
     "out_dir",
     "parallel",
+    "pool_cores",
     "prevent_sleep",
     "quant",
     "queue_timeout",
@@ -119,6 +120,7 @@ inline constexpr std::string_view kUpstreamEnvKnobs[] = {
     "STRATA_BATCH_TRACE",
     "STRATA_DEBUG",
     "STRATA_DROP_CACHE_ON_EXIT",
+    "STRATA_ENGINE_NICE",
     "STRATA_ENGINE_READY_S",
     "STRATA_ENGINE_STALL_S",
     "STRATA_FAIL_ONCE",

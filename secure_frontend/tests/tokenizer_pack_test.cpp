@@ -9,6 +9,7 @@
 #include <string>
 #include <system_error>
 #include <variant>
+#include <vector>
 
 namespace {
 int failures = 0;
@@ -196,10 +197,121 @@ void token_byte_decoder_returns_raw_token_bytes() {
              std::get<secure_frontend::TokenizerPackError>(outside).code == secure_frontend::TokenizerPackErrorCode::token_id_out_of_range,
          "ids outside the vocabulary");
 }
+
+// The byte pack plus the Qwen3 reasoning markers as Qwen3.8 packs carry them (USER_DEFINED, 4).
+secure_frontend::TokenizerPack think_pack() {
+  auto pack = test_support::byte_tokenizer();
+  pack.tokens_by_id.emplace_back("<think>");
+  pack.token_types.push_back(4);
+  pack.tokens_by_id.emplace_back("</think>");
+  pack.token_types.push_back(4);
+  return pack;
+}
+
+// The markers resolve only as exactly one CONTROL or USER_DEFINED token each.
+void finds_qwen_think_tokens_only_when_unambiguous() {
+  expect(!secure_frontend::find_qwen_think_tokens(test_support::byte_tokenizer()).has_value(),
+         "a ChatML pack without the markers has no reasoning split");
+  const auto pack = think_pack();
+  const std::size_t open = pack.tokens_by_id.size() - 2U;
+  const std::size_t close = pack.tokens_by_id.size() - 1U;
+  const auto found = secure_frontend::find_qwen_think_tokens(pack);
+  expect(found.has_value() && found->open == open && found->close == close, "USER_DEFINED markers resolve");
+  auto control = pack;
+  control.token_types[open] = 3;
+  control.token_types[close] = 3;
+  const auto control_found = secure_frontend::find_qwen_think_tokens(control);
+  expect(control_found.has_value() && control_found->open == open && control_found->close == close, "CONTROL markers resolve too");
+  auto only_open = test_support::byte_tokenizer();
+  only_open.tokens_by_id.emplace_back("<think>");
+  only_open.token_types.push_back(4);
+  expect(!secure_frontend::find_qwen_think_tokens(only_open).has_value(), "one marker alone is no split");
+  auto ordinary = pack;
+  ordinary.token_types[close] = 1;
+  expect(!secure_frontend::find_qwen_think_tokens(ordinary).has_value(), "an ordinary-typed marker is not a reasoning tag");
+  auto duplicated = pack;
+  duplicated.tokens_by_id.emplace_back("<think>");
+  duplicated.token_types.push_back(4);
+  expect(!secure_frontend::find_qwen_think_tokens(duplicated).has_value(), "a duplicated marker is ambiguous and fails closed");
+}
+
+std::vector<std::size_t> ids_of(const secure_frontend::TokenizerEncodeResult& result) {
+  const auto* ids = std::get_if<std::vector<std::size_t>>(&result);
+  return ids != nullptr ? *ids : std::vector<std::size_t>{};
+}
+
+// The markers are encoded only as the renderer's generation tail (QwenThinking::on/off);
+// anywhere else they keep encode_text()'s special-literal rejection.
+void qwen_encoder_takes_think_markers_only_as_generation_tail() {
+  const auto pack = think_pack();
+  const std::size_t open = pack.tokens_by_id.size() - 2U;
+  const std::size_t close = pack.tokens_by_id.size() - 1U;
+  const std::string head = "<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n";
+  const auto head_ids = ids_of(secure_frontend::encode_qwen_chatml_prompt(pack, head));
+  const auto newline = ids_of(secure_frontend::encode_text(pack, "\n"));
+  const auto two_newlines = ids_of(secure_frontend::encode_text(pack, "\n\n"));
+  expect(!head_ids.empty() && !newline.empty() && !two_newlines.empty(), "the plain prompt and newlines encode");
+
+  std::vector<std::size_t> open_tail = head_ids;
+  open_tail.push_back(open);
+  open_tail.insert(open_tail.end(), newline.begin(), newline.end());
+  const auto on = secure_frontend::encode_qwen_chatml_prompt(pack, head + "<think>\n");
+  expect(ids_of(on) == open_tail, "the open think tail encodes as <think> plus the newline");
+
+  std::vector<std::size_t> closed_tail = head_ids;
+  closed_tail.push_back(open);
+  closed_tail.insert(closed_tail.end(), two_newlines.begin(), two_newlines.end());
+  closed_tail.push_back(close);
+  closed_tail.insert(closed_tail.end(), two_newlines.begin(), two_newlines.end());
+  const auto off = secure_frontend::encode_qwen_chatml_prompt(pack, head + "<think>\n\n</think>\n\n");
+  expect(ids_of(off) == closed_tail, "the closed think tail encodes as the template writes it");
+
+  const std::vector<std::string> misplaced{"<|im_start|>user\n<think>\n<|im_end|>\n<|im_start|>assistant\n<think>\n",
+                                          head + "<think>\nmore", head + "</think>\n\n", head + "<think>\n<think>\n"};
+  for (const auto& prompt : misplaced) {
+    const auto encoded = secure_frontend::encode_qwen_chatml_prompt(pack, prompt);
+    const auto* failure = std::get_if<secure_frontend::TokenizerPackError>(&encoded);
+    expect(failure != nullptr && failure->code == secure_frontend::TokenizerPackErrorCode::unsupported_special_token,
+           "a marker outside the exact generation tail fails closed");
+  }
+  const auto without_markers = secure_frontend::encode_qwen_chatml_prompt(test_support::byte_tokenizer(), head + "<think>\n");
+  expect(std::holds_alternative<secure_frontend::TokenizerPackError>(without_markers), "a think tail needs the pack's markers");
+}
+
+std::size_t id_of(const secure_frontend::TokenizerPack& pack, const std::string_view literal) {
+  for (std::size_t id = 0U; id < pack.tokens_by_id.size(); ++id) {
+    if (pack.tokens_by_id[id] == literal) return id;
+  }
+  return pack.tokens_by_id.size();
+}
+
+// Issue 26: upstream's stop ids (serve/server.py:3770-3771), each only as one CONTROL token.
+void finds_qwen_end_of_turn_tokens() {
+  auto pack = test_support::byte_tokenizer();
+  const std::size_t im_end = id_of(pack, "<|im_end|>");
+  expect(secure_frontend::find_qwen_end_of_turn_tokens(pack) == std::vector<std::size_t>{im_end}, "a ChatML pack ends turns on <|im_end|>");
+  pack.tokens_by_id.emplace_back("<|endoftext|>");
+  pack.token_types.push_back(3);
+  const std::size_t endoftext = pack.tokens_by_id.size() - 1U;
+  expect(secure_frontend::find_qwen_end_of_turn_tokens(pack) == std::vector<std::size_t>({im_end, endoftext}),
+         "<|endoftext|> joins it when the pack has it");
+  auto ordinary = pack;
+  ordinary.token_types[endoftext] = 1;
+  expect(secure_frontend::find_qwen_end_of_turn_tokens(ordinary) == std::vector<std::size_t>{im_end},
+         "an ordinary-typed literal is not an end-of-turn token");
+  auto duplicated = pack;
+  duplicated.tokens_by_id.emplace_back("<|im_end|>");
+  duplicated.token_types.push_back(3);
+  expect(secure_frontend::find_qwen_end_of_turn_tokens(duplicated) == std::vector<std::size_t>{endoftext},
+         "a duplicated literal is ambiguous and is left out");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
+      {"finds_qwen_think_tokens_only_when_unambiguous", finds_qwen_think_tokens_only_when_unambiguous},
+      {"qwen_encoder_takes_think_markers_only_as_generation_tail", qwen_encoder_takes_think_markers_only_as_generation_tail},
+      {"finds_qwen_end_of_turn_tokens", finds_qwen_end_of_turn_tokens},
       {"loads_validates_and_decodes_offline_pack", loads_validates_and_decodes_offline_pack},
       {"rejects_ambiguous_or_incompatible_pack_assets", rejects_ambiguous_or_incompatible_pack_assets},
       {"rejects_malformed_json_and_special_literals_for_decode", rejects_malformed_json_and_special_literals_for_decode},

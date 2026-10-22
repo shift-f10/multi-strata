@@ -154,19 +154,19 @@ The runbook (gates at the old pin, bump, gates incl. upstream's own suites with 
 An offline box cannot fetch the submodule. The offline kit carries a git bundle
 of the pinned upstream commit next to the bundle of our repository:
 
-    git -C upstream bundle create ../out/upstream-v0.2.1.3-cbfd5b92.bundle v0.2.1.3
-    git bundle verify out/upstream-v0.2.1.3-cbfd5b92.bundle
+    git -C upstream bundle create ../out/upstream-v0.2.2-011c9e60.bundle v0.2.2
+    git bundle verify out/upstream-v0.2.2-011c9e60.bundle
 
 On the offline box, after cloning our repository from its bundle:
 
     git submodule init
-    git config submodule.upstream.url /path/to/upstream-v0.2.1.3-cbfd5b92.bundle
+    git config submodule.upstream.url /path/to/upstream-v0.2.2-011c9e60.bundle
     git -c protocol.file.allow=always submodule update
-    git submodule status   # cbfd5b926b794b356195d3cb600191b0c3567540 upstream (v0.2.1.3)
+    git submodule status   # 011c9e600a93bbc9fd451c563501b5831c32bbca upstream (v0.2.2)
 
-The bundle holds tag `v0.2.1.3` (tag object
-`1ab44ace2e4db985503ab9388b65405a63600dd7`, commit
-`cbfd5b926b794b356195d3cb600191b0c3567540`).
+The bundle holds tag `v0.2.2` (tag object
+`e6fff4ad12908de74952abe53b2bade45a68aa0f`, commit
+`011c9e600a93bbc9fd451c563501b5831c32bbca`).
 
 ## Workflow
 

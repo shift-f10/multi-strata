@@ -46,7 +46,7 @@ void add_optional(EnvironmentBlock& block, const EngineEnvironment& environment)
 // The glm family's constant rows (SP5 M2 Task 4, D-7 superseding A10's bound
 // on SP6 §4.9): the §4.9 safety values as forced defaults — a typed
 // environment.glm_knobs row of the same name replaces one (the hook below) —
-// and the two rows the vendored MAYA v1.1.8 has no literal for (SP6 §4.9:
+// and the two rows the vendored MAYA v1.1.21 has no literal for (SP6 §4.9:
 // WATCHDOG_IO absent, HIPBLASLT tuning A4), suppressed.
 struct ConstantForcedValue final {
   std::string_view name;
@@ -57,11 +57,11 @@ struct ConstantFamilyRows final {
   std::span<const std::string_view> suppressed;
 };
 constexpr std::array<ConstantForcedValue, 5> kGlmSafetyDefaults{{
-    {"STRATA_GLM_SLOTS", "0"},        // SP6 §4.9 A10: conversation slots off (generate.cpp:1174, 1252-1256)
-    {"STRATA_GLM_LOOP_THINK", "0"},   // SP6 §4.9 A11: loop guard off while thinking (generate.cpp:1724-1727)
+    {"STRATA_GLM_SLOTS", "0"},        // SP6 §4.9 A10: conversation slots off (generate.cpp:1270, 1354-1360)
+    {"STRATA_GLM_LOOP_THINK", "0"},   // SP6 §4.9 A11: loop guard off while thinking (generate.cpp:1938-1941)
     {"STRATA_GLM_LOOP_ANSWER", "0"},  // SP6 §4.9 A11: loop guard off in the answer (same lines)
-    {"STRATA_GLM_SPLIT", "0"},        // SP6 §4.9: one device even if a driver exposes more (glm_model.cu:1717-1735)
-    {"STRATA_WATCHDOG_S", "0"},       // SP6 §4.9 §9/M5: the engine's own watchdog off (generate.cpp:727)
+    {"STRATA_GLM_SPLIT", "0"},        // SP6 §4.9: one device even if a driver exposes more (glm_model.cu:1945-1972)
+    {"STRATA_WATCHDOG_S", "0"},       // SP6 §4.9 §9/M5: the engine's own watchdog off (generate.cpp:747)
 }};
 constexpr std::array<std::string_view, 2> kGlmSuppressed{{"STRATA_HIPBLASLT_TUNING", "STRATA_WATCHDOG_IO_S"}};
 constexpr ConstantFamilyRows kStrataRows{};
@@ -119,7 +119,7 @@ FamilyEnvironmentRows family_environment_rows(const EngineEnvironment& environme
   // glm (SP5 M2 Task 4, D-7): the §4.9 safety defaults, each moved by a typed
   // row of the same name; the typed knob rows themselves; and the CUDA
   // selectors — GPU selection is environment for this family only
-  // (maya-ref serve/server.py:1216-1224, SP6 §4.9 A8). A name off the closed
+  // (maya-ref serve/server.py:1280-1288, SP6 §4.9 A8). A name off the closed
   // allowlist, or a name both forced and suppressed, fails the merge and the
   // spawn is refused: the table bounds what can ever reach the child.
   FamilyEnvironmentRows rows = owned(kGlmRows);
@@ -129,7 +129,7 @@ FamilyEnvironmentRows family_environment_rows(const EngineEnvironment& environme
   }
   // SP5 M2 Task 8 (D-8): the VLEND-family row exists only for a vision turn (the
   // on-demand encoder the engine lends expert-pool memory to, maya-ref serve/
-  // server.py:3385/:3396). Without a turn the row is suppressed even when the
+  // server.py:4015/:4026). Without a turn the row is suppressed even when the
   // knob channel carries it — the table bounds what can reach the child.
   if (!environment.glm_vision_turn) {
     std::erase_if(rows.forced,

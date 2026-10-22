@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -92,12 +93,33 @@ class TokenByteDecoder final {
 [[nodiscard]] TokenizerEncodeResult encode_text(const TokenizerPack& pack,
                                                  std::string_view text);
 
+// The Qwen3 reasoning markers <think> and </think>. Found only when each literal occurs
+// exactly once in the vocabulary as a CONTROL (3) or USER_DEFINED (4) token (Qwen3.8 packs
+// mark them USER_DEFINED); nullopt otherwise, so a ChatML pack without reasoning keeps the
+// plain generation prompt and its output rules.
+struct ThinkTokens final {
+  std::size_t open;
+  std::size_t close;
+};
+[[nodiscard]] std::optional<ThinkTokens> find_qwen_think_tokens(const TokenizerPack& pack);
+
+// The Qwen end-of-turn tokens <|im_end|> and <|endoftext|> (upstream's stop ids,
+// serve/server.py:3770-3771; the engine's default --eos-ids). In serve mode the engine
+// prints the end-of-turn token as a T record before DONE ... stop; it ends the reply and
+// is never output. Each literal counts only as exactly one CONTROL (3) token; the result
+// lists those found, in that order (empty: none).
+[[nodiscard]] std::vector<std::size_t> find_qwen_end_of_turn_tokens(const TokenizerPack& pack);
+
 // Encodes a prompt produced by render_qwen_text_prompt.  This deliberately
 // recognizes only the two fixed Qwen ChatML framing literals: <|im_start|>
 // and <|im_end|>.  Each must be present in the pack as exactly one CONTROL
 // (type 3) token.  Every non-marker span still goes through encode_text(), so
 // arbitrary CONTROL or USER_DEFINED literals remain rejected.  This is not a
 // general special-token parser and must not be used with untrusted templates.
+// One exception (issue 19): when the text after the final "<|im_start|>assistant\n"
+// is exactly the renderer's reasoning tail ("<think>\n" or
+// "<think>\n\n</think>\n\n"), it encodes through find_qwen_think_tokens(); the
+// markers anywhere else are rejected as before.
 [[nodiscard]] TokenizerEncodeResult encode_qwen_chatml_prompt(
     const TokenizerPack& pack, std::string_view rendered_prompt);
 
