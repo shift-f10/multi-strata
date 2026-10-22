@@ -54,6 +54,23 @@ def test_extract_ships_the_glm_pattern_for_a_glm_pack(tmp_path):
     assert shipped(out_dir) == cfg
 
 
+def test_extract_ships_ignore_merges_for_every_glm_name(tmp_path):
+    """§5.5: the reader selects ignore_merges by name, so the pack must record it honestly."""
+    for pre in ("glm4", "glm5", "chatglm-bpe"):
+        out_dir = tmp_path / pre
+        cfg = extract(write_tiny_gguf(tmp_path / ("%s.gguf" % pre), pre), out_dir)
+        assert cfg["pre"] == pre
+        assert shipped(out_dir)["ignore_merges"] is True
+        assert shipped(out_dir)["pre_pattern"] == GLM4_PATTERN
+
+
+def test_extract_ships_ignore_merges_false_for_a_qwen35_pack(tmp_path):
+    out_dir = tmp_path / "pack"
+    extract(write_tiny_gguf(tmp_path / "qwen.gguf", "qwen35"), out_dir)
+    assert shipped(out_dir)["ignore_merges"] is False
+    assert shipped(out_dir)["pre_pattern"] == QWEN35_PATTERN
+
+
 def test_cli_keeps_the_qwen_pattern_for_a_qwen35_pack(tmp_path):
     out_dir = tmp_path / "pack"
     assert main(["--gguf", str(write_tiny_gguf(tmp_path / "qwen.gguf", "qwen35")), "--out", str(out_dir)]) == 0

@@ -1,5 +1,6 @@
 #include "secure_frontend/tokenizer_pack.hpp"
 
+#include "glm_pretokenizer_tables.hpp"
 #include "secure_frontend/canonical_path.hpp"
 #include "secure_frontend/json.hpp"
 
@@ -132,6 +133,177 @@ std::vector<std::string_view> basic_pretokenize(const std::string_view text) {
   return pieces;
 }
 
+// --- the GLM pre-tokenizer of SP6 5.5 -------------------------------------------------------
+//
+// The transcription of llama.cpp's LLAMA_VOCAB_PRE_TYPE_CHATGLM4 pattern, kept here as the
+// text a pack ships so a pack that contradicts the frontend is refused:
+//
+//   (?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])
+//   |[^\r\n\p{L}\p{N}]?\p{L}+
+//   |\p{N}{1,3}
+//   | ?[^\s\p{L}\p{N}]+[\r\n]*
+//   |\s*[\r\n]+|\s+(?!\S)|\s+
+//
+// `glm_match_at` below applies it exactly as Python's `regex` does - at each position the
+// seven branches are tried IN ORDER and the first that can match wins, each with its own
+// greedy quantifiers and its own backtracking.  Two details carry the parity: `\p{L}` here
+// EXCLUDES marks (unlike the qwen35 split above), so a combining mark starts a punctuation
+// run rather than joining the letter before it; and `\p{N}{1,3}` caps a numeric run at three
+// digits.  The classes come from glm_pretokenizer_tables.hpp, generated with the same
+// classifier that generated the fixtures.
+constexpr std::string_view kGlmPrePattern =
+    "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])"
+    "|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+"
+    "|\\p{N}{1,3}"
+    "| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*"
+    "|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
+
+// The names that select it.  `chatglm-bpe` is the older alias tools/secure/secure_tokenizer.py
+// has always accepted.
+constexpr std::array<std::string_view, 3U> kGlmPreNames{{"glm4", "glm5", "chatglm-bpe"}};
+constexpr std::string_view kQwen35PreName = "qwen35";
+
+// Branch 1's contraction literals, in the pattern's own order.
+constexpr std::array<std::string_view, 20U> kGlmContractions{{
+    "'s", "'S", "'t", "'T", "'re", "'Re", "'rE", "'RE", "'ve", "'Ve", "'vE", "'VE",
+    "'m", "'M", "'ll", "'Ll", "'lL", "'LL", "'d", "'D"}};
+
+bool in_ranges(const glm_tables::Range* const table, const std::size_t count, const std::uint32_t point) {
+  std::size_t low = 0U;
+  std::size_t high = count;
+  while (low < high) {
+    const std::size_t middle = low + (high - low) / 2U;
+    if (table[middle].last < point) low = middle + 1U;
+    else if (table[middle].first > point) high = middle;
+    else return true;
+  }
+  return false;
+}
+
+bool is_letter(const std::uint32_t point) { return in_ranges(glm_tables::kLetterRanges, glm_tables::kLetterRangesCount, point); }
+bool is_number(const std::uint32_t point) { return in_ranges(glm_tables::kNumberRanges, glm_tables::kNumberRangesCount, point); }
+bool is_space(const std::uint32_t point) { return in_ranges(glm_tables::kSpaceRanges, glm_tables::kSpaceRangesCount, point); }
+bool is_line_break(const std::uint32_t point) { return point == 0x0dU || point == 0x0au; }
+bool is_other(const std::uint32_t point) { return !is_space(point) && !is_letter(point) && !is_number(point); }
+
+// The code point at a byte offset of text already known to be valid UTF-8.
+std::uint32_t code_point_at(const std::string_view text, const std::size_t at) {
+  const auto lead = static_cast<unsigned char>(text[at]);
+  const std::size_t width = utf8_width(lead);
+  const std::uint32_t mask = width == 1U ? 0x7fU : width == 2U ? 0x1fU : width == 3U ? 0x0fU : 0x07U;
+  std::uint32_t point = lead & mask;
+  for (std::size_t index = 1U; index < width && at + index < text.size(); ++index) {
+    point = (point << 6U) | (static_cast<unsigned char>(text[at + index]) & 0x3fU);
+  }
+  return point;
+}
+
+template <typename Kind>
+std::size_t run_of(const std::string_view text, const std::size_t at, const Kind kind) {
+  std::size_t index = at;
+  while (index < text.size()) {
+    const unsigned char lead = static_cast<unsigned char>(text[index]);
+    if (!kind(code_point_at(text, index))) break;
+    index += utf8_width(lead);
+  }
+  return index;
+}
+
+// Where the leftmost GLM match starting at `at` ends, or nullopt when no branch matches.
+std::optional<std::size_t> glm_match_at(const std::string_view text, const std::size_t at) {
+  const unsigned char lead_byte = static_cast<unsigned char>(text[at]);
+  const std::size_t width = utf8_width(lead_byte);
+  const std::uint32_t point = code_point_at(text, at);
+  for (const std::string_view literal : kGlmContractions) {
+    if (text.size() - at >= literal.size() && text.compare(at, literal.size(), literal) == 0) return at + literal.size();
+  }
+  // 2. [^\r\n\p{L}\p{N}]?\p{L}+  - a code point that is itself a letter cannot be the lead,
+  //    so the two shapes are disjoint and their order does not matter.  The lead class here
+  //    holds spaces and marks: " the" and the U+0301 of "a\u0301bc" both arrive with it.
+  const std::size_t letters = run_of(text, at, is_letter);
+  if (letters > at) return letters;
+  if (!is_line_break(point) && !is_letter(point) && !is_number(point)) {
+    const std::size_t after_lead = run_of(text, at + width, is_letter);
+    if (after_lead > at + width) return after_lead;
+  }
+  // 3. \p{N}{1,3}
+  if (is_number(point)) {
+    std::size_t index = at;
+    for (std::size_t taken = 0U; taken < 3U && index < text.size(); ++taken) {
+      if (!is_number(code_point_at(text, index))) break;
+      index += utf8_width(static_cast<unsigned char>(text[index]));
+    }
+    return index;
+  }
+  // 4. ` ?[^\s\p{L}\p{N}]+[\r\n]*`  - the optional literal space is greedy, so it is tried
+  //    first; without it the branch cannot start at a space at all.
+  if (point == 0x20U) {
+    const std::size_t others = run_of(text, at + width, is_other);
+    if (others > at + width) return run_of(text, others, is_line_break);
+  }
+  const std::size_t others = run_of(text, at, is_other);
+  if (others > at) return run_of(text, others, is_line_break);
+  // 5. \s*[\r\n]+   6. \s+(?!\S)   7. \s+   - one whitespace run, three ways.
+  if (is_space(point)) {
+    const std::size_t run_end = run_of(text, at, is_space);
+    std::size_t last_break_end = 0U;      // greedy \s* leaves [\r\n]+ the LAST break cluster
+    std::size_t last_codepoint_at = at;   // \s+(?!\S) gives back the run's last code point
+    for (std::size_t index = at; index < run_end; ) {
+      const std::size_t step = utf8_width(static_cast<unsigned char>(text[index]));
+      if (is_line_break(code_point_at(text, index))) last_break_end = run_of(text, index, is_line_break);
+      last_codepoint_at = index;
+      index += step;
+    }
+    if (last_break_end != 0U) return last_break_end;
+    if (run_end == text.size()) return run_end;
+    if (last_codepoint_at > at) return last_codepoint_at;
+    return run_end;
+  }
+  return std::nullopt;
+}
+
+std::vector<std::string_view> glm_pretokenize(const std::string_view text) {
+  std::vector<std::string_view> pieces;
+  for (std::size_t at = 0U; at < text.size();) {
+    const auto end = glm_match_at(text, at);
+    if (end == std::nullopt || *end <= at) {
+      at += utf8_width(static_cast<unsigned char>(text[at]));   // findall moves on
+      continue;
+    }
+    pieces.push_back(text.substr(at, *end - at));
+    at = *end;
+  }
+  return pieces;
+}
+
+// tokenizer.json is read with its own limits: it is a metadata object (depth 2 with
+// `special_ids`), never a vocabulary.
+constexpr JsonLimits kPackMetaLimits{.max_bytes = kMaximumFileBytes, .max_depth = 2U,
+                                     .max_container_entries = kMaximumVocabularyEntries + 1U,
+                                     .max_string_bytes = kMaximumTokenBytes};
+
+// An optional pack file: a missing copy is not an error, everything else read_required does.
+std::variant<std::optional<std::string>, TokenizerPackError> read_optional(const CanonicalRoot& root, const std::string_view name) {
+  const auto relative = std::get<RelativePath>(parse_relative_path(name));
+  auto opened = open_beneath(root, relative, OpenOptions{.kind = OpenKind::regular_file});
+  if (const auto* failure = std::get_if<PathError>(&opened)) {
+    switch (failure->code) {
+      case PathErrorCode::not_found: return std::optional<std::string>{};
+      case PathErrorCode::symlink_not_allowed: return error(TokenizerPackErrorCode::symbolic_link_not_allowed, "tokenizer pack files must not be symbolic links");
+      case PathErrorCode::not_regular_file: return error(TokenizerPackErrorCode::unsafe_pack_path, "tokenizer pack paths must name regular files");
+      default: return error(TokenizerPackErrorCode::file_read_failed, "unable to open tokenizer pack file");
+    }
+  }
+  const auto& file = std::get<OpenedFile>(opened);
+  if (file.size() > kMaximumFileBytes) return error(TokenizerPackErrorCode::file_too_large, "tokenizer pack file exceeds fixed limit");
+  auto text = file.read_all(kMaximumFileBytes);
+  if (const auto* failure = std::get_if<PathError>(&text)) {
+    return error(failure->code == PathErrorCode::too_large ? TokenizerPackErrorCode::file_too_large : TokenizerPackErrorCode::file_read_failed,
+                 "unable to read tokenizer pack file");
+  }
+  return std::get<std::string>(std::move(text));
+}
+
 TokenizerEncodeResult encode_piece(const TokenizerPack& pack, const std::string_view piece,
                                    const std::array<std::string, 256U>& symbols,
                                    const std::map<std::string, std::size_t>& ids,
@@ -139,6 +311,20 @@ TokenizerEncodeResult encode_piece(const TokenizerPack& pack, const std::string_
   std::vector<std::string> values;
   values.reserve(piece.size());
   for (const unsigned char byte : piece) values.push_back(symbols[byte]);
+  // §5.5: llama.cpp's `ignore_merges` for the GLM pre-tokenizers - a pre-token piece that is
+  // an exact vocabulary entry is emitted WHOLE, and only the pieces that are not go through
+  // BPE.  The lookup runs on the BYTE-MAPPED piece (the vocabulary is stored in the byte-level
+  // alphabet), exactly as MAYA's tools/strata_tokenizer.py:249-255 does it: for `x=Δy²` the
+  // mapped piece `Â²` is one GLM token while the raw piece `²` is in the vocabulary not at all.
+  if (pack.ignore_merges) {
+    std::string whole;
+    for (const std::string& symbol : values) whole += symbol;
+    const auto hit = ids.find(whole);
+    if (hit != ids.end()) {
+      if (hit->second >= pack.token_types.size() || pack.token_types[hit->second] == 3 || pack.token_types[hit->second] == 4) return error(TokenizerPackErrorCode::unencodable_text, "text cannot be encoded by ordinary vocabulary tokens");
+      return std::vector<std::size_t>{hit->second};
+    }
+  }
   while (values.size() > 1U) {
     std::optional<std::size_t> best_rank;
     std::size_t best_index = 0U;
@@ -224,6 +410,51 @@ TokenizerPackLoadResult load_local_tokenizer_pack(const CanonicalRoot& root) {
     pack.tokens_by_id[id] = token;
   }
   if (std::any_of(pack.tokens_by_id.begin(), pack.tokens_by_id.end(), [](const std::string& token) { return token.empty(); })) return error(TokenizerPackErrorCode::invalid_vocabulary, "vocabulary IDs must start at zero and be contiguous");
+  // The pre-tokenizer the pack declares in tokenizer.json (SP6 §5.5).  A pack with no
+  // tokenizer.json, or with no `pre` member, keeps the generic split every such pack has
+  // always used; a DECLARED name the frontend has not transcribed is refused, because
+  // splitting text the wrong way produces plausible ids and wrong answers.
+  const auto meta_text = read_optional(root, "tokenizer.json");
+  if (const auto* failure = std::get_if<TokenizerPackError>(&meta_text)) return *failure;
+  if (const auto* text = std::get_if<std::optional<std::string>>(&meta_text); text != nullptr && text->has_value()) {
+    const auto parsed = parse_json(**text, kPackMetaLimits);
+    const auto* document = std::get_if<JsonValue>(&parsed);
+    const auto* members = document != nullptr ? document->if_object() : nullptr;
+    if (members == nullptr) return error(TokenizerPackErrorCode::invalid_tokenizer_pack, "tokenizer.json must be a JSON object");
+    const JsonValue* declared = nullptr;
+    const JsonValue* shipped_merges = nullptr;
+    const JsonValue* shipped_pattern = nullptr;
+    for (const auto& member : *members) {
+      if (member.key == "pre") declared = &member.value;
+      else if (member.key == "ignore_merges") shipped_merges = &member.value;
+      else if (member.key == "pre_pattern") shipped_pattern = &member.value;
+    }
+    if (declared != nullptr) {
+      const auto* name = declared->if_string();
+      if (name == nullptr) return error(TokenizerPackErrorCode::invalid_tokenizer_pack, "tokenizer.json pre must be a string");
+      if (*name == kQwen35PreName) {
+        pack.pre_tokenizer = PreTokenizerScheme::generic;
+        pack.ignore_merges = false;
+      } else if (std::any_of(kGlmPreNames.begin(), kGlmPreNames.end(), [&](const std::string_view known) { return *name == known; })) {
+        pack.pre_tokenizer = PreTokenizerScheme::glm;
+        pack.ignore_merges = true;
+      } else {
+        return error(TokenizerPackErrorCode::invalid_tokenizer_pack, "tokenizer.json declares a pre-tokenizer this frontend has not transcribed");
+      }
+    }
+    // A pack ships the pattern and the flag it was built with (MAYA extract writes both);
+    // the frontend uses ITS OWN transcription, so a pack that contradicts it is refused.
+    if (shipped_merges != nullptr) {
+      const auto* flag = shipped_merges->if_boolean();
+      if (flag == nullptr || *flag != pack.ignore_merges) return error(TokenizerPackErrorCode::invalid_tokenizer_pack, "tokenizer.json ignore_merges contradicts the declared pre-tokenizer");
+    }
+    if (shipped_pattern != nullptr) {
+      const auto* pattern = shipped_pattern->if_string();
+      // Only the GLM transcription is compared: the generic split above is a documented
+      // approximation of the qwen35 regex that the frontend makes no parity claim about.
+      if (pattern == nullptr || (pack.pre_tokenizer == PreTokenizerScheme::glm && *pattern != kGlmPrePattern)) return error(TokenizerPackErrorCode::invalid_tokenizer_pack, "tokenizer.json pre_pattern contradicts this frontend's transcription");
+    }
+  }
   std::set<std::string> known(pack.tokens_by_id.begin(), pack.tokens_by_id.end()); std::set<std::pair<std::string, std::string>> seen;
   std::string_view remaining = std::get<std::string>(merges_text); std::size_t start = 0U;
   while (start <= remaining.size()) {
@@ -292,7 +523,8 @@ TokenizerEncodeResult encode_text(const TokenizerPack& pack, const std::string_v
   for (std::size_t rank = 0U; rank < pack.merges_by_rank.size(); ++rank) ranks.emplace(pack.merges_by_rank[rank], rank);
   const auto symbols = byte_symbols();
   std::vector<std::size_t> output;
-  for (const std::string_view piece : basic_pretokenize(text)) {
+  for (const std::string_view piece : pack.pre_tokenizer == PreTokenizerScheme::glm
+                                       ? glm_pretokenize(text) : basic_pretokenize(text)) {
     const auto piece_ids = encode_piece(pack, piece, symbols, ids, ranks);
     if (const auto* failure = std::get_if<TokenizerPackError>(&piece_ids)) return *failure;
     const auto& values = std::get<std::vector<std::size_t>>(piece_ids);
@@ -319,6 +551,15 @@ std::optional<ThinkTokens> find_qwen_think_tokens(const TokenizerPack& pack) {
   const auto close = find("</think>");
   if (!open.has_value() || !close.has_value()) return std::nullopt;
   return ThinkTokens{*open, *close};
+}
+
+std::vector<std::string> pretokenizer_pieces(const TokenizerPack& pack, const std::string_view text) {
+  std::vector<std::string> pieces;
+  for (const std::string_view piece : pack.pre_tokenizer == PreTokenizerScheme::glm
+                                           ? glm_pretokenize(text) : basic_pretokenize(text)) {
+    pieces.emplace_back(piece);
+  }
+  return pieces;
 }
 
 std::vector<std::size_t> find_qwen_end_of_turn_tokens(const TokenizerPack& pack) {

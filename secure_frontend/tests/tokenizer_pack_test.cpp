@@ -305,6 +305,171 @@ void finds_qwen_end_of_turn_tokens() {
   expect(secure_frontend::find_qwen_end_of_turn_tokens(duplicated) == std::vector<std::size_t>{endoftext},
          "a duplicated literal is ambiguous and is left out");
 }
+
+// --- SP6 5.5: a pack declares its pre-tokenizer, and the GLM split is pinned by fixtures.
+
+std::vector<std::string> fields(const std::string_view line, const char separator = ' ') {
+  std::vector<std::string> parts;
+  std::size_t start = 0U;
+  while (start <= line.size()) {
+    const auto at = line.find(separator, start);
+    parts.push_back(std::string(line.substr(start, at == std::string_view::npos ? line.size() - start : at - start)));
+    if (at == std::string_view::npos) break;
+    start = at + 1U;
+  }
+  return parts;
+}
+
+std::string unhex(const std::string_view hex) {
+  const auto nibble = [](const char digit) {
+    return digit >= '0' && digit <= '9' ? static_cast<unsigned>(digit - '0') : static_cast<unsigned>(digit - 'a' + 10U);
+  };
+  std::string bytes;
+  for (std::size_t at = 0U; at + 1U < hex.size() + 1U; at += 2U) {
+    bytes.push_back(static_cast<char>((nibble(hex[at]) << 4U) | nibble(hex[at + 1U])));
+  }
+  return bytes;
+}
+
+void declares_the_pretokenizer_scheme_of_the_pack() {
+  // The pattern a GLM pack ships, transcribed independently of the library's constant:
+  // the cross-check must refuse a pack that contradicts the frontend, so a silent change
+  // to either side has to break here.
+  constexpr std::string_view kGlmPattern =
+      R"GLM((?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+)GLM";
+  const auto root = temporary_pack();
+  write(root / "vocab.json", R"({"a":0,"b":1,"Ġab":2})");
+  write(root / "merges.txt", "a b\n");
+  write(root / "token_type.json", "[0,0,0]");
+  const auto scheme = [&root](const std::string_view json) {
+    if (json.empty()) std::filesystem::remove(root / "tokenizer.json");
+    else write(root / "tokenizer.json", json);
+    const auto loaded = secure_frontend::load_local_tokenizer_pack(root);
+    const auto* pack = std::get_if<secure_frontend::TokenizerPack>(&loaded);
+    if (pack == nullptr) return std::pair<int, int>(-1, -1);
+    return std::pair<int, int>(static_cast<int>(pack->pre_tokenizer), pack->ignore_merges ? 1 : 0);
+  };
+  const auto refused = [&root](const std::string_view json, const std::string_view why) {
+    write(root / "tokenizer.json", json);
+    expect(has_error(secure_frontend::load_local_tokenizer_pack(root),
+                     secure_frontend::TokenizerPackErrorCode::invalid_tokenizer_pack),
+           std::string("tokenizer.json ") + std::string(why) + " must be invalid_tokenizer_pack");
+  };
+  // A pack ships its pattern as a JSON string, so the transcription needs JSON escaping.
+  const auto pattern_json = [](const std::string_view name, const std::string_view pattern) {
+    std::string escaped;
+    for (const char character : pattern) {
+      if (character == '\\') escaped += "\\\\";
+      else escaped += character;
+    }
+    return std::string(R"({"pre":")") + std::string(name) + R"(","pre_pattern":")" + escaped + R"("})";
+  };
+  using Scheme = secure_frontend::PreTokenizerScheme;
+  expect(scheme("") == std::pair(static_cast<int>(Scheme::generic), 0), "no tokenizer.json keeps the generic split");
+  std::filesystem::remove(root / "tokenizer.json");
+  expect(scheme("{}\n") == std::pair(static_cast<int>(Scheme::generic), 0), "a pack that declares no scheme stays generic");
+  expect(scheme(R"({"pre":"qwen35"})") == std::pair(static_cast<int>(Scheme::generic), 0), "qwen35 stays generic");
+  for (const std::string_view name : {"glm4", "glm5", "chatglm-bpe"}) {
+    expect(scheme(std::string(R"({"pre":")") + std::string(name) + R"("})") ==
+               std::pair(static_cast<int>(Scheme::glm), 1),
+           std::string(name) + " selects the GLM split and ignore_merges");
+  }
+  expect(scheme(pattern_json("glm5", kGlmPattern)) ==
+             std::pair(static_cast<int>(Scheme::glm), 1),
+         "a shipped pre_pattern that agrees with the frontend is accepted");
+  expect(scheme(R"({"pre":"glm4","ignore_merges":true})") == std::pair(static_cast<int>(Scheme::glm), 1),
+         "a shipped ignore_merges that agrees with the frontend is accepted");
+  refused(R"({"pre":"deepseek3"})", "an untranscribed pre-tokenizer");
+  refused(R"({"pre":"GLM4"})", "a pre-tokenizer name is case sensitive");
+  refused(R"({"pre":7})", "a non-string pre-tokenizer");
+  refused(R"({"pre":null})", "a null pre-tokenizer");
+  refused(R"({"ignore_merges":"yes"})", "a non-boolean ignore_merges");
+  refused(R"({"pre":"glm4","ignore_merges":false})", "ignore_merges contradicting the declared scheme");
+  refused(R"({"pre":"qwen35","ignore_merges":true})", "ignore_merges contradicting the declared scheme");
+  refused(std::string(R"({"pre":"glm4","pre_pattern":")") + "[^wrong]" + R"("})", "a pre_pattern contradicting the frontend's transcription");
+  refused(R"({"pre":})", "malformed JSON in tokenizer.json");
+  refused(R"([1,2])", "a tokenizer.json that is not an object");
+  std::filesystem::remove(root / "tokenizer.json");
+  const auto loaded = secure_frontend::load_local_tokenizer_pack(root);
+  expect(std::holds_alternative<secure_frontend::TokenizerPack>(loaded), "the trio alone still loads after the tokenizer.json is removed");
+  std::filesystem::remove_all(root);
+}
+
+void glm5_pretokenizer_matches_committed_fixtures() {
+  const auto& arguments = secure_frontend_test::extra_arguments();
+  expect(!arguments.empty(), "this case is registered with the fixtures directory");
+  if (arguments.empty()) return;
+  const auto fixture_path = std::filesystem::path(arguments[0]) / "glm-tokenize.txt";
+  std::ifstream input(fixture_path, std::ios::binary);
+  expect(input.is_open(), "tests/fixtures/glm-tokenize.txt must be committed (gen_glm_tokenizer_fixtures.py)");
+  if (!input.is_open()) return;
+
+  secure_frontend::TokenizerPack pack;
+  pack.pre_tokenizer = secure_frontend::PreTokenizerScheme::glm;
+  pack.ignore_merges = true;
+  std::string declared;
+  std::string text;
+  std::vector<std::string> expected_pieces;
+  std::size_t cases = 0U;
+  std::size_t bad_pieces = 0U;
+  std::size_t bad_ids = 0U;
+  std::size_t generic_differs = 0U;
+  std::string line;
+  while (std::getline(input, line)) {
+    if (line.empty() || line.front() == '#') continue;
+    const auto parts = fields(line);
+    if (parts[0] == "PRE") {
+      declared = parts[1];
+    } else if (parts[0] == "VOCAB") {
+      const auto id = static_cast<std::size_t>(std::stoull(parts[1]));
+      if (pack.tokens_by_id.size() <= id) {
+        pack.tokens_by_id.resize(id + 1U);
+        pack.token_types.resize(id + 1U);
+      }
+      pack.tokens_by_id[id] = unhex(parts[3]);
+      pack.token_types[id] = std::stoi(parts[2]);
+    } else if (parts[0] == "MERGE") {
+      pack.merges_by_rank.emplace_back(unhex(parts[1]), unhex(parts[2]));
+    } else if (parts[0] == "CASE") {
+      text = unhex(parts[1]);
+      expected_pieces.clear();
+    } else if (parts[0] == "PIECES") {
+      for (const auto& hex : fields(parts[1], ',')) {
+        if (!hex.empty()) expected_pieces.push_back(unhex(hex));
+      }
+    } else if (parts[0] == "IDS") {
+      std::vector<std::size_t> ids;
+      for (std::size_t index = 1U; index < parts.size(); ++index) ids.push_back(static_cast<std::size_t>(std::stoull(parts[index])));
+      ++cases;
+      const auto pieces = secure_frontend::pretokenizer_pieces(pack, text);
+      if (pieces != expected_pieces) {
+        ++bad_pieces;
+        if (bad_pieces <= 3U) std::cerr << "FAILED: case " << cases << " splits into " << pieces.size() << " pieces, expected " << expected_pieces.size() << '\n';
+      }
+      const auto encoded = secure_frontend::encode_text(pack, text);
+      const auto* got = std::get_if<std::vector<std::size_t>>(&encoded);
+      if (got == nullptr || *got != ids) {
+        ++bad_ids;
+        if (bad_ids <= 3U) {
+          std::cerr << "FAILED: case " << cases << " ids "
+                    << (got == nullptr ? "are an error" : std::to_string(got->size()))
+                    << ", expected " << ids.size() << '\n';
+        }
+      }
+      auto generic = pack;
+      generic.pre_tokenizer = secure_frontend::PreTokenizerScheme::generic;
+      generic.ignore_merges = false;
+      const auto generic_encoded = secure_frontend::encode_text(generic, text);
+      const auto* generic_ids = std::get_if<std::vector<std::size_t>>(&generic_encoded);
+      if (got != nullptr && (generic_ids == nullptr || *generic_ids != ids)) ++generic_differs;
+    }
+  }
+  expect(declared == "glm4", "the fixture declares the scheme it was generated under");
+  expect(cases == 200U, "the committed fixture carries its 200 cases");
+  expect(bad_pieces == 0U, "the C++ GLM split must reproduce every committed piece sequence");
+  expect(bad_ids == 0U, "the C++ encoder must reproduce every committed id sequence with ignore_merges");
+  expect(generic_differs > 0U, "the fixtures must pin the GLM rule: the generic scheme must differ somewhere");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -317,6 +482,8 @@ int main(int argc, char** argv) {
       {"rejects_malformed_json_and_special_literals_for_decode", rejects_malformed_json_and_special_literals_for_decode},
       {"encoding_fails_closed_for_special_invalid_and_missing_tokens", encoding_fails_closed_for_special_invalid_and_missing_tokens},
       {"token_byte_decoder_returns_raw_token_bytes", token_byte_decoder_returns_raw_token_bytes},
+      {"declares_the_pretokenizer_scheme_of_the_pack", declares_the_pretokenizer_scheme_of_the_pack},
+      {"glm5_pretokenizer_matches_committed_fixtures", glm5_pretokenizer_matches_committed_fixtures},
 #ifndef _WIN32
       {"rejects_symlinked_assets", rejects_symlinked_assets},
       {"cfg03_tokenizer_file_swapped_to_symlink_rejected", cfg03_tokenizer_file_swapped_to_symlink_rejected},

@@ -1417,7 +1417,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     set(_tokenizer_cases loads_validates_and_decodes_offline_pack rejects_ambiguous_or_incompatible_pack_assets
         rejects_malformed_json_and_special_literals_for_decode encoding_fails_closed_for_special_invalid_and_missing_tokens
         token_byte_decoder_returns_raw_token_bytes finds_qwen_think_tokens_only_when_unambiguous
-        qwen_encoder_takes_think_markers_only_as_generation_tail finds_qwen_end_of_turn_tokens)
+        qwen_encoder_takes_think_markers_only_as_generation_tail finds_qwen_end_of_turn_tokens
+        declares_the_pretokenizer_scheme_of_the_pack)
     if(WIN32)
         list(APPEND _tokenizer_cases cfg03_tokenizer_file_swapped_to_junction_rejected)
     else()
@@ -1425,6 +1426,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     endif()
     secure_frontend_add_cases(secure_frontend_tokenizer_pack_tests ${_tokenizer_cases}
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # SP6 5.5: the committed fixtures pin the GLM split piece by piece and id by id.
+    secure_frontend_add_cases(secure_frontend_tokenizer_pack_tests glm5_pretokenizer_matches_committed_fixtures
+        ARGS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
 
     secure_frontend_add_test_executable(secure_frontend_qwen_prompt_renderer_tests tests/qwen_prompt_renderer_test.cpp
         secure_frontend_qwen_prompt_renderer)

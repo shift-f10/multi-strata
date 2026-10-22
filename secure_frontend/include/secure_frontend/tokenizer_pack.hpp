@@ -18,10 +18,19 @@ namespace secure_frontend {
 // (through our wrapper tools/secure/secure_tokenizer.py for GLM packs).  This
 // type intentionally owns all input: loading a pack never keeps a file handle,
 // invokes a subprocess, or contacts a network service.
+// The pre-tokenizer scheme a pack declares in tokenizer.json `pre` (SP6 §5.5).
+// `generic` is the historic conservative approximation every qwen35 pack, and every
+// pack that declares no scheme, has always used; `glm` is llama.cpp's
+// LLAMA_VOCAB_PRE_TYPE_CHATGLM4 transcription (`glm4`, `glm5` and the older
+// `chatglm-bpe` alias), which also sets ignore_merges.
+enum class PreTokenizerScheme { generic, glm };
+
 struct TokenizerPack final {
   std::vector<std::string> tokens_by_id;
   std::vector<std::pair<std::string, std::string>> merges_by_rank;
   std::vector<int> token_types;
+  PreTokenizerScheme pre_tokenizer{PreTokenizerScheme::generic};
+  bool ignore_merges{false};
 };
 
 enum class TokenizerPackErrorCode {
@@ -36,6 +45,7 @@ enum class TokenizerPackErrorCode {
   invalid_vocabulary,
   invalid_merge,
   invalid_token_types,
+  invalid_tokenizer_pack,
   token_id_out_of_range,
   undecodable_token,
   decoded_text_not_utf8,
@@ -54,11 +64,14 @@ using TokenizerPackLoadResult = std::variant<TokenizerPack, TokenizerPackError>;
 using TokenizerDecodeResult = std::variant<std::string, TokenizerPackError>;
 using TokenizerEncodeResult = std::variant<std::vector<std::size_t>, TokenizerPackError>;
 
-// Loads only the fixed local files vocab.json, merges.txt, and token_type.json
-// beneath pack_root, each opened by handle with open_beneath (no link is
-// followed). All files must be regular, non-symlink files. Vocabulary
-// IDs must be unique, contiguous, and zero-based; merges must name vocabulary
-// tokens and be unique; token types must have exactly one value per ID.
+// Loads the fixed local files vocab.json, merges.txt, and token_type.json beneath
+// pack_root, each opened by handle with open_beneath (no link is followed), plus
+// tokenizer.json when the pack has one: its `pre` member selects the pre-tokenizer
+// (SP6 §5.5), and a declared name or flag that contradicts this frontend's
+// transcription fails with invalid_tokenizer_pack.  All files must be regular,
+// non-symlink files.  Vocabulary IDs must be unique, contiguous, and zero-based;
+// merges must name vocabulary tokens and be unique; token types must have exactly
+// one value per ID.
 [[nodiscard]] TokenizerPackLoadResult load_local_tokenizer_pack(const CanonicalRoot& pack_root);
 // Opens the root first (open_root: canonical, private, existing).
 [[nodiscard]] TokenizerPackLoadResult load_local_tokenizer_pack(const std::filesystem::path& pack_root);
@@ -85,13 +98,22 @@ class TokenByteDecoder final {
 };
 
 // Encodes ordinary UTF-8 text using the GPT-2 byte alphabet and merge ranks in
-// this pack. The intentionally small pre-tokenizer preserves runs of ASCII
-// letters, digits, whitespace, punctuation, and UTF-8 code points; it is not
-// a replacement for model-specific (for example Qwen) regex pre-tokenizers or
-// Jinja chat templates. Input containing a CONTROL or USER_DEFINED vocabulary
-// literal fails closed, as does text which cannot be expressed by this pack.
+// this pack.  The pre-tokenizer is the one the pack declares (SP6 §5.5): `glm`
+// packs split with the ChatGLM4/5 transcription and emit an exact vocabulary
+// entry whole (ignore_merges); every other pack keeps the intentionally small
+// generic split, which preserves runs of ASCII letters, digits, whitespace,
+// punctuation, and UTF-8 code points and is not a replacement for the Qwen
+// regex.  Input containing a CONTROL or USER_DEFINED vocabulary literal fails
+// closed, as does text which cannot be expressed by this pack.
 [[nodiscard]] TokenizerEncodeResult encode_text(const TokenizerPack& pack,
                                                  std::string_view text);
+
+// The pieces the pack's declared pre-tokenizer splits ordinary UTF-8 text into
+// (SP6 §5.5): `generic` is the historic approximation above, `glm` is llama.cpp's
+// ChatGLM4/5 transcription.  Diagnostic and test surface: the fixture parity case
+// compares this piece by piece, and the pieces are what encode_text() feeds BPE.
+[[nodiscard]] std::vector<std::string> pretokenizer_pieces(const TokenizerPack& pack,
+                                                            std::string_view text);
 
 // The Qwen3 reasoning markers <think> and </think>. Found only when each literal occurs
 // exactly once in the vocabulary as a CONTROL (3) or USER_DEFINED (4) token (Qwen3.8 packs
