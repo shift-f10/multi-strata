@@ -20,6 +20,7 @@
 
 #if defined(_WIN32)
 #include "secure_frontend/win32_prelude.hpp"
+#include "secure_frontend/crt_environment.hpp"
 #else
 #include <arpa/inet.h>
 #include <cerrno>
@@ -388,7 +389,7 @@ std::unique_ptr<ServerProcess> ServerProcess::start(const ServerOptions& options
 #if defined(_WIN32)
   // The server itself (not the engine) needs these for Winsock and the CRT.
   for (const char* name : {"SystemRoot", "SystemDrive", "WINDIR", "PATH", "TEMP", "TMP"}) {
-    if (const char* value = std::getenv(name)) environment.emplace(name, value);
+    if (const char* value = secure_frontend::crt_getenv(name)) environment.emplace(name, value);
   }
 #else
   environment.emplace("PATH", "/usr/bin:/bin");

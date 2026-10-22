@@ -976,7 +976,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         dos02_resources_return_to_idle shutdown_errors_never_report_fatal
         dos01_service_healthy_after_each_attack
         ext01_upstream_control_routes_are_404_after_auth ext02_http_headers_cannot_enable_extensions
-        log_line_format_and_rate_limit err_no_token_prompt_or_path_in_any_body_or_log)
+        log_line_format_and_rate_limit err_no_token_prompt_or_path_in_any_body_or_log
+        undecodable_output_logs_its_own_code)
     if(WIN32)
         # SP3 Task 22: Winsock parity cases (the same code paths run on Linux by hand; see the test file note).
         secure_frontend_add_cases(secure_frontend_api_server_tests win_refusal_is_read_not_reset

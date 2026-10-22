@@ -238,6 +238,22 @@ Numbered in the order found. Status: **open**, **worked around**, **fixed**, **n
     parallel-download test still fail, the lifeline test skips (POSIX path). Whether an
     exclusion can be dropped is a Linux-host question; the runbook list is unchanged.
 
+## Fix for issues 9, 10 and 23 (MSVC `/W4 /WX`, after the first commit)
+
+The project's own `windows-msvc` preset (`SECURE_FRONTEND_WERROR=ON`, `/W4 /WX`) now builds:
+- C4456/C4458/C4459 shadowing: inner names renamed (`chat_schema.cpp` parts loop `member` →
+  `part_member`; `frontend_config.cpp` layer-split loops `token` → `piece`; the fake engine's
+  loop record `line` → `record` — every use in the loop; `cli_harness.hpp` `out` → `escaped`;
+  `run_cases(..., failure_count)`).
+- C4996 (MSVC's deprecation of `getenv`/`_wgetenv`): one header,
+  `include/secure_frontend/crt_environment.hpp`, with `crt_getenv`/`crt_wgetenv` that silence it
+  in one place. `_dupenv_s` is not a substitute where it matters: `token_reader.cpp` wipes the
+  CRT's own copy of the token in place (CFG-05), and `_dupenv_s` would return a copy.
+- C2628/C2187: the Windows SDK's `#define small char` (`rpcndr.h`) — `small` locals renamed in
+  `manifest_test.cpp` (`small_rules`) and `http_socket_server_test.cpp` (`small_buffer`).
+- C4244 in `engine_child_test.cpp`: the ASCII SID string is narrowed with an explicit cast.
+- Not touched: POSIX-only `getenv` uses that MSVC never compiles.
+
 ## Fix for issues 19 and 26 (owner-approved 2026-10-21)
 
 Behaviour follows upstream `v0.2.1.3` (`serve/frontend.py`, `serve/server.py`), checked by a
@@ -477,11 +493,56 @@ read-only audit:
   cache of its own pack/MTP files (read-only); `tq_pascal_bench` joins a full CUDA build (not
   `--target strata`).
 
+### 9. After the first commit (`556b6368`, not pushed)
+
+- **MSVC `/W4 /WX`:** issues 9, 10, 23 fixed (see "Fix for issues 9, 10 and 23"). The
+  `windows-msvc` preset builds clean from scratch with warnings as errors: 0 warnings, 53 test
+  binaries (`manifest_tests` and `http_socket_server_tests` for the first time).
+- **Full preset suite** (`ctest --preset windows-msvc`), final source of this step
+  (`out/ctest-preset-final.xml`): 866 tests, 833 passed, 32 failed, 1 not run
+  (`cfg03_rejects_symlink_below_root`, needs a symlink privilege). 30 failures are the
+  baseline's; 2 are new because their binary never ran under MSVC before (issue 29); the 56
+  newly compiled tests otherwise pass, and nothing regressed against the previous run.
+- **Issue 20 fixed test-first:** a refused output token still answers the generic 500 (stream:
+  an `internal_error` chunk), and the request log now carries the log-only code
+  `undecodable_token` (`chat_route.cpp`, `chat_stream.cpp`). Test
+  `api_server_tests.undecodable_output_logs_its_own_code`: RED (`req 3 chat 500 internal_error`,
+  `req 4 chat_stream 200 internal_error`), then GREEN; the 64 related chat/SSE/API cases pass.
+- **`reasoning.effort`:** config description and parity row (now `frontend behaviour`) say what
+  it does for the qwen profile; README mirror and config table updated together.
+- **`privacy-migration.md` re-reviewed for `v0.2.2`** (agent read): every row holds; 2 rows
+  updated (`setup.py` download repair + signed-feed engine fetch; the update scripts now reach
+  it), 2 added (the `strata update` feed client; `apps/host`/`apps/desktop`, whose LAN share and
+  Cloudflare tunnel no longer require a key at `v0.2.2`). No literal URL host added.
+- **Distribution check hardened test-first:** `apps/host` and `apps/desktop` (JavaScript, so the
+  `.py` rule never caught them) are refused at any depth; RED then GREEN, 13 tests.
+- **Swift model through the frontend** (`out/serve/config-swift.json`, no `--ple-gguf`): ready in
+  48 s; "Name three primary colors" → `content: "Red, yellow, blue"` plus `reasoning_content`,
+  stop, 2.6 s.
+- **Issue 21 explained:** with `--expert`, `/v1/models` lists the configured `engine.model_id`
+  only (seen for both models), not the whole inventory as the README says — a doc/behaviour
+  mismatch, not investigated further.
+- **Resume §8 item 5, measured** (`out/stop-latency.ps1`, Swift, `v0.2.2` engine): a 16,401-token
+  prompt + 8 tokens in 6.25 s end to end (≥ 2,600 tok/s overall); a client that disconnects
+  2 s into a fresh long prefill is logged `client_gone`, and the next short request finishes
+  only 305 ms slower than an idle one (1,911 vs 1,606 ms) — STOP cuts the prefill within about
+  0.3 s (budget `stop_drain_timeout_s` 5 s). READY: `/health` 200 after 39–48 s on every start
+  (limit `ready_timeout_s` 900). Note: an identical prompt sent twice is reused by the engine
+  (no second prefill), which a first attempt at this measurement ran into.
+
+29. **Two `http_socket_server_tests` cases fail deterministically under MSVC on Windows** —
+    open. `head_terminator_split_across_reads` and `send_all_bounded_stall_restarts_on_progress`
+    (3 of 3 runs). First run ever under MSVC (the file did not compile before, issue 23); not
+    caused by the `small` rename (that is in `connected_pair`, :835). Likely a host-timing
+    assumption: the test sleeps 2 ms per byte, but Windows sleeps in ~15.6 ms steps, so ~190
+    header bytes take ~3 s against the fixture's header deadline. Not changed (a test is never
+    weakened); needs the owner's ruling or a Windows timer-resolution fix in the test harness.
+
 ### Not done in this session
 
-- Resume doc §8 items 3–5: `qwen35moe` checks, cgroup proof (Linux only), STOP latency
-  during a long prefill.
-- The Swift model through the frontend (its one-shot engine run passed, step 4).
+- Resume doc §8 item 3 (`qwen35moe` family behaviour): not applicable to these packs (no
+  `qwen35moe` model on the box); item 4 (cgroup delegation proof): Linux only. Item 5 was
+  measured (step 9).
 - The Maya open items (issue 27): penalty semantics, the `MAYA_*` inventory regeneration and
   its new rows, the `maya-vision` binary name. No GLM engine was built or run on this box.
 - The supported Windows frontend builds (MSYS2 clang / llvm-mingw) and their

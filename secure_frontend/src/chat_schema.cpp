@@ -213,18 +213,18 @@ ChatRequestResult parse_chat_request(const std::string_view json, const ChatSche
               ChatMessagePart parsed_part;
               std::string_view type;
               bool type_seen = false;
-              for (const auto& member : *part_fields) {
-                if (member.key == "type") {
-                  const auto* name = member.value.if_string();
+              for (const auto& part_member : *part_fields) {
+                if (part_member.key == "type") {
+                  const auto* name = part_member.value.if_string();
                   if (name == nullptr) return refuse(ApiError::invalid_request);
                   type = *name;
                   type_seen = true;
-                } else if (type == "text" && member.key == "text") {
-                  const auto* value_of_text = member.value.if_string();
+                } else if (type == "text" && part_member.key == "text") {
+                  const auto* value_of_text = part_member.value.if_string();
                   if (value_of_text == nullptr) return refuse(ApiError::invalid_request);
                   parsed_part.text = *value_of_text;
-                } else if (type == "image_url" && member.key == "image_url") {
-                  const auto* url_object = member.value.if_object();
+                } else if (type == "image_url" && part_member.key == "image_url") {
+                  const auto* url_object = part_member.value.if_object();
                   if (url_object == nullptr) return refuse(ApiError::invalid_request);
                   const std::string* url = nullptr;
                   for (const auto& url_member : *url_object) {

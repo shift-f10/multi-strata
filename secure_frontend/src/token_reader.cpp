@@ -1,4 +1,5 @@
 #include "secure_frontend/token_reader.hpp"
+#include "secure_frontend/crt_environment.hpp"
 
 #include "secure_frontend/secret_bytes.hpp"
 
@@ -79,7 +80,7 @@ TokenReadResult read_protected_file(const SecretSource& source, const CanonicalR
 
 TokenReadResult read_environment_token(const SecretSource& source) {
   const std::string& name = source.location();
-  char* const value = std::getenv(name.c_str());
+  char* const value = secure_frontend::crt_getenv(name.c_str());
   if (value == nullptr) {
     return error(TokenReadErrorCode::environment_variable_not_set, "The configured token environment variable is not set.");
   }
@@ -94,7 +95,7 @@ TokenReadResult read_environment_token(const SecretSource& source) {
   // the CRT and from the Win32 environment block. The block entry is removed,
   // not overwritten in place: no Win32 API can do that.
   const std::wstring wide_name(name.begin(), name.end());
-  if (wchar_t* const wide = _wgetenv(wide_name.c_str())) secure_wipe(wide, std::wcslen(wide) * sizeof(wchar_t));
+  if (wchar_t* const wide = secure_frontend::crt_wgetenv(wide_name.c_str())) secure_wipe(wide, std::wcslen(wide) * sizeof(wchar_t));
   (void)_putenv_s(name.c_str(), "");
   (void)SetEnvironmentVariableW(wide_name.c_str(), nullptr);
 #else

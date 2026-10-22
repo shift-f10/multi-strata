@@ -326,7 +326,7 @@ inline void remove_scratch_directories() {
 }
 
 // `failures` is the calling file's own counter (files whose expect() throws pass a zero).
-inline int run_cases(const int argc, char** argv, const std::initializer_list<Case> cases, const int& failures) {
+inline int run_cases(const int argc, char** argv, const std::initializer_list<Case> cases, const int& failure_count) {
   // Cleanup also runs on std::exit() from a helper, so a setup failure cannot
   // leave scratch directories behind (a no-op after the normal-path cleanup).
   // The registry is constructed first so it outlives the atexit handler.
@@ -362,7 +362,7 @@ inline int run_cases(const int argc, char** argv, const std::initializer_list<Ca
     }
   }
   remove_scratch_directories();
-  return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+  return failure_count == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
 }  // namespace secure_frontend_test

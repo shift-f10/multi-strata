@@ -106,7 +106,7 @@ constexpr std::array<ParityRow, 127> kRows{{
     {"queue_timeout", kMapped, none, "the SP3 row limits.concurrency.queue_timeout_ms already carries admission waiting (pin bound 0.1..600 at serve/server.py:8048; Ruling T8-a)"},
     {"reasoning_budget_tokens", kTyped, config_only, "serve/server.py:8337 (M1 Task 5: reasoning.budget_tokens)"},
     {"reasoning_close_retry", kTyped, config_only, "serve/server.py:8232 (M1 Task 5: reasoning.close_retry)"},
-    {"reasoning_effort", kTyped, config_only, "serve/server.py:7642 (M1 Task 5: reasoning.effort)"},
+    {"reasoning_effort", kTyped, frontend_behavior, "serve/server.py:7642 (M1 Task 5: reasoning.effort; the qwen think tail, issue 19: none writes the closed block, unset/low/medium/high open it, the levels are not told apart)"},
     {"reasoning_loop_recovery", kTyped, config_only, "serve/server.py:8346 (M1 Task 5: reasoning.loop_recovery)"},
     {"reload", kMapped, none, "image-generation card reload mode (spec D-9); the vision child's lifecycle follows the vision/elastic rows; serve/images.py:177"},
     {"repeat_stop_tokens", kTyped, frontend_behavior, "serve/server.py:198 (REPEAT_STOP_TOKENS 256), the pin's detector is frontend-side at :5098, notice :5278, 0 = off :8332 (Ruling T8-f: no GEN key)"},

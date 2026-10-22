@@ -174,7 +174,8 @@ ChatStreamOutcome run_chat_stream(StreamSink& sink, EngineProtocolClient& protoc
     const ApiError code = run.end == RunEnd::engine_error ? ApiError::engine_error
                               : run.end == RunEnd::engine_unavailable ? ApiError::engine_unavailable
                                                                       : ApiError::internal_error;
-    outcome.log_code = api_error_row(code).code;
+    // Issue 20: an undecodable token keeps the client's generic internal_error; the log says why.
+    outcome.log_code = run.end == RunEnd::undecodable ? std::string_view{"undecodable_token"} : api_error_row(code).code;
     if (!observer.flush_all(until) || !observer.send(render_error_event(code), until) || !observer.send(kSseDoneEvent, until) ||
         !observer.wait_writable(until)) {
       return outcome;

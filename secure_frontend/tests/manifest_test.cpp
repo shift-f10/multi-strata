@@ -346,9 +346,9 @@ void wildcard_redirect_hosts_validated() {
 
 void total_size_above_budget_is_total_budget_exceeded() {
   auto m = valid_qwen_manifest();
-  secure_frontend::ManifestRules small;
-  small.max_total_bytes = 50;
-  const auto issue = secure_frontend::validate_manifest(m, small);
+  secure_frontend::ManifestRules small_rules;
+  small_rules.max_total_bytes = 50;
+  const auto issue = secure_frontend::validate_manifest(m, small_rules);
   expect(issue && issue->reason == AcquireReason::total_budget_exceeded && issue->key_path == "files",
          "total of 100 bytes exceeds a 50-byte budget");
 }

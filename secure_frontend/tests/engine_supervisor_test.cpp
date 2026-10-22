@@ -1,4 +1,5 @@
 #include "secure_frontend/engine_supervisor.hpp"
+#include "secure_frontend/crt_environment.hpp"
 #include "secure_frontend/cgroup_scope.hpp"
 #include "secure_frontend/engine_environment.hpp"
 #include "secure_frontend/parity_table.hpp"
@@ -1497,7 +1498,7 @@ void supervisor_serving_api_is_thread_safe() {
 class ScopedParentVariable final {
  public:
   ScopedParentVariable(const char* name, const char* value) : name_(name) {
-    if (const char* previous = std::getenv(name)) previous_ = std::string(previous);
+    if (const char* previous = secure_frontend::crt_getenv(name)) previous_ = std::string(previous);
     set(value);
   }
   ~ScopedParentVariable() {

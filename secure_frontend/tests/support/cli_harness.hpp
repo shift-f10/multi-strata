@@ -24,9 +24,9 @@ struct CliHarness final {
 
   // An absolute path that does not exist (local verbs never touch the downloader).
   std::string missing_downloader() const {
-    std::string out;
-    for (const char c : std::filesystem::absolute(scratch / "missing" / "curl").generic_string()) out += c == '\\' ? std::string{"\\\\"} : std::string(1, c);
-    return "\"" + out + "\"";
+    std::string escaped;
+    for (const char c : std::filesystem::absolute(scratch / "missing" / "curl").generic_string()) escaped += c == '\\' ? std::string{"\\\\"} : std::string(1, c);
+    return "\"" + escaped + "\"";
   }
 
   // `extra_top_level` (SP7 M2 Task 3): raw JSON appended after the pull object, e.g.

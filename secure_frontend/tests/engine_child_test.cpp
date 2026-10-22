@@ -477,7 +477,9 @@ std::map<std::string, std::string, std::less<>> own_token_ids() {
   LPWSTR sid = nullptr;
   if (!user.empty() && ConvertSidToStringSidW(reinterpret_cast<const TOKEN_USER*>(user.data())->User.Sid, &sid)) {
     const std::wstring wide(sid);
-    ids["sid"] = std::string(wide.begin(), wide.end());  // SID strings are ASCII
+    std::string ascii;  // SID strings are ASCII
+    for (const wchar_t c : wide) ascii.push_back(static_cast<char>(c));
+    ids["sid"] = ascii;
     LocalFree(sid);
   }
   TOKEN_ELEVATION elevation{};

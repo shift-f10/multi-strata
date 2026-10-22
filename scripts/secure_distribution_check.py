@@ -32,7 +32,9 @@ FORBIDDEN_PATHS = {
     "requirements.txt",
     "docs/mcp_server.md",
 }
-FORBIDDEN_DIRECTORIES = {"serve", "sycl/serve", ".strata-mcp"}
+# apps/host (Node server: Cloudflare quick tunnel, LAN share) and apps/desktop
+# (its Tauri shell) are not Python, so the .py rule below never catches them.
+FORBIDDEN_DIRECTORIES = {"serve", "sycl/serve", ".strata-mcp", "apps/host", "apps/desktop"}
 FORBIDDEN_PYTHON_NAMES = {
     "server.py",
     "mcp.py",

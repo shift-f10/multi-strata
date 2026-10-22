@@ -169,7 +169,7 @@ constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 
     // the typed row names the three words); effort_position :2841-2843; anthropic_thinking
     // :8102-8104; fit_max_tokens :3485-3488 read at :7996 (false answers 400 over the room, :4536).
     {"reasoning.effort", T::string, false, 0, 0, 0, false, "", "",
-     "Thinking level for requests that name none: none, low, medium or high (pin levels); unset names none."},
+     "Thinking level for requests that name none: none, low, medium or high (pin levels); unset names none. Qwen packs with <think>: none closes the think block, any other value or unset thinks."},
     {"reasoning.budget_tokens", T::integer, false, 0, 4294967295, 0, false, "", "",
      "Default thinking budget in tokens (0 = none, the pin default); bounds added, C-1."},
     {"reasoning.close_retry", T::boolean, false, 0, 0, 0, false, "", "",
@@ -975,16 +975,16 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
     std::size_t start = 0;
     while (start <= trimmed.size()) {
       const auto comma = trimmed.find(',', start);
-      const auto token = trimmed.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
-      std::size_t begin = token.find_first_not_of(" \t");
-      std::size_t end = token.find_last_not_of(" \t");
+      const auto piece = trimmed.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+      std::size_t begin = piece.find_first_not_of(" \t");
+      std::size_t end = piece.find_last_not_of(" \t");
       if (begin == std::string::npos) {
         grammar = false;
         break;
       }
       std::int64_t value = 0;
-      const auto [ptr, ec] = std::from_chars(token.data() + begin, token.data() + end + 1, value);
-      if (ec != std::errc{} || ptr != token.data() + end + 1) {
+      const auto [ptr, ec] = std::from_chars(piece.data() + begin, piece.data() + end + 1, value);
+      if (ec != std::errc{} || ptr != piece.data() + end + 1) {
         grammar = false;
         break;
       }
@@ -1093,16 +1093,16 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
     std::size_t start = 0;
     while (start <= glm.layer_split.size()) {
       const auto comma = glm.layer_split.find(',', start);
-      const auto token = glm.layer_split.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
-      const std::size_t begin = token.find_first_not_of(" \t");
-      const std::size_t end = token.find_last_not_of(" \t");
+      const auto piece = glm.layer_split.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+      const std::size_t begin = piece.find_first_not_of(" \t");
+      const std::size_t end = piece.find_last_not_of(" \t");
       if (begin == std::string::npos) {
         grammar = false;
         break;
       }
       std::int64_t value = 0;
-      const auto [ptr, ec] = std::from_chars(token.data() + begin, token.data() + end + 1, value);
-      if (ec != std::errc{} || ptr != token.data() + end + 1 || value < 1) {
+      const auto [ptr, ec] = std::from_chars(piece.data() + begin, piece.data() + end + 1, value);
+      if (ec != std::errc{} || ptr != piece.data() + end + 1 || value < 1) {
         grammar = false;
         break;
       }

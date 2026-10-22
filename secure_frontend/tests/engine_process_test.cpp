@@ -1,4 +1,5 @@
 #include "secure_frontend/engine_process.hpp"
+#include "secure_frontend/crt_environment.hpp"
 #include "support/test_paths.hpp"
 #include "support/test_support.hpp"
 
@@ -31,11 +32,11 @@ using test_support::current_executable;
 
 int run_fake_engine(const int argc, char** argv) {
   if (argc != 3 || std::string(argv[2]) != "literal; exit 73") return 41;
-  const char* const allowed = std::getenv("STRATA_ALLOWED_TEST");
+  const char* const allowed = secure_frontend::crt_getenv("STRATA_ALLOWED_TEST");
   if (allowed == nullptr || std::string(allowed) != "present") return 42;
   // The names a real parent has (HOME/PATH on POSIX; PATH, SystemRoot, USERPROFILE on Windows): none may leak.
   for (const char* name : {"HOME", "PATH", "SystemRoot", "USERPROFILE"}) {
-    if (std::getenv(name) != nullptr) return 43;
+    if (secure_frontend::crt_getenv(name) != nullptr) return 43;
   }
   return 0;
 }
@@ -61,9 +62,9 @@ void starts_without_a_shell_and_uses_only_allowlisted_environment() {
 // N3: the leak check above is only meaningful when the parent really has
 // the names it looks for.
 void proc02_engine_process_env_checks_windows_names() {
-  expect(std::getenv("PATH") != nullptr, "precondition: the parent has PATH");
+  expect(secure_frontend::crt_getenv("PATH") != nullptr, "precondition: the parent has PATH");
 #if defined(_WIN32)
-  expect(std::getenv("SystemRoot") != nullptr && std::getenv("USERPROFILE") != nullptr, "precondition: the parent has SystemRoot and USERPROFILE");
+  expect(secure_frontend::crt_getenv("SystemRoot") != nullptr && secure_frontend::crt_getenv("USERPROFILE") != nullptr, "precondition: the parent has SystemRoot and USERPROFILE");
 #endif
   starts_without_a_shell_and_uses_only_allowlisted_environment();
 }

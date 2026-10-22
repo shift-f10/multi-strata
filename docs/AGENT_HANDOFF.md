@@ -249,10 +249,15 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
   test-first in the `maya_118` dialect. Open (session log issue 27): the GLM penalty
   semantics now differ from ours, and the `MAYA_*` respelling leaves the GLM key inventory at
   its `v1.1.8` set (50 new knobs, five DFlash, not yet rowed).
-- Frontend built only with MSVC and `SECURE_FRONTEND_WERROR=OFF` (unsupported; MSYS2 /
-  llvm-mingw not on the box). The supported `windows-msvc` preset fails, including real
-  `small`-macro clashes in `tests/manifest_test.cpp:349` and `tests/http_socket_server_test.cpp:837`
-  (issues 10, 23).
+- **After `556b6368`:** the `windows-msvc` preset now builds clean with `/W4 /WX` (shadowing
+  renames; one `crt_environment.hpp` wrapper for MSVC's `getenv` deprecation — `_dupenv_s`
+  would break the token wipe; the two `small`-macro clashes). Full preset suite: 865 tests,
+  832 pass; the 30 baseline Windows-host failures plus 2 `http_socket_server` cases that never
+  ran under MSVC before (issue 29, likely Windows sleep granularity). Issue 20 fixed test-first
+  (`undecodable_token` log-only code). `reasoning.effort` description/parity row updated.
+  `privacy-migration.md` re-reviewed for `v0.2.2`. The distribution check now refuses
+  `apps/host`/`apps/desktop`. Swift served through the frontend; STOP during a 16k-token
+  prefill frees the engine within ~0.3 s; READY in 39–48 s.
 - No Windows-runtime ctest proof was produced.
 
 ### SP7 M2 (branch `sp7-m2-release-side`, base `f4dff56d` — `main` with SP7 M1 merged; the branch waits for the controller's merge gate)

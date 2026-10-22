@@ -53,6 +53,22 @@ def test_forbidden_directory_below_the_root_is_rejected(tmp_path):
         assert flagged(errors, relative), (relative, errors)
 
 
+def test_upstream_desktop_and_host_apps_are_rejected_when_flattened(tmp_path):
+    # v0.2.2 privacy re-review (docs/security/privacy-migration.md): upstream's apps/host Node server
+    # (Cloudflare quick tunnel, LAN share) and its apps/desktop Tauri shell are not Python, so only a
+    # directory rule catches a copy staged without its upstream/ prefix.
+    files = ["pkg/apps/host/server/cloudflare.mjs", "pkg/apps/host/server/local-share.mjs",
+             "pkg/apps/desktop/src-tauri/tauri.conf.json"]
+    errors = check.inspect(stage(tmp_path, *files), False)
+    for relative in files:
+        assert flagged(errors, relative), (relative, errors)
+
+
+def test_apps_lookalikes_pass(tmp_path):
+    files = ["share/doc/apps-host-notes.txt", "bin/apps/strata-secure-server"]
+    assert check.inspect(stage(tmp_path, *files), False) == []
+
+
 def test_native_only_stage_passes(tmp_path):
     assert check.inspect(stage(tmp_path, "bin/strata-secure-server"), False) == []
 

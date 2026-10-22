@@ -1,6 +1,7 @@
 // SP4 Task 27: the strata network verbs — pull, run (D6/C6), update --models, doctor —
 // with §8.3 interrupts and §7.3 acquire.log records.
 #include "secure_frontend/catalog.hpp"
+#include "secure_frontend/crt_environment.hpp"
 #include "secure_frontend/acquire_url.hpp"
 #include "secure_frontend/download_response.hpp"
 #include "secure_frontend/downloader.hpp"
@@ -343,7 +344,7 @@ bool variable_present(const char* name) {
   const std::wstring wide = path_from_utf8(name).wstring();
   return GetEnvironmentVariableW(wide.c_str(), nullptr, 0) != 0;
 #else
-  return std::getenv(name) != nullptr;  // presence only: the value is never read further, printed or stored
+  return secure_frontend::crt_getenv(name) != nullptr;  // presence only: the value is never read further, printed or stored
 #endif
 }
 
@@ -572,10 +573,10 @@ int verb_doctor(const FrontendConfig& config, const std::filesystem::path& confi
 // HOME/.config; Windows has no systemd and the task branch (Task 6) will use
 // its own location — the plans answer "not wired yet" until then.
 std::filesystem::path user_config_home() {
-  if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg != nullptr && xdg[0] != '\0') return std::filesystem::path{xdg};
-  if (const char* home = std::getenv("HOME"); home != nullptr && home[0] != '\0') return std::filesystem::path{home} / ".config";
+  if (const char* xdg = secure_frontend::crt_getenv("XDG_CONFIG_HOME"); xdg != nullptr && xdg[0] != '\0') return std::filesystem::path{xdg};
+  if (const char* home = secure_frontend::crt_getenv("HOME"); home != nullptr && home[0] != '\0') return std::filesystem::path{home} / ".config";
 #if defined(_WIN32)
-  if (const char* appdata = std::getenv("APPDATA"); appdata != nullptr && appdata[0] != '\0') return std::filesystem::path{appdata};
+  if (const char* appdata = secure_frontend::crt_getenv("APPDATA"); appdata != nullptr && appdata[0] != '\0') return std::filesystem::path{appdata};
 #endif
   return {};
 }

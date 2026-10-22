@@ -23,7 +23,7 @@ struct ChatStreamSettings final {
 struct ChatStreamOutcome final {
   RunEnd end{RunEnd::engine_unavailable};
   bool terminal_chunk_sent{false};
-  std::string_view log_code{"-"};  // §8: "-", a §7.2 code, client_gone, write_stall or generation_timeout
+  std::string_view log_code{"-"};  // §8: "-", a §7.2 code, client_gone, write_stall, generation_timeout or undecodable_token
 };
 
 // Called once, as soon as the engine finished (DONE, failure or cancel), before the tail is flushed.

@@ -1227,6 +1227,35 @@ void log_line_format_and_rate_limit() {
          "startup summary");
 }
 
+// Issue 20 (docs/validation/2026-10-21-windows-gpu-session.md): a reply that reaches a token the
+// frontend refuses to output still answers the generic 500 (stream: an internal_error chunk), and
+// the request log now says why with a fixed, text-free log-only code, `undecodable_token`, for the
+// complete and the streaming form alike. Token 256 is the byte pack's <|im_start|> (CONTROL, not
+// an end-of-turn token).
+void undecodable_output_logs_its_own_code() {
+  auto server = start_server({{"logging.requests", "true"}}, {"--token-ids=256"});
+  if (!server) return;
+  const auto complete = raw(*server, chat_request(*server, chat_body()));
+  expect(complete && complete->status == 500, "the client still sees the generic 500");
+  const auto sse = test_support::chat(*server, test_support::chat_body(R"("stream":true)"));
+  expect(sse.streamed, "the stream starts before the token is refused");
+  std::this_thread::sleep_for(200ms);
+  const std::string log = server->stderr_text();
+  std::istringstream in(log);
+  bool complete_logged = false;
+  bool stream_logged = false;
+  for (std::string line; std::getline(in, line);) {
+    std::istringstream f(line);
+    std::string req, seq, route, status, code;
+    f >> req >> seq >> route >> status >> code;
+    if (req != "req") continue;
+    if (route == "chat" && status == "500" && code == "undecodable_token") complete_logged = true;
+    if (route == "chat_stream" && code == "undecodable_token") stream_logged = true;
+  }
+  expect(complete_logged, "the complete reply logs undecodable_token: " + log);
+  expect(stream_logged, "the streamed reply logs undecodable_token: " + log);
+}
+
 void err_no_token_prompt_or_path_in_any_body_or_log() {
   const std::string marker = "ZZPROMPTMARKERZZ";
   auto server = start_server({{"logging.requests", "true"}});
@@ -1699,6 +1728,7 @@ int main(int argc, char** argv) {
       {"ext01_upstream_control_routes_are_404_after_auth", ext01_upstream_control_routes_are_404_after_auth},
       {"ext02_http_headers_cannot_enable_extensions", ext02_http_headers_cannot_enable_extensions},
       {"log_line_format_and_rate_limit", log_line_format_and_rate_limit},
+      {"undecodable_output_logs_its_own_code", undecodable_output_logs_its_own_code},
       {"err_no_token_prompt_or_path_in_any_body_or_log", err_no_token_prompt_or_path_in_any_body_or_log},
       {"utf8_non_stream_max_tokens_cut_mid_character_returns_length", utf8_non_stream_max_tokens_cut_mid_character_returns_length},
       {"generation_timeout_returns_text_with_length", generation_timeout_returns_text_with_length},

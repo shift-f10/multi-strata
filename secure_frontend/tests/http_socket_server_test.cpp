@@ -834,8 +834,8 @@ void stream_socket_peek_and_nonblocking_send() {
   (void)getsockname(listener, reinterpret_cast<sockaddr*>(&address), &length);
   const auto connected_pair = [&] {
     Native client = socket(AF_INET, SOCK_STREAM, 0);
-    int small = 4096;
-    (void)setsockopt(client, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&small), sizeof(small));
+    int small_buffer = 4096;
+    (void)setsockopt(client, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&small_buffer), sizeof(small_buffer));
     expect(connect(client, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0, "connect");
     Native server = accept(listener, nullptr, nullptr);
     return std::pair<Native, Native>{client, server};

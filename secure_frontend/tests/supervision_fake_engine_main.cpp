@@ -632,8 +632,8 @@ int serve(const Options& options) {
   }
   StdinReader reader(options.record_file);
   while (const auto next = reader.next()) {
-    const std::string& line = *next;
-    if (line.rfind("GEN ", 0) == 0 || line.rfind("GENI ", 0) == 0) {
+    const std::string& record = *next;
+    if (record.rfind("GEN ", 0) == 0 || record.rfind("GENI ", 0) == 0) {
       if (options.hang_in_gen) sleep_forever();  // stops acting on stdin: STOP is never seen
       if (options.abort_in_gen) {
         std::cout << "T 7\n" << std::flush;
@@ -644,11 +644,11 @@ int serve(const Options& options) {
         std::cout << "T 7\n" << kFatalPrefixes[index] << (index < 2U ? "12" : "") << "\nDONE stop\n" << std::flush;
         continue;
       }
-      if (options.stream_modes) { run_generation(options, line, reader); continue; }
+      if (options.stream_modes) { run_generation(options, record, reader); continue; }
       std::cout << "T 7\nDONE stop\n" << std::flush;
-    } else if (line == "QUIT") {
+    } else if (record == "QUIT") {
       return 0;
-    } else if (line == "DUMP") {
+    } else if (record == "DUMP") {
       dump();
     }
   }

@@ -227,7 +227,12 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
       case GenerationFailure::cancelled: return HttpResponse{.status = kNoResponseStatus, .headers = {}, .body = {}, .log_code = "client_gone"};
       case GenerationFailure::engine_error: return make_error_response(ApiError::engine_error);
       case GenerationFailure::engine_unavailable: return engine_unavailable();
-      case GenerationFailure::decode_failed: return make_error_response(ApiError::internal_error);
+      case GenerationFailure::decode_failed: {
+        // Issue 20: the client sees the generic 500; the log says why (log-only code).
+        HttpResponse refused = make_error_response(ApiError::internal_error);
+        refused.log_code = "undecodable_token";
+        return refused;
+      }
       case GenerationFailure::shutting_down: return make_error_response(ApiError::server_shutting_down);
     }
   }

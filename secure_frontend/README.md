@@ -305,7 +305,7 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `defaults.sampling.frequency_penalty` | number | unset | 0-2 | - | Request default frequency penalty (0 off; cap 2 added, C-1). |
 | `defaults.sampling.penalty_last_n` | integer | unset | 0-8192 | - | Penalty window; unset means the pin default of 64 when any penalty is on (cap added, C-1). |
 | `defaults.sampling.seed` | integer | unset | 1-4294967295 | - | Request default sampling seed (pin: a positive integer; 32-bit cap added, C-1). |
-| `reasoning.effort` | string | unset | - | - | Thinking level for requests that name none: none, low, medium or high (pin levels); unset names none. |
+| `reasoning.effort` | string | unset | - | - | Thinking level for requests that name none: none, low, medium or high (pin levels); unset names none. Qwen packs with <think>: none closes the think block, any other value or unset thinks. |
 | `reasoning.budget_tokens` | integer | `0` | 0-4294967295 | - | Default thinking budget in tokens (0 = none, the pin default); bounds added, C-1. |
 | `reasoning.close_retry` | boolean | `false` | - | - | Close an unfinished thinking block once when the reply ends inside it (pin opt-in, off). |
 | `reasoning.loop_recovery` | string | `off` | - | - | A reasoning loop ends the reply (off, the pin default), stops (stop) or continues once (recover). |
@@ -466,7 +466,7 @@ consumer is out of M1 — every request cleans up after itself instead.
 | `parallel` | engine argv | serve/server.py:3000-3020 (replicas.parallel renders --batch N, :3020; window PARALLEL_MAX 8 at :2999; cap 1024 from the pin's own bound :8054, M1 Task 10) |
 | `reasoning_budget_tokens` | typed config | serve/server.py:8337 (M1 Task 5: reasoning.budget_tokens) |
 | `reasoning_close_retry` | typed config | serve/server.py:8232 (M1 Task 5: reasoning.close_retry) |
-| `reasoning_effort` | typed config | serve/server.py:7642 (M1 Task 5: reasoning.effort) |
+| `reasoning_effort` | frontend behaviour | serve/server.py:7642 (M1 Task 5: reasoning.effort; the qwen think tail, issue 19: none writes the closed block, unset/low/medium/high open it, the levels are not told apart) |
 | `reasoning_loop_recovery` | typed config | serve/server.py:8346 (M1 Task 5: reasoning.loop_recovery) |
 | `repeat_stop_tokens` | frontend behaviour | serve/server.py:198 (REPEAT_STOP_TOKENS 256), the pin's detector is frontend-side at :5098, notice :5278, 0 = off :8332 (Ruling T8-f: no GEN key) |
 | `sampling` | typed config | serve/server.py:7691 (M1 Task 4: defaults.sampling.*) |
@@ -892,7 +892,9 @@ generations (queue timeout 300 s), 4 connections per remote address (loopback
 exempt), 10 s header / 30 s request deadlines, 64 KiB request cap (49152-byte
 chat body), 10 s write stall / 60 s response-write deadline, `logging.requests`
 off (when on: one fixed-field stderr line per request under a token bucket —
-never tokens, prompts, paths or payload text).
+never tokens, prompts, paths or payload text; a reply cut by a token the
+frontend refuses to output answers the generic `500 internal_error` and logs
+the log-only code `undecodable_token`).
 
 The launch described in this section is the `--expert` bring-up mode: the
 operator supplies `engine.profile`, `roots.tokenizer_pack` (required) and the
