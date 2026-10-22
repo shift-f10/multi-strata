@@ -31,6 +31,14 @@ every claim below waits for the owner's own hardware (owner rulings 2026-10-20/2
    2026-10-22, resume §5 item 1; kit planned in `docs/superpowers/plans/2026-10-22-sp6-plan1-eval-kit.md`).
    Status: plan queued after SP7 M2; **battery runs (B-01…B-24) and pack building are owner-box
    work**.
+4. **SP7 offline release validation kit** — `docs/validation/sp7-offline-kit.md`:
+   build the signed artifact (`scripts/release/build_release.sh`, pinned key at
+   build time), air-gap carry, `unshare -rn` unpack, `SHA256SUMS` re-verify,
+   `doctor`/`doctor --deep`, `serve` + local chat, `strata update` accept and
+   `update --rollback` both directions, refusal proofs for unpinned-key and
+   tampered-component. Results hash into the `docs/PROVENANCE.md` release-entry
+   placeholder row. Status: ready (SP7 M2 delivered the tooling); **run is
+   owner-side**; no offline-release/GPU/update-chain claim until the row exists.
 
 ## Parked for the owner (decisions, not runs)
 

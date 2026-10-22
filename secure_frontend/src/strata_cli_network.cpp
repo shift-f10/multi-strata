@@ -1,22 +1,30 @@
 // SP4 Task 27: the strata network verbs — pull, run (D6/C6), update --models, doctor —
 // with §8.3 interrupts and §7.3 acquire.log records.
 #include "secure_frontend/catalog.hpp"
+#include "secure_frontend/acquire_url.hpp"
+#include "secure_frontend/download_response.hpp"
 #include "secure_frontend/downloader.hpp"
 #include "secure_frontend/engine_gate.hpp"
+#include "secure_frontend/fetch_file.hpp"
+#include "secure_frontend/sha256.hpp"
 #include "secure_frontend/strata_cli.hpp"
 #include "doctor_checks.hpp"
+#include "release_manifest.hpp"
 #include "service_ops.hpp"
 #include "uninstall_plan.hpp"
 #include "strata_cli_internal.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <charconv>
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <cwchar>
+#include <fstream>
 #include <limits>
 #include <ostream>
 #include <system_error>
@@ -587,6 +595,458 @@ std::filesystem::path self_executable() {
 #endif
 }
 
+// --- SP7 M2 Task 3 (spec D-2/D-3/D-4/D-10): `strata update`, the program half.
+// Flow (rulings R-T3-g/R-T3-l): update.source -> pinned key (fetch path only; a
+// rollback is a pure pointer flip) -> versioned-install check ->
+// fetch the signed envelope from each mirror base URL (<base>/envelope, R-T3-a) ->
+// verify -> show current vs offered -> confirm (--yes) -> fetch every component
+// (<base>/<file>) into <install>/.update-staging/<version>/bin and verify each
+// SHA-256 -> rename the version directory into place -> flip the `current`
+// pointer (keeping `previous`) -> restart hint. Any failure leaves `current`
+// untouched and removes the staging (R-T3-i); failures exit 12 (R-T3-d), a
+// decline exits 2, an interrupt exits 8 (§8.3). Fetching is the SP4 confined
+// downloader stack through fill_kit: never a bare system curl at runtime.
+
+constexpr std::size_t kMaxEnvelopeBytes = 1U << 20U;          // the signed envelope is small, like a model manifest
+constexpr std::uint64_t kUpdateHopSeconds = 600;              // per-request time bound (update has no run budget)
+inline constexpr std::string_view kStagingUpdateName = ".update-staging";
+
+bool is_safe_release_version(const std::string_view version) noexcept {
+  if (version.empty() || version.size() > 64 || version == "." || version == "..") return false;
+  for (const char c : version) {
+    const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_';
+    if (!ok) return false;
+  }
+  return true;
+}
+
+// The D-4 pointers. Linux: `current`/`previous` symlinks flipped by atomic rename
+// (spec D-4 verbatim); Windows: current.txt/previous.txt pointer files written to
+// a temporary and renamed (runtime proof is owner-side, windows-runtime gates).
+std::optional<std::string> read_pointer(const std::filesystem::path& install_root, const std::string& name) {
+#if defined(_WIN32)
+  std::ifstream pointer{install_root / (name + ".txt")};
+  std::string value;
+  if (!(pointer >> value)) return std::nullopt;
+  if (!value.empty() && value.back() == '\r') value.pop_back();
+  return value;
+#else
+  std::error_code ec;
+  const auto target = std::filesystem::read_symlink(install_root / name, ec);
+  if (ec) return std::nullopt;
+  return target.string();
+#endif
+}
+
+bool write_pointer(const std::filesystem::path& install_root, const std::string& name, const std::string& value) {
+#if defined(_WIN32)
+  // Compile-proven here; the Windows runtime claim waits for the owner's box.
+  const auto tmp = install_root / (name + ".txt.tmp");
+  std::ofstream out{tmp, std::ios::binary | std::ios::trunc};
+  if (!out) return false;
+  out << value << "\n";
+  out.close();
+  if (!out) return false;
+  std::error_code ec;
+  std::filesystem::rename(tmp, install_root / (name + ".txt"), ec);
+  if (ec) {
+    // Windows rename never replaces: the only replacement is remove-then-rename,
+    // which leaves the pointer absent for a moment (the NSIS installer of Task 6
+    // owns the atomic repoint story; the runtime claim is owner-side anyway).
+    std::error_code rm;
+    std::filesystem::remove(install_root / (name + ".txt"), rm);
+    std::filesystem::rename(tmp, install_root / (name + ".txt"), ec);
+  }
+  return !ec;
+#else
+  const auto tmp = install_root / (name + ".tmp");
+  std::error_code ec;
+  std::filesystem::remove(tmp, ec);
+  ec.clear();
+  std::filesystem::create_symlink(value, tmp, ec);
+  if (ec) return false;
+  std::filesystem::rename(tmp, install_root / name, ec);  // POSIX rename replaces atomically
+  return !ec;
+#endif
+}
+
+struct InstallView final {
+  std::filesystem::path install_root;
+  std::filesystem::path version_dir;
+  std::string version;  // the version directory's name
+};
+
+// The running exe sits at <root>/<version>/bin/<exe> and <root>/current resolves
+// to <version>; anything else is not a versioned install (D-4 refuses).
+std::optional<InstallView> resolve_versioned_install(const std::filesystem::path& self_path) {
+  std::error_code ec;
+  const auto self = std::filesystem::canonical(self_path, ec);
+  if (ec || !std::filesystem::is_regular_file(self)) return std::nullopt;
+  const auto version_dir = self.parent_path().parent_path();
+  const auto install_root = version_dir.parent_path();
+  if (install_root.empty() || version_dir.empty()) return std::nullopt;
+  const auto pointed = read_pointer(install_root, "current");
+  if (!pointed) return std::nullopt;
+  std::error_code ignored;
+  if (std::filesystem::canonical(install_root / *pointed, ignored) != version_dir) return std::nullopt;
+  return InstallView{install_root, version_dir, version_dir.filename().string()};
+}
+
+// The pinned release key: the build-time pinned value, or the explicit test pin
+// in hooks builds (CliServices::test_pinned_release_key_hex, 64 lowercase hex).
+std::optional<std::array<std::uint8_t, 32>> update_pinned_key(const CliServices& services) {
+#if defined(SECURE_FRONTEND_TEST_HOOKS)
+  if (!services.test_pinned_release_key_hex.empty()) {
+    if (!is_lower_hex_digest(services.test_pinned_release_key_hex)) return std::nullopt;
+    std::array<std::uint8_t, 32> key{};
+    for (std::size_t i = 0; i < 32U; ++i) {
+      const auto high = static_cast<unsigned char>(services.test_pinned_release_key_hex[2 * i]);
+      const auto low = static_cast<unsigned char>(services.test_pinned_release_key_hex[2 * i + 1]);
+      const auto nibble = [](const unsigned char c) { return c <= '9' ? c - '0' : c - 'a' + 10; };
+      key[i] = static_cast<std::uint8_t>((nibble(high) << 4) | nibble(low));
+    }
+    return key;
+  }
+#else
+  (void)services;  // the explicit pin exists in hooks builds only
+#endif
+  return pinned_release_public_key();
+}
+
+// Resolve and pin exactly like fetch_file's §3.5 rule (proxy configurations let
+// curl's proxy resolve, invisible to us, §13.2).
+std::optional<AcquireError> pin_hop(const NetworkKit& kit, const FetchSettings& fetch, const HttpsUrl& url, TransferRequest& request) {
+  if (fetch.proxy) return std::nullopt;
+  const auto answers = kit.resolver->resolve(url.host);
+  if (!answers || answers->empty()) return AcquireError{AcquireReason::dns_failed, url.host};
+  const auto verdict = choose_pinned_address(*answers, fetch.allow_private_addresses);
+  if (verdict.kind != AddressVerdictKind::pinned) return AcquireError{AcquireReason::address_not_allowed, url.host};
+  request.pin = verdict.pinned;
+  return std::nullopt;
+}
+
+std::optional<HttpsUrl> mirror_child(const HttpsUrl& base, const std::string& child) {
+  const auto parsed = parse_source_url("https://" + base.host + base.target + "/" + child);
+  if (const auto* problem = std::get_if<UrlProblem>(&parsed)) {
+    (void)problem;
+    return std::nullopt;
+  }
+  return std::get<HttpsUrl>(parsed);
+}
+
+// One GET into memory with a hard cap. The envelope size is unknown ahead, so the
+// head gets the update's own fixed rules (200 only; no redirects: --max-redirs 0).
+std::optional<AcquireError> fetch_envelope(const NetworkKit& kit, const FetchSettings& fetch, const HttpsUrl& url, std::string& body) {
+  TransferRequest request = hop_request(url, fetch, kUpdateHopSeconds);
+  if (auto failure = pin_hop(kit, fetch, url, request)) return failure;
+  ResponseHeadParser parser;
+  bool decided = false;
+  bool writable = false;
+  std::optional<AcquireError> body_error;
+  const auto on_bytes = [&](std::string_view bytes) -> bool {
+    if (kit.interrupted->load()) {
+      body_error = AcquireError{AcquireReason::interrupted, url.host};
+      return false;
+    }
+    if (!decided) {
+      const auto fed = parser.feed(bytes);
+      if (fed.state == ResponseHeadParser::State::malformed) {
+        body_error = AcquireError{AcquireReason::response_malformed, url.host};
+        return false;
+      }
+      if (fed.state == ResponseHeadParser::State::need_more) return true;
+      const int status = parser.head().status;
+      if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
+        body_error = AcquireError{AcquireReason::redirect_not_allowed, url.host};
+        return false;
+      }
+      if (status != 200) {
+        body_error = AcquireError{AcquireReason::http_status, url.host + " HTTP " + std::to_string(status)};
+        return false;
+      }
+      for (const auto& header : parser.head().headers) {
+        if (header.first != "content-length") continue;
+        std::uint64_t announced = 0;
+        const auto [ptr, ec] = std::from_chars(header.second.data(), header.second.data() + header.second.size(), announced);
+        if (ec != std::errc{} || announced > kMaxEnvelopeBytes) {
+          body_error = AcquireError{AcquireReason::size_exceeded, url.host};
+          return false;
+        }
+      }
+      decided = true;
+      writable = true;
+      bytes.remove_prefix(fed.consumed);
+    }
+    if (!writable || bytes.empty()) return true;
+    if (body.size() + bytes.size() > kMaxEnvelopeBytes) {
+      body_error = AcquireError{AcquireReason::size_exceeded, url.host};
+      return false;
+    }
+    body.append(bytes);
+    return true;
+  };
+  const HopExit exit = kit.transport->run(request, on_bytes);
+  if (exit.failure) return *exit.failure;
+  if (body_error) return body_error;
+  if (kit.interrupted->load()) return AcquireError{AcquireReason::interrupted, url.host};
+  if (exit.curl_exit && *exit.curl_exit != 0) {
+    return AcquireError{map_curl_exit(*exit.curl_exit, false).value_or(AcquireReason::transport_failed), url.host};
+  }
+  if (!decided || body.empty()) return AcquireError{AcquireReason::response_malformed, url.host};
+  return std::nullopt;
+}
+
+// One GET streamed to disk, hashed, capped and verified against the manifest row
+// (the same §3.4/§3.6 discipline fetch_file applies to model files).
+std::optional<AcquireError> fetch_component(const NetworkKit& kit, const FetchSettings& fetch, const HttpsUrl& url,
+                                            const ReleaseComponent& component, const std::filesystem::path& dest) {
+  TransferRequest request = hop_request(url, fetch, kUpdateHopSeconds);
+  if (auto failure = pin_hop(kit, fetch, url, request)) return failure;
+  std::ofstream out{dest, std::ios::binary | std::ios::trunc};
+  if (!out) return AcquireError{AcquireReason::publish_failed, "update staging"};
+  Sha256 hasher;
+  std::uint64_t written = 0;
+  ResponseHeadParser parser;
+  std::optional<HeadDecision> decision;
+  std::optional<AcquireError> body_error;
+  bool writing = false;
+  const auto on_bytes = [&](std::string_view bytes) -> bool {
+    if (kit.interrupted->load()) {
+      body_error = AcquireError{AcquireReason::interrupted, url.host};
+      return false;
+    }
+    if (!decision) {
+      const auto fed = parser.feed(bytes);
+      if (fed.state == ResponseHeadParser::State::malformed) {
+        body_error = AcquireError{AcquireReason::response_malformed, url.host};
+        return false;
+      }
+      if (fed.state == ResponseHeadParser::State::need_more) return true;
+      decision = classify_head(parser.head(), HopExpectation{component.size, std::nullopt});
+      bytes.remove_prefix(fed.consumed);
+      if (decision->action != HeadAction::write_body) return false;  // redirect or failure: the body is not needed
+      writing = true;
+    }
+    if (!writing || bytes.empty()) return true;
+    if (written + bytes.size() > component.size) {
+      body_error = AcquireError{AcquireReason::size_exceeded, component.file};
+      return false;
+    }
+    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    if (!out) {
+      body_error = AcquireError{AcquireReason::disk_space, component.file};
+      return false;
+    }
+    hasher.update(bytes);
+    written += bytes.size();
+    return true;
+  };
+  const HopExit exit = kit.transport->run(request, on_bytes);
+  out.close();
+  const auto finish = [&](const AcquireReason reason, const std::string& detail) {
+    std::error_code ec;
+    std::filesystem::remove(dest, ec);
+    return AcquireError{reason, detail};
+  };
+  if (exit.failure) return *exit.failure;
+  if (body_error) return body_error;
+  if (kit.interrupted->load()) return finish(AcquireReason::interrupted, component.file);
+  if (decision && decision->action == HeadAction::redirect) return finish(AcquireReason::redirect_not_allowed, component.file);
+  if (decision && decision->action == HeadAction::fail) {
+    std::string detail = url.host;
+    if (decision->reason == AcquireReason::http_status) detail += " HTTP " + std::to_string(decision->status);
+    return finish(decision->reason, detail);
+  }
+  if (!decision) {
+    const AcquireReason reason = exit.curl_exit && *exit.curl_exit != 0 ? map_curl_exit(*exit.curl_exit, false).value_or(AcquireReason::transport_failed)
+                                                                        : AcquireReason::response_malformed;
+    return finish(reason, url.host);
+  }
+  if (exit.curl_exit && *exit.curl_exit != 0) return finish(map_curl_exit(*exit.curl_exit, false).value_or(AcquireReason::transport_failed), component.file);
+  if (written != component.size) return finish(AcquireReason::size_short, component.file);
+  if (to_hex(hasher.finish()) != component.sha256) return finish(AcquireReason::digest_mismatch, component.file);
+  return std::nullopt;
+}
+
+int update_failure(CliStreams& io, const std::string& current_version) {
+  io.out << "update: failed; current version " << current_version << " untouched\n";
+  return exit_code_value(ExitCode::program_update);
+}
+
+int verb_update_program(const FrontendConfig& config, const std::filesystem::path& config_file, const std::span<const std::string> rest,
+                        CliStreams& io, CliServices& services) {
+  const auto args = parse_args(rest, {"--yes", "--rollback"}, {});
+  if (!args) return usage(io, "update [--yes] | update --rollback | update --models [<name:tag> ...] [--yes]");
+  if (!args->positional.empty()) return usage(io, "strata update takes no operands (the models half is update --models ...)");
+  if (args->flags.contains("--rollback") && args->flags.contains("--yes")) return usage(io, "update --rollback takes no --yes");
+  StreamConfirmer ui(io);
+
+  if (config.update.source.empty()) {
+    io.out << "strata update: update.source is not configured\n";
+    return exit_code_value(ExitCode::program_update);
+  }
+  // R-T3-l: on the fetch path the pinned key (a property of this binary) refuses
+  // before any environment question (Task 2's contract: unpinned == `no release
+  // key pinned`). A rollback is a pure pointer flip — no crypto, no key needed.
+  const bool rollback = args->flags.contains("--rollback");
+  std::optional<std::array<std::uint8_t, 32>> key;
+  if (!rollback) {
+    key = update_pinned_key(services);
+    if (!key) {
+      io.out << describe_release_issue(ReleaseIssue{ReleaseReject::no_pinned_key, ""}) << "\n";
+      return exit_code_value(ExitCode::program_update);
+    }
+  }
+  std::filesystem::path self = self_executable();
+#if defined(SECURE_FRONTEND_TEST_HOOKS)
+  if (!services.test_self_executable.empty()) self = services.test_self_executable;
+#endif
+  const auto install = resolve_versioned_install(self);
+  if (!install) {
+    io.out << "strata update: not a versioned install (this program is not started through a current pointer)\n";
+    return exit_code_value(ExitCode::program_update);
+  }
+
+  if (rollback) {
+    const auto previous = read_pointer(install->install_root, "previous");
+    if (!previous || !std::filesystem::is_directory(install->install_root / *previous)) {
+      io.out << "update: nothing kept to roll back to\n";
+      return exit_code_value(ExitCode::program_update);
+    }
+    io.out << "update: rollback: current " << install->version << ", kept " << *previous << "\n";
+    if (!ui.confirm("roll back to the kept version " + *previous + "?", false)) {
+      io.out << "update: declined; current version " << install->version << " untouched\n";
+      return exit_code_value(ExitCode::declined);
+    }
+    // previous first: a failed flip always leaves a working `current` (D-4).
+    if (!write_pointer(install->install_root, "previous", install->version) || !write_pointer(install->install_root, "current", *previous)) {
+      return update_failure(io, install->version);
+    }
+    io.out << "update: current -> " << *previous << " (previous kept: " << install->version << ")\n";
+    io.out << "update: restart strata to run the rolled-back version\n";
+    return 0;
+  }
+
+  NetworkKit kit;
+  if (auto failure = fill_kit(kit, config, config_file, services, true)) return report(io, *failure);
+  FetchSettings fetch = fetch_settings_from(config.pull);
+#if defined(SECURE_FRONTEND_TEST_HOOKS)
+  fetch.test_cacert = services.test_cacert;
+#endif
+
+  // R-T3-a: each source is a mirror base URL; the first that delivers a valid
+  // signed envelope wins, and its components come from the same mirror.
+  ReleaseManifest offer;
+  HttpsUrl chosen;
+  bool found = false;
+  for (std::size_t i = 0; i < config.update.source.size(); ++i) {
+    const auto parsed = parse_source_url(config.update.source[i]);
+    const auto* base = std::get_if<HttpsUrl>(&parsed);
+    if (base == nullptr) {
+      io.err << format_error(AcquireError{AcquireReason::manifest_invalid, "update.source"}) << '\n';
+    } else {
+      std::string envelope;
+      std::optional<AcquireError> failure;
+      if (const auto envelope_url = mirror_child(*base, "envelope")) {
+        failure = fetch_envelope(kit, fetch, *envelope_url, envelope);
+      } else {
+        failure = AcquireError{AcquireReason::manifest_invalid, base->host};
+      }
+      if (failure) {
+        report(io, *failure);
+      } else {
+        auto verified = verify_release_manifest(envelope, *key);
+        if (const auto* issue = std::get_if<ReleaseIssue>(&verified)) {
+          io.err << describe_release_issue(*issue) << '\n';
+        } else {
+          offer = std::get<ReleaseManifest>(std::move(verified));
+          chosen = *base;
+          found = true;
+          break;
+        }
+      }
+    }
+    if (!found && i + 1 < config.update.source.size()) {
+      io.out << "update: source " << (i + 1) << " refused the envelope; trying source " << (i + 2) << "\n";
+    }
+  }
+  if (!found) return update_failure(io, install->version);
+
+  if (!is_safe_release_version(offer.version)) {
+    io.err << "update: the offered version is not a usable version-directory name\n";
+    return update_failure(io, install->version);
+  }
+  io.out << "update: current version " << install->version << "\n";
+  io.out << "update: offered version " << offer.version << " (channel " << offer.channel << ")\n";
+  for (const auto& component : offer.components) {
+    io.out << "update: component " << component.name << ": " << component.file << ", " << component.size << " bytes, sha256 " << component.sha256 << "\n";
+  }
+  if (offer.version == install->version) {
+    io.out << "update: already the current version " << offer.version << "\n";
+    return 0;
+  }
+  if (std::filesystem::exists(install->install_root / offer.version)) {
+    io.err << "update: " << offer.version << " is already a version directory below the install root\n";
+    return update_failure(io, install->version);
+  }
+  if (!ui.confirm("apply update to version " + offer.version + "?", args->flags.contains("--yes"))) {
+    io.out << "update: declined; current version " << install->version << " untouched\n";
+    return exit_code_value(ExitCode::declined);
+  }
+
+  const auto staging = install->install_root / std::string{kStagingUpdateName};
+  std::error_code ec;
+  std::filesystem::remove_all(staging, ec);
+  std::error_code mk_ec;
+  std::filesystem::create_directories(staging / offer.version / "bin", mk_ec);
+  if (mk_ec) {
+    io.err << format_error(AcquireError{AcquireReason::publish_failed, "update staging"}) << '\n';
+    return update_failure(io, install->version);
+  }
+  for (const auto& component : offer.components) {
+    const auto url = mirror_child(chosen, component.file);
+    if (!url) {
+      io.err << format_error(AcquireError{AcquireReason::manifest_invalid, component.file}) << '\n';
+      std::filesystem::remove_all(staging, ec);
+      return update_failure(io, install->version);
+    }
+    if (auto failure = fetch_component(kit, fetch, *url, component, staging / offer.version / "bin" / component.file)) {
+      report(io, *failure);
+      std::filesystem::remove_all(staging, ec);  // R-T3-i: no half-staged leftovers
+      if (failure->reason == AcquireReason::interrupted) {
+        io.out << "update: failed; current version " << install->version << " untouched\n";
+        return exit_code_value(ExitCode::interrupted);
+      }
+      return update_failure(io, install->version);
+    }
+  }
+  std::error_code rename_ec;
+  std::filesystem::rename(staging / offer.version, install->install_root / offer.version, rename_ec);
+  std::filesystem::remove_all(staging, ec);
+  if (rename_ec) {
+    io.err << format_error(AcquireError{AcquireReason::publish_failed, "update install"}) << '\n';
+    return update_failure(io, install->version);
+  }
+  io.out << "update: installed version " << offer.version << " with " << offer.components.size() << " components\n";
+  if (!write_pointer(install->install_root, "previous", install->version) || !write_pointer(install->install_root, "current", offer.version)) {
+    // The version directory is installed but the pointer flip failed: `current`
+    // still names the old version, which is exactly the promise.
+    return update_failure(io, install->version);
+  }
+  io.out << "update: current -> " << offer.version << " (previous kept: " << install->version << ")\n";
+  io.out << "update: restart strata to run the new version\n";
+  return 0;
+}
+
+// `update` splits: the documented --models operand goes to the models half
+// (SP4 §6.1, unchanged); anything else is the program half (SP7 M2 Task 3).
+int verb_update(const FrontendConfig& config, const std::filesystem::path& config_file, const std::span<const std::string> rest,
+                CliStreams& io, CliServices& services) {
+  if (std::find(rest.begin(), rest.end(), "--models") == rest.end()) return verb_update_program(config, config_file, rest, io, services);
+  return verb_update_models(config, config_file, rest, io, services);
+}
+
+
 int verb_service(const FrontendConfig& config, const std::filesystem::path& config_file, const std::span<const std::string> rest,
                  CliStreams& io) {
   const auto args = parse_args(rest, {}, {});
@@ -730,7 +1190,7 @@ int run_network_verb(const std::string& verb, const FrontendConfig& config, cons
   if (verb == "doctor") return verb_doctor(config, config_file, rest, io, services);
   if (verb == "service") return verb_service(config, config_file, rest, io);
   if (verb == "uninstall") return verb_uninstall(config, config_file, rest, io);
-  return verb_update_models(config, config_file, rest, io, services);
+  return verb_update(config, config_file, rest, io, services);
 }
 
 }  // namespace secure_frontend

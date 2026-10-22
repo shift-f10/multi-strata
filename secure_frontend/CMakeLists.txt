@@ -650,6 +650,8 @@ target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_download
 target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_service_ops secure_frontend_doctor)
 # SP7 M1 Task 4/5: the uninstall verb.
 target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_uninstall)
+# SP7 M2 Task 3: `strata update` verifies the D-3 envelope against the pinned key.
+target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_release_manifest)
 if(WIN32)
     target_link_libraries(secure_frontend_strata_cli PUBLIC ws2_32)
 endif()
@@ -671,6 +673,21 @@ secure_frontend_add_library(secure_frontend_uninstall SOURCES src/uninstall_plan
 if(WIN32)
     target_link_libraries(secure_frontend_uninstall PUBLIC ws2_32)
 endif()
+
+# SP7 M2 Task 1 (spec D-2): dependency-free Ed25519 verification (RFC 8032
+# verify path only — no signing in C++) and the self-contained SHA-512 it
+# needs, both following the secure_frontend_sha256 precedent.
+secure_frontend_add_library(secure_frontend_ed25519 SOURCES src/ed25519_verify.cpp src/sha512.cpp)
+
+# SP7 M2 Task 2 (spec D-2/D-3): signed release envelope. The pinned release key
+# is a build-time decision (owner's keygen output); default empty = every
+# pinned-path verification refuses with "no release key pinned".
+set(STRATA_RELEASE_PUBKEY_HEX "" CACHE STRING
+    "Lowercase 64-hex Ed25519 release public key pinned into the build (SP7 M2 D-2); empty refuses updates")
+secure_frontend_add_library(secure_frontend_release_manifest SOURCES src/release_manifest.cpp
+    LINKS secure_frontend_ed25519 secure_frontend_json)
+target_compile_definitions(secure_frontend_release_manifest PRIVATE
+    "STRATA_RELEASE_PUBKEY_HEX=\"${STRATA_RELEASE_PUBKEY_HEX}\"")
 
 # PX §2: the one user-facing binary. SP4 provides only its acquisition verbs (Controller note 1);
 # strata-secure-server never links secure_frontend_acquire or secure_frontend_strata_cli (§7.1).
@@ -1432,6 +1449,49 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         render_systemd_unit_rejects_relative_or_empty render_schtasks_create_exact_golden
         render_schtasks_create_rejects_unsafe_paths)
     secure_frontend_add_cases(secure_frontend_service_ops_tests ${SECURE_FRONTEND_SERVICE_OPS_CASES})
+
+    # SP7 M2 Task 1: SHA-512 FIPS example digests and the RFC 8032 §7.1
+    # Ed25519 vectors plus the forged/tamper/encoding negatives. Pure CPU,
+    # so the whole battery is release-also like the SHA-256 vectors.
+    secure_frontend_add_test_executable(secure_frontend_ed25519_tests tests/ed25519_test.cpp
+        secure_frontend_ed25519)
+    target_include_directories(secure_frontend_ed25519_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    secure_frontend_add_cases(secure_frontend_ed25519_tests sha512_fips_example_digests
+        sha512_million_a_streaming sha512_chunk_boundaries_do_not_change_digest
+        rfc8032_ed25519_official_vectors ed25519_rejects_tampered_message
+        ed25519_rejects_tampered_signature ed25519_rejects_swapped_pubkey
+        ed25519_rejects_noncanonical_signature ed25519_rejects_invalid_encodings
+        LABELS release-also TIMEOUT 120)
+
+    # SP7 M2 Task 2: the D-3 envelope happy path, forgeries and malformed input.
+    # Fixtures are RFC 8032 section-6 reference signatures (generated file).
+    secure_frontend_add_test_executable(secure_frontend_release_manifest_tests tests/release_manifest_test.cpp
+        secure_frontend_release_manifest)
+    target_include_directories(secure_frontend_release_manifest_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    secure_frontend_add_cases(secure_frontend_release_manifest_tests good_envelope_verifies
+        tampered_manifest_rejected tampered_signature_rejected wrong_pinned_key_rejected
+        no_pinned_key_refuses_exact_line malformed_envelopes_rejected schema_violations_rejected
+        LABELS release-also TIMEOUT 120)
+    # SP7 M2 Task 4: the C++ verifier must accept the Python signer's committed fixture.
+    secure_frontend_add_cases(secure_frontend_release_manifest_tests python_signed_fixture_verifies
+        ARGS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures LABELS release-also TIMEOUT 120)
+
+    # SP7 M2 Task 3: the `strata update` verb — golden install/flip flow, refusals,
+    # tamper, digest mismatch, mirror fallback and rollback over the scripted transport.
+    # Generated file; envelopes are RFC 8032 reference signatures (R-T0-b).
+    secure_frontend_add_test_executable(secure_frontend_update_cli_tests tests/update_cli_test.cpp
+        secure_frontend_strata_cli secure_frontend_test_support)
+    secure_frontend_add_cases(secure_frontend_update_cli_tests update_refuses_without_update_source
+        update_refuses_without_pinned_key LABELS release-also TIMEOUT 120)
+    # PX §7 source-scan invariant: it reads the frontend src tree, so pass it as ARGS.
+    secure_frontend_add_cases(secure_frontend_update_cli_tests px7_nothing_but_the_update_verb_touches_update_source
+        ARGS ${CMAKE_CURRENT_SOURCE_DIR}/src LABELS release-also TIMEOUT 60)
+    if(SECURE_FRONTEND_TEST_HOOKS)
+        secure_frontend_add_cases(secure_frontend_update_cli_tests update_refuses_plain_install
+            update_installs_and_flips_current update_declines_without_yes update_digest_mismatch_keeps_current
+            update_tampered_envelope_rejected update_falls_back_to_next_source update_rollback_flips_both_directions
+            update_rollback_without_previous LABELS release-also TIMEOUT 120)
+    endif()
 
     # SP7 M1 Task 3: the D-7 doctor checks, all driven by fake ProbeBundles.
     secure_frontend_add_test_executable(secure_frontend_doctor_tests tests/doctor_checks_test.cpp

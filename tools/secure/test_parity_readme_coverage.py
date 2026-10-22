@@ -31,7 +31,8 @@ def array_body(text: str, opener: str) -> str:
 def test_parity_readme_coverage() -> None:
     table = (REPO / "secure_frontend/src/parity_table.cpp").read_text(encoding="utf-8")
     rows = ROW.findall(array_body(table, "kRows{{"))
-    assert len(rows) == 121, f"the parity table shape changed ({len(rows)} rows parsed) — update this gate and the README"
+    # SP7 M2 Task 3: +update.source (typed) and +STRATA_RELEASE_PUBKEY_HEX (mapped) -> 123.
+    assert len(rows) == 123, f"the parity table shape changed ({len(rows)} rows parsed) — update this gate and the README"
 
     # SP5 M2 Task 10: the GLM (Maya) table mirrors into its own README blocks,
     # every row in the block for its disposition — the count is the non-vacuity

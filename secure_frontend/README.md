@@ -294,6 +294,7 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `pull.max_duration_s` | integer | `172800` | 60-604800 | - | Time budget for a whole pull run. |
 | `pull.stall_timeout_s` | integer | `120` | 10-3600 | - | Abort a transfer slower than 1024 B/s for this long. |
 | `pull.connect_timeout_s` | integer | `30` | 1-300 | - | TCP/TLS connect timeout per request. |
+| `update.source` | string array | `[]` | - | - | HTTPS release-mirror URLs that 'strata update' fetches the signed release envelope from. |
 | `logging.requests` | boolean | `false` | - | - | One line per request to stderr: route, status, code, time, bytes, loopback or remote; never paths, headers, tokens or text. |
 | `defaults.sampling.temperature` | number | unset | 0-2 | - | Request default temperature (pin: 0..2); unset keeps the engine default. |
 | `defaults.sampling.top_p` | number | unset | >0-1 | - | Request default top_p (pin: 0 < top_p <= 1); unset keeps the engine default. |
@@ -475,6 +476,7 @@ consumer is out of M1 — every request cleans up after itself instead.
 | `tool_call_recovery` | typed config | serve/server.py:8106 (M1 Task 9: session.tool_call_recovery) |
 | `trusted_origins` | frontend behaviour | already typed (SP3 origins family); serve/server.py:8064 |
 | `uma` | frontend behaviour | serve/images.py:23, :334 (M1 Task 7: engine.uma; Tasks 11-12 consume it) |
+| `update.source` | typed config | our key (PX §4 reserved; SP7 M2 D-10): the HTTPS mirror list read only by 'strata update' (SP7 M2 Task 3) |
 | `vision` | typed config | serve/server.py:2930 (M1 Task 11: the vision.* block) |
 | `vram_elastic` | engine argv | serve/server.py:2945 (M1 Task 7) |
 | `vram_segment_mib` | engine argv | serve/server.py:2947 (M1 Task 7) |
@@ -519,6 +521,7 @@ consumer is out of M1 — every request cleans up after itself instead.
 | `STRATA_NO_PRESET` | launch is SP4 manifest-composed; serve/server.py:7448 |
 | `STRATA_OFFLINE` | PRIV-01: the frontend never reaches the network; enforced by design and the DL-01 proof; serve/server.py:3240 |
 | `STRATA_REQUEST_LINES` | the wire record is fixed by docs/security/engine-protocol-limits.md; serve/server.py:639 |
+| `STRATA_RELEASE_PUBKEY_HEX` | our compile-definition pin of the Ed25519 release public key (SP7 M2 D-2), not an upstream knob: it is read by the release-manifest verifier and reported by 'strata update'; empty refuses every update (SP7 M2 Task 2/3) |
 | `STRATA_START_RETRIES` | respawn retries belong to the SP2 RestartTracker (restart_policy.hpp); serve/server.py:609 |
 | `STRATA_TOKENIZER` | the SP4 manifest carries the tokenizer; serve/test_detok.py:21 |
 <!-- parity-mapped:end -->

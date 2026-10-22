@@ -67,15 +67,15 @@ void program_update_exits_12_without_network() {
     network_seam_used = true;
     return std::unique_ptr<secure_frontend::Resolver>{};
   };
-  const int code = h.run_raw({"update"});
-  expect(code == 12, "program update exits 12");
-  expect(h.out.find("program update not available in this release; install the new release manually") != std::string::npos, "message");
-  expect(!network_seam_used, "no transport, downloader probe or resolver is created (§6.2: no network access)");
-  // Controller note 16 / C7 with note 2's mandatory --config: the documented form.
-  expect(h.run({"update"}) == 12, "strata --config <f> update exits 12: " + h.err);
-  expect(h.out.find("program update not available in this release; install the new release manually") != std::string::npos,
-         "message with --config");
-  expect(!network_seam_used, "--config update creates no seam either");
+  // SP7 M2 Task 3 (ruling R-T3-j): the exit-12 placeholder is gone. A bare
+  // `strata update` now takes the standard "--config is required" usage path,
+  // and `strata --config <f> update` is the program verb refusing on the
+  // unconfigured update.source — still exit 12, still with no network.
+  expect(h.run_raw({"update"}) == 1 && h.err.find("--config") != std::string::npos, "bare update now follows every verb's config rule");
+  const int code = h.run({"update"});
+  expect(code == 12, "update with no update.source exits 12, got " + std::to_string(code));
+  expect(h.out.find("strata update: update.source is not configured") != std::string::npos, "the configured-key refusal");
+  expect(!network_seam_used, "no transport, downloader probe or resolver is created before the config refusals");
   expect(h.run({"update", "--models"}) != 12, "update --models is the models part, not the program update");
 }
 

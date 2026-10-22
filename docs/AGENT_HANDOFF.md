@@ -207,6 +207,54 @@ Follow [`PROVENANCE.md`](PROVENANCE.md), "Updating the baseline" (the only copy 
 
 ## What has changed
 
+### SP7 M2 (branch `sp7-m2-release-side`, base `f4dff56d` — `main` with SP7 M1 merged; the branch waits for the controller's merge gate)
+
+Plan `docs/superpowers/plans/2026-10-22-sp7-m2-release-side.md` (Tasks 1–8),
+spec D-2/D-3/D-4/D-10. Lane ledger with every ruling (R-T0-a/b, R-T1-math,
+R-T2-a/c, R-T3-a…l, R-T5-a/truth, R-T6-a…d) and RED evidence:
+`.superpowers/sdd/2026-10-22-sp7-m2-release-side/progress.md` (git-ignored
+work record, same convention as M1 R-T1-d). Commits authored `shift-f10`,
+`Co-Authored-By` trailer, no `Claude-Session:`.
+
+| Task | Commit | Landed | Proof (named in the ledger) |
+| --- | --- | --- | --- |
+| 1 | `b4ca02b1` | lib `secure_frontend_ed25519`: dependency-free RFC 8032 §5.1.7 **verify path only** (strict equation, canonical-S, no cofactor), plus `sha512`; three field-arithmetic bugs found and fixed during TDD (R-T1-math) | official §7.1 vectors + forged/tampered/swapped/non-canonical negatives, all data fetched from rfc-editor.org and cryptographically re-derived, never hand-transcribed (R-T0-b) |
+| 2 | `706fc5db` | lib `secure_frontend_release_manifest`: envelope gate order framing→base64→JSON→schema→Ed25519 (R-T2-a); CMake cache var `STRATA_RELEASE_PUBKEY_HEX` (64-lowercase-hex; empty/malformed = unpinned, exact refusal line `no release key pinned`) | good envelope accepted, every tamper class rejected with its named reject, pinned 844-byte fixture envelope |
+| 3 | `f4811354` | config `update.source` (typed row, parity 121→123, README rows); full `strata update` program half: fetch envelope (1 MiB cap, no redirect) + components streamed with sha256 verify from first-valid mirror, confirm, stage → atomic rename → `current` flip keeping `previous`, `--rollback` pure pointer flip (skips the key, R-T3-l); exit 12 for program-update failures, 8 on interrupt, 2 on decline | `update_cli` 11 cases incl. `px7_nothing_but_the_update_verb_touches_update_source` source scan; rewritten no-network exit-12 case; Windows pointer branches compile-proved only |
+| 4 | `16264a48` | `scripts/release/keygen.py` (seed→pin, 0600 `O_EXCL`, never committed) and `sign.py` — RFC 8032 §6 reference code VERBATIM + envelope framing + `--self-test` re-deriving all four official vectors; interlock fixtures under `secure_frontend/tests/fixtures/release/` | C++ verifier accepts the Python signer's committed fixture byte-identical to the C++ pinned literal and reproducible by the signer; 7 pytest |
+| 5 | `792647fa` | generators `make_manifest.py`/`manifest_lib.py`/`sbom.py` (SPDX-2.3, live submodule pins/URLs/LICENSE facts — R-T5-truth: no hardcoded repo facts); also completed Task 4's uncommitted CMake registration hunk | e2e: generated package passes `secure_distribution_check.py --release`; negative control flips `analytics:true` → judge fails naming it; byte reproducibility |
+| 6 | `ddb1cdbd` | `build_release.sh` (bundle + VERSION + evidence + D-3 manifest + `SHA256SUMS` + tarball + `dpkg-deb` when present; exact `unsigned: not releasable` without `STRATA_SIGNING_KEY`; judge is the last build step), `stage_windows.sh` + generated `installer.nsi` + `NSIS_STATUS.txt` (hooks-off release tree by construction), `make_update_manifest.py` (sizes/sha256 computed from shipped bytes) | 8 pytest incl. hooks-tree refusal negative control and signed-envelope verify against the keygen-derived pin |
+| 7 | `620b4d1a` | `docs/validation/sp7-offline-kit.md` + validation README row + PROVENANCE placeholder release-entry table (13 blank fields) | docs-only; commands pinned to the real CLI shape (`--config` global) |
+| 8 | (this commit) | truth pass: this section + PROVENANCE "Vendored crypto" note | — |
+
+Gates at the branch tip (this host, 2026-10-22): `cmake --preset linux-gcc` +
+build + `ctest --preset linux-gcc` 100% (**895/895** + the 4 env skips);
+release preset build 0 warnings + plain `ctest --test-dir
+out/build/linux-gcc-release` **853/853**; `windows-llvm-mingw-cross` rc=0,
+**0 warnings** — Windows **not run** (owner-hardware rule); pytest **54**.
+
+Declared gaps, not hidden: **no pinned release key exists** — agents never
+generate or hold one; every agent-built binary is unpinned and its update
+path refuses with `no release key pinned` (by design, D-2). The D-3 schema
+carries one file per component class (closed set `frontend|engine|cuda-runtime`,
+duplicate names rejected by the C++ schema), so `strata update` updates the
+`strata` CLI only; `strata-secure-server` ships in bundles but is not
+update-distributable under D-3 as specified — flagged for the
+controller/owner, not relitigated in code. Windows `current`/`previous`
+pointer files have a documented remove-then-rename gap (no atomic symlink
+rename on Windows) recorded in the Task 3 ledger; all Windows update/packaging
+branches are compile-proved only. `makensis` availability: nsis 3.09 deb was
+fetched into `.toolchains/` but its stub paths are system-baked and
+unprivileged bind-mounts are denied on this host — `NSIS_STATUS.txt` records
+that truth; the `makensis` run, the offline kit, and every GPU claim wait for
+the owner's box (PROVENANCE release-entry row blank ⇒ no claim). No signing
+key has ever been committed; `SHA256SUMS`/`.deb`/tarball from agent runs are
+test artifacts marked `unsigned: not releasable`. The uninstall
+install-metadata gate stays vacuously matching (M1 ruling R-T5-b): M2's
+versioned `current`/`previous` layout is deliberately its own story
+(`strata_cli_network.cpp` carries the comment); no producer feeds
+`install_location_ok` yet — recorded, not silently wired.
+
 ### SP7 M1 (branch `sp7-m1-service-doctor`, base `9b467e08`; the branch waits for the controller's merge gate)
 
 Plan `docs/superpowers/plans/2026-10-22-sp7-m1-service-uninstall-doctor.md`

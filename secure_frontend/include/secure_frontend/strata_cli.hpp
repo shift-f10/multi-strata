@@ -39,6 +39,11 @@ struct CliServices final {
   // SECURE_FRONTEND_TEST_HOOKS builds only (F-51 / Task 22 carry): copied into PullRequest::test_cacert
   // by the network verbs (Task 27); a release build never reads it. Empty = absent.
   std::string test_cacert;
+  // SECURE_FRONTEND_TEST_HOOKS builds only (SP7 M2 Task 3): the `strata update` test pins a release
+  // key without recompiling, and simulates a D-4 versioned install by naming this process's "own"
+  // executable. A release build never reads either. Empty = absent (production defaults).
+  std::string test_pinned_release_key_hex;
+  std::filesystem::path test_self_executable;
 };
 
 class StreamConfirmer final : public Confirmer {
