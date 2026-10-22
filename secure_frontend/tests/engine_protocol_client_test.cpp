@@ -707,9 +707,48 @@ void maya_flavor_accepts_vram_and_note_before_ready() {
   }
 }
 
+// The Monitor needs the engines' expert-tier counters (owner: the VRAM and RAM cards
+// show experts loaded, not only GB used). INFO (both flavors; upstream generate.cpp
+// :10933, maya-ref pre-READY INFO) and the maya_118 STAT cadence (generate.cpp :2014)
+// must be KEPT, not just consumed: the client retains the last value per key.
+void info_and_stat_readings_are_captured() {
+  FakeTransport transport;
+  transport.reads = {line("INFO engine=0.1.43 context=8192 expert_slots=384 expert_slots_primary=212 expert_cache_mib=10240"),
+                     line("READY 8192 stop"), line("T 1"), line("DONE 1 1 1.0 1.0 stop")};
+  EngineProtocolClient client(transport);
+  secure_frontend::EngineReady ready{};
+  expect(!client.await_ready(std::chrono::seconds(1), ready).has_value(), "READY parses");
+  const auto readings = client.engine_readings();
+  expect(readings.count("expert_slots") != 0U && readings.at("expert_slots") == "384" &&
+         readings.count("context") != 0U && readings.at("context") == "8192" &&
+         readings.count("engine") != 0U && readings.at("engine") == "0.1.43",
+         "the INFO record's fields are kept for the Monitor");
+  expect(!client.begin_generation(4, {1}, secure_frontend::deadline_after(std::chrono::seconds(5))).has_value(),
+         "the generation starts");
+  secure_frontend::EngineGeneration generation;
+  expect(!client.read_generation(std::chrono::seconds(1), generation).has_value(), "the generation completes");
+
+  FakeTransport maya;
+  maya.reads = {line("READY 8192 stop"),
+                line("STAT tok_s=30.10 vram_used=2100 ram_used=1792 vram_gb=14.6 ram_gb=41.2"),
+                line("T 9"),
+                line("STAT vram_used=2102 ram_used=1790"),
+                line("DONE 1 stop")};
+  EngineProtocolClient mc(maya, {}, secure_frontend::EngineProtocolFlavor::maya_118);
+  expect(!mc.await_ready(std::chrono::seconds(1), ready).has_value(), "the maya_118 client starts");
+  expect(!mc.begin_generation(4, {1}, secure_frontend::deadline_after(std::chrono::seconds(5))).has_value(),
+         "the maya_118 generation starts");
+  expect(!mc.read_generation(std::chrono::seconds(1), generation).has_value(), "the maya_118 generation completes");
+  const auto live = mc.engine_readings();
+  expect(live.count("vram_used") != 0U && live.at("vram_used") == "2102" && live.at("ram_used") == "1790" &&
+         live.count("vram_gb") != 0U && live.at("vram_gb") == "14.6",
+         "the STAT cadence keeps the last value seen per key");
+}
+
 int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
       {"maya_flavor_accepts_vram_and_note_before_ready", maya_flavor_accepts_vram_and_note_before_ready},
+      {"info_and_stat_readings_are_captured", info_and_stat_readings_are_captured},
       {"runs_the_solo_protocol", runs_the_solo_protocol},
       {"gen_line_unchanged_without_embeddings_geni_with_them", gen_line_unchanged_without_embeddings_geni_with_them},
       {"stop_and_quit_are_explicit", stop_and_quit_are_explicit},

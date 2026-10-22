@@ -1183,7 +1183,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_test_paths(secure_frontend_serve_monitor_tests)
     secure_frontend_add_cases(secure_frontend_serve_monitor_tests
         parses_nvidia_smi_lines nvidia_smi_command_is_fixed nvidia_smi_environment_is_program_files_only
-        monitor_records_generations monitor_reports_live_states
+        monitor_records_generations monitor_reports_live_states engine_readings_reach_the_engine_block
         monitor_keeps_a_bounded_history)
     secure_frontend_add_cases(secure_frontend_serve_monitor_tests host_readings_are_plausible gpu_sampler_reads_a_fake_tool
         gpu_sampler_reads_the_real_tool_when_present
@@ -1214,6 +1214,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_test_executable(secure_frontend_engine_protocol_client_tests tests/engine_protocol_client_test.cpp
         secure_frontend_engine_protocol_client)
     secure_frontend_add_cases(secure_frontend_engine_protocol_client_tests
+        info_and_stat_readings_are_captured
         runs_the_solo_protocol gen_line_unchanged_without_embeddings_geni_with_them stop_and_quit_are_explicit write_deadlines_reach_the_transport refuses_stop_when_not_advertised
         rejects_malformed_and_unexpected_engine_output bounds_and_engine_errors_fail_closed
         prefill_progress_is_bounded_in_both_profiles

@@ -173,6 +173,7 @@ GenerationRunResult drive_generation(EngineProtocolClient& protocol, const Token
     } else if (std::holds_alternative<ProgressEvent>(event)) {
       progress = true;
       last_activity = Clock::now();  // a progress line is the engine speaking (pin: "nothing valid")
+      if (limits.meter != nullptr) limits.meter->on_engine_stats(protocol.engine_readings());
     } else {
       const auto& done = std::get<DoneEvent>(event);
       if (limits.meter != nullptr) limits.meter->on_done(done.figures);

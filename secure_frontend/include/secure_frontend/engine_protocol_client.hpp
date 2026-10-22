@@ -8,7 +8,9 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
+#include <string>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -205,6 +207,12 @@ class EngineProtocolClient final {
   [[nodiscard]] bool closed() const noexcept;
   // The code that failed the protocol (set by every terminal failure), or nullopt.
   [[nodiscard]] std::optional<EngineProtocolErrorCode> failure_code() const noexcept { return failure_code_; }
+  // Monitor (session log, Monitor issues): the engine's own startup and cadence records —
+  // the INFO line before READY (upstream generate.cpp:10933; maya-ref pre-READY INFO) and
+  // the maya_118 `STAT key=value` expert-tier cadence (generate.cpp:2014) — kept as the
+  // LAST value seen per key. Bounded (96 keys, short keys/values); never parsed further:
+  // consumers (ServeMonitor's whitelist) own the meaning.
+  [[nodiscard]] const std::map<std::string, std::string>& engine_readings() const noexcept { return engine_readings_; }
   // Why STOP was sent for the current (or last) generation; nullopt if none was.
   [[nodiscard]] std::optional<EngineStopCause> stop_cause() const noexcept { return stop_cause_; }
   // Generations that ended with a successful DONE (a `nonfinite` DONE is not
@@ -225,6 +233,14 @@ class EngineProtocolClient final {
   std::optional<EngineStopCause> stop_cause_;
   std::atomic<std::uint64_t> completed_generations_{0};
   std::optional<EngineProtocolErrorCode> failure_code_;
+  // Last key=value pairs seen in INFO (pre-READY, both flavors) and, on the maya_118
+  // flavor, the STAT cadence; bounded in the .cpp capture helper; Monitor-only.
+  std::map<std::string, std::string> engine_readings_{};
+  // Records `key=value` fields into engine_readings_ (last value wins per key). Bounded:
+  // at most 96 keys, keys 1..32 chars of [a-z0-9_], values 1..64 chars; over-cap pairs
+  // are ignored (readings are Monitor sugar; the record's SHAPE is already fail-closed
+  // at the call sites). The record name (field 0) is never a key.
+  void capture_engine_readings(const std::vector<std::string_view>& parsed);
   // Outbound command cap; sized from READY when limits_.max_line_bytes == 0.
   std::size_t effective_max_line_bytes_;
 

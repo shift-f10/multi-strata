@@ -43,8 +43,7 @@ bool parse_decimal(const std::string_view text, Number& value) {
   return error == std::errc{} && end == text.data() + text.size();
 }
 
-std::vector<std::string_view> fields(const std::string_view line) {
-  std::vector<std::string_view> result;
+std::vector<std::string_view> fields(const std::string_view line) {  std::vector<std::string_view> result;
   std::size_t begin = 0;
   while (begin < line.size()) {
     const auto end = line.find(' ', begin);
@@ -156,6 +155,29 @@ EngineProtocolClient::EngineProtocolClient(EngineLineTransport& transport,
       flavor_(flavor),
       effective_max_line_bytes_(limits.max_line_bytes != 0U ? limits.max_line_bytes : kDefaultInboundLineBytes) {}
 
+// Monitor: keep the key=value fields of INFO (pre-READY, both flavors) and the maya_118
+// STAT cadence, last value seen per key. The records' SHAPE is already fail-closed at
+// the call sites; this only bounds and stores — meaning belongs to the consumers.
+void EngineProtocolClient::capture_engine_readings(const std::vector<std::string_view>& parsed) {
+  for (std::size_t i = 1; i < parsed.size(); ++i) {
+    const auto equals = parsed[i].find('=');
+    if (equals == std::string_view::npos || equals == 0U || equals > 32U) continue;
+    const auto key = parsed[i].substr(0, equals);
+    const auto value = parsed[i].substr(equals + 1);
+    if (value.empty() || value.size() > 64U) continue;
+    bool key_ok = true;
+    for (const char c : key) {
+      if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')) {
+        key_ok = false;
+        break;
+      }
+    }
+    if (!key_ok) continue;
+    if (engine_readings_.size() >= 96U && engine_readings_.count(std::string(key)) == 0U) continue;
+    engine_readings_[std::string(key)] = std::string(value);
+  }
+}
+
 std::size_t EngineProtocolClient::inbound_max_line_bytes() const noexcept {
   return limits_.max_line_bytes != 0U ? limits_.max_line_bytes : kDefaultInboundLineBytes;
 }
@@ -220,7 +242,10 @@ std::optional<EngineProtocolError> EngineProtocolClient::await_ready(const std::
       return fail(EngineProtocolErrorCode::fatal_engine_line, "engine reported a fatal verification failure");
     }
     const auto parsed = fields(response.line);
-    if (parsed.size() >= 2 && parsed.front() == "INFO") continue;
+    if (parsed.size() >= 2 && parsed.front() == "INFO") {
+      capture_engine_readings(parsed);
+      continue;
+    }
     if (flavor_ == EngineProtocolFlavor::maya_118 && !parsed.empty() && (parsed.front() == "VRAM" || parsed.front() == "NOTE")) {
       // Maya v1.1.21's fast path prints one `VRAM key=value ...` record per GPU part
       // before READY (maya-ref src/program/generate.cpp:1054-1062) and, when Windows'
@@ -410,6 +435,7 @@ GenerationEvent EngineProtocolClient::next_event(const std::chrono::milliseconds
         return *fail(EngineProtocolErrorCode::unexpected_line, "engine emitted a malformed stat record");
       }
     }
+    capture_engine_readings(pairs);
     return ProgressEvent{};
   }
   if ((response.line.rfind("RESUME ", 0) == 0 || response.line.rfind("REUSED ", 0) == 0) &&

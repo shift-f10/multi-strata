@@ -342,11 +342,37 @@ void gpu_sampler_reads_the_real_tool_when_present() {
          "the real nvidia-smi answers with the server's command: " + sampler.note());
 }
 
+// Owner Monitor fix: the engine block carries the expert-tier readings so the VRAM
+// and RAM cards can show experts loaded. on_engine_stats feeds it; keys outside the
+// whitelist and non-numeric values never reach the JSON.
+void engine_readings_reach_the_engine_block() {
+  secure_frontend::ServeMonitor monitor;
+  monitor.on_engine_stats({{"expert_slots", "384"},
+                           {"expert_slots_primary", "212"},
+                           {"expert_cache_mib", "10240"},
+                           {"vram_used", "2102"},
+                           {"ram_used", "1790"},
+                           {"vram_gb", "14.6"},
+                           {"tok_s", "30.10"},
+                           {"model_path", "/private/path"}});
+  const std::string json = monitor.render_json({.model = "qwen-test", .engine = "ready", .queued = 0});
+  expect(json.find("\"experts\"") != std::string::npos, "the engine block carries an experts object");
+  expect(json.find("\"expert_slots\":384") != std::string::npos && json.find("\"vram_used\":2102") != std::string::npos &&
+         json.find("\"ram_used\":1790") != std::string::npos && json.find("\"vram_gb\":14.6") != std::string::npos,
+         "whitelisted numbers pass through as numbers");
+  // tok_s legitimately exists elsewhere in the payload; the rule is that the experts
+  // object carries only whitelisted numbers (and model_path never appears at all).
+  const auto experts_pos = json.find("\"experts\":");
+  const std::string experts_block = experts_pos == std::string::npos ? std::string{} : json.substr(experts_pos, json.find('}', experts_pos) - experts_pos);
+  expect(json.find("model_path") == std::string::npos && experts_block.find("tok_s") == std::string::npos,
+         "non-whitelisted keys never reach the experts block");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
       {"parses_nvidia_smi_lines", parses_nvidia_smi_lines},
+      {"engine_readings_reach_the_engine_block", engine_readings_reach_the_engine_block},
       {"nvidia_smi_command_is_fixed", nvidia_smi_command_is_fixed},
       {"nvidia_smi_environment_is_program_files_only", nvidia_smi_environment_is_program_files_only},
       {"monitor_records_generations", monitor_records_generations},

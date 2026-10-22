@@ -19,6 +19,30 @@ double milliseconds_between(const Steady::time_point from, const Steady::time_po
 
 void append_count(std::string* out, const std::uint64_t value) { out->append(std::to_string(value)); }
 
+// The Monitor's expert-tier whitelist (owner: the VRAM and RAM cards show experts
+// loaded): the engine's own key names, INFO split for the main engine and STAT for
+// the GLM engine. Only plain numbers are stored; the page adds the words.
+constexpr std::array<std::string_view, 9> kExpertReadingKeys{
+    "expert_slots", "expert_slots_primary", "expert_cache_mib", "expert_cache_primary_mib", "vram_free_mib",
+    "vram_used", "ram_used", "vram_gb", "ram_gb"};
+
+bool is_plain_number(const std::string_view value) {
+  if (value.empty() || value.size() > 20U) return false;
+  std::size_t index = value.front() == '-' ? 1U : 0U;
+  bool digits = false;
+  bool dot = false;
+  for (; index < value.size(); ++index) {
+    if (value[index] == '.') {
+      if (dot) return false;
+      dot = true;
+      continue;
+    }
+    if (value[index] < '0' || value[index] > '9') return false;
+    digits = true;
+  }
+  return digits;
+}
+
 // Finite values only, two decimals; anything else is null (the page shows a dash).
 void append_decimal(std::string* out, const std::optional<double> value) {
   if (!value.has_value() || !std::isfinite(*value)) {
@@ -98,6 +122,14 @@ void ServeMonitor::on_token(const std::size_t generated) {
 void ServeMonitor::on_done(const DoneFigures& figures) {
   std::lock_guard lock(mutex_);
   if (live_.has_value()) live_->figures = figures;
+}
+
+void ServeMonitor::on_engine_stats(const std::map<std::string, std::string>& readings) {
+  std::lock_guard lock(mutex_);
+  for (const auto& key : kExpertReadingKeys) {
+    const auto found = readings.find(std::string(key));
+    if (found != readings.end() && is_plain_number(found->second)) experts_[std::string(key)] = found->second;
+  }
 }
 
 void ServeMonitor::end_locked(const std::string_view finish) {
@@ -180,6 +212,19 @@ std::string ServeMonitor::render_json(const MonitorView& view) const {
   append_optional_count(&out, context_tokens_ == 0U ? std::optional<std::size_t>{} : std::optional<std::size_t>{context_tokens_});
   append_key(&out, "health");
   append_json_string(&out, view.engine);
+  // The engine's expert-tier readings (validated on store): the page renders
+  // "N experts loaded" on the VRAM and RAM cards from these.
+  if (!experts_.empty()) {
+    append_key(&out, "experts");
+    out.push_back('{');
+    bool first_expert = true;
+    for (const auto& entry : experts_) {
+      append_key(&out, entry.first, first_expert);
+      first_expert = false;
+      out += entry.second;
+    }
+    out.push_back('}');
+  }
   out.push_back('}');
 
   std::string_view state = "idle";

@@ -830,9 +830,28 @@
     $("ctx-fill").style.opacity = 235.6 * frac >= 3 ? "1" : "0";  // a near-zero arc would draw just its round cap
     $("ctx-pct").textContent = Math.round(frac * 100) + "%";
     $("ctx-sub").textContent = ctx ? kfmt(used) + " / " + ctxfmt(ctx) : "-";
-    $("vram-text").textContent = hw.gpu_mem_total ? gb(hw.gpu_mem_used) + " / " + gb(hw.gpu_mem_total, 0) + " GB" : "-";
+    // Owner ruling: the VRAM and RAM cards show EXPERTS LOADED beside the GB. The
+    // numbers come from the engine itself (/metrics engine.experts): GLM STAT
+    // vram_used/ram_used when present, else the startup INFO expert split
+    // (expert_slots_primary is the VRAM part; the rest of expert_slots is the RAM
+    // tier). GB-only when the engine has reported no expert figures yet.
+    var ex = eng.experts || null;
+    var has = function (v) { return v !== null && v !== undefined; };
+    var vramE = has(ex && ex.vram_used) ? ex.vram_used
+              : has(ex && ex.expert_slots_primary) ? ex.expert_slots_primary
+              : has(ex && ex.expert_slots) ? ex.expert_slots : null;
+    var ramE = has(ex && ex.ram_used) ? ex.ram_used
+              : has(ex && ex.expert_slots) && has(ex && ex.expert_slots_primary)
+                ? Math.max(0, ex.expert_slots - ex.expert_slots_primary) : null;
+    var vramParts = [];
+    if (vramE !== null) vramParts.push(fmt(vramE) + " experts loaded");
+    if (hw.gpu_mem_total) vramParts.push(gb(hw.gpu_mem_used) + " / " + gb(hw.gpu_mem_total, 0) + " GB");
+    $("vram-text").textContent = vramParts.length ? vramParts.join(" \u00b7 ") : "-";
     setBar("vram-bar", hw.gpu_mem_total ? (100 * hw.gpu_mem_used) / hw.gpu_mem_total : 0);
-    $("ram-text").textContent = hw.ram_total ? gb(hw.ram_used) + " / " + gb(hw.ram_total, 0) + " GB" : "-";
+    var ramParts = [];
+    if (ramE !== null) ramParts.push(fmt(ramE) + " experts loaded");
+    if (hw.ram_total) ramParts.push(gb(hw.ram_used) + " / " + gb(hw.ram_total, 0) + " GB");
+    $("ram-text").textContent = ramParts.length ? ramParts.join(" \u00b7 ") : "-";
     var ramPct = hw.ram_total ? (100 * hw.ram_used) / hw.ram_total : 0;
     setBar("ram-bar", ramPct);
     if (ramPct > 92) { $("ram-progress").setAttribute("data-tone", "danger"); } else { $("ram-progress").removeAttribute("data-tone"); }

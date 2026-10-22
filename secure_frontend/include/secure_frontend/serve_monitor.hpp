@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -58,6 +59,10 @@ class ServeMonitor final : public GenerationMeter {
   void generation_ended(std::string_view finish);  // one of monitor_finish's literals
   void on_token(std::size_t generated) override;
   void on_done(const DoneFigures& figures) override;
+  // Engine readings (INFO before READY; the maya_118 STAT cadence): keep the whitelisted
+  // NUMERIC fields for the page's expert-tier lines. Anything else never gets stored,
+  // so it can never reach the JSON. Last value seen per key wins.
+  void on_engine_stats(const std::map<std::string, std::string>& readings) override;
 
   // The sampler, once a second.
   void add_host_sample(const HostSample& sample);
@@ -101,6 +106,9 @@ class ServeMonitor final : public GenerationMeter {
   std::optional<Live> live_;
   std::deque<Finished> requests_;  // newest first
   std::size_t context_tokens_{0};
+  // Whitelisted numeric engine readings (expert_slots & friends), validated in
+  // on_engine_stats; rendered into the engine block as `experts`.
+  std::map<std::string, std::string> experts_;
   // Totals since start.
   std::size_t total_requests_{0};
   std::size_t total_prompt_tokens_{0};

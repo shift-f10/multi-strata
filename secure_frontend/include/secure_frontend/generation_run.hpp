@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <map>
 #include <optional>
 #include <string_view>
 #include <vector>
@@ -31,6 +32,9 @@ class GenerationMeter {
  public:
   virtual void on_token(std::size_t generated) = 0;      // after each counted T record
   virtual void on_done(const DoneFigures& figures) = 0;  // the engine's DONE figures
+  // Monitor: the engine's own readings (INFO before READY + the maya_118 STAT cadence),
+  // pushed whenever a progress record flows — the last push carries the latest values.
+  virtual void on_engine_stats(const std::map<std::string, std::string>&) {}
   virtual ~GenerationMeter() = default;
 };
 
