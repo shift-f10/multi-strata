@@ -561,7 +561,14 @@ void run_generation(const Options& options, const std::string& line, StdinReader
     finish = "cancel";
     if (options.stop_delay_ms > 0) sleep_ms(options.stop_delay_ms);
   }
-  std::cout << "DONE " << generated << ' ' << prompt << " 0 0 " << finish << '\n' << std::flush;
+  // SP5-P2 Task 5: the maya dialect answers with the v1.1.21 single-session DONE record
+  // (generate.cpp:2111): DONE <produced> <prompt> <prompt_ms> <decode_ms> <finish>
+  // <spec-hits> <spec-steps> <reuse> <tier-hits> <tier-total>; the strata dialect keeps
+  // the pin's six-field form.
+  if (maya)
+    std::cout << "DONE " << generated << ' ' << prompt << " 300.0 40.5 " << finish << " 0 0 0 0 0\n" << std::flush;
+  else
+    std::cout << "DONE " << generated << ' ' << prompt << " 0 0 " << finish << '\n' << std::flush;
 }
 
 int serve(const Options& options) {
