@@ -207,6 +207,40 @@ Follow [`PROVENANCE.md`](PROVENANCE.md), "Updating the baseline" (the only copy 
 
 ## What has changed
 
+### SP5-P2 parity refresh at the new pins (branch `sp5-p2-parity-refresh`, base `c71206f1`; closes issue 27)
+
+Owner-bumped pins (`upstream` v0.2.2 @ `011c9e60`, `engines/maya-ref` v1.1.21 @
+`451f9cb6`) left both parity tables citing the OLD pins. SP5-P2 (plan
+`docs/superpowers/plans/2026-10-22-sp5-p2-parity-refresh-new-pins.md`) closed that:
+
+- Task 1 `da5d54f7`: parity meta-tests now enumerate the CURRENT vendored trees and
+  demand a disposition for every knob (the drift tripwire — a new upstream/Maya knob
+  now fails the suite until dispositioned, with a `file:line` citation at the pin).
+- Task 2 `2205d229`: `parity_keys_maya.hpp` REGENERATED at v1.1.21 — 183 typed /
+  33 mapped / 50 rejected / 464 out-of-scope over the `MAYA_*`/`DS4_*`/`STRATA_GLM_*`
+  surface; security exclusions stay tested rejects.
+- Task 3 `9b68cb4f`: upstream table citations refreshed at v0.2.2.
+- Task 4 `9119629b`: GLM child-env allowlist regenerated (146 names), `glm.*` config
+  refreshed (127-row table; `glm.idle_unload_s` added; forced-safe defaults kept).
+- Task 5 `aa4e5e9d` (lane): maya_118 wire identity pinned at v1.1.21 — slot-mode
+  records (`T <rid> <tok>`, rid `DONE`) are protocol errors under the slots-forced-off
+  launch; the ten-field v1.1.21 `DONE` yields figures from positional fields 2-4/8.
+- Task 6 (lane; code in `aa1a17d0`): the GLM argv base re-anchored at v1.1.21 (gained
+  `--expert-cache auto`, maya.py:2228) — all six composed flags exist in the pin's
+  parser; the vision child is `maya-vision` beside the engine exe (grammar certified
+  against `tools/vision/strata_vision.cpp:61-79`; no `--min-tokens`).
+- Task 7 `14a77634` (controller): penalty semantics closed (issue 27) — a penalty
+  window of 0 means NO penalty on the GLM engine (`generate.cpp:3467`); the client
+  renders the flavor rule; the strata default-window-of-64 rule is untouched.
+- History mapping (labels, not content): `aa1a17d0` carries the Task-5 label but its
+  files are Task 6 (a controller `git add -A` swept the lane's in-flight files while
+  the lane session was thought dead); `aa4e5e9d` is the lane's real Task 5. Nothing
+  was lost or rewritten; both states were gate-verified. A double-writer race then
+  occurred in the worktree (the lane was alive); all gates were RE-RUN single-writer.
+- Proof: debug ctest 965/965 (4 allowed env skips), release full 923/923,
+  windows-llvm-mingw-cross 0 warnings (compile-only), pytest 65 passed 1 skipped.
+  Parity is citation-static: no GPU runs, no Windows runtime claims (owner hardware).
+
 ### First owner-box Windows GPU session (2026-10-21, base `main` = `e5a5327a`, uncommitted)
 
 Full log with every issue: [`validation/2026-10-21-windows-gpu-session.md`](validation/2026-10-21-windows-gpu-session.md).
