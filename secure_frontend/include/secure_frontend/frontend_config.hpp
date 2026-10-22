@@ -310,6 +310,9 @@ struct EngineLaunch final {
   std::optional<std::size_t> max_tokens;          // engine.max_tokens: ceiling on the request output budget (added, C-1)
   std::optional<std::size_t> min_tokens;          // engine.min_tokens: floor on the request output budget (added, C-1)
   std::vector<std::string> aliases{};             // model.aliases (set_aliases :3764-3777)
+  // model.name (session log step 13; the pin's model_name, default_model_name :7855): the name
+  // the API serves the model as. Unset: the model's own id (inventory file, or name:tag).
+  std::optional<std::string> served_name{};
 };
 
 // SP4 §3.9. pull.downloader is only a syntactically absolute path here; the

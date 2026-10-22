@@ -761,6 +761,40 @@ void queue_and_answer_room_limits_are_enforced() {
 // SP5 M1 Task 8 (parity row aliases, runconfig.py:34 + set_aliases :3764-3777): a
 // configured alias is a served name — listed by /v1/models, answered by chat; matching is
 // exact (§4: never empty or partial) and an alias equal to the model is dropped (:3775).
+// Session log step 13 (owner: "name the models better instead of the filename"): model.name is the
+// served name, like the pin's model_name (serve/server.py:7855, default_model_name): /v1/models
+// lists it and a chat names it; the inventory file name is no longer an answerable id.
+void model_name_replaces_the_file_name() {
+  auto r = start_recorded("named", {{"model.name", "\"qwen3.8-flash-next\""}, {"model.aliases", R"(["qwen-flash"])"}});
+  if (!r.server) return;
+  const auto list = raw(*r.server, raw_http::request("GET", "/v1/models", authority(*r.server), {raw_http::bearer(token())}));
+  expect(list && list->status == 200 && list->body.find("\"id\":\"qwen3.8-flash-next\"") != std::string::npos &&
+             list->body.find("\"id\":\"qwen-flash\"") != std::string::npos && list->body.find("fake-model") == std::string::npos,
+         "the list names the served name and its alias, not the file: " + (list ? list->body : std::string{"<none>"}));
+  const auto named = raw(*r.server, chat_request(*r.server, R"({"model":"qwen3.8-flash-next","messages":[{"role":"user","content":"Hi"}]})"));
+  expect(named && named->status == 200 && named->body.find("\"model\":\"qwen3.8-flash-next\"") != std::string::npos,
+         "a chat names the served name and is answered with it");
+  const auto alias = raw(*r.server, chat_request(*r.server, R"({"model":"qwen-flash","messages":[{"role":"user","content":"Hi"}]})"));
+  expect(alias && alias->status == 200, "an alias still answers");
+  const auto file = raw(*r.server, chat_request(*r.server, R"({"model":"fake-model","messages":[{"role":"user","content":"Hi"}]})"));
+  expect(file && file->status == 404, "the file name is not a served name any more");
+  const auto one = raw(*r.server, raw_http::request("GET", "/v1/models/qwen3.8-flash-next", authority(*r.server), {raw_http::bearer(token())}));
+  expect(one && one->status == 200, "GET /v1/models/<served name> finds it");
+}
+
+// Session log step 14: the qwen profile serves a per-request reasoning_effort (the page's
+// Thinking control); an unknown word is a 400 naming nothing (invalid_request).
+void reasoning_effort_per_request_is_served() {
+  auto server = start_server();
+  if (!server) return;
+  for (const char* word : {"none", "high"}) {
+    const auto r = raw(*server, chat_request(*server, chat_body(std::string{R"("max_tokens":2,"reasoning_effort":")"} + word + "\"")));
+    expect(r && r->status == 200, std::string{"reasoning_effort "} + word + " is served");
+  }
+  const auto bad = raw(*server, chat_request(*server, chat_body(R"("max_tokens":2,"reasoning_effort":"max")")));
+  expect(bad && bad->status == 400, "an unknown effort word is refused");
+}
+
 void aliases_answer_like_the_primary_model() {
   auto r = start_recorded("aliases", {{"model.aliases", R"(["Alt.Model","fake-model","secondary"])"}});
   if (!r.server) return;
@@ -1773,6 +1807,8 @@ int main(int argc, char** argv) {
       {"idle_unload_respawns_before_the_next_request", idle_unload_respawns_before_the_next_request},
       {"queue_and_answer_room_limits_are_enforced", queue_and_answer_room_limits_are_enforced},
       {"aliases_answer_like_the_primary_model", aliases_answer_like_the_primary_model},
+      {"model_name_replaces_the_file_name", model_name_replaces_the_file_name},
+      {"reasoning_effort_per_request_is_served", reasoning_effort_per_request_is_served},
       {"absent_max_tokens_uses_auto", absent_max_tokens_uses_auto},
       {"sampling_passthrough_reaches_gen", sampling_passthrough_reaches_gen},
       {"dos01_context_rule_is_400_without_gen", dos01_context_rule_is_400_without_gen},

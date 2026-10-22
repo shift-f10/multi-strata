@@ -95,8 +95,11 @@ bool valid_model(std::string_view value) {
          (colon == std::string_view::npos || valid_segment(value.substr(colon + 1U)));
 }
 
+// Message text is text: a link or "data:" in it is never fetched or acted on (SP3 §6.2 lets
+// such content be "rejected or treated as text"; rejecting it made any answer with a link
+// break the next turn, session log step 15). The model field keeps the scheme guard.
 bool valid_content(std::string_view value, const std::size_t max_message_bytes) {
-  if (value.empty() || value.size() > max_message_bytes || !valid_utf8(value) || contains_remote_scheme(value)) return false;
+  if (value.empty() || value.size() > max_message_bytes || !valid_utf8(value)) return false;
   for (const unsigned char byte : value) {
     if (byte < 0x20U && byte != '\n' && byte != '\r' && byte != '\t') return false;
   }
@@ -313,6 +316,14 @@ ChatRequestResult parse_chat_request(const std::string_view json, const ChatSche
         return refuse(ApiError::invalid_request);
       }
       request.sampling.seed = static_cast<std::uint64_t>(*integer);
+    } else if (key == "reasoning_effort") {
+      // Session log step 14: the reasoning.effort words, per request, on the qwen profile only.
+      if (!limits.per_request_reasoning_effort) return refuse(ApiError::unsupported_parameter, "reasoning_effort");
+      const auto* word = value.if_string();
+      if (word == nullptr || (*word != "none" && *word != "low" && *word != "medium" && *word != "high")) {
+        return refuse(ApiError::invalid_request, "reasoning_effort");
+      }
+      request.reasoning_effort = std::string{*word};
     } else if (key == "presence_penalty" || key == "frequency_penalty") {
       const auto number = number_of(value);
       if (!number) return refuse(ApiError::invalid_request);

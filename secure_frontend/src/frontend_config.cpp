@@ -35,7 +35,7 @@ std::string decimal_text(const double value) {
   return ec == std::errc{} ? std::string{buffer, end} : std::string{"?"};
 }
 
-constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 + 1 + 2> kSchema{{
+constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 + 1 + 2 + 1> kSchema{{
     {"schema_version", T::integer, false, 1, 1, d::kSchemaVersion, false, "", "",
      "Config format version; must be 1. Required in a config file."},
     {"listener.host", T::string, false, 0, 0, 0, false, "127.0.0.1", "--host",
@@ -56,7 +56,7 @@ constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 
      "Answer the API and the page without the API key: only with a loopback listener.host, and with no token.source; Host and Origin checks still apply."},
     {"limits.http.request_deadline_ms", T::integer, false, 1, 3'600'000, d::kRequestDeadlineMs, false, "", "",
      "Total time to read one request, header and body."},
-    {"limits.http.max_request_bytes", T::integer, false, 4096, 16'777'216, d::kMaxRequestBytes, false, "", "",
+    {"limits.http.max_request_bytes", T::integer, false, 4096, 268'435'456, d::kMaxRequestBytes, false, "", "",
      "Largest request (header and body) the listener and parser accept."},
     {"limits.http.max_header_bytes", T::integer, false, 1024, 65'536, d::kMaxHeaderBytes, false, "", "",
      "Largest header block; at most limits.http.max_request_bytes."},
@@ -71,17 +71,17 @@ constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 
      "Time to send a whole complete response, or a stream's tail after DONE; at least limits.http.write_stall_ms."},
     {"limits.http.stream_keepalive_ms", T::integer, false, 1'000, 300'000, d::kStreamKeepaliveMs, false, "", "",
      "SSE comment interval while no content flows (streaming)."},
-    {"limits.chat.max_body_bytes", T::integer, false, 1, 16'777'216, d::kChatMaxBodyBytes, false, "", "",
+    {"limits.chat.max_body_bytes", T::integer, false, 1, 268'435'456, d::kChatMaxBodyBytes, false, "", "",
      "Largest chat request body; at most max_request_bytes minus max_header_bytes."},
-    {"limits.chat.max_messages", T::integer, false, 1, 128, d::kChatMaxMessages, false, "", "",
+    {"limits.chat.max_messages", T::integer, false, 1, 65'536, d::kChatMaxMessages, false, "", "",
      "Most messages in one chat request."},
-    {"limits.chat.max_message_bytes", T::integer, false, 1, 65'536, d::kChatMaxMessageBytes, false, "", "",
+    {"limits.chat.max_message_bytes", T::integer, false, 1, 268'435'456, d::kChatMaxMessageBytes, false, "", "",
      "Largest single message content."},
-    {"limits.chat.max_prompt_tokens", T::integer, false, 1, 262'144, d::kChatMaxPromptTokens, false, "", "",
+    {"limits.chat.max_prompt_tokens", T::integer, false, 1, 1'048'576, d::kChatMaxPromptTokens, false, "", "",
      "Largest tokenized prompt sent to the engine."},
-    {"limits.chat.max_completion_tokens", T::integer, false, 1, 16'384, d::kChatMaxCompletionTokens, false, "", "",
+    {"limits.chat.max_completion_tokens", T::integer, false, 1, 1'048'576, d::kChatMaxCompletionTokens, false, "", "",
      "Largest max_tokens a request may ask for."},
-    {"limits.chat.default_max_tokens", T::integer, false, 0, 16'384, d::kChatDefaultMaxTokens, false, "", "",
+    {"limits.chat.default_max_tokens", T::integer, false, 0, 1'048'576, d::kChatDefaultMaxTokens, false, "", "",
      "max_tokens when a request omits it; 0 = auto: min(max_completion_tokens, context - prompt - 8); at most limits.chat.max_completion_tokens."},
     {"limits.chat.max_generated_bytes", T::integer, false, 1, 16'777'216, d::kChatMaxGeneratedBytes, false, "", "",
      "Largest generated text returned."},
@@ -251,6 +251,8 @@ constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 
      "Floor on a request's output budget (unset: none; an added frontend bound, C-1)."},
     {"model.aliases", T::string_array, false, 0, 0, 0, false, "", "",
      "Other model names the server lists and answers to (exact match only, like the pin's set_aliases)."},
+    {"model.name", T::string, false, 0, 0, 0, false, "", "",
+     "The name the server serves the model as: /v1/models lists it, the chat page shows it, requests name it (like the pin's model_name). Unset: the model's own id (its inventory file name, or name:tag)."},
     // SP5 M1 Task 9 (the session family). slot_save_path: the pin's /slots file directory
     // (:8092-8100 + slot_save_dir :3469-3481) — typed with our absolute rule; the route
     // itself is not in our spec (Rulings T9-a/b). expert_profile_save / -every: the pin
@@ -1032,6 +1034,13 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   const auto max_output = read.optional_integer("engine.max_tokens");
   const auto min_output = read.optional_integer("engine.min_tokens");
   const std::vector<std::string> aliases = read_bounded_strings(read, errors, "model.aliases");
+  // model.name (session log step 13): the served name, in the alias grammar.
+  std::optional<std::string> served_name = read.string("model.name");
+  if (served_name.has_value() && !is_valid_model_alias(*served_name)) {
+    add(errors, "model.name", ConfigIssueCode::invalid_value,
+        "must be 1-64 characters of [A-Za-z0-9._-] (name or name:tag), starting with a letter or digit");
+    served_name.reset();
+  }
   // SP5 M1 Task 9 (the session family; serve/server.py:2999-3005, :8043-8110, :8092-8100 +
   // slot_save_dir :3469-3481, images.py:188). Path rows keep the pin's shape (non-empty, no
   // control characters) and ride our added absolute rule (T9-b, engine.lib_dirs precedent):
@@ -1230,7 +1239,8 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
                                              : std::optional<std::size_t>{},
                       min_output.has_value() ? std::optional<std::size_t>{static_cast<std::size_t>(*min_output)}
                                              : std::optional<std::size_t>{},
-                      std::move(aliases)};
+                      std::move(aliases),
+                      std::move(served_name)};
   auto config_ptr = std::shared_ptr<const FrontendConfig>(
       new FrontendConfig(std::move(listener), limits, std::move(roots), std::move(*token), std::move(engine),
                          PullSettings{std::move(downloader), std::move(proxy), allow_private,
@@ -1426,6 +1436,7 @@ std::string describe(const FrontendConfig& c) {
   line("engine.max_tokens", c.engine.max_tokens ? std::to_string(*c.engine.max_tokens) : std::string{"unset"});
   line("engine.min_tokens", c.engine.min_tokens ? std::to_string(*c.engine.min_tokens) : std::string{"unset"});
   line("model.aliases", list_text(c.engine.aliases));
+  line("model.name", c.engine.served_name ? json_quoted(*c.engine.served_name) : std::string{"(unset)"});
   return out;
 }
 

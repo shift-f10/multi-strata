@@ -266,26 +266,38 @@ void cfg01_out_of_range_rejected() {
   }
 }
 
-// Spec §9.5: a value the schema accepts must be one the server can honour. The
-// prompt renderers cap messages at 128 and one message at 64 KiB
-// (src/qwen_prompt_renderer.cpp, src/glm_prompt_renderer.cpp); the engine
-// protocol caps a prompt at 262144 tokens (EngineProtocolLimits).
+// Spec §9.5: a value the schema accepts must be one the server can honour. Session log
+// step 13 (owner: Strata runs contexts up to 1M with YaRN) raised the enforced caps to
+// upstream's scale: the prompt renderers take 65,536 messages and 256 MiB a message
+// (src/qwen_prompt_renderer.cpp, src/glm_prompt_renderer.cpp); the engine protocol takes
+// 1,048,576 prompt, new and generated tokens (EngineProtocolLimits); a request may be
+// 256 MiB (upstream's body limit). The defaults are unchanged.
 void cfg01_chat_ranges_match_enforced_caps() {
   ConfigFixture f;
   const auto with = [&](const std::string& key, const std::string& value) {
     auto literals = f.literals;
     literals[key] = value;
+    if (key == "limits.chat.max_body_bytes") literals["limits.http.max_request_bytes"] = "268435456";
+    if (key == "limits.chat.default_max_tokens") literals["limits.chat.max_completion_tokens"] = "1048576";
     return validate_text(render_config_json(literals), f.dir);
   };
   for (const auto& [key, cap] : std::vector<std::pair<std::string, std::int64_t>>{
-           {"limits.chat.max_messages", 128},
-           {"limits.chat.max_message_bytes", 65'536},
-           {"limits.chat.max_prompt_tokens", 262'144}}) {
+           {"limits.chat.max_messages", 65'536},
+           {"limits.chat.max_message_bytes", 268'435'456},
+           {"limits.chat.max_prompt_tokens", 1'048'576},
+           {"limits.chat.max_completion_tokens", 1'048'576},
+           {"limits.chat.default_max_tokens", 1'048'576},
+           {"limits.http.max_request_bytes", 268'435'456}}) {
     expect(std::holds_alternative<secure_frontend::ValidatedConfig>(with(key, std::to_string(cap))),
            "the enforced cap is accepted: " + key);
     expect(has_issue(with(key, std::to_string(cap + 1)), key, ConfigIssueCode::out_of_range),
            "one above the enforced cap is rejected: " + key);
   }
+  // The chat body stays below the request less its header (the cross-field rule).
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(with("limits.chat.max_body_bytes", "268419072")),
+         "a 256 MiB request takes a body of 256 MiB less the 16 KiB header");
+  expect(has_issue(with("limits.chat.max_body_bytes", "268435457"), "limits.chat.max_body_bytes", ConfigIssueCode::out_of_range),
+         "one above 256 MiB is out of range for the body too");
 }
 
 void typed_config_cross_field_rules() {
@@ -831,7 +843,7 @@ constexpr Sp3Row kSp3RowsA2[] = {
     {"limits.concurrency.max_queued_generations", ConfigValueType::integer, 0, 254},
     {"limits.concurrency.queue_timeout_ms", ConfigValueType::integer, 1'000, 3'600'000},
     {"limits.concurrency.max_connections_per_remote_address", ConfigValueType::integer, 1, 256},
-    {"limits.chat.default_max_tokens", ConfigValueType::integer, 0, 16'384},
+    {"limits.chat.default_max_tokens", ConfigValueType::integer, 0, 1'048'576},  // session log step 13
 };
 
 const secure_frontend::FrontendConfig* config_of(const secure_frontend::ConfigValidationResult& result) {
@@ -1595,6 +1607,27 @@ void web_ui_and_loopback_without_key_rows() {
          "a configured key that would never be read is refused, not ignored: " + issues_of(named_key));
 }
 
+// Session log step 13: model.name, the served name (the pin's model_name), in the alias grammar.
+void model_name_row() {
+  ConfigFixture f;
+  const auto bare_result = with_literals(f, {});
+  const auto* bare = config_of(bare_result);
+  expect(bare != nullptr && !bare->engine.served_name.has_value(), "unset by default: the model's own id is served");
+  expect(describe_of(bare_result).find("model.name = (unset)\n") != std::string::npos, "--check reports it unset");
+  const auto named_result = with_literals(f, {{"model.name", "\"qwen3.8-flash-next\""}});
+  const auto* named = config_of(named_result);
+  expect(named != nullptr && named->engine.served_name == std::optional<std::string>{"qwen3.8-flash-next"},
+         "a name in the alias grammar is kept: " + issues_of(named_result));
+  expect(describe_of(named_result).find("model.name = \"qwen3.8-flash-next\"\n") != std::string::npos, "--check reports it");
+  for (const char* bad : {"\"\"", "\"has space\"", "\"a/b\"", "\"-lead\"", "1"}) {
+    expect(has_issue(with_literals(f, {{"model.name", bad}}), "model.name", ConfigIssueCode::invalid_value) ||
+               has_issue(with_literals(f, {{"model.name", bad}}), "model.name", ConfigIssueCode::wrong_type),
+           std::string{"refused: "} + bad);
+  }
+  expect(has_issue(with_literals(f, {{"model.name", "\"" + std::string(65, 'a') + "\""}}), "model.name", ConfigIssueCode::invalid_value),
+         "at most 64 characters, like an alias");
+}
+
 void codex_and_tool_call_rows_are_dispositioned() {
   struct Expected { const char* key; const char* path; };
   for (const Expected e : {Expected{"slot_save_path", "session.slot_save_path"},
@@ -1810,6 +1843,7 @@ int main(int argc, char** argv) {
       {"session_rows_match_the_pin", session_rows_match_the_pin},
       {"slot_save_path_is_a_bounded_private_path", slot_save_path_is_a_bounded_private_path},
       {"web_ui_and_loopback_without_key_rows", web_ui_and_loopback_without_key_rows},
+      {"model_name_row", model_name_row},
       {"codex_and_tool_call_rows_are_dispositioned", codex_and_tool_call_rows_are_dispositioned},
       {"session_rows_at_each_edge", session_rows_at_each_edge},
       {"replicas_parallel_row_at_the_pin", replicas_parallel_row_at_the_pin},

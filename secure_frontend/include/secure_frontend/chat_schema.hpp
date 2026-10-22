@@ -37,6 +37,9 @@ struct ChatCompletionRequest final {
   bool stream{false};
   bool include_usage{false};
   SamplingParams sampling{};
+  // Session log step 14 (upstream's per-request reasoning_effort): none, low, medium or high,
+  // the reasoning.effort words; unset = the server's reasoning.effort. Qwen profile only.
+  std::optional<std::string> reasoning_effort{};
 };
 
 // Chat request/response bounds; derived from FrontendConfig by chat_schema_limits().
@@ -52,6 +55,9 @@ struct ChatSchemaLimits final {
   // max_image_b64_chars bounds each URL's base64 LENGTH before anything decodes
   // (T12-c: the pin's IMAGE_URL_MAX = 32 MiB of decoded bytes, serve/server.py:2474).
   bool vision_capable{false};
+  // Session log step 14: the qwen renderer takes reasoning_effort per request; set at boot from
+  // the composed launch's profile (false: the key is refused by name).
+  bool per_request_reasoning_effort{false};
   std::size_t max_images{4};
   std::size_t max_image_b64_chars{(std::size_t{32} << 20) / 3U * 4U + 4U};
 };

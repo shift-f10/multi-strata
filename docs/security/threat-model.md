@@ -55,7 +55,11 @@ Trust boundaries:
   refused next to a `token.source`, and announced by a `strata: warning:` line
   on stderr and in the ready line. Host, Origin and Content-Type checks still
   apply (residual risk below).
-- Rate/size/concurrency limits are configured with safe finite defaults.
+- Rate/size/concurrency limits are configured with safe finite defaults. The defaults
+  stayed small when the schema maxima were raised to upstream's scale for long contexts
+  (2026-10-21: 256 MiB request/body/message, 1,048,576 prompt and output tokens, 65,536
+  messages). An operator who raises them accepts that each worker may hold one request
+  that large in memory (bounded by `limits.concurrency.max_concurrent_requests`).
   Streaming requests must be cancellable on client disconnect and shutdown.
 
 ### Privacy and offline operation
@@ -86,16 +90,18 @@ Trust boundaries:
 - Reject browser `Origin` values unless the origin is same-origin or exactly in
   an explicit allowlist. Missing `Origin` is allowed for non-browser API
   clients after token authentication.
-- The built-in chat page (`listener.web_ui`, off by default, 2026-10-21) is the
-  only unauthenticated content: three bundled, ASCII files embedded at build
-  time, served at exact `GET` targets after the Host and Origin checks, under
-  their own CSP (`script-src`/`style-src`/`connect-src 'self'`, no inline code,
-  `form-action 'none'`, `frame-ancestors 'none'`) and
+- The built-in chat page (`listener.web_ui`, off by default, 2026-10-21; upstream's
+  look 2026-10-22) is the only unauthenticated content: bundled files (ASCII text,
+  plus the WOFF2 font) embedded at build time, served at exact `GET` targets after
+  the Host and Origin checks, under their own CSP (`script-src`/`style-src`/
+  `connect-src`/`img-src`/`font-src 'self'`, no inline code, `form-action 'none'`,
+  `frame-ancestors 'none'`) and
   `Cross-Origin-Opener-Policy: same-origin`. They hold no secret and reach no
   route. The page keeps the key in `sessionStorage` (that tab), sends it only as
   a same-origin bearer header with cookies off, and renders model output as text
   only. Tests pin those properties of the files (no inline script or handler, no
-  HTML sinks, no other host, no `localStorage`).
+  HTML sinks, no other host, no `localStorage` in the chat script; the theme
+  script stores only `strata.theme`).
 - CORS is disabled by default: no `Access-Control-Allow-Origin` header is
   emitted. When configured, emit only exact allowed origins; never reflect an
   arbitrary origin and never combine `*` with credentials.

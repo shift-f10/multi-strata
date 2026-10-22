@@ -289,6 +289,25 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
   - Test-first: 11 cases, RED then GREEN. Full preset suite 878/877 pass, 1 skipped.
     Checked in the built-in browser against the real model, in both modes.
   - Threat model, privacy-migration and README updated.
+- **Long contexts, model names, upstream's page look (session log steps 13-14).**
+  - **Caps:** the enforced caps and schema maxima reach upstream's scale. The renderers
+    take 65,536 messages and 256 MiB a message; the protocol takes 1,048,576 tokens; the
+    request, body and message maxima are 256 MiB. The defaults are unchanged. YaRN passes
+    through `engine.args`.
+  - **`model.name`:** the served name (upstream's `model_name`). `reasoning_effort` is
+    also accepted per request on the qwen profile.
+  - **Page:** it now uses upstream's UI kit (MIT) and Outfit font (OFL), with provenance in
+    PROVENANCE.md. It keeps our API-key sign-in and a New chat button, and has no
+    Monitor, Images or MCP views. The embed step carries binary assets; the CSP adds
+    `img-src`/`font-src 'self'`.
+  - **Gates:** all test-first. Full preset suite 885/884 pass, 1 skipped. Served at 128K
+    and checked in the browser against the real model.
+  - **Open:** commit headroom at 128K (issue 38).
+  - **Issue 39 (owner bug):** message text with a link or "data:" was refused (SP0
+    `valid_content`), which broke every turn after an answer containing one. Text is now
+    text (SP3 §6.2 allows "rejected or treated as text"; nothing fetches it). The model
+    field and image URLs keep their guards; the egress test keeps its no-egress checks.
+    Test-first; suite 886/885, 1 skipped.
 - The `windows-runtime`-labelled cases run under the MSVC preset on the owner's box; the
   supported Windows toolchains (MSYS2 clang, llvm-mingw) are still not installed (issue 3).
 

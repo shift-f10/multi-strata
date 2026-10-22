@@ -98,6 +98,22 @@ void think_literals_in_content_fail_closed() {
     }
   }
 }
+// Session log step 13 (owner: Strata runs contexts up to 1M with YaRN): the renderer no longer
+// caps a conversation at 128 messages, 64 KiB a message or 512 KiB in all; the configured
+// limits.chat.* rows bound a request (their schema maxima follow these caps, spec §9.5).
+void renders_long_conversations_past_the_old_caps() {
+  std::vector<secure_frontend::ChatMessage> messages;
+  std::size_t total = 0;
+  for (int i = 0; i < 201; ++i) {  // 201 alternating turns, ending with the user
+    std::string text = i % 20 == 0 ? std::string(100U * 1024U, static_cast<char>('a' + i % 26)) : "turn " + std::to_string(i);
+    total += text.size();
+    messages.push_back({i % 2 == 0 ? "user" : "assistant", std::move(text)});
+  }
+  expect(messages.size() > 128U && total > 1024U * 1024U, "the case is past every old cap");
+  const auto prompt = secure_frontend::render_qwen_text_prompt(messages);
+  expect(prompt.has_value() && prompt->size() > total && prompt->find(std::string(100U * 1024U, 'a')) != std::string::npos,
+         "201 messages, ten of 100 KiB, over 1 MiB in all, render whole");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -107,5 +123,6 @@ int main(int argc, char** argv) {
       {"rejects_unsafe_or_unsupported_conversations", rejects_unsafe_or_unsupported_conversations},
       {"renders_think_block_per_template", renders_think_block_per_template},
       {"think_literals_in_content_fail_closed", think_literals_in_content_fail_closed},
+      {"renders_long_conversations_past_the_old_caps", renders_long_conversations_past_the_old_caps},
   }, failures);
 }

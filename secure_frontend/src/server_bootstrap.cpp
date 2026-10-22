@@ -182,6 +182,8 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
   // (compose refuses that pairing for glm53, so the gate implies the qwen renderer).
   // The request itself can never open it.
   if (config.vision.enabled && launch.vision_mmproj.has_value()) schema_limits.vision_capable = true;
+  // Session log step 14: per-request reasoning_effort reaches the qwen renderer only.
+  schema_limits.per_request_reasoning_effort = launch.profile == secure_frontend::EngineProfile::qwen;
   const auto tokenizer_result = secure_frontend::load_local_tokenizer_pack(*launch.tokenizer_root);
   const auto* tokenizer = std::get_if<secure_frontend::TokenizerPack>(&tokenizer_result);
   if (tokenizer == nullptr) {
@@ -189,7 +191,9 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
               << "): " << std::get<secure_frontend::TokenizerPackError>(tokenizer_result).message << '\n';
     return EXIT_FAILURE;
   }
-  const std::string& model_id = launch.model_id;
+  // model.name (session log step 13; the pin's model_name): the name the API serves; the
+  // launch's own id (the inventory file, or name:tag) when it is unset.
+  const std::string model_id = config.engine.served_name.value_or(launch.model_id);
   // SP5 M1 Task 8 (model.aliases; set_aliases :3774-3777): drop an alias equal to the
   // served name, keep order, dedup — the route and /v1/models share one effective list.
   std::vector<std::string> model_aliases;

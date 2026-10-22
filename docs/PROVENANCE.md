@@ -421,6 +421,35 @@ Cited document: `RFC 8032, "Edwards-curve Digital Signature Algorithm
 (EdDSA)"` (Josefsson & Liusvaara, January 2017), sections 5.1.7, 6, 7, 8.4
 (<https://www.rfc-editor.org/rfc/rfc8032>).
 
+## Built-in chat page: upstream's UI kit and font (2026-10-22, session log step 14)
+
+The page served with `listener.web_ui` (`secure_frontend/web/`) takes upstream Strata's
+look, by owner request. It is copied from the reviewed upstream pin (`v0.2.2`,
+`serve/web/`, last changed in upstream commit `f2709679`) by `out/copy_upstream_ui.py`
+(a session helper). The copy normalises line ends to LF and the three non-ASCII
+characters in comments (em dash, ellipsis, degree sign) to ASCII. It drops the sprite's
+embedded C2PA metadata block (an inert base64 provenance blob from the design tool) and
+its inline style, points the font URLs at `/ui/fonts/`, and puts an attribution header
+on each text file.
+
+| File | Source | Licence | SHA-256 (as committed) |
+| --- | --- | --- | --- |
+| `web/tokens.css` | `serve/web/tokens.css` (adapted) | MIT | `b42489b95a279578244e1a4a080fc4c31169062652fced83b277ee6a295d5605` |
+| `web/components.css` | `serve/web/components.css` | MIT | `c1d0cc2a77450817ee10b6cadaa7099c4b4afd20998bca45acdc14e820a666df` |
+| `web/sprite.svg` | `serve/web/sprite.svg` (metadata dropped) | MIT | `55efc1936f17f21c645eac63579857bf565d21e30ac972b3d180e8bf7f022cf9` |
+| `web/favicon.svg` | `serve/web/favicon.svg` | MIT | `84e586cd99715df7191c587e5b7289267f87e5035a0c4f5ab004d385809e0c1d` |
+| `web/fonts/outfit-latin-wght.woff2` | `serve/web/fonts/` (byte-identical) | SIL OFL 1.1 | `6c18d579fd87c3776be068b762cbc83fde3acb543d49eabd3ade842eb987e887` |
+| `web/fonts/outfit-latin-ext-wght.woff2` | `serve/web/fonts/` (byte-identical) | SIL OFL 1.1 | `0f53d1c03b3918d744a843b5039001ee31695ca1e255e3914188df81beb461e9` |
+| `web/fonts/OFL.txt` | `serve/web/fonts/OFL.txt` | (the licence) | `c676351bf8576b9aba743cd5eaa8c0e7ee0d51f805d720447b4df4ddb6a2e416` |
+| `web/LICENSE.strata-ui.txt` | upstream `LICENSE` | (the licence) | `949b9b0aada7476006469e58ee4ffb0e0f68c2d9137e90a356757b61a09d37f0` |
+
+`web/index.html`, `web/app.css` and `web/app.js` are ours, modelled on upstream's
+`index.html`, `app.css` and `app.js` (the markup and layout rules adapted, with the same
+attribution; the script written for this server's routes). `web/theme.js` is ours. The
+fonts are data, not code (contract C6 is about executables). They are WOFF2, checked by a
+test, and the page's CSP allows fonts from this origin only. The licence texts are kept
+beside the files and are not served.
+
 ## Release evidence (SP7 M2 — placeholder)
 
 The SP7 offline release validation kit is `docs/validation/sp7-offline-kit.md`

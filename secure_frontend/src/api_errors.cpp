@@ -35,13 +35,15 @@ constexpr std::array<ApiErrorRow, 23> kTable{{
     {ApiError::http_version_not_supported, 505, "invalid_request_error", "http_version_not_supported", "Only HTTP/1.1 is supported."},
 }};
 
-constexpr std::array<std::string_view, 20> kFixedParamKeys{
+constexpr std::array<std::string_view, 21> kFixedParamKeys{
     "n", "presence_penalty", "frequency_penalty", "logit_bias", "stop", "logprobs", "top_k", "min_p", "top_logprobs",
     "response_format", "content", "stream", "tools", "tool_choice", "functions", "function_call", "parallel_tool_calls",
     "mcp_servers", "role",
     // SP5 M1 Task 12 (C-9): the fixed §7.2 key the image gate names — caps, shapes and
     // unfetchable URLs all refuse through this one literal.
-    "image_url"};
+    "image_url",
+    // Session log step 14: a profile without per-request thinking refuses reasoning_effort by name.
+    "reasoning_effort"};
 
 }  // namespace
 

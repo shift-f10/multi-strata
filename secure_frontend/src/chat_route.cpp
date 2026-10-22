@@ -66,6 +66,9 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
   if (request.model != config_.model_id &&
       std::find(config_.model_aliases.begin(), config_.model_aliases.end(), request.model) == config_.model_aliases.end())
     return make_error_response(ApiError::model_not_found);
+  // Session log step 14: a request's own reasoning_effort (none closes the think block)
+  // wins over the server's reasoning.effort; the schema admits it on the qwen profile only.
+  const bool thinking = request.reasoning_effort.has_value() ? *request.reasoning_effort != "none" : config_.qwen_thinking;
   // SP5 M1 Task 12 (C-9): the image half of P4/P6, in the pinned order.
   // image_urls is empty on every text request; then everything below it is inert and
   // the text path runs exactly as before.
@@ -111,7 +114,7 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
   if (!vision_request) {
     const auto plan_result = config_.profile == NativeChatProfile::qwen
                                  ? make_qwen_chat_generation_plan(request, tokenizer_, config_.max_prompt_tokens, 1U,
-                                                                  config_.sampling_default, {}, config_.qwen_thinking)
+                                                                  config_.sampling_default, {}, thinking)
                                  : make_glm53_chat_generation_plan(request, tokenizer_, config_.max_prompt_tokens, 1U,
                                                                   config_.sampling_default);
     if (const auto* plan_error = std::get_if<ChatGenerationPlanError>(&plan_result)) {
@@ -171,7 +174,7 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
     image_counts.reserve(encoded.size());
     for (const auto& entry : encoded) image_counts.push_back(entry.image_tokens);
     const auto plan_result = make_qwen_chat_generation_plan(request, tokenizer_, config_.max_prompt_tokens, 1U,
-                                                            config_.sampling_default, image_counts, config_.qwen_thinking);
+                                                            config_.sampling_default, image_counts, thinking);
     if (const auto* plan_error = std::get_if<ChatGenerationPlanError>(&plan_result)) {
       config_.vision->discard(*combined_file);
       lease.reset();

@@ -982,7 +982,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         enc_round_trip_reaches_the_prompt image_rejections_name_image_url_before_any_write
         idle_unload_respawns_before_the_next_request
         queue_and_answer_room_limits_are_enforced
-        aliases_answer_like_the_primary_model
+        aliases_answer_like_the_primary_model model_name_replaces_the_file_name reasoning_effort_per_request_is_served
         absent_max_tokens_uses_auto sampling_passthrough_reaches_gen dos01_context_rule_is_400_without_gen
         chat_response_has_openai_shape dos02_excess_connections_get_503_retry_after dos02_queue_full_is_503
         dos02_queue_timeout_is_503 dos02_queue_is_fifo dos02_health_answers_while_generation_places_full
@@ -1205,7 +1205,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         gen_carries_bounded_sampling_keys
         sampling_defaults_reach_gen_request
         generation_total_deadline_is_enforced
-        gen_line_fits_max_prompt_tokens derived_line_cap_is_clamped_to_protocol_max stop_cause_and_completed_generations
+        gen_line_fits_max_prompt_tokens default_limits_take_a_million_token_prompt derived_line_cap_is_clamped_to_protocol_max stop_cause_and_completed_generations
         next_event_yields_tokens_progress_and_done next_event_timeout_keeps_generation_active
         next_event_finish_forms_and_nonfinite_stays_idle
         maya_flavor_consumes_note_and_progress strata_flavor_still_fails_closed_on_note maya_pp_grammar_is_bounded
@@ -1258,7 +1258,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
 
     secure_frontend_add_test_executable(secure_frontend_chat_schema_tests tests/chat_schema_test.cpp secure_frontend_chat_schema)
     secure_frontend_add_cases(secure_frontend_chat_schema_tests
-        parses_minimal_text_request image_url_parts_accepted_only_for_vision_models
+        parses_minimal_text_request image_url_parts_accepted_only_for_vision_models reasoning_effort_per_request
+        remote_looking_text_is_text
         image_part_caps_and_shape_are_checked_before_decode
         rejects_unsupported_and_unsafe_features rejects_duplicate_and_malformed_json
         renders_escaped_minimal_response
@@ -1337,6 +1338,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         session_rows_match_the_pin
         slot_save_path_is_a_bounded_private_path
         web_ui_and_loopback_without_key_rows
+        model_name_row
         codex_and_tool_call_rows_are_dispositioned
         session_rows_at_each_edge
         replicas_parallel_row_at_the_pin
@@ -1398,12 +1400,14 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         secure_frontend_qwen_prompt_renderer)
     secure_frontend_add_cases(secure_frontend_qwen_prompt_renderer_tests
         renders_fixed_qwen_chatml_prompt accepts_systemless_conversation rejects_unsafe_or_unsupported_conversations
-        renders_think_block_per_template think_literals_in_content_fail_closed)
+        renders_think_block_per_template think_literals_in_content_fail_closed
+        renders_long_conversations_past_the_old_caps)
 
     secure_frontend_add_test_executable(secure_frontend_glm_profile_tests tests/glm_profile_test.cpp
         secure_frontend_chat_generation_plan)
     secure_frontend_add_cases(secure_frontend_glm_profile_tests
-        renders_exact_fixed_profile rejects_boundary_injection_and_invalid_order creates_plan_only_with_control_tokens)
+        renders_exact_fixed_profile rejects_boundary_injection_and_invalid_order creates_plan_only_with_control_tokens
+        renders_long_conversations_past_the_old_caps)
 
     secure_frontend_add_test_executable(secure_frontend_chat_generation_plan_tests tests/chat_generation_plan_test.cpp
         secure_frontend_chat_generation_plan)

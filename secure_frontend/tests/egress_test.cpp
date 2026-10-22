@@ -272,7 +272,9 @@ void egress_command_like_values_trigger_nothing() {
     const auto r = raw_http::exchange("127.0.0.1", server->port(),
         raw_http::request("POST", "/v1/chat/completions", a, {raw_http::bearer(token), "Content-Type: application/json"},
                           R"({"model":"fake-model","messages":[{"role":"user","content":")" + content + R"("}]})"));
-    expect(r && r->status == 400, "remote-looking content is refused: " + content);
+    // Session log step 15: SP3 §6.2 "rejected or treated as text" — text now; what this case
+    // pins is that nothing is fetched or started for it (the checks below).
+    expect(r && r->status == 200, "remote-looking content is served as text, never fetched: " + content);
   }
   const auto pull = raw_http::exchange("127.0.0.1", server->port(),
       raw_http::request("POST", "/v1/chat/completions", a, {raw_http::bearer(token), "Content-Type: application/json", "X-Strata-Update: now"},
@@ -285,7 +287,11 @@ void egress_command_like_values_trigger_nothing() {
     const auto r = raw_http::exchange("127.0.0.1", server->port(), raw_http::request("GET", target, a, {raw_http::bearer(token)}));
     expect(r && r->status == 404, "no acquire/update route: " + target);
   }
-  expect(test_support::file_text(record).find("GEN") == std::string::npos, "the engine received no GEN");
+  const std::string recorded = test_support::file_text(record);
+  std::size_t gens = 0;
+  for (std::size_t at = recorded.find("GEN "); at != std::string::npos; at = recorded.find("GEN ", at + 1U)) ++gens;
+  expect(gens == 5U, "the engine received exactly the five text chats, nothing for the refused model or routes: " +
+                         std::to_string(gens));
   expect(server->active_processes() == before, "no process started or ended");
   if (armed) expect(test_support::file_text(egress).empty(), "no outbound attempt (interposer)");
 }

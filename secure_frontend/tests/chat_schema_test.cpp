@@ -116,7 +116,6 @@ void rejects_unsupported_and_unsafe_features() {
            R"({"model":"local","messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":"yes"}}"),
            R"({"model":"local","messages":[{"role":"user","content":"hi"}],"tools":[]})",
            R"({"model":"local","messages":[{"role":"user","content":[{"type":"image_url"}]]})",
-           R"({"model":"local","messages":[{"role":"user","content":"https://example.test/a"}]})",
            R"({"model":"mcp://remote","messages":[{"role":"user","content":"hi"}]})",
            R"({"model":"local","messages":[{"role":"tool","content":"hi"}]})",
            R"({"model":"local","messages":[{"role":"user","content":"hi","mcp":"x"}]})",
@@ -183,8 +182,67 @@ void renders_reasoning_content_beside_the_answer() {
 
 }  // namespace
 
+// Session log step 14 (the page's Thinking control; upstream's per-request reasoning_effort,
+// serve/web/app.js:802): the qwen profile takes reasoning_effort per request in the
+// reasoning.effort words — none, low, medium, high — and a profile without it (GLM) refuses
+// it by name, never ignores it.
+void reasoning_effort_per_request() {
+  using secure_frontend::ChatCompletionRequest;
+  using secure_frontend::ChatRequestError;
+  secure_frontend::ChatSchemaLimits qwen;
+  qwen.per_request_reasoning_effort = true;
+  const auto body = [](const std::string& value) {
+    return R"({"model":"local","messages":[{"role":"user","content":"hi"}],"reasoning_effort":)" + value + "}";
+  };
+  for (const char* word : {"none", "low", "medium", "high"}) {
+    const auto result = secure_frontend::parse_chat_request(body("\"" + std::string{word} + "\""), qwen);
+    const auto* request = std::get_if<ChatCompletionRequest>(&result);
+    expect(request != nullptr && request->reasoning_effort == std::optional<std::string>{word},
+           std::string{"accepted and kept: "} + word);
+  }
+  const auto absent = secure_frontend::parse_chat_request(R"({"model":"local","messages":[{"role":"user","content":"hi"}]})", qwen);
+  const auto* plain = std::get_if<ChatCompletionRequest>(&absent);
+  expect(plain != nullptr && !plain->reasoning_effort.has_value(), "absent: the server's reasoning.effort applies");
+  for (const std::string bad : {"\"max\"", "\"xhigh\"", "\"\"", "\"NONE\"", "1", "true", "null"}) {
+    const auto result = secure_frontend::parse_chat_request(body(bad), qwen);
+    const auto* error = std::get_if<ChatRequestError>(&result);
+    expect(error != nullptr && error->error == secure_frontend::ApiError::invalid_request && error->param == "reasoning_effort",
+           "refused, naming the key: " + bad);
+  }
+  const secure_frontend::ChatSchemaLimits glm;  // per_request_reasoning_effort stays false
+  const auto refused = secure_frontend::parse_chat_request(body("\"none\""), glm);
+  const auto* error = std::get_if<ChatRequestError>(&refused);
+  expect(error != nullptr && error->error == secure_frontend::ApiError::unsupported_parameter && error->param == "reasoning_effort",
+         "a profile without it refuses it by name");
+}
+
+// Session log step 15 (owner bug: "invalid_request after first answer"): SP3 §6.2 lets
+// remote-looking content be "rejected or treated as text"; SP0 rejected it anywhere in a
+// message, so a model answer with a link, or prose such as "Training data:", made the next
+// turn a 400. Text content is now text, verbatim (the server never fetches it); the model
+// field and image URLs keep their guards.
+void remote_looking_text_is_text() {
+  using secure_frontend::ChatCompletionRequest;
+  const secure_frontend::ChatSchemaLimits limits;
+  for (const std::string text : {"https://example.test/a", "Training data: examples the model learns from.",
+                                 "see file:///etc/passwd and mcp://x", "data:text/plain,x", "HTTP://EXAMPLE.COM"}) {
+    const std::string json = R"({"model":"local","messages":[{"role":"system","content":")" + text +
+                             R"("},{"role":"user","content":"hi"},{"role":"assistant","content":")" + text +
+                             R"("},{"role":"user","content":")" + text + R"("}]})";
+    const auto result = secure_frontend::parse_chat_request(json, limits);
+    const auto* request = std::get_if<ChatCompletionRequest>(&result);
+    expect(request != nullptr && request->messages.size() == 4U && request->messages[0].content == text &&
+               request->messages[2].content == text && request->messages[3].content == text,
+           "kept verbatim as text in every role: " + text);
+  }
+  expect(!secure_frontend::parse_chat_completion_request(R"({"model":"mcp://remote","messages":[{"role":"user","content":"hi"}]})"),
+         "the model field keeps its remote-scheme guard");
+}
+
 int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
+      {"remote_looking_text_is_text", remote_looking_text_is_text},
+      {"reasoning_effort_per_request", reasoning_effort_per_request},
       {"parses_minimal_text_request", parses_minimal_text_request},
       {"image_url_parts_accepted_only_for_vision_models", image_url_parts_accepted_only_for_vision_models},
       {"image_part_caps_and_shape_are_checked_before_decode", image_part_caps_and_shape_are_checked_before_decode},

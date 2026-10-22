@@ -10,3 +10,4 @@
 /docs/security/engine-binary-allowlist.json -text
 # The built-in chat page is embedded byte for byte (cmake/EmbedWebUi.cmake refuses CR).
 /secure_frontend/web/** text eol=lf
+/secure_frontend/web/fonts/*.woff2 binary

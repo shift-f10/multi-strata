@@ -258,7 +258,7 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `listener.web_ui` | boolean | `false` | - | - | Serve the built-in chat page at / (bundled files only). The page asks for the API key and keeps it in that tab; every API route still needs the key. |
 | `listener.loopback_without_key` | boolean | `false` | - | - | Answer the API and the page without the API key: only with a loopback listener.host, and with no token.source; Host and Origin checks still apply. |
 | `limits.http.request_deadline_ms` | integer | `30000` | 1-3600000 | - | Total time to read one request, header and body. |
-| `limits.http.max_request_bytes` | integer | `65536` | 4096-16777216 | - | Largest request (header and body) the listener and parser accept. |
+| `limits.http.max_request_bytes` | integer | `65536` | 4096-268435456 | - | Largest request (header and body) the listener and parser accept. |
 | `limits.http.max_header_bytes` | integer | `16384` | 1024-65536 | - | Largest header block; at most limits.http.max_request_bytes. |
 | `limits.http.max_headers` | integer | `64` | 8-256 | - | Most header fields. |
 | `limits.http.max_request_line_bytes` | integer | `4096` | 256-16384 | - | Longest request line; at most limits.http.max_header_bytes. |
@@ -266,12 +266,12 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `limits.http.write_stall_ms` | integer | `10000` | 100-300000 | - | Longest send without progress before the client is treated as gone. |
 | `limits.http.response_write_deadline_ms` | integer | `60000` | 1000-3600000 | - | Time to send a whole complete response, or a stream's tail after DONE; at least limits.http.write_stall_ms. |
 | `limits.http.stream_keepalive_ms` | integer | `15000` | 1000-300000 | - | SSE comment interval while no content flows (streaming). |
-| `limits.chat.max_body_bytes` | integer | `49152` | 1-16777216 | - | Largest chat request body; at most max_request_bytes minus max_header_bytes. |
-| `limits.chat.max_messages` | integer | `128` | 1-128 | - | Most messages in one chat request. |
-| `limits.chat.max_message_bytes` | integer | `65536` | 1-65536 | - | Largest single message content. |
-| `limits.chat.max_prompt_tokens` | integer | `32768` | 1-262144 | - | Largest tokenized prompt sent to the engine. |
-| `limits.chat.max_completion_tokens` | integer | `4096` | 1-16384 | - | Largest max_tokens a request may ask for. |
-| `limits.chat.default_max_tokens` | integer | `0` | 0-16384 | - | max_tokens when a request omits it; 0 = auto: min(max_completion_tokens, context - prompt - 8); at most limits.chat.max_completion_tokens. |
+| `limits.chat.max_body_bytes` | integer | `49152` | 1-268435456 | - | Largest chat request body; at most max_request_bytes minus max_header_bytes. |
+| `limits.chat.max_messages` | integer | `128` | 1-65536 | - | Most messages in one chat request. |
+| `limits.chat.max_message_bytes` | integer | `65536` | 1-268435456 | - | Largest single message content. |
+| `limits.chat.max_prompt_tokens` | integer | `32768` | 1-1048576 | - | Largest tokenized prompt sent to the engine. |
+| `limits.chat.max_completion_tokens` | integer | `4096` | 1-1048576 | - | Largest max_tokens a request may ask for. |
+| `limits.chat.default_max_tokens` | integer | `0` | 0-1048576 | - | max_tokens when a request omits it; 0 = auto: min(max_completion_tokens, context - prompt - 8); at most limits.chat.max_completion_tokens. |
 | `limits.chat.max_generated_bytes` | integer | `1048576` | 1-16777216 | - | Largest generated text returned. |
 | `limits.engine.ready_timeout_s` | integer | `900` | 1-86400 | - | How long the supervisor waits for the engine's READY after each start; a miss kills and restarts it (upstream STRATA_ENGINE_READY_S). |
 | `limits.engine.generation_timeout_s` | integer | `120` | 1-86400 | - | Total time for one generation before STOP. |
@@ -341,6 +341,7 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `engine.max_tokens` | integer | unset | 1-1048576 | - | Ceiling on a request's output budget (unset: the completion cap; an added frontend bound, C-1). |
 | `engine.min_tokens` | integer | unset | 1-1048576 | - | Floor on a request's output budget (unset: none; an added frontend bound, C-1). |
 | `model.aliases` | string array | `[]` | - | - | Other model names the server lists and answers to (exact match only, like the pin's set_aliases). |
+| `model.name` | string | unset | - | - | The name the server serves the model as: /v1/models lists it, the chat page shows it, requests name it (like the pin's model_name). Unset: the model's own id (its inventory file name, or name:tag). |
 | `session.slot_save_path` | string | unset | - | - | Directory for engine slot session save/restore files (absolute; the /slots route is not served today). |
 | `session.expert_profile_save` | string | unset | - | - | Where the engine re-saves its learned expert profile (absolute path; --expert-profile-save). |
 | `session.expert_profile_save_every` | integer | `10` | 0-1440 | - | Re-save the learned expert profile every N minutes (pin default 10; 0: at engine exit only). Cap added, C-1. |
@@ -439,6 +440,7 @@ consumer is out of M1 — every request cleans up after itself instead.
 | Upstream option | Destination | Disposition note and the pin read site |
 | --- | --- | --- |
 | `aliases` | frontend behaviour | serve/server.py:8263, set_aliases :3951-3964; runconfig.py:34 (M1 Task 8: model.aliases — /v1/models lists them, chat matches exactly) |
+| `model_name` | frontend behaviour | serve/server.py:7855 default_model_name, :3966 model_names (session log step 13: model.name — the served name /v1/models lists and requests name; unset keeps the inventory or manifest id) |
 | `allowed_hosts` | frontend behaviour | already typed (SP1/SP3 listen); serve/server.py:8283 |
 | `answer_room` | typed config | serve/server.py:8231 (`is not False`), formula :4893-4905; typed only: the pin's formula sits in its thinking parser, not in our §7.2 room rule (Ruling T8-d, Task 15) |
 | `anthropic_thinking` | typed config | serve/server.py:8319 (M1 Task 5: reasoning.anthropic_thinking) |
@@ -473,7 +475,7 @@ consumer is out of M1 — every request cleans up after itself instead.
 | `parallel` | engine argv | serve/server.py:3000-3020 (replicas.parallel renders --batch N, :3020; window PARALLEL_MAX 8 at :2999; cap 1024 from the pin's own bound :8054, M1 Task 10) |
 | `reasoning_budget_tokens` | typed config | serve/server.py:8337 (M1 Task 5: reasoning.budget_tokens) |
 | `reasoning_close_retry` | typed config | serve/server.py:8232 (M1 Task 5: reasoning.close_retry) |
-| `reasoning_effort` | frontend behaviour | serve/server.py:7642 (M1 Task 5: reasoning.effort; the qwen think tail, issue 19: none writes the closed block, unset/low/medium/high open it, the levels are not told apart) |
+| `reasoning_effort` | frontend behaviour | serve/server.py:7642 (M1 Task 5: reasoning.effort; the qwen think tail, issue 19: none writes the closed block, unset/low/medium/high open it, the levels are not told apart; session log step 14: the same words per request on the qwen profile) |
 | `reasoning_loop_recovery` | typed config | serve/server.py:8346 (M1 Task 5: reasoning.loop_recovery) |
 | `repeat_stop_tokens` | frontend behaviour | serve/server.py:198 (REPEAT_STOP_TOKENS 256), the pin's detector is frontend-side at :5098, notice :5278, 0 = off :8332 (Ruling T8-f: no GEN key) |
 | `sampling` | typed config | serve/server.py:7691 (M1 Task 4: defaults.sampling.*) |
@@ -509,7 +511,6 @@ consumer is out of M1 — every request cleans up after itself instead.
 | `gpu_roles` | strata_control/gpu_roles.py saved_roles :386-405 (:390); serve/server.py:2822-2825 (gpu_list: the cards, Main last, when `gpu` is unset), :3224 (keeps the given order); card choice and order are the typed engine.gpu (SP2 §3.9: rendered as --gpu), the Main/Helper/Off roles have no typed form |
 | `images` | spec D-9: image generation is out, the route answers 404 like an unknown route; serve/server.py:8233 |
 | `max_queue` | the SP3 row limits.concurrency.max_queued_generations already carries queue admission (pin bound 0..4096 at serve/server.py:8044, derived default :3789-3791; Ruling T8-a) |
-| `model_name` | served-model identity comes from the SP4 manifest; serve/images.py:184 |
 | `native` | the SP4 manifest composes --native (engine_arguments); serve/images.py:126 |
 | `out_dir` | spec D-9 image generation is out; serve/images.py:186 |
 | `pool_cores` | the operator's engine.args carries the engine's own --pool-cores LIST (not frontend-owned and not a mode: engine_arguments.cpp passes it through; no typed row); serve/server.py:3031, pool_cores_args :3026-3046 (experimental, off by default; a --pool-cores already in the args wins, :3034), composed after parallel at :2995 |
@@ -831,27 +832,45 @@ token.
 
 ### Built-in chat page and the keyless loopback mode (owner decisions 2026-10-21)
 
-`listener.web_ui = true` serves a small chat page at `/` (with `/ui/app.js`
-and `/ui/app.css`). It is three bundled files from `secure_frontend/web/`,
-embedded in the binary at configure time (`cmake/EmbedWebUi.cmake`: ASCII, LF,
-nothing read from disk at run time). It loads nothing from any other server,
-and every model reply is rendered as text, never as HTML. Only these exact
-`GET` targets are public, and only after the `Host` and `Origin` checks: the
-files hold no secret and reach no route.
+`listener.web_ui = true` serves a chat page at `/` with upstream Strata's look:
+its UI kit (tokens, components, icon sprite, favicon; MIT, adapted) and its Outfit
+font (SIL OFL), from `secure_frontend/web/`. The licence texts are
+`web/LICENSE.strata-ui.txt` and `web/fonts/OFL.txt`, with provenance in
+docs/PROVENANCE.md. The files are embedded in the binary at configure time
+(`cmake/EmbedWebUi.cmake`: text files ASCII with LF, the fonts as they are; nothing
+read from disk at run time) and served only at their exact `GET` targets (`/` and
+`/ui/...`), after the `Host` and `Origin` checks. They hold no secret, load nothing
+from any other server, and reach no route.
 
 - **The login is the API key.** The page asks for it, checks it against
-  `/v1/models` and keeps it in that browser tab only (`sessionStorage`). It
-  sends it only as `Authorization: Bearer` to this server, with cookies off.
-  Every API route still requires the key; the key field has no form name, so
-  no submission can put it in a URL.
+  `/v1/models` and keeps it in that browser tab only (`sessionStorage`). It sends it
+  only as `Authorization: Bearer` to this server, with cookies off. Every API route
+  still requires the key. The key field has no form name, so no submission can put
+  it in a URL.
+- **Upstream's chat:** your messages in green bubbles and the model's in cards, with
+  Markdown (headings, lists, tables, quotes, code blocks with a copy button), the
+  reasoning in a collapsible "Thinking" block, and per reply the model, tokens,
+  speed and time.
+  - **Header:** Chat and About tabs, a New chat button, a status pill (polls
+    `/health`) and a light/dark switch.
+  - **Composer:** attach text files, save the chat as Markdown, Stop, Send.
+  - **Sampling drawer:** Thinking on/off (sent as `reasoning_effort`),
+    temperature, top-p, max tokens, seed, show thinking.
+  - **About:** the model, the engine state, and the base URL for other clients.
+  - **Storage:** the chat and the settings live in that tab; the theme choice is in
+    `localStorage` (`strata.theme`, nothing else).
+  - **Left out:** upstream's Monitor, Images and MCP views, and its server-side
+    settings, need routes this server does not have.
 - **Its own policy:** the page's responses carry `Content-Security-Policy:
   default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self';
-  img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
-  (no inline script, style or handler) and `Cross-Origin-Opener-Policy:
-  same-origin`. Every other response keeps `default-src 'none'`.
-- **Streaming chat** through `/v1/chat/completions` (`stream: true`, with usage),
-  with the reasoning shown apart from the answer, Stop (which disconnects, so the
-  server sends STOP), a model picker and an optional `max_tokens`.
+  img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none';
+  frame-ancestors 'none'` (no inline script, style or handler; tests pin that) and
+  `Cross-Origin-Opener-Policy: same-origin`. Every other response keeps
+  `default-src 'none'`.
+
+`reasoning_effort` is also accepted per request on the qwen profile (`none`, `low`,
+`medium`, `high`, the `reasoning.effort` words; `none` closes the think block). Another
+profile refuses it by name.
 
 `listener.loopback_without_key = true` answers the API and the page with no key
 at all. On the page, the login is skipped. It is accepted only with a loopback
@@ -863,6 +882,30 @@ another web site cannot use it from a browser: DNS rebinding fails the Host
 check, a page on another origin fails the Origin check, and a plain form post
 fails the Content-Type check. Any program or user on the same machine can
 use it.
+
+### Long contexts and model names (owner requests, session log step 13)
+
+The defaults keep a request small (48 KiB body, 32K-token prompt). For long contexts, raise
+them in the config file, up to upstream's scale:
+
+- `limits.chat.max_prompt_tokens` and `limits.chat.max_completion_tokens` take up to
+  1,048,576. `limits.http.max_request_bytes`, `limits.chat.max_body_bytes` and
+  `limits.chat.max_message_bytes` take up to 256 MiB (upstream's body limit), and
+  `limits.chat.max_messages` up to 65,536.
+- Set `limits.engine.generation_timeout_s` and `limits.http.request_deadline_ms` for the
+  longer prefill and upload.
+- The engine's own context is `--max-context N` in `engine.args`, with `--kv-resident 32768`
+  (KV streaming, as upstream's setup does at 64K and more) on a GPU with less memory than
+  the KV cache needs.
+- Past the trained 262,144 positions, add upstream's YaRN rope scaling: `--rope-scaling yarn
+  --rope-scale F` with F = context / 262,144 (2 at 512K, 4 at 1M). This is experimental
+  upstream, needs proportionally more RAM for the KV cache (~13 KB a token), and is fixed for
+  the whole run.
+
+`model.name` sets the name the server serves the model as: `/v1/models` lists it, the chat
+page shows it, and requests name it (upstream serves `qwen3.8-flash-next` by default, set by
+its `model_name`). Unset, the served id is the inventory file name (expert mode) or
+`name:tag` (a managed model).
 
 ### Routes, errors, headers (SP3)
 

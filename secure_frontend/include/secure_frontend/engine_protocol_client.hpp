@@ -100,9 +100,11 @@ struct EngineProtocolLimits final {
   // A non-zero value is a fixed cap for both outbound commands and inbound records.
   // With 0, inbound records are capped at kDefaultInboundLineBytes (engine records are short).
   std::size_t max_line_bytes{0};
-  std::size_t max_prompt_tokens{262144};
-  std::size_t max_generated_tokens{262144};
-  std::uint32_t max_new_tokens{262144};
+  // 1,048,576: upstream Strata runs contexts up to 1M with YaRN rope scaling (session log
+  // step 13); a GEN line of that many ids still fits kProtocolMaxLineBytes.
+  std::size_t max_prompt_tokens{1048576};
+  std::size_t max_generated_tokens{1048576};
+  std::uint32_t max_new_tokens{1048576};
 };
 
 // The original Strata profile has no prefill progress record. The separately

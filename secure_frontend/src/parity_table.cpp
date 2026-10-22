@@ -91,7 +91,7 @@ constexpr std::array<ParityRow, 127> kRows{{
     // only where a GPU box can answer it).
     {"min_free_vram_mib", kTyped, frontend_behavior, "serve/server.py:8300 (M1 Task 7: engine.min_free_vram_mib)"},
     {"min_tokens", kTyped, request_rule, "serve/server.py:2573 (vision encoder at the pin); engine.min_tokens re-scoped as the request output floor (added, C-1; Ruling T8-e: lifts at the §7.2 resolve site)"},
-    {"model_name", kMapped, none, "served-model identity comes from the SP4 manifest; serve/images.py:184"},
+    {"model_name", kTyped, frontend_behavior, "serve/server.py:7855 default_model_name, :3966 model_names (session log step 13: model.name — the served name /v1/models lists and requests name; unset keeps the inventory or manifest id)"},
     // The pin reads this one through strata_control/draft_layer.is_off, which the Task-2
     // inventory greps do not see; the row keeps the parity spine complete (extra rule row).
     {"mtp", kTyped, engine_arg, "strata_control/draft_layer.py is_off; serve/server.py:2966-2969 (M1 Task 6: engine.mtp drops --mtp/--spec-min-p/--batch-mtp at every start)"},
@@ -106,7 +106,7 @@ constexpr std::array<ParityRow, 127> kRows{{
     {"queue_timeout", kMapped, none, "the SP3 row limits.concurrency.queue_timeout_ms already carries admission waiting (pin bound 0.1..600 at serve/server.py:8048; Ruling T8-a)"},
     {"reasoning_budget_tokens", kTyped, config_only, "serve/server.py:8337 (M1 Task 5: reasoning.budget_tokens)"},
     {"reasoning_close_retry", kTyped, config_only, "serve/server.py:8232 (M1 Task 5: reasoning.close_retry)"},
-    {"reasoning_effort", kTyped, frontend_behavior, "serve/server.py:7642 (M1 Task 5: reasoning.effort; the qwen think tail, issue 19: none writes the closed block, unset/low/medium/high open it, the levels are not told apart)"},
+    {"reasoning_effort", kTyped, frontend_behavior, "serve/server.py:7642 (M1 Task 5: reasoning.effort; the qwen think tail, issue 19: none writes the closed block, unset/low/medium/high open it, the levels are not told apart; session log step 14: the same words per request on the qwen profile)"},
     {"reasoning_loop_recovery", kTyped, config_only, "serve/server.py:8346 (M1 Task 5: reasoning.loop_recovery)"},
     {"reload", kMapped, none, "image-generation card reload mode (spec D-9); the vision child's lifecycle follows the vision/elastic rows; serve/images.py:177"},
     {"repeat_stop_tokens", kTyped, frontend_behavior, "serve/server.py:198 (REPEAT_STOP_TOKENS 256), the pin's detector is frontend-side at :5098, notice :5278, 0 = off :8332 (Ruling T8-f: no GEN key)"},

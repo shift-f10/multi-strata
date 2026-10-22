@@ -424,6 +424,25 @@ void gen_line_fits_max_prompt_tokens() {
   expect(transport.writes.size() == 1U && transport.writes.front().size() > 40000U, "the GEN line must actually carry every id");
 }
 
+// Session log step 13 (owner: Strata runs contexts up to 1M with YaRN): the default limits take
+// a prompt near 1,048,576 tokens from a READY that advertises that context; the GEN line (six-digit
+// ids, as the tokenizer's) stays under the 16 MiB protocol cap.
+void default_limits_take_a_million_token_prompt() {
+  const secure_frontend::EngineProtocolLimits defaults{};
+  expect(defaults.max_prompt_tokens == 1048576U && defaults.max_generated_tokens == 1048576U &&
+             defaults.max_new_tokens == 1048576U,
+         "the default token limits are 1,048,576");
+  FakeTransport transport;
+  transport.reads = {line("READY 1048576 stop")};
+  EngineProtocolClient client(transport);
+  secure_frontend::EngineReady ready{};
+  (void)client.await_ready(std::chrono::seconds(1), ready);
+  const std::vector<std::uint32_t> prompt(1048576U - 64U, 248046U);
+  expect(!client.begin_generation(1, prompt, secure_frontend::deadline_after(std::chrono::seconds(30))).has_value(),
+         "a prompt just under 1M tokens is sent");
+  expect(transport.writes.size() == 1U && transport.writes.front().size() > 7U * 1000U * 1000U, "the GEN line carries every id");
+}
+
 // The READY-derived outbound cap is clamped to the shared 16 MiB protocol cap, so a
 // huge advertised context cannot let begin_generation build a line the transport refuses.
 void derived_line_cap_is_clamped_to_protocol_max() {
@@ -665,6 +684,7 @@ int main(int argc, char** argv) {
        resume_and_reused_progress_is_consumed_in_the_strata_profile},
       {"generation_total_deadline_is_enforced", generation_total_deadline_is_enforced},
       {"gen_line_fits_max_prompt_tokens", gen_line_fits_max_prompt_tokens},
+      {"default_limits_take_a_million_token_prompt", default_limits_take_a_million_token_prompt},
       {"derived_line_cap_is_clamped_to_protocol_max", derived_line_cap_is_clamped_to_protocol_max},
       {"stop_cause_and_completed_generations", stop_cause_and_completed_generations},
       {"gen_carries_bounded_sampling_keys", gen_carries_bounded_sampling_keys},

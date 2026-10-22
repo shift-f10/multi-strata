@@ -479,7 +479,10 @@ void dos01_json_limits() {
   expect(fails_with(parse(body_with(R"("unknown":1)")), ApiError::invalid_request), "unknown key");
   expect(fails_with(parse(body_with(R"("user":")" + std::string(257, 'u') + "\"")), ApiError::invalid_request), "user over 256 bytes");
   expect(ok(parse(body_with(R"("user":"alice")"))) != nullptr, "user is accepted and ignored");
-  expect(fails_with(parse(body_with("", R"([{"role":"user","content":"https://x"}])")), ApiError::invalid_request), "remote scheme (SP0)");
+  // Session log step 15: remote-looking text is text (SP3 §6.2 "rejected or treated as text";
+  // the server fetches nothing), so a link in an answer no longer breaks the next turn.
+  const auto linked = parse(body_with("", R"([{"role":"user","content":"https://x"}])"));
+  expect(ok(linked) != nullptr && ok(linked)->messages.front().content == "https://x", "remote-looking text is kept as text");
   // Ruling T12-l (SP5 M1 Task 12): name:tag is the served managed-model grammar, so
   // a colon alone no longer answers at the schema — "x::y" (empty segment) still
   // does, and "pull:x" passes the grammar only to be refused model_not_found by the

@@ -102,10 +102,25 @@ void creates_plan_only_with_control_tokens() {
          "GLM encoder must reject arbitrary special-token literals");
 }
 
+// Session log step 13: the GLM renderer drops the old 128-message / 64 KiB / 512 KiB caps too
+// (Maya's GLM engine already takes glm.max_context up to 1,048,576).
+void renders_long_conversations_past_the_old_caps() {
+  std::vector<secure_frontend::ChatMessage> messages;
+  std::size_t total = 0;
+  for (int i = 0; i < 201; ++i) {
+    std::string text = i % 20 == 0 ? std::string(100U * 1024U, 'g') : "turn " + std::to_string(i);
+    total += text.size();
+    messages.push_back({i % 2 == 0 ? "user" : "assistant", std::move(text)});
+  }
+  const auto prompt = secure_frontend::render_glm53_text_prompt(messages);
+  expect(prompt.has_value() && prompt->size() > total, "201 messages, ten of 100 KiB, over 1 MiB in all, render whole");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
+      {"renders_long_conversations_past_the_old_caps", renders_long_conversations_past_the_old_caps},
       {"renders_exact_fixed_profile", renders_exact_fixed_profile},
       {"rejects_boundary_injection_and_invalid_order", rejects_boundary_injection_and_invalid_order},
       {"creates_plan_only_with_control_tokens", creates_plan_only_with_control_tokens},

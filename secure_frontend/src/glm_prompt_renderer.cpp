@@ -7,9 +7,12 @@
 namespace secure_frontend {
 namespace {
 
-constexpr std::size_t kMaximumMessages = 128U;
-constexpr std::size_t kMaximumMessageBytes = 64U * 1024U;
-constexpr std::size_t kMaximumPromptBytes = 512U * 1024U;
+// The most the limits.chat.* rows may allow (spec §9.5; session log step 13, the owner's 1M
+// contexts): 65,536 messages, a message of up to a whole 256 MiB body, and the rendered prompt
+// that much plus room for every message's framing. A request is bounded by its config first.
+constexpr std::size_t kMaximumMessages = 65536U;
+constexpr std::size_t kMaximumMessageBytes = 256U * 1024U * 1024U;
+constexpr std::size_t kMaximumPromptBytes = kMaximumMessageBytes + 16U * 1024U * 1024U;
 constexpr std::array<std::string_view, 6U> kControlLiterals = {
     "[gMASK]", "<sop>", "<|system|>", "<|user|>", "<|assistant|>", "<think>"};
 

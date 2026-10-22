@@ -718,6 +718,109 @@ mode only as an explicit loopback-only switch with a warning). Both are now buil
   (terminal tab, `out/serve/serve-iq3s-lan.ps1`). From another machine, Windows Firewall
   must allow `strata-secure-server.exe` (Public profile; not changed here).
 
+### 13. Long contexts to upstream's scale, and served model names (owner requests)
+
+- **1M contexts** (owner: "Strata can go to 1M context using rope scaling yarn"). Upstream
+  serves a 256 MiB body by default ("a million-token conversation") and documents YaRN runs
+  at 421K, 714K and 1M (`--rope-scaling yarn --rope-scale F`, F = context / 262,144). Our
+  frontend capped well below that, below the config too.
+  - The prompt renderers allowed 128 messages, 64 KiB a message and **512 KiB a prompt**
+    (≈128K tokens of text). `EngineProtocolLimits` allowed 262,144 prompt, new and
+    generated tokens. The schema maxima mirrored those (spec §9.5).
+  - Now: renderers 65,536 messages and 256 MiB a message (prompt: that plus 16 MiB of
+    framing); protocol 1,048,576; schema maxima `max_prompt_tokens`,
+    `max_completion_tokens` and `default_max_tokens` 1,048,576, `max_messages` 65,536,
+    `max_message_bytes`, `max_body_bytes` and `max_request_bytes` 256 MiB.
+  - **Defaults unchanged** (48 KiB body, 32K prompt), so an install opts in by config.
+  - The GEN line for ~1M six-digit ids is ~7 MB, under the 16 MiB protocol cap. YaRN
+    needs no code: `engine.args` passes `--rope-scaling`/`--rope-scale` through (only
+    frontend-owned flags are refused).
+  - Test-first: 5 cases RED then GREEN (renderers ×2, protocol defaults, config ranges ×2).
+- **Served model names** (owner: "name the models better instead of the filename").
+  Upstream serves `qwen3.8-flash-next` (`default_model_name`, its `model_name` key), not the
+  file. New typed `model.name` (the alias grammar, ≤64 characters): `/v1/models` lists it,
+  the chat page shows it, requests name it. Unset keeps the inventory file or `name:tag`.
+  The `model_name` parity row is now typed (`frontend behaviour`). Test-first: RED (the file
+  name was still served), GREEN.
+
+### 14. The page with upstream's look; per-request thinking; served at 128K (owner requests)
+
+- **Design** (owner: "the same look and feel as the upstream but I want the api login and
+  new chat button"). Upstream's UI (`serve/web/`, MIT; the Outfit font SIL OFL) was read
+  and its kit copied: tokens, components, icon sprite, favicon, font. The sprite's C2PA
+  metadata blob is dropped, and the text is converted to ASCII and LF (provenance and
+  SHA-256s in `docs/PROVENANCE.md`).
+  - Markup and layout follow upstream: header tabs, status pill, theme switch, bubbles,
+    Markdown and code blocks, the "Thinking" collapsible, the composer with attach,
+    export, sampling, Stop and Send, the sampling drawer, and About.
+  - Added: our API-key sign-in card and a labelled New chat button.
+  - Dropped: Monitor, Images, MCP and server settings (routes this server does not have),
+    the GitHub link, Top-k (the schema refuses it), and inline script (the theme
+    pre-paint moved to `/ui/theme.js`).
+  - The Markdown renderer builds DOM nodes only. The embed step now carries binary assets
+    (the font); text assets are still ASCII and LF only. CSP adds `img-src 'self'` and
+    `font-src 'self'`. `.gitattributes` keeps `web/` at LF and the fonts binary.
+- **Per-request `reasoning_effort`** (the drawer's Thinking control; upstream sends it per
+  message): `none|low|medium|high` on the qwen profile (`none` closes the think block).
+  A profile without it refuses it by name. Test-first: schema and socket cases RED, then
+  GREEN.
+- **Tests:** the page cases now pin the 10 assets and their types, the absence of inline
+  code and HTML sinks, the WOFF2 fonts, the symbols-only sprite, and the theme-only
+  storage. Full preset suite **885 tests, 884 passed, 0 failed, 1 skipped**; repo pytest
+  55 passed, the same 7 host failures, 4 skipped. The page's later script fixes (below)
+  re-ran the 10 page cases.
+- **Served at 128K** (`out/serve/config-iq3s-lan-128k.json`):
+  - The engine runs `--max-context 131072 --kv int8 --kv-resident 32768`. READY in 45 s,
+    and `/v1/models` lists `Qwen3.8-Flash-Next` (`model.name`).
+  - Resources at idle: GPU 15.7 of 16 GB, RAM free ~4 GB, **commit 77.4 of 78.3 GB**
+    (issue 17's headroom, now nearly gone).
+- **Browser check** (built-in browser, real model):
+  - Sign-in card, chat with Markdown (heading, 3-item list, `python` code block, thinking
+    collapsed after the answer started): `Qwen3.8-Flash-Next - 220 tokens - 94.7 tok/s -
+    5.1 s`. Thinking Off answered with no thinking block. Reload stayed signed in, and New
+    chat cleared.
+  - Stop, then a new question answered (the stored history alternates). The About facts
+    were right, and the theme switched and was remembered.
+  - No CSP violation in the console; the font, sprite and favicon all loaded.
+  - Two page bugs found and fixed: a turn with no answer (stopped or refused) left the
+    question in the history, so the next question was refused as two user turns in a
+    row; and a speed of 40,000 tok/s for a 4-token reply that arrived in one chunk (a rate
+    is now shown only from 16 tokens and 0.25 s).
+37. **The first two thinking-off requests after a 128K start took 60-70 s** — observation.
+    `"What is 17 times 23?"` with `reasoning_effort: none` (35 prompt tokens, 4 out): the
+    engine at 99% GPU, no token for 62 s (the page's request, stopped), then 69.8 s (curl).
+    After that the same request took 2.2 and 1.7 s. After a restart it took 2.0 s, and
+    thinking on 2.8 s. Not reproduced. A plausible cause is cold experts read from disk
+    under memory pressure (~4 GB free); not proven.
+38. **128K on this box leaves almost no commit headroom** — open (owner). Commit charge
+    77.4 of 78.3 GB at idle with the IQ3_S pack. Longer contexts (256K, or 1M with YaRN)
+    need more pinned host memory for the KV cache (~13 KB a token), so on this box they
+    need a larger page file or a smaller pack first (issue 17).
+
+### 15. A link or "data:" in an answer broke the next turn (owner bug report)
+
+39. **"The request is malformed or not supported. (invalid_request)" after the first
+    answer** — **fixed, test-first.** SP0's `valid_content` refused any message text
+    containing `http://`, `https://`, `file://`, `mcp://` or `data:` (case-insensitive,
+    anywhere). The page sends the earlier answers back as history, so an answer with a
+    link, or prose such as "Training data: …", made every later turn a 400. Reproduced
+    with curl.
+    - SP3 §6.2 (PRIV-03) allows such content to be "rejected or treated as text", and the
+      server never fetches message text. So text is now text, verbatim, in every role.
+      The model field keeps the scheme guard, and image URLs keep their own gate (data:
+      only, never fetched).
+    - Tests: new `chat_schema_tests.remote_looking_text_is_text`. Two cases change from
+      "refused" to "kept as text": `http_parser_tests.dos01_json_limits`, and
+      `egress_tests.egress_command_like_values_trigger_nothing`, which now asserts the five
+      texts are served (200) and reach the engine exactly five times. Its egress checks are
+      unchanged: no process started, no acquire or update route, no outbound attempt
+      under the interposer.
+    - RED (3 failing), GREEN; full preset suite **886 tests, 885 passed, 0 failed, 1
+      skipped**.
+    - Checked: the failing curl request now answers in 4.0 s. In the page, "the Python
+      website URL" (`https://www.python.org`) then "which language?" (`Python`) both
+      answered.
+
 ### Not done in this session
 
 - Resume doc §8 item 3 (`qwen35moe` family behaviour): not applicable to these packs (no

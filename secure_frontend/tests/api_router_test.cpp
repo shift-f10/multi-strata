@@ -237,7 +237,24 @@ void web_ui_off_by_default_serves_nothing_public() {
 
 void web_ui_serves_the_bundled_page_without_a_key() {
   auto router = page_router(true, true);
-  expect(secure_frontend::web_ui_assets().size() == 3U, "three bundled files");
+  // Session log step 14: the page, its two scripts and three stylesheets (upstream's UI kit,
+  // MIT), the icon sprite and favicon, and the Outfit font (OFL) - each at one exact target.
+  const std::vector<std::pair<std::string, std::string>> expected{
+      {"/", "text/html; charset=utf-8"},
+      {"/ui/theme.js", "text/javascript; charset=utf-8"},
+      {"/ui/app.js", "text/javascript; charset=utf-8"},
+      {"/ui/tokens.css", "text/css; charset=utf-8"},
+      {"/ui/components.css", "text/css; charset=utf-8"},
+      {"/ui/app.css", "text/css; charset=utf-8"},
+      {"/ui/sprite.svg", "image/svg+xml; charset=utf-8"},
+      {"/ui/favicon.svg", "image/svg+xml; charset=utf-8"},
+      {"/ui/fonts/outfit-latin-wght.woff2", "font/woff2"},
+      {"/ui/fonts/outfit-latin-ext-wght.woff2", "font/woff2"}};
+  expect(secure_frontend::web_ui_assets().size() == expected.size(), "exactly the bundled files");
+  for (const auto& [target, type] : expected) {
+    const auto* asset = secure_frontend::find_web_asset(target);
+    expect(asset != nullptr && asset->content_type == type, target + " is bundled as " + type + " (nosniff needs it exact)");
+  }
   for (const auto& asset : secure_frontend::web_ui_assets()) {
     const std::string target{asset.target};
     const auto response = bare(router, "GET", target);
@@ -250,10 +267,6 @@ void web_ui_serves_the_bundled_page_without_a_key() {
     expect(response.header_value("Cross-Origin-Opener-Policy") == std::optional<std::string_view>{"same-origin"},
            target + " isolates its browsing context");
   }
-  const auto types = [](std::string_view target) { return std::string{secure_frontend::find_web_asset(target)->content_type}; };
-  expect(types("/") == "text/html; charset=utf-8" && types("/ui/app.js") == "text/javascript; charset=utf-8" &&
-             types("/ui/app.css") == "text/css; charset=utf-8",
-         "HTML, JavaScript and CSS types (nosniff needs them exact)");
   const auto authorized = get(router, "/");
   expect(authorized.status == 200 && authorized.body == secure_frontend::find_web_asset("/")->body,
          "a request that carries the key gets the same page");
@@ -272,6 +285,7 @@ void web_ui_leaves_every_api_route_authenticated() {
   for (const auto& [method, target, status] : std::vector<std::tuple<std::string, std::string, int>>{
            {"POST", "/", 401}, {"HEAD", "/", 401}, {"GET", "/ui/", 401}, {"GET", "/ui/other.js", 401},
            {"GET", "/index.html", 401}, {"GET", "//", 401}, {"GET", "/UI/app.js", 401}, {"POST", "/ui/app.js", 401},
+           {"GET", "/ui/fonts/", 401}, {"GET", "/ui/fonts/OFL.txt", 401}, {"GET", "/ui/LICENSE.strata-ui.txt", 401},
            {"GET", "/?a=1", 400}, {"GET", "/ui/app.js?v=1", 400}}) {
     const auto response = bare(router, method, target);
     expect(response.status == status && response.content_security_policy.empty() && response.body.find("<html") == std::string::npos,
@@ -290,26 +304,40 @@ void web_ui_still_checks_host_and_origin() {
   expect(same.status == 200, "the page's own origin is same-origin");
 }
 
-// The bundled files themselves: ASCII, no carriage return, nothing fetched from anywhere
-// else, no inline script, style or handler (the CSP would refuse them anyway), and the
-// script renders text only and keeps the key in sessionStorage (this tab), never localStorage.
+// The bundled files themselves (session log steps 12 and 14): every text file ASCII with LF line
+// ends; nothing names another server (the SVG namespace URI is an identifier, never fetched); no
+// inline script, style or handler (the CSP would refuse them anyway); the script renders text
+// only, keeps the key in sessionStorage (this tab) and never in localStorage, which only the
+// theme script uses, for the theme; the sprite carries no metadata blob; the fonts are WOFF2.
 void web_ui_assets_are_bundled_and_inert() {
   const auto body = [](std::string_view target) { return std::string{secure_frontend::find_web_asset(target)->body}; };
+  constexpr std::string_view kSvgNamespace = "http://www.w3.org/2000/svg";
   for (const auto& asset : secure_frontend::web_ui_assets()) {
-    const std::string text{asset.body};
     const std::string name{asset.target};
+    std::string text{asset.body};
+    if (asset.content_type == "font/woff2") {
+      expect(text.rfind("wOF2", 0) == 0, name + " is a WOFF2 font");
+      continue;
+    }
     expect(!text.empty() && std::all_of(text.begin(), text.end(), [](char c) { return static_cast<unsigned char>(c) < 0x80U && c != '\r'; }),
            name + " is ASCII with LF line ends");
+    for (std::size_t at = text.find(kSvgNamespace); at != std::string::npos; at = text.find(kSvgNamespace)) {
+      text.erase(at, kSvgNamespace.size());
+    }
     expect(text.find("http://") == std::string::npos && text.find("https://") == std::string::npos && text.find("//cdn") == std::string::npos,
            name + " names no other server");
   }
   const std::string html = body("/");
-  expect(html.find("<script src=\"/ui/app.js\" defer></script>") != std::string::npos &&
-             html.find("<link rel=\"stylesheet\" href=\"/ui/app.css\">") != std::string::npos,
-         "the page loads exactly its two bundled files");
+  expect(html.find("<script src=\"/ui/theme.js\"></script>") != std::string::npos &&
+             html.find("<script src=\"/ui/app.js\" defer></script>") != std::string::npos,
+         "the page loads exactly its two bundled scripts");
   std::size_t scripts = 0;
   for (std::size_t at = html.find("<script"); at != std::string::npos; at = html.find("<script", at + 1U)) ++scripts;
-  expect(scripts == 1U, "one script element, the bundled one (no inline script)");
+  expect(scripts == 2U, "two script elements, both bundled (no inline script)");
+  for (const char* sheet : {"/ui/tokens.css", "/ui/components.css", "/ui/app.css"}) {
+    expect(html.find(std::string{"<link rel=\"stylesheet\" href=\""} + sheet + "\">") != std::string::npos,
+           std::string{"the page loads "} + sheet);
+  }
   expect(html.find(" style=") == std::string::npos && html.find("<style") == std::string::npos, "no inline style");
   for (const char* handler : {" onclick=", " onload=", " onerror=", " onsubmit=", " oninput=", " onkeydown="}) {
     expect(html.find(handler) == std::string::npos, std::string{"no inline handler:"} + handler);
@@ -324,6 +352,13 @@ void web_ui_assets_are_bundled_and_inert() {
   expect(js.find("sessionStorage") != std::string::npos && js.find("textContent") != std::string::npos &&
              js.find("credentials = \"omit\"") != std::string::npos,
          "the key lives in sessionStorage, output is text, no cookies are sent");
+  const std::string theme = body("/ui/theme.js");
+  expect(theme.find("strata.theme") != std::string::npos && theme.find("sessionStorage") == std::string::npos &&
+             theme.find("fetch(") == std::string::npos && theme.find("Key") == std::string::npos,
+         "the theme script stores the theme and nothing else");
+  const std::string sprite = body("/ui/sprite.svg");
+  expect(sprite.find("<metadata") == std::string::npos && sprite.find("c2pa") == std::string::npos && sprite.find("i-new-chat") != std::string::npos,
+         "the icon sprite is the symbols only");
 }
 
 void keyless_router_answers_without_a_key() {
