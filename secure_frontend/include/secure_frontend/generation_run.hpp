@@ -25,6 +25,15 @@ enum class RunCancel { none, client_gone, write_stall, shutting_down };
 // undecodable: a generated id that is not ordinary output, STOP drained.
 enum class RunEnd { stop, length, cancelled, engine_error, engine_unavailable, undecodable };
 
+// The Monitor's meter (listener.monitor, session log step 16): what one generation did,
+// never what it said. Called on the loop's thread; an implementation must not block.
+class GenerationMeter {
+ public:
+  virtual void on_token(std::size_t generated) = 0;      // after each counted T record
+  virtual void on_done(const DoneFigures& figures) = 0;  // the engine's DONE figures
+  virtual ~GenerationMeter() = default;
+};
+
 struct GenerationRunLimits final {
   std::chrono::milliseconds generation_timeout{std::chrono::seconds(120)};
   std::chrono::milliseconds stop_drain_timeout{std::chrono::seconds(5)};
@@ -49,6 +58,8 @@ struct GenerationRunLimits final {
   // is never output, and anything the engine sends after it before DONE is dropped
   // (upstream breaks out of its token loop there, serve/server.py:5086-5091).
   std::vector<std::size_t> stop_tokens{};
+  // The Monitor's meter; null (the default): nothing is measured.
+  GenerationMeter* meter{nullptr};
 };
 
 struct GenerationRunResult final {

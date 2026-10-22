@@ -102,6 +102,24 @@ Trust boundaries:
   only. Tests pin those properties of the files (no inline script or handler, no
   HTML sinks, no other host, no `localStorage` in the chat script; the theme
   script stores only `strata.theme`).
+- The Monitor (`listener.monitor`, off by default, 2026-10-22; session log step
+  16) is one more keyed route, `GET /metrics`, answering 404 while off. It tells a
+  key holder what the server is doing — the engine state, the queue, the last 100
+  generations' token counts, finish and the engine's own timings, and this
+  machine's CPU, RAM and GPU readings — never a prompt, an answer, a client
+  address or a key. Everything is in memory and bounded (100 records, 60 samples a
+  series) and gone at exit. A key holder already sees the model and can time its
+  own requests; the new disclosure is other clients' request sizes and times, and
+  the hardware's state. The GPU is read by NVIDIA's `nvidia-smi`, started by the
+  server as its own child from the system directory only (Windows
+  `GetSystemDirectoryW`, Linux `/usr/bin`), with a fixed argument list, no shell,
+  a fixed environment (Windows: `ProgramFiles` alone, which NVML needs, read from
+  HKLM's `ProgramFilesDir` — never from the server's own environment, so whoever
+  starts the server cannot point NVML elsewhere) and the engine's Job/process-group
+  handling, and killed on
+  shutdown. Its stdout is parsed strictly (ten fields, bounded, fail-closed per
+  line); no vendor library is loaded into the server. Residual: that tool is the
+  driver vendor's code, trusted like the driver the engine already uses.
 - CORS is disabled by default: no `Access-Control-Allow-Origin` header is
   emitted. When configured, emit only exact allowed origins; never reflect an
   arbitrary origin and never combine `*` with credentials.

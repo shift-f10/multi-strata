@@ -57,7 +57,7 @@ ChatGenerationPlanResult make_qwen_chat_generation_plan(
     const ChatCompletionRequest& request, const TokenizerPack& tokenizer,
     const std::size_t maximum_prompt_tokens, const std::size_t default_max_tokens,
     const SamplingDefaults& defaults, const std::span<const std::size_t> image_token_counts,
-    const bool thinking) {
+    const bool thinking, const std::optional<QwenEffortPlacement> effort) {
   if (request.model.empty() || request.messages.empty() || maximum_prompt_tokens == 0U ||
       (request.max_tokens.has_value() && *request.max_tokens == 0U)) {
     return error(ChatGenerationPlanErrorCode::invalid_request,
@@ -74,7 +74,7 @@ ChatGenerationPlanResult make_qwen_chat_generation_plan(
   // without them keeps the plain prompt (the tags then fail closed in output as before).
   const auto think_tokens = find_qwen_think_tokens(tokenizer);
   const QwenThinking tail = !think_tokens.has_value() ? QwenThinking::absent : thinking ? QwenThinking::on : QwenThinking::off;
-  const auto prompt = render_qwen_text_prompt(request.messages, image_token_counts, tail);
+  const auto prompt = render_qwen_text_prompt(request.messages, image_token_counts, tail, effort);
   if (!prompt) {
     return error(ChatGenerationPlanErrorCode::prompt_render_failed,
                  "chat messages cannot be represented by the fixed prompt format");

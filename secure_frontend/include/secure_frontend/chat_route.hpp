@@ -4,7 +4,9 @@
 #include "secure_frontend/chat_schema.hpp"
 #include "secure_frontend/generation_gate.hpp"
 #include "secure_frontend/image_payload.hpp"
+#include "secure_frontend/qwen_prompt_renderer.hpp"
 #include "secure_frontend/request_router.hpp"
+#include "secure_frontend/serve_monitor.hpp"
 #include "secure_frontend/tokenizer_pack.hpp"
 
 #include <atomic>
@@ -31,6 +33,11 @@ struct ChatRouteConfig final {
   // reasoning.effort for the qwen profile: false only for "none" (the template's closed
   // think block); unset, low, medium and high think (upstream frontend.py:134-148).
   bool qwen_thinking = true;
+  // Session log step 16: the level a thinking request without its own reasoning_effort gets
+  // (reasoning.effort; unset is the template's default, high), and reasoning.effort_position
+  // "end" (the template's sentence for a non-default level right before the answer).
+  QwenEffort qwen_effort = QwenEffort::high;
+  bool effort_at_end = false;
   // SP5 M1 Task 8: engine.min_tokens / engine.max_tokens — added frontend bounds on the
   // request output budget (0: unset; Ruling T8-e) — and model.aliases: extra exact model
   // names the chat route answers to (set_aliases :3764-3777; §4: never empty or partial).
@@ -46,6 +53,8 @@ struct ChatRouteConfig final {
   // are one decision made by secure_server_main), so a content array never reaches a
   // route without a service.
   VisionService* vision{nullptr};
+  // listener.monitor (session log step 16): told about each generation; null when off.
+  ServeMonitor* monitor{nullptr};
 };
 
 [[nodiscard]] std::optional<std::string> make_completion_id();

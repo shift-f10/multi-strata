@@ -838,6 +838,108 @@ mode only as an explicit loopback-only switch with a warning). Both are now buil
       There is no JS test harness here: the browser reproduction was the RED, the
       same run after the fix the GREEN.
 
+### 16. Upstream's Monitor tab and its four thinking levels (owner requests)
+
+Owner: "it is missing the monitor section from the upstream", then "the upstream has
+thinking off, low, medium and high".
+
+41. **The page had no Monitor; this server had no `/metrics`.** Upstream's Monitor tab
+    polls its own `GET /metrics` (serve/server.py `metrics()`), which reads the GPU through
+    NVML loaded in-process (serve/telemetry.py). Added as **`listener.monitor`** (off by
+    default, config file only), following privacy-migration.md's rule for upstream's
+    metrics: "opt-in, token-protected, and documented".
+    - **Route:** `GET /metrics` is a keyed `kRouteTable` route. While the switch is off it
+      answers 404. The JSON has upstream's shape.
+    - **Meter (`ServeMonitor`):** the chat route tells it when a generation starts and how
+      it ended, on both paths, and `drive_generation` tells it each token and the engine's
+      `DONE` figures. `DoneEvent::figures` now carries the record's prompt tokens,
+      prompt_ms, decode_ms and reused count. It keeps the last 100 generations and totals,
+      never any text.
+    - **Host readings:** CPU and RAM come from the OS. GPU 0 comes from
+      `System32\nvidia-smi.exe` (`/usr/bin/nvidia-smi` on Linux), run as its own child
+      through `EngineStdioProcess`: fixed argv (`--loop-ms=1000`), no shell, empty
+      environment, the Job. Its csv is parsed strictly and nothing from NVIDIA loads into
+      the server. A one-second sampler keeps 60 samples a series.
+    - **Page:** upstream's Monitor tab, ported from its `renderMonitor`: state badges,
+      speed / GPU load / VRAM / GPU temp / power / PCIe / CPU cards with sparklines,
+      context gauge, GPU memory / RAM / temperature bars, recent requests and totals. It
+      is built from DOM nodes; upstream's uses `innerHTML`, which our page tests forbid.
+      Left out: disk read, experts in VRAM, VRAM hit rate, conversation cache and MCP (no
+      data here).
+42. **The four levels were one level on our side, and our prompt lacked the template's
+    effort sentence.** The page had Thinking Off / On. The server took
+    none/low/medium/high but told the three thinking ones apart nowhere. The model's own
+    template (`C:\strata-data\packs\iq3_s\tokenizer\chat_template.jinja`, same effort
+    block as upstream's `serve/chat_template.jinja`) puts a fixed sentence at the top of
+    the system turn: "Reasoning effort is set to xhigh. ..." for high, which is also the
+    default, a low sentence for low, nothing for medium, and nothing with thinking off.
+    So every thinking request we rendered differed from upstream's prompt.
+    - Fixed: `render_qwen_text_prompt` takes a `QwenEffortPlacement` and writes the
+      template's sentences byte for byte.
+    - With `reasoning.effort_position = "end"`, and only when the engine took
+      `--tail-role-token`, it renders upstream #458: the conversation as high, and a low or
+      medium sentence in a short system turn before the answer (`render_prompt`,
+      server.py:4557).
+    - The route passes the request's level, else `reasoning.effort`, else high. The page
+      offers Off / Low / Medium / High (High by default), and a saved "on" becomes high.
+- **TDD:**
+  - New cases: `serve_monitor_tests` ×7 (nvidia-smi parsing and fixed command, records,
+    live states, bounded history, host readings, sampler against a fake tool, a new
+    `--fake-nvidia-smi` mode of the test-only fake engine);
+    `engine_protocol_client_tests.done_figures_reach_the_done_event`;
+    `chat_execution_tests.drive_generation_feeds_the_monitor_meter`;
+    `api_router_tests.metrics_route_needs_the_key_and_the_switch`;
+    `typed_config_tests.monitor_row`;
+    `api_server_tests.monitor_reports_generations_without_their_text` (a real socket:
+    keyed, both chat paths recorded, the prompt text absent, valid JSON, 404 when off);
+    `qwen_prompt_renderer_tests.renders_the_templates_effort_sentences`;
+    `chat_generation_plan_tests.qwen_plan_writes_the_effort_sentence`.
+  - RED: 14 failed for the right reason (stubs, an unknown config key, a 404 route, no
+    sentence; `out/ctest-red-monitor.log`), then GREEN, 15/15.
+  - `server_cli_tests.auth04_no_switch_disables_auth`'s switch inventory names
+    `listener.monitor` (a keyed route; it reads no key).
+  - The page assertions (`api_router_tests.web_ui_has_the_monitor_and_four_thinking_levels`)
+    were written with the page, not before it; the browser run below is their behavioural
+    check.
+- **Found by the existing security tests (full run 1: 901 tests, 3 failed):**
+  - `api_server_tests.ext01_upstream_control_routes_are_404_after_auth`: with the Monitor
+    off, `POST /metrics` answered 405, which reveals the route. Fixed in the router (off,
+    `/metrics` is no route for any method); RED first in
+    `api_router_tests.metrics_route_needs_the_key_and_the_switch`. The EXT-01 test is
+    unchanged.
+  - `api_server_tests.web02_bound_authority_and_localhost_alias_succeed` walks every
+    `kRouteTable` route on a default server. `/metrics` is opt-in, so that server now turns
+    the Monitor on and the test covers `/metrics` under every authority too.
+  - `typed_config_tests.readme_config_table_matches_schema`: I edited the README during the
+    run. It passes after the rebuild.
+  - Full run 2: **901 tests, 900 passed, 0 failed, 1 skipped**
+    (`cfg03_rejects_symlink_below_root`, symlink privilege).
+43. **The real `nvidia-smi` does not start with an empty environment.** On the restarted
+    server the GPU cards were empty, with the note "nvidia-smi stopped". The tool printed
+    "Failed to initialize NVML: Unknown Error" and exited 255; tried by hand, it needs
+    `ProgramFiles` and nothing else. Fixed: the child's whole environment is `ProgramFiles`,
+    read from `HKLM\...\CurrentVersion\ProgramFilesDir`, never from the server's own
+    environment.
+    - Tests: `serve_monitor_tests.nvidia_smi_environment_is_program_files_only`, RED then
+      GREEN. `serve_monitor_tests.gpu_sampler_reads_the_real_tool_when_present` runs the
+      server's exact command against the real tool where one exists; it was written after
+      the fix, and would have caught the bug. Monitor tests 9/9.
+    - `api_server|serve_monitor|server_e2e|egress` rerun: 103 tests, 102 passed.
+      `idle_unload_respawns_before_the_next_request` (an idle-window timing test, Monitor
+      off) failed once while the 128K server was running. It then passed 3 of 3 alone, and
+      it passed in both full runs. That is a timing flake, not this change.
+- **Checked on the owner box** (IQ3_S, 128K, 0.0.0.0, `listener.monitor` on, built-in
+  browser):
+  - The Monitor tab shows the RTX 4080 SUPER's load, VRAM 15.4 of 16 GB, temperature,
+    power of 320 W, PCIe Gen4 x16 (idle Gen1), CPU over 24 threads, RAM 60.0 of 64 GB, and
+    sparklines.
+  - The same "hi" at each level, through the page's drawer: the engine reported prompts of
+    13 tokens (Off), 65 (Low), 11 (Medium) and 90 (High). Those are the closed block, the
+    low sentence, no sentence and the xhigh sentence. All four ended `stop`, with the
+    engine's own timings.
+  - The table and totals show the four requests; the context reads "117 / 128K"; no CSP
+    violation or script error.
+
 ### Not done in this session
 
 - Resume doc §8 item 3 (`qwen35moe` family behaviour): not applicable to these packs (no

@@ -78,6 +78,62 @@ void renders_think_block_per_template() {
   expect(absent.has_value() && *absent == head, "absent keeps the plain generation tail");
 }
 
+// Session log step 16 (owner: upstream's Off / Low / Medium / High): the template's reasoning
+// instructions (tokenizer/chat_template.jinja: reasoning_effort, default xhigh, high = xhigh).
+// Thinking on: high and low put their sentence at the top of the system turn (a blank line before
+// the system text), medium none. Thinking off: none. reasoning.effort_position "end" (upstream
+// #458, server.py render_prompt): low, medium and off render the conversation as high would, and
+// low or medium add their sentence as a short system turn right before the answer.
+void renders_the_templates_effort_sentences() {
+  using secure_frontend::QwenEffort;
+  using secure_frontend::QwenThinking;
+  const std::string high =
+      "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider "
+      "plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.";
+  const std::string low =
+      "Reasoning effort is set to low. Keep your thinking brief and focused, moving directly to the conclusion without "
+      "unnecessary elaboration.";
+  const std::string medium_end = "Reasoning effort is set to medium. Think as much as the task needs, without unnecessary elaboration.";
+  const std::vector<secure_frontend::ChatMessage> bare{{"user", "Hello"}};
+  const std::vector<secure_frontend::ChatMessage> with_system{{"system", "Be brief."}, {"user", "Hello"}};
+  const std::string user = "<|im_start|>user\nHello<|im_end|>\n";
+  const std::string open = "<|im_start|>assistant\n<think>\n";
+  const std::string closed = "<|im_start|>assistant\n<think>\n\n</think>\n\n";
+  const auto render = [](const std::vector<secure_frontend::ChatMessage>& messages, const QwenThinking thinking,
+                         const QwenEffort effort, const bool at_end) {
+    return secure_frontend::render_qwen_text_prompt(messages, {}, thinking, secure_frontend::QwenEffortPlacement{effort, at_end})
+        .value_or("<nullopt>");
+  };
+  const auto system = [](const std::string& text) { return "<|im_start|>system\n" + text + "<|im_end|>\n"; };
+  for (const bool at_end : {false, true}) {
+    const std::string where = at_end ? " (end)" : " (start)";
+    expect(render(bare, QwenThinking::on, QwenEffort::high, at_end) == system(high) + user + open, "high, no system" + where);
+    expect(render(with_system, QwenThinking::on, QwenEffort::high, at_end) == system(high + "\n\nBe brief.") + user + open,
+           "high before the system text" + where);
+  }
+  expect(render(bare, QwenThinking::on, QwenEffort::low, false) == system(low) + user + open, "low, no system");
+  expect(render(with_system, QwenThinking::on, QwenEffort::low, false) == system(low + "\n\nBe brief.") + user + open,
+         "low before the system text");
+  expect(render(bare, QwenThinking::on, QwenEffort::medium, false) == user + open, "medium writes no sentence");
+  expect(render(with_system, QwenThinking::on, QwenEffort::medium, false) == system("Be brief.") + user + open,
+         "medium keeps the system text alone");
+  for (const auto effort : {QwenEffort::low, QwenEffort::medium, QwenEffort::high}) {
+    expect(render(with_system, QwenThinking::off, effort, false) == system("Be brief.") + user + closed,
+           "thinking off writes no sentence and closes the block");
+  }
+  expect(render(bare, QwenThinking::on, QwenEffort::low, true) == system(high) + user + system(low) + open,
+         "end: the conversation as high, low's sentence right before the answer");
+  expect(render(with_system, QwenThinking::on, QwenEffort::medium, true) ==
+             system(high + "\n\nBe brief.") + user + system(medium_end) + open,
+         "end: medium says its own sentence there");
+  expect(render(with_system, QwenThinking::off, QwenEffort::low, true) == system(high + "\n\nBe brief.") + user + closed,
+         "end: thinking off renders the high conversation and the closed block");
+  expect(render(bare, QwenThinking::absent, QwenEffort::high, false) == user + "<|im_start|>assistant\n",
+         "a pack without think markers gets no sentence");
+  expect(secure_frontend::render_qwen_text_prompt(bare, {}, QwenThinking::on) == std::optional<std::string>{user + open},
+         "without a placement the fixed format is unchanged");
+}
+
 // Only the renderer places the reasoning markers: content carrying either literal would
 // let a client open or close the model's think block, so it fails closed.
 void think_literals_in_content_fail_closed() {
@@ -122,6 +178,7 @@ int main(int argc, char** argv) {
       {"accepts_systemless_conversation", accepts_systemless_conversation},
       {"rejects_unsafe_or_unsupported_conversations", rejects_unsafe_or_unsupported_conversations},
       {"renders_think_block_per_template", renders_think_block_per_template},
+      {"renders_the_templates_effort_sentences", renders_the_templates_effort_sentences},
       {"think_literals_in_content_fail_closed", think_literals_in_content_fail_closed},
       {"renders_long_conversations_past_the_old_caps", renders_long_conversations_past_the_old_caps},
   }, failures);

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <limits>
 
 namespace secure_frontend {
@@ -74,6 +75,32 @@ std::optional<std::string_view> finish_literal(const std::vector<std::string_vie
     if (const auto literal = match(done[1])) return literal;
   }
   return std::string_view{"stop"};
+}
+
+// The Monitor's DONE figures (DoneFigures): positional fields 2-4 and 8 of a full record; a
+// field that is not a plain non-negative number is left empty.
+DoneFigures done_figures(const std::vector<std::string_view>& done) {
+  DoneFigures figures;
+  if (done.size() < 6U) return figures;
+  const auto count = [](const std::string_view text) -> std::optional<std::size_t> {
+    std::size_t value = 0;
+    if (text.empty() || text.front() == '+' || text.front() == '-') return std::nullopt;
+    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (error != std::errc{} || end != text.data() + text.size()) return std::nullopt;
+    return value;
+  };
+  const auto milliseconds = [](const std::string_view text) -> std::optional<double> {
+    double value = 0.0;
+    if (text.empty() || text.front() == '+' || text.front() == '-') return std::nullopt;
+    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value, std::chars_format::fixed);
+    if (error != std::errc{} || end != text.data() + text.size() || !std::isfinite(value)) return std::nullopt;
+    return value;
+  };
+  figures.prompt_tokens = count(done[2]);
+  figures.prompt_ms = milliseconds(done[3]);
+  figures.decode_ms = milliseconds(done[4]);
+  if (done.size() >= 9U) figures.reused = count(done[8]);
+  return figures;
 }
 
 }  // namespace
@@ -414,7 +441,7 @@ GenerationEvent EngineProtocolClient::next_event(const std::chrono::milliseconds
     // output, but the engine is alive and resets on the next GEN, so it is
     // not counted as a successful generation (SP0 E3).
     if (*finish != "nonfinite") completed_generations_.fetch_add(1U);
-    return DoneEvent{*finish, active_generation_.token_ids.size()};
+    return DoneEvent{*finish, active_generation_.token_ids.size(), done_figures(fields(response.line))};
   }
   if (response.line.rfind("ERR", 0) == 0 && (response.line.size() == 3 || response.line[3] == ' ')) {
     return *fail(EngineProtocolErrorCode::engine_error, response.line);

@@ -7,9 +7,10 @@
 <title>Strata</title>
 <!-- Strata built-in chat page (listener.web_ui). Adapted from upstream Strata serve/web/index.html
      (pin v0.2.2, MIT License, Copyright (c) 2026 Niko1221 and the Strata contributors; see
-     LICENSE.strata-ui.txt): the header, chat, composer, about and sampling drawer kept; the API-key
-     sign-in and the labelled New chat button added; the images and monitor views, MCP and the
-     server-side settings dropped (this server has none of those routes); no inline script or style. -->
+     LICENSE.strata-ui.txt): the header, chat, composer, monitor, about and sampling drawer kept; the
+     API-key sign-in and the labelled New chat button added; the images view, the conversation-cache
+     and MCP cards and the server-side settings dropped (this server has none of those); no inline
+     script or style. -->
 <link rel="icon" href="/ui/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/ui/tokens.css">
 <link rel="stylesheet" href="/ui/components.css">
@@ -23,6 +24,8 @@
   <nav class="st-tabs" role="tablist" aria-label="Views" id="tabs" hidden>
     <button class="st-tab" role="tab" id="tab-btn-chat" aria-controls="view-chat" aria-selected="true" data-tab="chat">
       <svg class="st-icon st-icon--sm"><use href="/ui/sprite.svg#i-chat"/></svg>Chat</button>
+    <button class="st-tab" role="tab" id="tab-btn-monitor" aria-controls="view-monitor" aria-selected="false" data-tab="monitor">
+      <svg class="st-icon st-icon--sm"><use href="/ui/sprite.svg#i-activity"/></svg>Monitor</button>
     <button class="st-tab" role="tab" id="tab-btn-about" aria-controls="view-about" aria-selected="false" data-tab="about">
       <svg class="st-icon st-icon--sm"><use href="/ui/sprite.svg#i-info"/></svg>About</button>
   </nav>
@@ -86,6 +89,70 @@
     </div>
   </section>
 
+  <!-- ============================ Monitor (listener.monitor, GET /metrics) ============================ -->
+  <section class="view view--monitor" id="view-monitor" role="tabpanel" aria-labelledby="tab-btn-monitor" hidden>
+    <div class="monitor">
+      <div class="st-card monitor-off" id="monitor-off" hidden>
+        <span class="card-title">Monitor</span>
+        <p class="muted">The Monitor is off on this server. Its operator turns it on with <code>"monitor": true</code> in the
+          config file's <code>listener</code> section.</p>
+      </div>
+
+      <div class="st-card state-card" id="state-card">
+        <div class="state-card__head">
+          <span class="card-title">Model state</span>
+          <span class="badges" id="state-badges">
+            <span class="st-badge" data-s="idle">Idle</span>
+            <span class="st-badge st-badge--reading" data-s="reading">Reading</span>
+            <span class="st-badge st-badge--generating" data-s="generating">Generating</span>
+            <span class="st-badge st-badge--queued" data-s="queued">Queued</span>
+            <span class="st-badge st-badge--error" data-s="error">Error</span>
+          </span>
+        </div>
+        <div class="state-card__row"><span id="state-label">Waiting for a request</span><span class="muted" id="state-detail"></span></div>
+        <div class="st-progress" id="state-progress"><div class="st-progress__bar bar" id="state-bar"></div></div>
+      </div>
+
+      <div class="metrics" id="metrics">
+        <!-- filled by app.js: Speed, GPU load, VRAM, GPU temp, Power, PCIe, CPU -->
+      </div>
+
+      <div class="monitor-row" id="monitor-row">
+        <div class="st-card ctx-card">
+          <span class="card-title">Context fill</span>
+          <div class="ctx-gauge">
+            <svg class="st-gauge" viewBox="0 0 120 120" aria-hidden="true">
+              <circle class="st-gauge__track" cx="60" cy="60" r="50" fill="none" stroke-width="10" stroke-linecap="round"
+                      stroke-dasharray="235.6 314.2" transform="rotate(135 60 60)"/>
+              <circle class="st-gauge__fill" id="ctx-fill" cx="60" cy="60" r="50" fill="none" stroke-width="10"
+                      stroke-linecap="round" stroke-dasharray="0 314.2" transform="rotate(135 60 60)"/>
+            </svg>
+            <div class="ctx-gauge__label"><span class="ctx-gauge__pct" id="ctx-pct">0%</span><span class="muted" id="ctx-sub">&ndash;</span></div>
+          </div>
+          <div class="bar-row"><span>GPU memory</span><span class="muted" id="vram-text">&ndash;</span></div>
+          <div class="st-progress"><div class="st-progress__bar bar" id="vram-bar"></div></div>
+          <div class="bar-row"><span>System RAM</span><span class="muted" id="ram-text">&ndash;</span></div>
+          <div class="st-progress" id="ram-progress"><div class="st-progress__bar bar" id="ram-bar"></div></div>
+          <div class="bar-row"><span>GPU temperature</span><span class="muted" id="temp-text">&ndash;</span></div>
+          <div class="st-progress" data-tone="warn"><div class="st-progress__bar bar" id="temp-bar"></div></div>
+        </div>
+        <div class="st-card req-card">
+          <div class="req-head"><span class="card-title">Recent requests</span>
+            <button type="button" class="st-btn st-btn--secondary" id="req-all" hidden>Show all</button></div>
+          <div class="table-wrap" id="req-wrap">
+            <table class="st-table">
+              <thead><tr><th>Time</th><th>Status</th><th class="num">Prompt</th><th class="num">Reused</th><th class="num">Output</th>
+                <th class="num" title="New prompt tokens per second, excluding reused tokens (the engine's prompt time)">Prefill t/s</th>
+                <th class="num">Decode t/s</th><th class="num">Duration</th></tr></thead>
+              <tbody id="req-body"><tr><td colspan="8" class="muted">No requests yet</td></tr></tbody>
+            </table>
+          </div>
+          <p class="muted req-totals" id="req-totals"></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- ============================ About ============================ -->
   <section class="view view--about" id="view-about" role="tabpanel" aria-labelledby="tab-btn-about" hidden>
     <div class="about">
@@ -119,7 +186,8 @@
     <div class="st-field">
       <span class="st-label">Thinking <output id="o-thinking"></output></span>
       <div class="seg" id="s-thinking" role="radiogroup" aria-label="Thinking">
-        <button type="button" role="radio" data-v="off">Off</button><button type="button" role="radio" data-v="on">On</button>
+        <button type="button" role="radio" data-v="none">Off</button><button type="button" role="radio" data-v="low">Low</button>
+        <button type="button" role="radio" data-v="medium">Medium</button><button type="button" role="radio" data-v="high">High</button>
       </div>
     </div>
     <div class="st-field">

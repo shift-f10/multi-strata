@@ -680,6 +680,17 @@ int main(int argc, char* argv[]) {
       sleep_ms(60000);
       return 0;
     }
+    // Session log step 16 (the Monitor's GpuSampler): nvidia-smi's csv answer, every 50 ms,
+    // --fake-nvidia-smi=N lines then exit (no N: until killed).
+    const std::string_view argument{argv[index]};
+    if (argument == "--fake-nvidia-smi" || argument.rfind("--fake-nvidia-smi=", 0) == 0) {
+      const long lines = argument.size() > 18U ? std::stol(std::string{argument.substr(18U)}) : -1L;
+      for (long printed = 0; lines < 0 || printed < lines; ++printed) {
+        std::cout << "Fake GPU, 42, 2048, 16384, 55, 120.50, 320.00, 4, 4, 16\n" << std::flush;
+        sleep_ms(50);
+      }
+      return 0;
+    }
   }
   // The detached stdin reader can be blocked inside std::getline when serve
   // returns: exit() runs the stdio cleanup, which locks every FILE —

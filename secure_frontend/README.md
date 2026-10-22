@@ -257,6 +257,7 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `listener.host_aliases` | string array | `[]` | - | - | Extra exact Host values (host or host:port) clients use; required when the bind is a wildcard; at most 16. |
 | `listener.web_ui` | boolean | `false` | - | - | Serve the built-in chat page at / (bundled files only). The page asks for the API key and keeps it in that tab; every API route still needs the key. |
 | `listener.loopback_without_key` | boolean | `false` | - | - | Answer the API and the page without the API key: only with a loopback listener.host, and with no token.source; Host and Origin checks still apply. |
+| `listener.monitor` | boolean | `false` | - | - | Serve GET /metrics (with the key) for the page's Monitor tab: the engine's state, the last 100 requests' token counts and timings (never their text), and this machine's CPU, RAM and GPU readings (the GPU through the system's nvidia-smi, a separate process). |
 | `limits.http.request_deadline_ms` | integer | `30000` | 1-3600000 | - | Total time to read one request, header and body. |
 | `limits.http.max_request_bytes` | integer | `65536` | 4096-268435456 | - | Largest request (header and body) the listener and parser accept. |
 | `limits.http.max_header_bytes` | integer | `16384` | 1024-65536 | - | Largest header block; at most limits.http.max_request_bytes. |
@@ -312,7 +313,7 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `defaults.sampling.frequency_penalty` | number | unset | 0-2 | - | Request default frequency penalty (0 off; cap 2 added, C-1). |
 | `defaults.sampling.penalty_last_n` | integer | unset | 0-8192 | - | Penalty window; unset means the pin default of 64 when any penalty is on (cap added, C-1). |
 | `defaults.sampling.seed` | integer | unset | 1-4294967295 | - | Request default sampling seed (pin: a positive integer; 32-bit cap added, C-1). |
-| `reasoning.effort` | string | unset | - | - | Thinking level for requests that name none: none, low, medium or high (pin levels); unset names none. Qwen packs with <think>: none closes the think block, any other value or unset thinks. |
+| `reasoning.effort` | string | unset | - | - | Thinking level for requests that name none: none, low, medium or high (pin levels); unset is the template's default, high. Qwen packs with <think>: none closes the think block; low and high write the template's effort sentence, medium none. |
 | `reasoning.budget_tokens` | integer | `0` | 0-4294967295 | - | Default thinking budget in tokens (0 = none, the pin default); bounds added, C-1. |
 | `reasoning.close_retry` | boolean | `false` | - | - | Close an unfinished thinking block once when the reply ends inside it (pin opt-in, off). |
 | `reasoning.loop_recovery` | string | `off` | - | - | A reasoning loop ends the reply (off, the pin default), stops (stop) or continues once (recover). |
@@ -447,7 +448,7 @@ consumer is out of M1 — every request cleans up after itself instead.
 | `codex_compaction_cache` | typed config | serve/server.py:8261 (M1 Task 9: session.codex_compaction_cache) |
 | `codex_thread_titles` | typed config | serve/server.py:8260 (M1 Task 9: session.codex_thread_titles) |
 | `cors_origins` | frontend behaviour | already typed (SP3 B12: listener.cors_origins); serve/server.py:8280 |
-| `effort_position` | engine argv | serve/server.py:2880 (M1 Task 5: reasoning.effort_position composes the engine's --tail-role-token) |
+| `effort_position` | engine argv | serve/server.py:2880 (M1 Task 5: reasoning.effort_position composes the engine's --tail-role-token; session log step 16: then a low or medium level's sentence goes right before the answer, :4557 render_prompt) |
 | `elastic` | frontend behaviour | serve/server.py:2557, :8138 (M1 Task 7: engine.elastic; Tasks 11-12 consume it) |
 | `elastic_idle_s` | frontend behaviour | serve/server.py:2559, :4041 (M1 Task 7: engine.elastic_idle_s) |
 | `elastic_mib` | frontend behaviour | serve/server.py:2558, :4019 (M1 Task 7: engine.elastic_mib; /v1/vram headroom) |
@@ -475,7 +476,7 @@ consumer is out of M1 — every request cleans up after itself instead.
 | `parallel` | engine argv | serve/server.py:3000-3020 (replicas.parallel renders --batch N, :3020; window PARALLEL_MAX 8 at :2999; cap 1024 from the pin's own bound :8054, M1 Task 10) |
 | `reasoning_budget_tokens` | typed config | serve/server.py:8337 (M1 Task 5: reasoning.budget_tokens) |
 | `reasoning_close_retry` | typed config | serve/server.py:8232 (M1 Task 5: reasoning.close_retry) |
-| `reasoning_effort` | frontend behaviour | serve/server.py:7642 (M1 Task 5: reasoning.effort; the qwen think tail, issue 19: none writes the closed block, unset/low/medium/high open it, the levels are not told apart; session log step 14: the same words per request on the qwen profile) |
+| `reasoning_effort` | frontend behaviour | serve/server.py:7642 (M1 Task 5: reasoning.effort; the qwen think tail, issue 19: none writes the closed block, unset/low/medium/high open it; session log step 14: the same words per request on the qwen profile; step 16: low and high (unset) write the template's effort sentence, medium none) |
 | `reasoning_loop_recovery` | typed config | serve/server.py:8346 (M1 Task 5: reasoning.loop_recovery) |
 | `repeat_stop_tokens` | frontend behaviour | serve/server.py:198 (REPEAT_STOP_TOKENS 256), the pin's detector is frontend-side at :5098, notice :5278, 0 = off :8332 (Ruling T8-f: no GEN key) |
 | `sampling` | typed config | serve/server.py:7691 (M1 Task 4: defaults.sampling.*) |
@@ -810,7 +811,8 @@ both sides: `--expert-profile`, `--expert-profile-save(-every)`,
 local Strata engine as a direct child (never through a shell), communicates
 only through private stdio, and exposes authenticated `GET /health`, `GET
 /v1/models`, `GET /v1/models/<id>`, and text-only `POST /v1/chat/completions`
-— complete JSON or streamed SSE (`"stream": true`, SP3 M2). Its
+— complete JSON or streamed SSE (`"stream": true`, SP3 M2) — plus `GET /metrics`
+when `listener.monitor` is on (below). Its
 default fixed native profile uses the local GPT-2-byte-BPE tokenizer pack and
 the fixed Qwen ChatML renderer; the separately selected GLM-5.3 profile is
 documented below. It deliberately rejects tools, MCP and downloads, and a
@@ -851,16 +853,22 @@ from any other server, and reach no route.
   Markdown (headings, lists, tables, quotes, code blocks with a copy button), the
   reasoning in a collapsible "Thinking" block, and per reply the model, tokens,
   speed and time.
-  - **Header:** Chat and About tabs, a New chat button, a status pill (polls
-    `/health`) and a light/dark switch.
+  - **Header:** Chat, Monitor and About tabs, a New chat button, a status pill
+    (polls `/health`) and a light/dark switch.
   - **Composer:** attach text files, save the chat as Markdown, Stop, Send.
-  - **Sampling drawer:** Thinking on/off (sent as `reasoning_effort`),
-    temperature, top-p, max tokens, seed, show thinking.
+  - **Sampling drawer:** Thinking Off, Low, Medium or High (upstream's four levels,
+    sent as `reasoning_effort`; High is the default), temperature, top-p, max tokens,
+    seed, show thinking.
+  - **Monitor** (with `listener.monitor`, below): upstream's dashboard — the model
+    state, speed (decode and prefill), GPU load, VRAM, GPU temperature, power, PCIe and
+    CPU cards with a minute of history, the context fill, GPU memory, RAM and
+    temperature bars, and the recent requests with their totals. Without the switch
+    the tab says the Monitor is off.
   - **About:** the model, the engine state, and the base URL for other clients.
   - **Storage:** the chat and the settings live in that tab; the theme choice is in
     `localStorage` (`strata.theme`, nothing else).
-  - **Left out:** upstream's Monitor, Images and MCP views, and its server-side
-    settings, need routes this server does not have.
+  - **Left out:** upstream's Images and MCP views, its conversation-cache card and its
+    server-side settings need features this server does not have.
 - **Its own policy:** the page's responses carry `Content-Security-Policy:
   default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self';
   img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none';
@@ -869,8 +877,35 @@ from any other server, and reach no route.
   `default-src 'none'`.
 
 `reasoning_effort` is also accepted per request on the qwen profile (`none`, `low`,
-`medium`, `high`, the `reasoning.effort` words; `none` closes the think block). Another
-profile refuses it by name.
+`medium`, `high`, the `reasoning.effort` words). Another profile refuses it by name. The
+levels write what the model's own template writes (session log step 16): `none` closes the
+think block; `high` (also a request with no level and no `reasoning.effort`) puts the
+template's "Reasoning effort is set to xhigh..." sentence at the top of the system turn,
+`low` its low sentence, `medium` none. With `reasoning.effort_position = "end"` and an
+engine that takes `--tail-role-token`, the conversation is written as `high` and a `low` or
+`medium` sentence goes in a short system turn right before the answer, as upstream does.
+
+### The Monitor (listener.monitor, session log step 16)
+
+`listener.monitor = true` (config file only, off by default) serves `GET /metrics` for the
+page's Monitor tab, in upstream's `/metrics` shape. Like every route it needs the key; with
+the switch off it answers 404. It reports:
+
+- the served model name, the context from the engine's `READY`, and the engine's state
+  (`starting`, `idle`, `reading`, `generating`, `error`) with the queue length;
+- the last 100 generations: when each ended, how (`stop`, `length`, `cancel`,
+  `disconnect`, `error`), the prompt, reused and output token counts and the engine's own
+  prompt and decode times (from its `DONE` record), with totals since the start. Never a
+  prompt, an answer, a client address or a key. All of it is in memory and goes when the
+  server stops;
+- this machine's CPU load and RAM (from the operating system) and GPU 0's load, memory,
+  temperature, power and PCIe link, read once a second with a minute of history. The GPU
+  readings come from NVIDIA's `nvidia-smi`, run as its own child process from the system
+  directory only (`System32` on Windows, `/usr/bin` on Linux), with a fixed argument list,
+  no shell and a fixed environment (on Windows only `ProgramFiles`, which NVML needs to
+  start, read from the machine registry — nothing is inherited from the server's
+  environment), and stopped with the server. No NVIDIA library is
+  loaded into the server. Without `nvidia-smi` the GPU cards stay empty and say why.
 
 `listener.loopback_without_key = true` answers the API and the page with no key
 at all. On the page, the login is skipped. It is accepted only with a loopback

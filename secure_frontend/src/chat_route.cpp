@@ -16,6 +16,37 @@
 #include <vector>
 
 namespace secure_frontend {
+namespace {
+
+// The Monitor's name for how a non-streamed generation ended (monitor_finish's literals).
+std::string_view outcome_finish(const GenerationOutcome& outcome) {
+  if (const auto* result = std::get_if<GenerationResult>(&outcome)) return result->finish == FinishReason::stop ? "stop" : "length";
+  switch (std::get<GenerationFailure>(outcome)) {
+    case GenerationFailure::cancelled: return "disconnect";
+    case GenerationFailure::shutting_down: return "cancel";
+    case GenerationFailure::engine_error:
+    case GenerationFailure::engine_unavailable:
+    case GenerationFailure::decode_failed: return "error";
+  }
+  return "error";
+}
+
+// A streamed generation tells the Monitor its end exactly once: from the loop, or, for a
+// handler that never ran or never reached the loop, when the last copy of this goes.
+struct MonitorTurn final {
+  ServeMonitor* monitor{nullptr};
+  bool ended{false};
+  void end(const std::string_view finish) {
+    if (monitor != nullptr && !ended) monitor->generation_ended(finish);
+    ended = true;
+  }
+  MonitorTurn() = default;
+  MonitorTurn(const MonitorTurn&) = delete;
+  MonitorTurn& operator=(const MonitorTurn&) = delete;
+  ~MonitorTurn() { end("disconnect"); }
+};
+
+}  // namespace
 
 std::optional<std::string> make_completion_id() {
   std::array<unsigned char, 16> bytes{};
@@ -69,6 +100,12 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
   // Session log step 14: a request's own reasoning_effort (none closes the think block)
   // wins over the server's reasoning.effort; the schema admits it on the qwen profile only.
   const bool thinking = request.reasoning_effort.has_value() ? *request.reasoning_effort != "none" : config_.qwen_thinking;
+  // Session log step 16: and its level writes the template's sentence (low, medium, high).
+  QwenEffort level = config_.qwen_effort;
+  if (request.reasoning_effort == "low") level = QwenEffort::low;
+  else if (request.reasoning_effort == "medium") level = QwenEffort::medium;
+  else if (request.reasoning_effort == "high") level = QwenEffort::high;
+  const QwenEffortPlacement effort{level, config_.effort_at_end};
   // SP5 M1 Task 12 (C-9): the image half of P4/P6, in the pinned order.
   // image_urls is empty on every text request; then everything below it is inert and
   // the text path runs exactly as before.
@@ -114,7 +151,7 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
   if (!vision_request) {
     const auto plan_result = config_.profile == NativeChatProfile::qwen
                                  ? make_qwen_chat_generation_plan(request, tokenizer_, config_.max_prompt_tokens, 1U,
-                                                                  config_.sampling_default, {}, thinking)
+                                                                  config_.sampling_default, {}, thinking, effort)
                                  : make_glm53_chat_generation_plan(request, tokenizer_, config_.max_prompt_tokens, 1U,
                                                                   config_.sampling_default);
     if (const auto* plan_error = std::get_if<ChatGenerationPlanError>(&plan_result)) {
@@ -174,7 +211,7 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
     image_counts.reserve(encoded.size());
     for (const auto& entry : encoded) image_counts.push_back(entry.image_tokens);
     const auto plan_result = make_qwen_chat_generation_plan(request, tokenizer_, config_.max_prompt_tokens, 1U,
-                                                            config_.sampling_default, image_counts, thinking);
+                                                            config_.sampling_default, image_counts, thinking, effort);
     if (const auto* plan_error = std::get_if<ChatGenerationPlanError>(&plan_result)) {
       config_.vision->discard(*combined_file);
       lease.reset();
@@ -209,13 +246,15 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
   if (!budget) {
     context_refused = true;
   } else {
+    if (config_.monitor != nullptr) config_.monitor->generation_started(prompt_ids.size(), *budget, context_tokens);
     outcome = lease->chat().run_generation(
         prompt_ids,
         {.max_tokens = *budget, .sampling = plan->sampling, .embeddings = embeddings, .think_tokens = plan->think_tokens,
-         .starts_in_reasoning = plan->starts_in_reasoning, .stop_tokens = plan->stop_tokens},
+         .starts_in_reasoning = plan->starts_in_reasoning, .stop_tokens = plan->stop_tokens, .meter = config_.monitor},
         {.cancelled = context.client_gone, .shutting_down = context.shutting_down,
          .shutdown_requested = [] { return shutdown_signalled(); }},
         tokenizer_);
+    if (config_.monitor != nullptr) config_.monitor->generation_ended(outcome_finish(outcome));
     // Ruling R-H: never report_fatal once shutdown has begun (pool flag or SP2 signal).
     const bool shutting = (context.shutting_down != nullptr && context.shutting_down->load()) || shutdown_signalled();
     if (lease->protocol().closed() && !shutting) port_.report_fatal(*lease, kill_reason_for(lease->protocol()));
@@ -266,8 +305,12 @@ RouteResult ChatRoute::stream_response(std::optional<Lease>& lease, const std::v
     hold->end_generation();
     return make_error_response(ApiError::internal_error);
   }
+  auto turn = std::make_shared<MonitorTurn>();
+  turn->monitor = config_.monitor;
+  if (config_.monitor != nullptr) config_.monitor->generation_started(prompt_ids.size(), max_tokens, hold->lease().chat().context_tokens());
   if (const auto failure =
           hold->lease().chat().begin(prompt_ids, {.max_tokens = max_tokens, .sampling = plan.sampling, .embeddings = embeddings})) {
+    turn->end("error");
     hold->end_generation();  // reports a closed protocol through the port
     if (combined_file.has_value()) config_.vision->discard(*combined_file);
     return *failure == GenerationFailure::engine_error ? make_error_response(ApiError::engine_error) : engine_unavailable();
@@ -279,6 +322,7 @@ RouteResult ChatRoute::stream_response(std::optional<Lease>& lease, const std::v
   settings.run.think_tokens = plan.think_tokens;
   settings.run.starts_in_reasoning = plan.starts_in_reasoning;
   settings.run.stop_tokens = plan.stop_tokens;
+  settings.run.meter = config_.monitor;
   settings.write_stall = config_.write_stall;
   settings.tail_deadline = config_.response_write_deadline;
   settings.keepalive = config_.stream_keepalive;
@@ -286,7 +330,7 @@ RouteResult ChatRoute::stream_response(std::optional<Lease>& lease, const std::v
   settings.prompt_tokens = prompt_ids.size();
   const TokenizerPack* tokenizer = &tokenizer_;
   return StreamHandler{[hold, identity = std::move(identity), settings, tokenizer, shutting_down, vision = config_.vision,
-                      combined_file](StreamSink& sink) {
+                      combined_file, turn](StreamSink& sink) {
     // The engine consumed the GENI file at generation start; if it never began, the
     // begin() failure above already removed it. Either way it must not outlive the stream.
     const struct FileGuard {
@@ -295,8 +339,12 @@ RouteResult ChatRoute::stream_response(std::optional<Lease>& lease, const std::v
       ~FileGuard() { if (vision != nullptr && file.has_value()) vision->discard(*file); }
     } file_guard{vision, combined_file};
     const TokenByteDecoder decoder(*tokenizer);
-    const ChatStreamOutcome outcome = run_chat_stream(sink, hold->lease().protocol(), decoder, identity, settings, shutting_down,
-                                                      [&hold](const GenerationRunResult&) { hold->end_generation(); });
+    const ChatStreamOutcome outcome =
+        run_chat_stream(sink, hold->lease().protocol(), decoder, identity, settings, shutting_down,
+                        [&hold, &turn](const GenerationRunResult& run) {
+                          turn->end(monitor_finish(run.end, run.cancel));
+                          hold->end_generation();
+                        });
     sink.set_log_code(outcome.log_code);
   }};
 }

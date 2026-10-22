@@ -35,7 +35,7 @@ std::string decimal_text(const double value) {
   return ec == std::errc{} ? std::string{buffer, end} : std::string{"?"};
 }
 
-constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 + 1 + 2 + 1> kSchema{{
+constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 + 1 + 2 + 1 + 1> kSchema{{
     {"schema_version", T::integer, false, 1, 1, d::kSchemaVersion, false, "", "",
      "Config format version; must be 1. Required in a config file."},
     {"listener.host", T::string, false, 0, 0, 0, false, "127.0.0.1", "--host",
@@ -54,6 +54,8 @@ constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 
      "Serve the built-in chat page at / (bundled files only). The page asks for the API key and keeps it in that tab; every API route still needs the key."},
     {"listener.loopback_without_key", T::boolean, false, 0, 0, 0, false, "", "",
      "Answer the API and the page without the API key: only with a loopback listener.host, and with no token.source; Host and Origin checks still apply."},
+    {"listener.monitor", T::boolean, false, 0, 0, 0, false, "", "",
+     "Serve GET /metrics (with the key) for the page's Monitor tab: the engine's state, the last 100 requests' token counts and timings (never their text), and this machine's CPU, RAM and GPU readings (the GPU through the system's nvidia-smi, a separate process)."},
     {"limits.http.request_deadline_ms", T::integer, false, 1, 3'600'000, d::kRequestDeadlineMs, false, "", "",
      "Total time to read one request, header and body."},
     {"limits.http.max_request_bytes", T::integer, false, 4096, 268'435'456, d::kMaxRequestBytes, false, "", "",
@@ -173,7 +175,7 @@ constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 
     // the typed row names the three words); effort_position :2841-2843; anthropic_thinking
     // :8102-8104; fit_max_tokens :3485-3488 read at :7996 (false answers 400 over the room, :4536).
     {"reasoning.effort", T::string, false, 0, 0, 0, false, "", "",
-     "Thinking level for requests that name none: none, low, medium or high (pin levels); unset names none. Qwen packs with <think>: none closes the think block, any other value or unset thinks."},
+     "Thinking level for requests that name none: none, low, medium or high (pin levels); unset is the template's default, high. Qwen packs with <think>: none closes the think block; low and high write the template's effort sentence, medium none."},
     {"reasoning.budget_tokens", T::integer, false, 0, 4294967295, 0, false, "", "",
      "Default thinking budget in tokens (0 = none, the pin default); bounds added, C-1."},
     {"reasoning.close_retry", T::boolean, false, 0, 0, 0, false, "", "",
@@ -728,6 +730,7 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   const bool allow_wildcard = read.boolean("listener.allow_wildcard_bind");
   const bool web_ui = read.boolean("listener.web_ui");
   const bool loopback_without_key = read.boolean("listener.loopback_without_key");
+  const bool monitor = read.boolean("listener.monitor");
   const auto backlog = read.integer("listener.backlog");
   const auto host = parse_listener_address(host_text);
   if (!host.has_value()) {
@@ -1197,7 +1200,7 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   }
   const auto u32 = [](const std::int64_t v) { return static_cast<std::uint32_t>(v); };
   ListenerConfig listener{*host, static_cast<std::uint16_t>(port), allow_remote, allow_wildcard, u32(backlog),
-                          std::move(cors_origins), std::move(host_aliases), web_ui, loopback_without_key};
+                          std::move(cors_origins), std::move(host_aliases), web_ui, loopback_without_key, monitor};
   const Limits limits{
       HttpLimits{std::chrono::milliseconds(deadline_ms), u32(max_request), u32(max_header), u32(max_headers), u32(max_line),
                  std::chrono::milliseconds(header_deadline_ms), std::chrono::milliseconds(write_stall_ms),
@@ -1278,6 +1281,7 @@ std::string describe(const FrontendConfig& c) {
   line("listener.host_aliases", list_text(c.listener.host_aliases));
   line("listener.web_ui", c.listener.web_ui ? "true" : "false");
   line("listener.loopback_without_key", c.listener.loopback_without_key ? "true" : "false");
+  line("listener.monitor", c.listener.monitor ? "true" : "false");
   line("limits.http.request_deadline_ms", std::to_string(c.limits.http.request_deadline.count()));
   line("limits.http.max_request_bytes", std::to_string(c.limits.http.max_request_bytes));
   line("limits.http.max_header_bytes", std::to_string(c.limits.http.max_header_bytes));

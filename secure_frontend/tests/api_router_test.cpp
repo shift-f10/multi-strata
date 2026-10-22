@@ -12,6 +12,8 @@
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -361,6 +363,24 @@ void web_ui_assets_are_bundled_and_inert() {
          "the icon sprite is the symbols only");
 }
 
+// Session log step 16: the page has upstream's Monitor tab (fed by GET /metrics, built from DOM
+// nodes like the rest) and upstream's four thinking levels, sent as reasoning_effort.
+void web_ui_has_the_monitor_and_four_thinking_levels() {
+  const std::string html{secure_frontend::find_web_asset("/")->body};
+  const std::string js{secure_frontend::find_web_asset("/ui/app.js")->body};
+  expect(html.find("id=\"tab-btn-monitor\"") != std::string::npos && html.find("id=\"view-monitor\"") != std::string::npos &&
+             html.find("id=\"monitor-off\"") != std::string::npos,
+         "a Monitor tab, its view, and the note for a server with the Monitor off");
+  for (const char* level : {"data-v=\"none\"", "data-v=\"low\"", "data-v=\"medium\"", "data-v=\"high\""}) {
+    expect(html.find(level) != std::string::npos, std::string{"the Thinking control offers "} + level);
+  }
+  expect(html.find("data-v=\"on\"") == std::string::npos, "the old Off / On control is gone");
+  expect(js.find("api(\"/metrics\")") != std::string::npos && js.find("response.status === 404") != std::string::npos,
+         "the Monitor asks /metrics through the keyed API helper and handles the switch being off");
+  expect(js.find("reasoning_effort: LEVELS[s.thinking] ? s.thinking : \"high\"") != std::string::npos,
+         "the level is sent as reasoning_effort, high by default");
+}
+
 void keyless_router_answers_without_a_key() {
   auto keyless = page_router(true, false);
   const auto models = bare(keyless, "GET", "/v1/models");
@@ -375,6 +395,45 @@ void keyless_router_answers_without_a_key() {
   expect(bare(keyless, "POST", "/v1/chat/completions", "").status != 401, "keyless: chat needs no key");
   auto keyed = page_router(true, true);
   expect(bare(keyed, "GET", "/v1/models").status == 401, "control: the same router with require_key answers 401");
+}
+
+// --- The Monitor (listener.monitor; session log step 16) ---------------------------------
+// GET /metrics is an API route: the key first, then the switch. Off (no provider) it is not
+// served at all; on, it answers the provider's JSON, asked once per request.
+secure_frontend::ApiRouter metrics_router(secure_frontend::MetricsProvider metrics) {
+  secure_frontend::SecretBytes secret;
+  (void)secret.assign(kRouterToken);
+  return secure_frontend::ApiRouter({
+      .policy = secure_frontend::make_http_policy(*secure_frontend::parse_listener_address("127.0.0.1"), 8080, {}, {}),
+      .validator = secure_frontend::make_bearer_validator(std::make_shared<const secure_frontend::TokenVerifier>(std::move(secret))),
+      .model_id = "fake-model", .owned_by = "local", .chat_body_limit = 49152,
+      .health = [] { return secure_frontend::HealthView{true, "ready", ""}; },
+      .chat = {}, .metrics = std::move(metrics)});
+}
+
+void metrics_route_needs_the_key_and_the_switch() {
+  auto off = metrics_router({});
+  expect(bare(off, "GET", "/metrics").status == 401, "the Monitor's route needs the key");
+  expect(get(off, "/metrics").status == 404, "off: with the key it is not served at all");
+  const std::string off_key = "Authorization: Bearer " + std::string{kRouterToken} + "\r\n";
+  expect(bare(off, "POST", "/metrics", off_key).status == 404,
+         "off: no method reveals the route either (EXT-01: upstream's /metrics is 404, not 405)");
+  int calls = 0;
+  auto on = metrics_router([&calls] {
+    ++calls;
+    return std::string{"{\"live\":{\"state\":\"idle\"}}\n"};
+  });
+  expect(bare(on, "GET", "/metrics").status == 401 && calls == 0, "on: the key is still asked first; the provider is untouched");
+  const auto served = get(on, "/metrics");
+  expect(served.status == 200 && served.body == "{\"live\":{\"state\":\"idle\"}}\n" && calls == 1,
+         "on: the provider's JSON, asked once (" + std::to_string(served.status) + ")");
+  expect(served.header_value("Content-Type") == std::optional<std::string_view>{"application/json; charset=utf-8"},
+         "served as JSON");
+  const std::string key = "Authorization: Bearer " + std::string{kRouterToken} + "\r\n";
+  expect(bare(on, "POST", "/metrics", key).status == 405, "GET only");
+  expect(get(on, "/metrics/prometheus").status == 404 && get(on, "/Metrics").status == 404, "the exact target only");
+  auto throwing = metrics_router([]() -> std::string { throw std::runtime_error("monitor"); });
+  expect(get(throwing, "/metrics").status == 500, "a provider that throws is an internal error, nothing else");
 }
 }  // namespace
 
@@ -395,6 +454,8 @@ int main(int argc, char** argv) {
       {"web_ui_leaves_every_api_route_authenticated", web_ui_leaves_every_api_route_authenticated},
       {"web_ui_still_checks_host_and_origin", web_ui_still_checks_host_and_origin},
       {"web_ui_assets_are_bundled_and_inert", web_ui_assets_are_bundled_and_inert},
+      {"web_ui_has_the_monitor_and_four_thinking_levels", web_ui_has_the_monitor_and_four_thinking_levels},
       {"keyless_router_answers_without_a_key", keyless_router_answers_without_a_key},
+      {"metrics_route_needs_the_key_and_the_switch", metrics_route_needs_the_key_and_the_switch},
   }, failures);
 }

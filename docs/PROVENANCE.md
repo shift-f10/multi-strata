@@ -445,7 +445,13 @@ on each text file.
 
 `web/index.html`, `web/app.css` and `web/app.js` are ours, modelled on upstream's
 `index.html`, `app.css` and `app.js` (the markup and layout rules adapted, with the same
-attribution; the script written for this server's routes). `web/theme.js` is ours. The
+attribution; the script written for this server's routes). The Monitor tab (session log
+step 16) follows the same rule: its markup (the state card, the context gauge and bars, the
+requests table) and its layout rules are adapted from upstream's `index.html` and
+`app.css`, and its rendering from upstream's `renderMonitor` in `app.js`, rewritten to
+build DOM nodes (upstream's uses `innerHTML`) for this server's `/metrics`. Upstream's
+conversation-cache and MCP cards and its disk and expert readings are left out (this
+server has none of them). `web/theme.js` is ours. The
 fonts are data, not code (contract C6 is about executables). They are WOFF2, checked by a
 test, and the page's CSP allows fonts from this origin only. The licence texts are kept
 beside the files and are not served.

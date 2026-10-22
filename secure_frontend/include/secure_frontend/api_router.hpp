@@ -22,6 +22,8 @@ struct HealthView final {
 };
 // Called exactly once per authenticated GET /health.
 using HealthProvider = std::function<HealthView()>;
+// listener.monitor (session log step 16): the Monitor's JSON for one authenticated GET /metrics.
+using MetricsProvider = std::function<std::string()>;
 // A chat handler returns a complete response or (M2) a StreamHandler.
 using ChatHandler = std::function<RouteResult(std::string_view body, const RequestContext& context)>;
 
@@ -42,6 +44,8 @@ struct ApiRouterConfig final {
   // false only for listener.loopback_without_key (a loopback bind, validated at load and
   // again at bind): routes answer without the key. Host and Origin checks still apply.
   bool require_key{true};
+  // listener.monitor: GET /metrics answers this provider's JSON; empty (the switch off), 404.
+  MetricsProvider metrics{};
 };
 
 // application/json, optionally followed by `; charset=utf-8`; ASCII

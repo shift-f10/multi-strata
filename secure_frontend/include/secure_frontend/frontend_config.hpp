@@ -125,6 +125,7 @@ struct ListenerConfig final {
   std::vector<std::string> host_aliases;  // SP3 §4.3: extra exact Host values, each is_valid_host_alias
   bool web_ui;                            // the built-in chat page at / (web_ui.hpp)
   bool loopback_without_key;              // the one keyless listener: loopback only, no token.source
+  bool monitor;                           // GET /metrics, the page's Monitor tab (serve_monitor.hpp)
 };
 struct HttpLimits final {
   std::chrono::milliseconds request_deadline;

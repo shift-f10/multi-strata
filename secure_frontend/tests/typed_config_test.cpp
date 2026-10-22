@@ -1607,6 +1607,27 @@ void web_ui_and_loopback_without_key_rows() {
          "a configured key that would never be read is refused, not ignored: " + issues_of(named_key));
 }
 
+// Session log step 16: listener.monitor turns on GET /metrics (the page's Monitor tab). Off by
+// default, a strict boolean, config file only, and independent of the page and the key.
+void monitor_row() {
+  ConfigFixture f;
+  const auto bare_result = with_literals(f, {});
+  const auto* bare = config_of(bare_result);
+  expect(bare != nullptr && !bare->listener.monitor, "listener.monitor defaults to false");
+  expect(describe_of(bare_result).find("listener.monitor = false\n") != std::string::npos, "--check reports it");
+  const auto on_result = with_literals(f, {{"listener.monitor", "true"}});
+  const auto* on = config_of(on_result);
+  expect(on != nullptr && on->listener.monitor && !on->listener.web_ui && !on->listener.loopback_without_key,
+         "the Monitor alone turns nothing else on: " + issues_of(on_result));
+  expect(describe_of(on_result).find("listener.monitor = true\n") != std::string::npos, "--check reports it on");
+  expect(std::holds_alternative<secure_frontend::ConfigErrors>(with_literals(f, {{"listener.monitor", "1"}})), "a strict boolean");
+  const auto schema = secure_frontend::config_schema();
+  const auto row = std::find_if(schema.begin(), schema.end(),
+                                [](const secure_frontend::ConfigKey& key) { return key.path == "listener.monitor"; });
+  expect(row != schema.end() && row->flag.empty() && row->type == secure_frontend::ConfigValueType::boolean && !row->default_boolean,
+         "a schema row: a boolean, false, config file only (no flag)");
+}
+
 // Session log step 13: model.name, the served name (the pin's model_name), in the alias grammar.
 void model_name_row() {
   ConfigFixture f;
@@ -1844,6 +1865,7 @@ int main(int argc, char** argv) {
       {"slot_save_path_is_a_bounded_private_path", slot_save_path_is_a_bounded_private_path},
       {"web_ui_and_loopback_without_key_rows", web_ui_and_loopback_without_key_rows},
       {"model_name_row", model_name_row},
+      {"monitor_row", monitor_row},
       {"codex_and_tool_call_rows_are_dispositioned", codex_and_tool_call_rows_are_dispositioned},
       {"session_rows_at_each_edge", session_rows_at_each_edge},
       {"replicas_parallel_row_at_the_pin", replicas_parallel_row_at_the_pin},

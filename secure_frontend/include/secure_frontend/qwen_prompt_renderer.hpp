@@ -43,8 +43,21 @@ namespace secure_frontend {
 // either literal fails closed, so only the renderer places them.
 enum class QwenThinking { absent, on, off };
 
+// Session log step 16: the template's reasoning instructions (chat_template.jinja,
+// reasoning_effort; its default is xhigh, which "high" names). With thinking on, high and low
+// put their fixed sentence at the top of the system turn (before any system text, a blank line
+// between), medium none; with thinking off there is none. at_end (reasoning.effort_position
+// "end", upstream #458, serve/server.py render_prompt): a low, medium or off request renders the
+// conversation as high would, and low or medium add their sentence as a short system turn right
+// before the answer. No placement (nullopt): the fixed format above, without a sentence.
+enum class QwenEffort { low, medium, high };
+struct QwenEffortPlacement final {
+  QwenEffort effort;
+  bool at_end{false};
+};
+
 [[nodiscard]] std::optional<std::string> render_qwen_text_prompt(
     const std::vector<ChatMessage>& messages, std::span<const std::size_t> image_token_counts = {},
-    QwenThinking thinking = QwenThinking::absent);
+    QwenThinking thinking = QwenThinking::absent, std::optional<QwenEffortPlacement> effort = std::nullopt);
 
 }  // namespace secure_frontend

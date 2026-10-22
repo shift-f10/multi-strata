@@ -19,7 +19,7 @@ namespace secure_frontend {
 
 // web: one of the built-in page's bundled files (listener.web_ui; web_ui.hpp), public and
 // outside kRouteTable, which stays the authenticated API.
-enum class RouteId { health, models, model, chat, other, web };
+enum class RouteId { health, models, model, chat, other, web, metrics };
 
 struct RouteEntry final {
   std::string_view method;
@@ -29,11 +29,14 @@ struct RouteEntry final {
 };
 
 // The one route table (spec §3.6); auth and EXT tests iterate it.
-inline constexpr std::array<RouteEntry, 4> kRouteTable{{
+// /metrics is the Monitor's (listener.monitor, session log step 16): keyed like the rest, and
+// not served (404) while the switch is off.
+inline constexpr std::array<RouteEntry, 5> kRouteTable{{
     {"GET", "/health", false, RouteId::health},
     {"GET", "/v1/models", false, RouteId::models},
     {"GET", "/v1/models/", true, RouteId::model},
     {"POST", "/v1/chat/completions", false, RouteId::chat},
+    {"GET", "/metrics", false, RouteId::metrics},
 }};
 
 struct RouteDecision final {

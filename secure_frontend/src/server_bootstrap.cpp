@@ -17,6 +17,7 @@
 #include "secure_frontend/engine_supervisor.hpp"
 #include "secure_frontend/frontend_config.hpp"
 #include "secure_frontend/generation_gate.hpp"
+#include "secure_frontend/host_readings.hpp"
 #include "secure_frontend/http_policy.hpp"
 #include "secure_frontend/http_socket_server.hpp"
 #include "secure_frontend/image_payload.hpp"
@@ -24,6 +25,7 @@
 #include "secure_frontend/privilege_check.hpp"
 #include "secure_frontend/process_defaults.hpp"
 #include "secure_frontend/request_log.hpp"
+#include "secure_frontend/serve_monitor.hpp"
 #include "secure_frontend/shutdown_signal.hpp"
 #include "secure_frontend/subsystem_limits.hpp"
 #include "secure_frontend/test_hooks.hpp"
@@ -33,6 +35,8 @@
 #include "secure_frontend/vision_supervisor.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -40,6 +44,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -206,11 +211,18 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
   auto* engine_arguments = &launch.engine_args;
   // SP5 M1 Task 5 (parity row effort_position, serve/server.py:2836-2856): reasoning.effort_position
   // "end" composes the engine's --tail-role-token checkpoint flag (probe rules in the composer).
+  // Session log step 16: the prompt puts a non-default level's sentence right before the
+  // answer only when the engine took the flag; otherwise it stays at the top (the notice says so).
+  bool effort_at_end = false;
   if (config.reasoning.effort_position == secure_frontend::EffortPosition::end) {
     const auto tail = secure_frontend::compose_effort_end_arguments(config.engine.executable.path(), *tokenizer);
     std::cerr << "[strata] " << tail.notice << '\n';
     engine_arguments->insert(engine_arguments->end(), tail.arguments.begin(), tail.arguments.end());
+    effort_at_end = !tail.arguments.empty();
   }
+  secure_frontend::QwenEffort qwen_effort = secure_frontend::QwenEffort::high;  // unset: the template's default
+  if (config.reasoning.effort == secure_frontend::ReasoningEffort::low) qwen_effort = secure_frontend::QwenEffort::low;
+  if (config.reasoning.effort == secure_frontend::ReasoningEffort::medium) qwen_effort = secure_frontend::QwenEffort::medium;
 
   // Profile, protocol flavor, chat limits and the READY deadline all come from
   // the validated config (limits.engine.ready_timeout_s drives the policy).
@@ -346,6 +358,10 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
     service_limits.scratch_dir = vision_scratch;
     vision_service.emplace(*vision, std::move(service_limits));
   }
+  // listener.monitor (session log step 16): the Monitor's meter. The chat route tells it about
+  // each generation, the host sampler below adds a reading a second, GET /metrics renders it.
+  std::optional<secure_frontend::ServeMonitor> monitor;
+  if (config.listener.monitor) monitor.emplace();
   secure_frontend::ChatRoute chat_route(
       secure_frontend::ChatRouteConfig{.schema = schema_limits, .model_id = model_id, .profile = supervisor_config.profile,
                                        .max_prompt_tokens = config.limits.chat.max_prompt_tokens,
@@ -354,6 +370,8 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
                                        .sampling_default = config.sampling,
                                        .fit_max_tokens = config.engine.fit_max_tokens,
                                        .qwen_thinking = config.reasoning.effort != secure_frontend::ReasoningEffort::none,
+                                       .qwen_effort = qwen_effort,
+                                       .effort_at_end = effort_at_end,
                                        .minimum_output_tokens = config.engine.min_tokens.value_or(0U),
                                        .maximum_output_tokens = config.engine.max_tokens.value_or(0U),
                                        .model_aliases = model_aliases,
@@ -361,7 +379,8 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
                                        .write_stall = config.limits.http.write_stall,
                                        .response_write_deadline = config.limits.http.response_write_deadline,
                                        .stream_keepalive = config.limits.http.stream_keepalive,
-                                       .vision = vision_service.has_value() ? &*vision_service : nullptr},
+                                       .vision = vision_service.has_value() ? &*vision_service : nullptr,
+                                       .monitor = monitor.has_value() ? &*monitor : nullptr},
       port, gate, *tokenizer);
   // Spec §4.1: every request goes through the header-first router (Host,
   // Origin, preflight, bearer token, route table, Content-Type, body limit)
@@ -385,7 +404,11 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
         return chat_route.handle(body, context);
       },
       .web_ui = config.listener.web_ui,
-      .require_key = !keyless});
+      .require_key = !keyless,
+      .metrics = monitor.has_value() ? secure_frontend::MetricsProvider{[&monitor, &port, &gate, &model_id] {
+        return monitor->render_json({.model = model_id, .engine = port.snapshot().engine, .queued = gate.waiting()});
+      }}
+                                     : secure_frontend::MetricsProvider{}});
   const secure_frontend::ConnectionLimits connection_bounds = secure_frontend::connection_limits(config);
   std::string bind_error;
   auto server = secure_frontend::HttpSocketServer::bind(listener, static_cast<int>(config.listener.backlog), &bind_error);
@@ -407,6 +430,38 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
     secure_frontend::EngineSupervisor& supervisor;
     ~StopSupervisor() { supervisor.shutdown(secure_frontend::config_defaults::kShutdownBound); }
   } stop_supervisor{supervisor};
+  // listener.monitor (session log step 16): this machine's readings once a second; the GPU's
+  // through the system's nvidia-smi, its own child (no shell, ProgramFiles alone, the Job),
+  // started after bind like every child and stopped (before the supervisor) on every way out.
+  struct HostSampler final {
+    secure_frontend::ServeMonitor* monitor{nullptr};
+    secure_frontend::GpuSampler gpu;
+    std::atomic<bool> stopping{false};
+    std::thread thread;
+    void start(secure_frontend::ServeMonitor& target) {
+      monitor = &target;
+      gpu.start({.executable = secure_frontend::nvidia_smi_path(), .arguments = secure_frontend::nvidia_smi_arguments(),
+                 .environment = secure_frontend::nvidia_smi_environment(), .no_new_privileges = true, .insert_serve = false});
+      thread = std::thread([this] {
+        secure_frontend::CpuMeter cpu;
+        while (!stopping.load()) {
+          secure_frontend::HostSample sample;
+          sample.cpu_percent = cpu.sample();
+          sample.memory = secure_frontend::read_memory();
+          sample.gpu = gpu.latest();
+          if (!sample.gpu.has_value()) sample.gpu_note = gpu.note();
+          monitor->add_host_sample(sample);
+          for (int slice = 0; slice < 10 && !stopping.load(); ++slice) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+      });
+    }
+    ~HostSampler() {
+      stopping = true;
+      if (thread.joinable()) thread.join();
+      gpu.stop();
+    }
+  } host_sampler;
+  if (monitor.has_value()) host_sampler.start(*monitor);
   // SP5 M1 Task 11 (Ruling T11-z): resident (the pin's eager default, serve/server.py:
   // 2511) starts the encoder now — no READY within the policy, and boot fails, because
   // vision.enabled is a promise of images. resident=false stays stopped until the FIRST

@@ -967,6 +967,40 @@ void run_generation_returns_reasoning_beside_the_answer() {
          "answer and reasoning come back apart: [" + result->text + "] [" + result->reasoning + "]");
 }
 
+// Session log step 16 (listener.monitor): the meter hears every counted token and the
+// engine's DONE figures, on both paths, and never any text; without one nothing changes.
+struct CountingMeter final : secure_frontend::GenerationMeter {
+  std::vector<std::size_t> tokens;
+  std::optional<secure_frontend::DoneFigures> done;
+  void on_token(const std::size_t generated) override { tokens.push_back(generated); }
+  void on_done(const secure_frontend::DoneFigures& figures) override { done = figures; }
+};
+
+void drive_generation_feeds_the_monitor_meter() {
+  const auto pack = test_support::byte_tokenizer();
+  const secure_frontend::TokenByteDecoder decoder(pack);
+  Running run({"T " + byte_id('A'), "T " + byte_id('B'), "T " + byte_id('C'), "DONE 3 9 120.5 60 stop 0 0 4"});
+  Collector collector;
+  CountingMeter meter;
+  const auto result = secure_frontend::drive_generation(run.protocol, decoder, {.max_tokens = 16U, .meter = &meter}, collector);
+  expect(result.end == secure_frontend::RunEnd::stop && collector.text == "ABC", "the run itself is unchanged");
+  expect(meter.tokens == std::vector<std::size_t>({1U, 2U, 3U}), "one call per counted token");
+  expect(meter.done.has_value() && meter.done->prompt_tokens == std::optional<std::size_t>{9U} &&
+             meter.done->prompt_ms == std::optional<double>{120.5} && meter.done->decode_ms == std::optional<double>{60.0} &&
+             meter.done->reused == std::optional<std::size_t>{4U},
+         "the DONE figures reach the meter");
+
+  ReadyService f;
+  f.transport.reads = {"T " + byte_id('H'), "T " + byte_id('i'), "DONE 2 3 5.0 8.0 stop"};
+  CountingMeter route_meter;
+  const auto outcome =
+      f.service.run_generation({1U, 2U, 3U}, {.max_tokens = 8U, .meter = &route_meter}, {}, test_support::byte_tokenizer());
+  expect(std::holds_alternative<secure_frontend::GenerationResult>(outcome) &&
+             route_meter.tokens == std::vector<std::size_t>({1U, 2U}) && route_meter.done.has_value() &&
+             route_meter.done->decode_ms == std::optional<double>{8.0},
+         "run_generation hands GenerationSettings::meter to the loop");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1007,6 +1041,7 @@ int main(int argc, char** argv) {
       {"drive_generation_keeps_other_special_tokens_fail_closed", drive_generation_keeps_other_special_tokens_fail_closed},
       {"run_generation_returns_reasoning_beside_the_answer", run_generation_returns_reasoning_beside_the_answer},
       {"drive_generation_end_of_turn_ends_the_reply_as_stop", drive_generation_end_of_turn_ends_the_reply_as_stop},
+      {"drive_generation_feeds_the_monitor_meter", drive_generation_feeds_the_monitor_meter},
       {"run_generation_ends_at_the_end_of_turn", run_generation_ends_at_the_end_of_turn},
       {"run_generation_maps_engine_errors", run_generation_maps_engine_errors},
   }, failures);

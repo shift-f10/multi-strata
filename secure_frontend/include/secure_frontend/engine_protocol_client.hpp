@@ -87,9 +87,21 @@ struct EngineProtocolError final {
 struct TokenEvent final {
   std::uint32_t id;
 };
+// The engine's own figures from a full DONE record, `DONE <generated> <prompt> <prompt_ms>
+// <decode_ms> <finish> [<drafts_accepted> <drafts_offered> <reused> ...]` (generate.cpp; the
+// fields upstream's /metrics reads, serve/server.py _parse_done). For the Monitor
+// (listener.monitor, session log step 16) only: a short record leaves them all empty, and a
+// field that is not a number leaves that one empty. They never decide the record's validity.
+struct DoneFigures final {
+  std::optional<std::size_t> prompt_tokens{};
+  std::optional<double> prompt_ms{};
+  std::optional<double> decode_ms{};
+  std::optional<std::size_t> reused{};   // prompt tokens the engine kept from the last turn
+};
 struct DoneEvent final {
   std::string_view finish;
   std::size_t generated;  // this generation's T records
+  DoneFigures figures{};
 };
 struct ProgressEvent final {};
 using GenerationEvent = std::variant<TokenEvent, DoneEvent, ProgressEvent, EngineProtocolError>;

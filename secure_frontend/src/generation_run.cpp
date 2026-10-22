@@ -130,6 +130,7 @@ GenerationRunResult drive_generation(EngineProtocolClient& protocol, const Token
       idle_slice = true;
     } else if (const auto* token = std::get_if<TokenEvent>(&event)) {
       ++result.completion_tokens;
+      if (limits.meter != nullptr) limits.meter->on_token(result.completion_tokens);
       last_activity = Clock::now();  // a token is the engine speaking
       if (limits.max_tokens != 0U && result.completion_tokens > limits.max_tokens) {
         protocol.abandon();  // more tokens than GEN allowed: not trusted further (M1: engine_error)
@@ -174,6 +175,7 @@ GenerationRunResult drive_generation(EngineProtocolClient& protocol, const Token
       last_activity = Clock::now();  // a progress line is the engine speaking (pin: "nothing valid")
     } else {
       const auto& done = std::get<DoneEvent>(event);
+      if (limits.meter != nullptr) limits.meter->on_done(done.figures);
       if (cause == StopCause::none && !turn_ended) (void)release(utf8.finish(done.finish != "stop"), reasoning);
       if (done.finish == "nonfinite") {
         result.end = RunEnd::engine_error;

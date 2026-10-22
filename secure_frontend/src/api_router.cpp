@@ -117,6 +117,9 @@ RouteDecision ApiRouter::authorize(const RequestHead& head) {
   std::string_view allow;
   const std::string_view target = head.target;
   for (const auto& entry : kRouteTable) {
+    // listener.monitor off: /metrics is no route at all, for any method (EXT-01: upstream's
+    // /metrics stays 404 after authentication, never 405).
+    if (entry.id == RouteId::metrics && !config_.metrics) continue;
     const bool path_match = entry.prefix
                                 ? (target.size() > entry.path.size() && target.substr(0, entry.path.size()) == entry.path)
                                 : target == entry.path;
@@ -204,6 +207,10 @@ RouteResult ApiRouter::handle(const RequestHead& head, const std::string_view bo
                                 .content_security_policy = kWebUiContentSecurityPolicy};
         break;
       }
+      case RouteId::metrics:
+        // listener.monitor (session log step 16): keyed above like every route; off, not served.
+        response = config_.metrics ? json_response(200, config_.metrics()) : make_error_response(ApiError::not_found);
+        break;
       case RouteId::other:
         response = make_error_response(ApiError::not_found);
         break;

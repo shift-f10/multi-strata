@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <deque>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -272,6 +273,43 @@ void resume_and_reused_progress_is_consumed_in_the_strata_profile() {
   const auto glm_error = glm_client.read_generation(std::chrono::seconds(1), generation);
   expect(glm_error.has_value() && glm_error->code == EngineProtocolErrorCode::unexpected_line && glm_client.closed(),
          "the GLM profile keeps its exact record and must refuse RESUME/REUSED");
+}
+
+// Session log step 16 (listener.monitor): a full DONE carries the engine's own counts and
+// timings to the Monitor. A short record, or a field that is not a number, leaves them empty
+// and never fails the generation.
+void done_figures_reach_the_done_event() {
+  const auto done_of = [](const std::string& record) -> std::optional<secure_frontend::DoneEvent> {
+    FakeTransport transport;
+    transport.reads = {line("READY 64"), line("T 9"), line(record)};
+    EngineProtocolClient client(transport);
+    secure_frontend::EngineReady ready{};
+    (void)client.await_ready(std::chrono::seconds(1), ready);
+    (void)client.begin_generation(4, {1}, secure_frontend::deadline_after(std::chrono::seconds(5)));
+    (void)client.next_event(std::chrono::seconds(1));  // T 9
+    const auto event = client.next_event(std::chrono::seconds(1));
+    const auto* done = std::get_if<secure_frontend::DoneEvent>(&event);
+    if (done == nullptr || client.closed()) return std::nullopt;
+    return *done;
+  };
+  const auto full = done_of("DONE 1 8192 1250.5 400 stop 0 0 4096 7 9");
+  expect(full.has_value() && full->finish == "stop" && full->figures.prompt_tokens == std::optional<std::size_t>{8192U} &&
+             full->figures.prompt_ms == std::optional<double>{1250.5} && full->figures.decode_ms == std::optional<double>{400.0} &&
+             full->figures.reused == std::optional<std::size_t>{4096U},
+         "a full DONE gives prompt tokens, both timings and the reused count");
+  const auto six = done_of("DONE 1 12 3.5 7 length");
+  expect(six.has_value() && six->figures.prompt_tokens == std::optional<std::size_t>{12U} && !six->figures.reused.has_value(),
+         "the six-field record has no reused count");
+  for (const char* short_form : {"DONE 1", "DONE stop"}) {
+    const auto done = done_of(short_form);
+    expect(done.has_value() && !done->figures.prompt_tokens && !done->figures.prompt_ms && !done->figures.decode_ms &&
+               !done->figures.reused,
+           std::string{"a short record leaves the figures empty: "} + short_form);
+  }
+  const auto odd = done_of("DONE 1 x 2.5 -3 stop 0 0 y");
+  expect(odd.has_value() && !odd->figures.prompt_tokens && odd->figures.prompt_ms == std::optional<double>{2.5} &&
+             !odd->figures.decode_ms && !odd->figures.reused,
+         "a field that is not a number (or is negative) is left empty, the rest kept, the record still accepted");
 }
 
 // E1: the timeout is a total budget, not a per-line allowance.
@@ -682,6 +720,7 @@ int main(int argc, char** argv) {
       {"prefill_progress_is_bounded_in_both_profiles", prefill_progress_is_bounded_in_both_profiles},
       {"resume_and_reused_progress_is_consumed_in_the_strata_profile",
        resume_and_reused_progress_is_consumed_in_the_strata_profile},
+      {"done_figures_reach_the_done_event", done_figures_reach_the_done_event},
       {"generation_total_deadline_is_enforced", generation_total_deadline_is_enforced},
       {"gen_line_fits_max_prompt_tokens", gen_line_fits_max_prompt_tokens},
       {"default_limits_take_a_million_token_prompt", default_limits_take_a_million_token_prompt},

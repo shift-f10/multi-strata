@@ -412,6 +412,11 @@ target_link_libraries(secure_frontend_chat_execution
 secure_frontend_add_library(secure_frontend_generation_run SOURCES src/generation_run.cpp
     LINKS secure_frontend_engine_protocol_client secure_frontend_tokenizer_pack secure_frontend_utf8_stream secure_frontend_api_core)
 target_link_libraries(secure_frontend_chat_execution PUBLIC secure_frontend_generation_run)
+# Session log step 16 (listener.monitor): the Monitor's meter and JSON, and this machine's
+# readings (CPU/RAM from the OS; the GPU from nvidia-smi as a separate child).
+secure_frontend_add_library(secure_frontend_serve_monitor SOURCES src/serve_monitor.cpp src/host_readings.cpp
+    LINKS secure_frontend_generation_run secure_frontend_engine_stdio_process secure_frontend_json)
+target_link_libraries(secure_frontend_chat_route PUBLIC secure_frontend_serve_monitor)
 target_compile_features(secure_frontend_engine_supervisor PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_engine_supervisor
     PUBLIC
@@ -993,7 +998,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         ext01_upstream_control_routes_are_404_after_auth ext02_http_headers_cannot_enable_extensions
         log_line_format_and_rate_limit err_no_token_prompt_or_path_in_any_body_or_log
         undecodable_output_logs_its_own_code web_ui_page_is_served_and_the_api_keeps_its_key
-        keyless_loopback_server_answers_without_a_key)
+        keyless_loopback_server_answers_without_a_key monitor_reports_generations_without_their_text)
     if(WIN32)
         # SP3 Task 22: Winsock parity cases (the same code paths run on Linux by hand; see the test file note).
         secure_frontend_add_cases(secure_frontend_api_server_tests win_refusal_is_read_not_reset
@@ -1173,6 +1178,16 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         gate_cancelled_waiter_leaves_queue gate_fast_fails_when_engine_not_ready gate_shutdown_refuses_waiters)
     secure_frontend_add_cases(secure_frontend_concurrency_tests ${SECURE_FRONTEND_CONCURRENCY_CASES} TIMEOUT 120)
 
+    # Session log step 16 (listener.monitor): the meter, its JSON, the host readings, nvidia-smi.
+    secure_frontend_add_test_executable(secure_frontend_serve_monitor_tests tests/serve_monitor_test.cpp secure_frontend_serve_monitor)
+    secure_frontend_test_paths(secure_frontend_serve_monitor_tests)
+    secure_frontend_add_cases(secure_frontend_serve_monitor_tests
+        parses_nvidia_smi_lines nvidia_smi_command_is_fixed nvidia_smi_environment_is_program_files_only
+        monitor_records_generations monitor_reports_live_states
+        monitor_keeps_a_bounded_history)
+    secure_frontend_add_cases(secure_frontend_serve_monitor_tests host_readings_are_plausible gpu_sampler_reads_a_fake_tool
+        gpu_sampler_reads_the_real_tool_when_present
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
     secure_frontend_add_test_executable(secure_frontend_api_router_tests tests/api_router_test.cpp secure_frontend_api_router)
     secure_frontend_add_cases(secure_frontend_api_router_tests
         health_samples_status_before_state_once_each health_includes_engine_state_when_provided
@@ -1182,7 +1197,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         auth01_every_route_rejects_missing_malformed_wrong_token models_list_keeps_utf8_model_id
         web_ui_off_by_default_serves_nothing_public web_ui_serves_the_bundled_page_without_a_key
         web_ui_leaves_every_api_route_authenticated web_ui_still_checks_host_and_origin
-        web_ui_assets_are_bundled_and_inert keyless_router_answers_without_a_key)
+        web_ui_assets_are_bundled_and_inert keyless_router_answers_without_a_key
+        metrics_route_needs_the_key_and_the_switch web_ui_has_the_monitor_and_four_thinking_levels)
     target_link_libraries(secure_frontend_api_router_tests PRIVATE
         secure_frontend_secrets secure_frontend_api_router secure_frontend_http_policy)
 
@@ -1202,6 +1218,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         rejects_malformed_and_unexpected_engine_output bounds_and_engine_errors_fail_closed
         prefill_progress_is_bounded_in_both_profiles
         resume_and_reused_progress_is_consumed_in_the_strata_profile
+        done_figures_reach_the_done_event
         gen_carries_bounded_sampling_keys
         sampling_defaults_reach_gen_request
         generation_total_deadline_is_enforced
@@ -1338,7 +1355,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         session_rows_match_the_pin
         slot_save_path_is_a_bounded_private_path
         web_ui_and_loopback_without_key_rows
-        model_name_row
+        model_name_row monitor_row
         codex_and_tool_call_rows_are_dispositioned
         session_rows_at_each_edge
         replicas_parallel_row_at_the_pin
@@ -1400,7 +1417,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         secure_frontend_qwen_prompt_renderer)
     secure_frontend_add_cases(secure_frontend_qwen_prompt_renderer_tests
         renders_fixed_qwen_chatml_prompt accepts_systemless_conversation rejects_unsafe_or_unsupported_conversations
-        renders_think_block_per_template think_literals_in_content_fail_closed
+        renders_think_block_per_template renders_the_templates_effort_sentences think_literals_in_content_fail_closed
         renders_long_conversations_past_the_old_caps)
 
     secure_frontend_add_test_executable(secure_frontend_glm_profile_tests tests/glm_profile_test.cpp
@@ -1415,6 +1432,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         composes_schema_prompt_and_tokenizer vision_marker_runs_join_the_prompt_ids defaults_output_limit_and_rejects_unsafe_inputs
         rejects_missing_or_non_control_framing_tokens does_not_parse_arbitrary_special_literals
         sampling_defaults_merge_under_request_overrides qwen_plan_writes_the_template_think_block
+        qwen_plan_writes_the_effort_sentence
         qwen_plan_carries_the_end_of_turn_tokens)
 
     secure_frontend_add_test_executable(secure_frontend_chat_execution_tests tests/chat_execution_test.cpp
@@ -1439,7 +1457,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         drive_generation_splits_reasoning_at_the_think_close drive_generation_think_open_while_answering_starts_reasoning
         drive_generation_caps_reasoning_and_answer_together drive_generation_ends_a_split_character_at_the_tag
         drive_generation_keeps_other_special_tokens_fail_closed run_generation_returns_reasoning_beside_the_answer
-        drive_generation_end_of_turn_ends_the_reply_as_stop run_generation_ends_at_the_end_of_turn)
+        drive_generation_end_of_turn_ends_the_reply_as_stop run_generation_ends_at_the_end_of_turn
+        drive_generation_feeds_the_monitor_meter)
 
     secure_frontend_add_test_executable(secure_frontend_subsystem_limits_tests tests/subsystem_limits_test.cpp
         secure_frontend_subsystem_limits)

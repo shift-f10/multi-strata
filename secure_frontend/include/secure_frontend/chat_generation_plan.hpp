@@ -2,6 +2,7 @@
 
 #include "secure_frontend/chat_schema.hpp"
 #include "secure_frontend/config_defaults.hpp"
+#include "secure_frontend/qwen_prompt_renderer.hpp"
 #include "secure_frontend/sampling_params.hpp"
 #include "secure_frontend/tokenizer_pack.hpp"
 
@@ -58,12 +59,14 @@ using ChatGenerationPlanResult = std::variant<ChatGenerationPlan, ChatGeneration
 // thinking (reasoning.effort; upstream's default is on, serve/frontend.py:134-148): when
 // the pack carries <think>/</think>, true opens the template's think block and false
 // writes it closed; a pack without them renders the plain prompt either way.
+// effort (session log step 16): the template's reasoning sentence and where it sits
+// (render_qwen_text_prompt); the route always passes one, nullopt keeps the fixed format.
 [[nodiscard]] ChatGenerationPlanResult make_qwen_chat_generation_plan(
     const ChatCompletionRequest& request, const TokenizerPack& tokenizer,
     std::size_t maximum_prompt_tokens = static_cast<std::size_t>(config_defaults::kChatMaxPromptTokens),
     std::size_t default_max_tokens = static_cast<std::size_t>(config_defaults::kChatDefaultMaxTokens),
     const SamplingDefaults& defaults = {}, std::span<const std::size_t> image_token_counts = {},
-    bool thinking = true);
+    bool thinking = true, std::optional<QwenEffortPlacement> effort = std::nullopt);
 
 // Converts a schema-validated text request using only the fixed GLM-5.3
 // profile. It neither interprets a model template nor contacts the network.

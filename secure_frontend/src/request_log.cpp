@@ -15,6 +15,7 @@ std::string_view route_name(const RouteId route) {
     case RouteId::chat: return "chat";
     case RouteId::other: return "other";
     case RouteId::web: return "web";
+    case RouteId::metrics: return "metrics";
   }
   return "other";
 }

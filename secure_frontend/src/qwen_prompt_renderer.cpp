@@ -22,6 +22,42 @@ constexpr std::string_view kImagePadMarker = "<|image_pad|>";
 constexpr std::string_view kVisionEndMarker = "<|vision_end|>";
 constexpr std::string_view kThinkOpenMarker = "<think>";
 constexpr std::string_view kThinkCloseMarker = "</think>";
+// Session log step 16: the reasoning instructions of the Qwen3.8 template
+// (tokenizer/chat_template.jinja, reasoning_instructions), byte for byte, and the medium
+// sentence upstream says only in its end turn (serve/server.py EFFORT_TEXT, #458).
+constexpr std::string_view kEffortHigh =
+    "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider "
+    "plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.";
+constexpr std::string_view kEffortLow =
+    "Reasoning effort is set to low. Keep your thinking brief and focused, moving directly to the conclusion without "
+    "unnecessary elaboration.";
+constexpr std::string_view kEffortMediumTurn =
+    "Reasoning effort is set to medium. Think as much as the task needs, without unnecessary elaboration.";
+
+// The sentence at the top of the system turn. At the end, the conversation is the default
+// one (xhigh) whatever the request asked; at the start it is the request's own level.
+std::string_view top_effort_sentence(const QwenThinking thinking, const std::optional<QwenEffortPlacement>& effort) {
+  if (!effort.has_value() || thinking == QwenThinking::absent) return {};
+  if (effort->at_end) return kEffortHigh;
+  if (thinking == QwenThinking::off) return {};
+  switch (effort->effort) {
+    case QwenEffort::high: return kEffortHigh;
+    case QwenEffort::low: return kEffortLow;
+    case QwenEffort::medium: return {};
+  }
+  return {};
+}
+
+// The short system turn right before the answer (effort_position "end"): low and medium only.
+std::string_view end_effort_sentence(const QwenThinking thinking, const std::optional<QwenEffortPlacement>& effort) {
+  if (!effort.has_value() || !effort->at_end || thinking != QwenThinking::on) return {};
+  switch (effort->effort) {
+    case QwenEffort::low: return kEffortLow;
+    case QwenEffort::medium: return kEffortMediumTurn;
+    case QwenEffort::high: return {};
+  }
+  return {};
+}
 
 bool valid_utf8(std::string_view value) {
   for (std::size_t index = 0; index < value.size();) {
@@ -122,7 +158,7 @@ bool holds_think_marker(const ChatMessage& message) {
 
 std::optional<std::string> render_qwen_text_prompt(const std::vector<ChatMessage>& messages,
                                                    const std::span<const std::size_t> image_token_counts,
-                                                   const QwenThinking thinking) {
+                                                   const QwenThinking thinking, const std::optional<QwenEffortPlacement> effort) {
   if (messages.empty() || messages.size() > kMaximumMessages) return std::nullopt;
   if (thinking != QwenThinking::absent) {
     for (const auto& message : messages) {
@@ -162,16 +198,28 @@ std::optional<std::string> render_qwen_text_prompt(const std::vector<ChatMessage
   // must have been consumed by an image part (exact match, both directions).
   if (expect_user || image_index != image_token_counts.size()) return std::nullopt;
 
-  if (messages.front().role == "system") {
+  // The template's system turn: its reasoning sentence first, a blank line, then the
+  // system text; the sentence alone when there is no system message.
+  const bool has_system = messages.front().role == "system";
+  const std::string_view sentence = top_effort_sentence(thinking, effort);
+  if (has_system || !sentence.empty()) {
     std::string system_prefix;
-    system_prefix.reserve(messages.front().content.size() + 32U);
+    system_prefix.reserve((has_system ? messages.front().content.size() : 0U) + sentence.size() + 32U);
     system_prefix.append(kStartMarker);
     system_prefix.append("system\n");
-    system_prefix.append(messages.front().content);
+    system_prefix.append(sentence);
+    if (!sentence.empty() && has_system) system_prefix.append("\n\n");
+    if (has_system) system_prefix.append(messages.front().content);
     system_prefix.append(kEndMarker);
     system_prefix.push_back('\n');
     if (system_prefix.size() > kMaximumPromptBytes - prompt.size()) return std::nullopt;
     prompt.insert(0U, system_prefix);
+  }
+  if (const std::string_view turn = end_effort_sentence(thinking, effort); !turn.empty()) {
+    if (!append_bounded(&prompt, kStartMarker) || !append_bounded(&prompt, "system\n") || !append_bounded(&prompt, turn) ||
+        !append_bounded(&prompt, kEndMarker) || !append_bounded(&prompt, "\n")) {
+      return std::nullopt;
+    }
   }
   if (!append_bounded(&prompt, kStartMarker) || !append_bounded(&prompt, "assistant\n")) {
     return std::nullopt;

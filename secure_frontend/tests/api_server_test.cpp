@@ -1,4 +1,5 @@
 #include "secure_frontend/api_errors.hpp"
+#include "secure_frontend/json.hpp"
 #include "secure_frontend/request_router.hpp"
 #include "secure_frontend/socket_io.hpp"
 #include "secure_frontend/web_ui.hpp"
@@ -279,7 +280,9 @@ void web01_ipv6_bound_host_rules() {
 }
 
 void web02_bound_authority_and_localhost_alias_succeed() {
-  auto server = start_server();
+  // Session log step 16: /metrics is an opt-in route (listener.monitor); on here, so every
+  // route in the table is exercised under every authority.
+  auto server = start_server({{"listener.monitor", "true"}});
   if (!server) return;
   const std::string port = std::to_string(server->port());
   for (const std::string& host : std::vector<std::string>{authority(*server), "localhost:" + port, "LOCALHOST:" + port}) {
@@ -1325,6 +1328,50 @@ void web_ui_page_is_served_and_the_api_keeps_its_key() {
   expect(log.find(" web 200 - ") != std::string::npos, "the request log names the page route 'web': " + log);
 }
 
+// Session log step 16 (listener.monitor), over a real socket: GET /metrics needs the key,
+// reports each finished generation's counts and finish on both chat paths, never its text,
+// and is valid JSON; with the switch off it is not served.
+void monitor_reports_generations_without_their_text() {
+  {
+    auto off = start_server();
+    if (!off) return;
+    const auto missing = raw(*off, raw_http::request("GET", "/metrics", authority(*off), {raw_http::bearer(token())}));
+    expect(missing && missing->status == 404, "listener.monitor off: /metrics is not served");
+  }
+  auto server = start_server({{"listener.monitor", "true"}, {"logging.requests", "true"}}, {"--tokens=3"});
+  expect(server != nullptr, "the server starts with listener.monitor");
+  if (!server) return;
+  const auto metrics = [&server] {
+    return raw(*server, raw_http::request("GET", "/metrics", authority(*server), {raw_http::bearer(token())}));
+  };
+  const auto unkeyed = raw(*server, raw_http::request("GET", "/metrics", authority(*server), {}));
+  expect(unkeyed && unkeyed->status == 401, "the Monitor needs the key");
+  const auto idle = metrics();
+  expect(idle && idle->status == 200 && idle->body.find("\"state\":\"idle\"") != std::string::npos &&
+             idle->body.find("\"requests\":[]") != std::string::npos,
+         "idle, no requests yet: " + (idle ? idle->body.substr(0, 400) : std::string{"<none>"}));
+  const auto plain = raw(*server, chat_request(*server, chat_body(R"("max_tokens":8)", "monitor-secret-words")));
+  expect(plain && plain->status == 200, "a chat");
+  const auto streamed = raw(*server, chat_request(*server, chat_body(R"("max_tokens":8,"stream":true)", "monitor-secret-words")));
+  expect(streamed && streamed->status == 200, "a streamed chat");
+  const auto after = metrics();
+  const std::string body = after ? after->body : std::string{};
+  expect(after && after->status == 200 && body.find("\"requests_kept\":2") != std::string::npos,
+         "both generations are kept: " + body.substr(0, 600));
+  std::size_t stops = 0;
+  for (std::size_t at = body.find("\"finish\":\"stop\""); at != std::string::npos; at = body.find("\"finish\":\"stop\"", at + 1U)) ++stops;
+  expect(stops == 2U && body.find("\"output_tokens\":3") != std::string::npos,
+         "each one's finish and token count, on both paths: " + body.substr(0, 600));
+  expect(body.find("\"model\":\"fake-model\"") != std::string::npos, "the served model is named");
+  expect(body.find("monitor-secret-words") == std::string::npos && body.find("\"content\"") == std::string::npos,
+         "no prompt and no answer in the Monitor");
+  const secure_frontend::JsonLimits limits{.max_bytes = 1U << 20U, .max_depth = 8U, .max_container_entries = 4096U,
+                                           .max_string_bytes = 1U << 16U, .allow_fractions = true};
+  expect(std::holds_alternative<secure_frontend::JsonValue>(secure_frontend::parse_json(body, limits)), "valid JSON");
+  std::this_thread::sleep_for(200ms);
+  expect(server->stderr_text().find(" metrics 200 - ") != std::string::npos, "the request log names the route 'metrics'");
+}
+
 void keyless_loopback_server_answers_without_a_key() {
   test_support::ServerOptions options;
   options.no_token = true;
@@ -1831,6 +1878,7 @@ int main(int argc, char** argv) {
       {"log_line_format_and_rate_limit", log_line_format_and_rate_limit},
       {"undecodable_output_logs_its_own_code", undecodable_output_logs_its_own_code},
       {"web_ui_page_is_served_and_the_api_keeps_its_key", web_ui_page_is_served_and_the_api_keeps_its_key},
+      {"monitor_reports_generations_without_their_text", monitor_reports_generations_without_their_text},
       {"keyless_loopback_server_answers_without_a_key", keyless_loopback_server_answers_without_a_key},
       {"err_no_token_prompt_or_path_in_any_body_or_log", err_no_token_prompt_or_path_in_any_body_or_log},
       {"utf8_non_stream_max_tokens_cut_mid_character_returns_length", utf8_non_stream_max_tokens_cut_mid_character_returns_length},

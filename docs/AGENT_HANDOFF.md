@@ -312,6 +312,20 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
     so every later turn sent two user turns in a row (renderer refuses: 400), even after
     a refresh. The page now sends, saves and loads only strictly alternating turns
     (`conversation()` in app.js). Verified in the browser; no JS test harness exists.
+  - **Issue 41 (owner request): the Monitor.** `listener.monitor` (off by default) serves
+    a keyed `GET /metrics` in upstream's shape (`serve_monitor.hpp`). It holds the last 100
+    generations' counts and the engine's DONE timings (never text), and the host's CPU/RAM
+    plus GPU 0 via the system's `nvidia-smi` as a child (`host_readings.hpp`; no NVML in
+    the server; its environment is `ProgramFiles` from HKLM, issue 43 — NVML does not start
+    without it). Off, `/metrics` is no route for any method (EXT-01). The page has
+    upstream's Monitor tab, DOM-built. Gaps: one GPU only; no disk, expert or hit-rate
+    readings; no Prometheus format. Gates: full suite 901/900, 1 skipped; after the issue
+    43 fix the monitor and server e2e tests rerun (one known idle-unload timing flake,
+    passes on rerun). Not run: the Linux and cross -Werror gates.
+  - **Issue 42 (owner request): Off / Low / Medium / High.** The qwen renderer now writes
+    the template's effort sentence (`QwenEffortPlacement`; high is the default, low has
+    its own sentence, medium none, `effort_position` "end" as upstream #458). Before, every
+    thinking prompt lacked the template's xhigh sentence. The page offers the four levels.
 - The `windows-runtime`-labelled cases run under the MSVC preset on the owner's box; the
   supported Windows toolchains (MSYS2 clang, llvm-mingw) are still not installed (issue 3).
 

@@ -1,7 +1,7 @@
 // Strata's built-in chat page (listener.web_ui), modelled on upstream Strata's serve/web UI (pin
 // v0.2.2, MIT License, Copyright (c) 2026 Niko1221 and the Strata contributors; see
-// LICENSE.strata-ui.txt) and written for this server's routes: /health, /v1/models and
-// /v1/chat/completions, nothing else.
+// LICENSE.strata-ui.txt) and written for this server's routes: /health, /v1/models,
+// /v1/chat/completions and (listener.monitor) /metrics, nothing else.
 //
 // The API key is the login: kept in sessionStorage (this tab only) and sent only as
 // "Authorization: Bearer" to this origin, with cookies off. On a keyless loopback server
@@ -14,8 +14,13 @@
   var SLOT_KEY = "strata.apiKey";
   var SLOT_CHAT = "strata.chat";
   var SLOT_SETTINGS = "strata.settings";
-  var DEFAULTS = { thinking: "on", temperature: 1.0, top_p: 0.95, max: "", seed: "", show: true, tuned: false };
+  // Upstream's four thinking levels (session log step 16): none closes the think block; low,
+  // medium and high (the template's default) write its effort sentence.
+  var DEFAULTS = { thinking: "high", temperature: 1.0, top_p: 0.95, max: "", seed: "", show: true, tuned: false };
+  var LEVELS = { none: "answers right away", low: "short", medium: "medium", high: "thorough (default)" };
   var SPRITE = "/ui/sprite.svg#";
+  var DEG = String.fromCharCode(176);
+  var DOT = " " + String.fromCharCode(183) + " ";
 
   var state = {
     key: null, keyless: false, models: [], model: "", history: [], attachments: [],
@@ -124,16 +129,18 @@
 
   // ---------------------------------------------------------------- views
   function showView(name) {
-    ["login", "chat", "about"].forEach(function (view) { $("view-" + view).hidden = view !== name; });
+    ["login", "chat", "monitor", "about"].forEach(function (view) { $("view-" + view).hidden = view !== name; });
     var signedIn = name !== "login";
     $("tabs").hidden = !signedIn;
     $("new-btn").hidden = name !== "chat";
-    ["chat", "about"].forEach(function (tab) { $("tab-btn-" + tab).setAttribute("aria-selected", tab === name ? "true" : "false"); });
+    ["chat", "monitor", "about"].forEach(function (tab) { $("tab-btn-" + tab).setAttribute("aria-selected", tab === name ? "true" : "false"); });
+    if (name === "monitor") { startMonitor(); } else { stopMonitor(); }
     if (name === "about") { renderAbout(); }
     if (name === "chat") { $("input").focus(); }
   }
   function showLogin(message) {
     stopPolling();
+    stopMonitor();
     setPill("idle", "Signed out");
     $("login-error").textContent = message || "";
     $("login-error").hidden = !message;
@@ -416,7 +423,7 @@
       messages: conversation(state.history).map(function (m) { return { role: m.role, content: m.content }; }),
       stream: true,
       stream_options: { include_usage: true },
-      reasoning_effort: s.thinking === "off" ? "none" : "high"
+      reasoning_effort: LEVELS[s.thinking] ? s.thinking : "high"
     };
     if (s.tuned) { body.temperature = Number(s.temperature); body.top_p = Number(s.top_p); }
     if (s.max) { body.max_tokens = Number(s.max); }
@@ -583,7 +590,7 @@
     Array.prototype.forEach.call($("s-thinking").querySelectorAll("button"), function (b) {
       b.setAttribute("aria-checked", b.getAttribute("data-v") === s.thinking ? "true" : "false");
     });
-    $("o-thinking").textContent = s.thinking === "off" ? "off" : "on";
+    $("o-thinking").textContent = LEVELS[s.thinking] || "";
     $("s-temp").value = s.temperature; $("o-temp").textContent = Number(s.temperature).toFixed(2);
     $("s-topp").value = s.top_p; $("o-topp").textContent = Number(s.top_p).toFixed(2);
     $("s-max").value = s.max; $("s-seed").value = s.seed;
@@ -598,7 +605,7 @@
   function applySettings() {
     var s = state.settings;
     var thinking = $("s-thinking").querySelector("[aria-checked=true]");
-    s.thinking = thinking ? thinking.getAttribute("data-v") : "on";
+    s.thinking = thinking ? thinking.getAttribute("data-v") : "high";
     var temperature = Number($("s-temp").value);
     var topP = Number($("s-topp").value);
     s.tuned = s.tuned || temperature !== s.temperature || topP !== s.top_p;
@@ -634,6 +641,242 @@
     fact(apiFacts, "API key", state.keyless ? "not needed (loopback server)" : "the key you signed in with", false);
     $("dark-toggle").setAttribute("aria-checked", window.StrataTheme && window.StrataTheme.get() === "dark" ? "true" : "false");
   }
+
+  // ---------------------------------------------------------------- Monitor (GET /metrics)
+  // Upstream's Monitor tab on this server's /metrics (listener.monitor): asked once a second
+  // while the tab is open. A server with the Monitor off answers 404 and the tab says so.
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  var METRICS = [
+    { key: "speed", label: "Speed", icon: "i-gauge", series: "tok_s" },
+    { key: "gpu", label: "GPU load", icon: "i-gpu", series: "gpu_util", max: 100 },
+    { key: "vram", label: "VRAM", icon: "i-layers", series: "gpu_mem_used" },
+    { key: "temp", label: "GPU temp", icon: "i-thermometer", series: "gpu_temp", tone: "warn", max: 90 },
+    { key: "power", label: "Power", icon: "i-bolt", series: "gpu_power" },
+    { key: "pcie", label: "PCIe", icon: "i-link", tone: "info" },
+    { key: "cpu", label: "CPU", icon: "i-cpu", series: "cpu", max: 100 }
+  ];
+  var FINISH = { stop: ["", "Done"], length: ["", "Max tokens"], cancel: ["st-badge--queued", "Stopped"],
+                 disconnect: ["st-badge--queued", "Closed"], error: ["st-badge--error", "Error"] };
+  var monitor = { timer: null, showAll: false, last: null };
+
+  function fmt(value, digits) {
+    if (value === null || value === undefined || !isFinite(value)) { return "-"; }
+    var d = digits || 0;
+    return Number(value).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+  }
+  function gb(bytes, digits) { return fmt(bytes / 1073741824, digits === undefined ? 1 : digits); }
+  function kfmt(n) { return n >= 1000 ? fmt(n / 1000, n >= 10000 ? 0 : 1) + "K" : fmt(n); }
+  function ctxfmt(n) { return n >= 1048576 ? fmt(n / 1048576, n % 1048576 ? 1 : 0) + "M" : n >= 1024 ? fmt(n / 1024) + "K" : fmt(n); }
+  function svgNode(tag, attributes) {
+    var node = document.createElementNS(SVG_NS, tag);
+    Object.keys(attributes).forEach(function (name) { node.setAttribute(name, attributes[name]); });
+    return node;
+  }
+
+  function buildMetricCards() {
+    var grid = $("metrics");
+    clear(grid);
+    METRICS.forEach(function (m) {
+      var card = el("div", "st-card metric-card");
+      var body = el("div", "st-metric");
+      var label = el("span", "st-metric__label");
+      label.appendChild(icon(m.icon, true));
+      label.appendChild(document.createTextNode(m.label));
+      body.appendChild(label);
+      if (m.key === "speed") {
+        var values = el("div", "speed-values");
+        [["speed", "Decode"], ["prefill", "Prefill"]].forEach(function (pair) {
+          var column = el("div", pair[0] === "prefill" ? "speed-prefill" : null);
+          var value = el("span", "st-metric__value", "-");
+          value.id = "mv-" + pair[0];
+          var sub = el("span", "st-metric__sub", pair[1]);
+          sub.id = "ms-" + pair[0];
+          column.appendChild(value);
+          column.appendChild(sub);
+          values.appendChild(column);
+        });
+        body.appendChild(values);
+      } else {
+        var value = el("span", "st-metric__value", "-");
+        value.id = "mv-" + m.key;
+        var sub = el("span", "st-metric__sub");
+        sub.id = "ms-" + m.key;
+        body.appendChild(value);
+        body.appendChild(sub);
+      }
+      var spark = svgNode("svg", { "class": "st-metric__spark", id: "sp-" + m.key, viewBox: "0 0 100 32", preserveAspectRatio: "none" });
+      if (m.tone) { spark.setAttribute("data-tone", m.tone); }
+      spark.appendChild(svgNode("path", { "class": "area", fill: "currentColor", opacity: ".12" }));
+      spark.appendChild(svgNode("path", { "class": "line", fill: "none", stroke: "currentColor", "stroke-width": "1.6",
+                                          "stroke-linejoin": "round", "stroke-linecap": "round", "vector-effect": "non-scaling-stroke" }));
+      body.appendChild(spark);
+      card.appendChild(body);
+      grid.appendChild(card);
+    });
+  }
+  function setMetric(key, value, unit, sub) {
+    var node = $("mv-" + key);
+    clear(node);
+    node.appendChild(document.createTextNode(value === null || value === undefined ? "-" : value));
+    if (unit && value !== null && value !== undefined) { node.appendChild(el("small", null, unit)); }
+    $("ms-" + key).textContent = sub || "";
+  }
+  function spark(key, values, max) {
+    var svg = $("sp-" + key);
+    if (!svg) { return; }
+    var line = svg.querySelector(".line");
+    var area = svg.querySelector(".area");
+    var points = (values || []).map(function (x) { return x === null || x === undefined ? 0 : x; });
+    if (points.length < 2) { line.setAttribute("d", ""); area.setAttribute("d", ""); return; }
+    var top = Math.max.apply(null, [max || 0, 1].concat(points));
+    var path = points.map(function (x, i) {
+      return (i ? "L" : "M") + ((i / (points.length - 1)) * 100).toFixed(2) + "," + (30 - (x / top) * 26).toFixed(2);
+    }).join("");
+    line.setAttribute("d", path);
+    area.setAttribute("d", path + "L100,32L0,32Z");
+  }
+  function setBar(id, percent) { $(id).style.width = Math.max(0, Math.min(100, percent || 0)) + "%"; }
+
+  function totalsText(t) {
+    if (!t || !t.requests) { return ""; }
+    var since = new Date(t.since * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+    var read = Math.max(0, t.prompt_tokens - t.reused);
+    var prefill = t.prompt_ms > 0 && read > 0 ? " at " + fmt(read / (t.prompt_ms / 1000)) + " tok/s" : "";
+    var decode = t.decode_ms > 0 && t.output_tokens > 0 ? " at " + fmt(t.output_tokens / (t.decode_ms / 1000), 1) + " tok/s" : "";
+    return "Since " + since + ": " + fmt(t.requests) + " requests" + DOT + fmt(read) + " prompt tokens read" + prefill +
+           " (" + fmt(t.reused) + " reused)" + DOT + fmt(t.output_tokens) + " written" + decode;
+  }
+  function requestRow(r) {
+    var row = el("tr");
+    var cell = function (text, numeric) { var td = el("td", numeric ? "num" : null, text); row.appendChild(td); return td; };
+    cell(new Date(r.time * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
+    var badge = FINISH[r.finish] || ["", r.finish || "-"];
+    var status = cell("");
+    status.appendChild(el("span", "st-badge " + badge[0], badge[1]));
+    cell(fmt(r.prompt_tokens), true);
+    cell(fmt(r.reused), true);
+    cell(fmt(r.output_tokens), true);
+    var fresh = r.prompt_tokens === null || r.prompt_tokens === undefined ? null : Math.max(0, r.prompt_tokens - (r.reused || 0));
+    cell(fresh > 0 && r.prompt_ms > 0 ? fmt(fresh / (r.prompt_ms / 1000)) : "-", true);
+    cell(fmt(r.decode_tok_s, 1), true);
+    cell(fmt(r.duration_s, 1) + " s", true);
+    return row;
+  }
+
+  function renderMonitor(m) {
+    monitor.last = m;
+    var live = m.live || {}, hw = m.hardware || {}, st = m.hardware_static || {}, eng = m.engine || {}, h = m.history || {};
+    var requests = m.requests || [];
+    var last = requests[0];
+    var busy = live.state === "reading" || live.state === "generating";
+    // The model state.
+    var on = live.queued > 0 ? "queued" : live.state;
+    Array.prototype.forEach.call($("state-badges").querySelectorAll(".st-badge"), function (b) {
+      var s = b.getAttribute("data-s");
+      b.classList.toggle("on", s === on || s === live.state);
+    });
+    var label = "Waiting for a request", detail = "", pct = 0;
+    var progress = $("state-progress");
+    progress.removeAttribute("data-tone");
+    if (live.state === "starting") {
+      label = "The engine is starting";
+    } else if (live.state === "error") {
+      label = "The engine is not available";
+    } else if (live.state === "reading") {
+      label = "Reading prompt";
+      progress.setAttribute("data-tone", "info");
+      detail = fmt(live.prompt_tokens) + " tokens" + DOT + fmt(live.elapsed_s, 1) + " s";
+    } else if (live.state === "generating") {
+      label = "Generating";
+      pct = live.max_tokens ? (100 * live.generated) / live.max_tokens : 0;
+      detail = fmt(live.generated) + " tokens" + (live.tok_s ? DOT + fmt(live.tok_s, 1) + " tok/s" : "");
+    } else if (last) {
+      detail = "last: " + fmt(last.output_tokens) + " tokens" + (last.decode_tok_s ? " at " + fmt(last.decode_tok_s, 1) + " tok/s" : "");
+    }
+    if (live.queued > 0) { detail += (detail ? DOT : "") + fmt(live.queued) + " queued"; }
+    $("state-label").textContent = label;
+    $("state-detail").textContent = detail;
+    setBar("state-bar", pct);
+    // The cards.
+    var speed = live.state === "generating" ? live.tok_s : last ? last.decode_tok_s : null;
+    setMetric("speed", speed === null || speed === undefined ? null : fmt(speed, 1), "t/s",
+              live.state === "generating" ? "Decode now" : last ? "Decode last request" : "Decode");
+    var prefill = busy && live.prefill_tok_s ? live.prefill_tok_s
+                : last && last.prompt_ms > 0 ? Math.max(0, last.prompt_tokens - (last.reused || 0)) / (last.prompt_ms / 1000) : null;
+    setMetric("prefill", prefill === null ? null : fmt(prefill), "t/s",
+              live.state === "reading" ? "Prefill now" : busy ? "Prefill this request" : last ? "Prefill last request" : "Prefill");
+    spark("speed", h.tok_s);
+    var gpuSub = st.gpu_name || st.gpu_note || "";
+    setMetric("gpu", hw.gpu_util === null || hw.gpu_util === undefined ? null : fmt(hw.gpu_util), "%", gpuSub);
+    spark("gpu", h.gpu_util, 100);
+    setMetric("vram", hw.gpu_mem_used === null || hw.gpu_mem_used === undefined ? null : gb(hw.gpu_mem_used),
+              hw.gpu_mem_total ? "/ " + gb(hw.gpu_mem_total, 0) + " GB" : "GB", "");
+    spark("vram", h.gpu_mem_used, hw.gpu_mem_total);
+    setMetric("temp", hw.gpu_temp === null || hw.gpu_temp === undefined ? null : fmt(hw.gpu_temp), DEG + "C", "");
+    spark("temp", h.gpu_temp, 90);
+    setMetric("power", hw.gpu_power === null || hw.gpu_power === undefined ? null : fmt(hw.gpu_power), "W",
+              hw.gpu_power_limit ? "of " + fmt(hw.gpu_power_limit) + " W limit" : "");
+    spark("power", h.gpu_power, hw.gpu_power_limit);
+    var gen = hw.gpu_pcie_gen_max || hw.gpu_pcie_gen;
+    setMetric("pcie", gen ? "Gen" + gen : null, hw.gpu_pcie_width ? "x" + hw.gpu_pcie_width : "",
+              hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? "idle Gen" + hw.gpu_pcie_gen : "");
+    setMetric("cpu", hw.cpu === null || hw.cpu === undefined ? null : fmt(hw.cpu), "%", st.threads ? st.threads + " threads" : "");
+    spark("cpu", h.cpu, 100);
+    // Context fill: the running request, else the last one.
+    var ctx = eng.max_context || 0;
+    var used = busy ? (live.prompt_tokens || 0) + (live.generated || 0) : last ? (last.prompt_tokens || 0) + (last.output_tokens || 0) : 0;
+    var frac = ctx ? Math.min(1, used / ctx) : 0;
+    $("ctx-fill").setAttribute("stroke-dasharray", (235.6 * frac).toFixed(1) + " 314.2");
+    $("ctx-fill").style.opacity = 235.6 * frac >= 3 ? "1" : "0";  // a near-zero arc would draw just its round cap
+    $("ctx-pct").textContent = Math.round(frac * 100) + "%";
+    $("ctx-sub").textContent = ctx ? kfmt(used) + " / " + ctxfmt(ctx) : "-";
+    $("vram-text").textContent = hw.gpu_mem_total ? gb(hw.gpu_mem_used) + " / " + gb(hw.gpu_mem_total, 0) + " GB" : "-";
+    setBar("vram-bar", hw.gpu_mem_total ? (100 * hw.gpu_mem_used) / hw.gpu_mem_total : 0);
+    $("ram-text").textContent = hw.ram_total ? gb(hw.ram_used) + " / " + gb(hw.ram_total, 0) + " GB" : "-";
+    var ramPct = hw.ram_total ? (100 * hw.ram_used) / hw.ram_total : 0;
+    setBar("ram-bar", ramPct);
+    if (ramPct > 92) { $("ram-progress").setAttribute("data-tone", "danger"); } else { $("ram-progress").removeAttribute("data-tone"); }
+    $("temp-text").textContent = hw.gpu_temp === null || hw.gpu_temp === undefined ? "-" : fmt(hw.gpu_temp) + " " + DEG + "C";
+    setBar("temp-bar", hw.gpu_temp || 0);
+    // The recent requests.
+    var body = $("req-body");
+    clear(body);
+    if (!requests.length) {
+      var empty = el("tr");
+      var td = el("td", "muted", "No requests yet");
+      td.colSpan = 8;
+      empty.appendChild(td);
+      body.appendChild(empty);
+    } else {
+      requests.slice(0, monitor.showAll ? requests.length : 12).forEach(function (r) { body.appendChild(requestRow(r)); });
+    }
+    var kept = m.requests_kept === undefined ? requests.length : m.requests_kept;
+    $("req-all").hidden = kept <= 12;
+    $("req-all").textContent = monitor.showAll ? "Show fewer" : "Show all (" + kept + ")";
+    $("req-wrap").classList.toggle("all", monitor.showAll);
+    $("req-totals").textContent = totalsText(m.totals);
+  }
+
+  function showMonitorOff(off) {
+    $("monitor-off").hidden = !off;
+    ["state-card", "metrics", "monitor-row"].forEach(function (id) { $(id).hidden = off; });
+  }
+  async function pollMonitor() {
+    try {
+      var response = await api("/metrics");
+      var text = await response.text();
+      if (response.status === 404) { showMonitorOff(true); stopMonitor(); return; }
+      if (!response.ok) { return; }
+      showMonitorOff(false);
+      renderMonitor(JSON.parse(text));
+    } catch (e) { /* the next poll tries again; the pill says when the server is gone */ }
+  }
+  function startMonitor() {
+    stopMonitor();
+    pollMonitor();
+    monitor.timer = window.setInterval(pollMonitor, 1000);
+  }
+  function stopMonitor() { if (monitor.timer) { window.clearInterval(monitor.timer); monitor.timer = null; } }
 
   // ---------------------------------------------------------------- theme
   function syncThemeIcon() {
@@ -681,7 +924,7 @@
         Array.prototype.forEach.call($("s-thinking").querySelectorAll("button"), function (b) {
           b.setAttribute("aria-checked", b === button ? "true" : "false");
         });
-        $("o-thinking").textContent = button.getAttribute("data-v");
+        $("o-thinking").textContent = LEVELS[button.getAttribute("data-v")] || "";
       });
     });
     $("s-temp").addEventListener("input", function () { $("o-temp").textContent = Number($("s-temp").value).toFixed(2); });
@@ -692,7 +935,13 @@
     $("s-reset").addEventListener("click", function () { state.settings = Object.assign({}, DEFAULTS); showSettings(); });
     $("s-apply").addEventListener("click", applySettings);
     $("tab-btn-chat").addEventListener("click", function () { showView("chat"); });
+    $("tab-btn-monitor").addEventListener("click", function () { showView("monitor"); });
     $("tab-btn-about").addEventListener("click", function () { showView("about"); });
+    $("req-all").addEventListener("click", function () {
+      monitor.showAll = !monitor.showAll;
+      if (monitor.last) { renderMonitor(monitor.last); }
+    });
+    buildMetricCards();
     $("theme-btn").addEventListener("click", toggleTheme);
     $("dark-toggle").addEventListener("click", toggleTheme);
     $("sign-out").addEventListener("click", function () { signOut(""); });
@@ -700,6 +949,9 @@
 
   async function start() {
     state.settings = Object.assign({}, DEFAULTS, load(SLOT_SETTINGS, {}));
+    // Settings saved by the page's earlier Off / On control: off is none, on was high.
+    if (state.settings.thinking === "off") { state.settings.thinking = "none"; }
+    if (!LEVELS[state.settings.thinking]) { state.settings.thinking = "high"; }
     // A saved chat is repaired on the way in: it never ends on an unanswered question.
     var saved = load(SLOT_CHAT, []);
     state.history = Array.isArray(saved) ? conversation(saved) : [];

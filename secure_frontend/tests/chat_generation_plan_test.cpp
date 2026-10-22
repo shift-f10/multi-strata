@@ -302,6 +302,53 @@ void qwen_plan_writes_the_template_think_block() {
          "a client cannot close the think block from its content");
 }
 
+// Session log step 16: the plan hands its effort placement to the renderer, so the prompt the
+// engine reads carries the template's sentence for that level (high's differs from low's).
+void qwen_plan_writes_the_effort_sentence() {
+  const auto request = secure_frontend::parse_chat_completion_request(
+      R"({"model":"qwen-local","messages":[{"role":"user","content":"Hi"}]})");
+  expect(request.has_value(), "effort test request must be valid");
+  if (!request) return;
+  const std::string sentences =
+      "systemuserassistant\nHi Reasoning effort is set to xhigh. Please think carefully through the task, validate key "
+      "assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final "
+      "answer. Reasoning effort is set to low. Keep your thinking brief and focused, moving directly to the conclusion "
+      "without unnecessary elaboration.";
+  auto pack = tokenizer_for(sentences, true);
+  pack.tokens_by_id.emplace_back("<think>");
+  pack.token_types.push_back(4);
+  pack.tokens_by_id.emplace_back("</think>");
+  pack.token_types.push_back(4);
+  const auto plan_for = [&](const secure_frontend::QwenEffort effort) {
+    return secure_frontend::make_qwen_chat_generation_plan(
+        *request, pack, static_cast<std::size_t>(secure_frontend::config_defaults::kChatMaxPromptTokens),
+        static_cast<std::size_t>(secure_frontend::config_defaults::kChatDefaultMaxTokens), {}, {}, true,
+        secure_frontend::QwenEffortPlacement{effort, false});
+  };
+  for (const auto effort : {secure_frontend::QwenEffort::low, secure_frontend::QwenEffort::high}) {
+    const auto plan = plan_for(effort);
+    const auto* made = std::get_if<secure_frontend::ChatGenerationPlan>(&plan);
+    const auto rendered = secure_frontend::render_qwen_text_prompt(request->messages, {}, secure_frontend::QwenThinking::on,
+                                                                   secure_frontend::QwenEffortPlacement{effort, false});
+    expect(rendered.has_value() && rendered->find("Reasoning effort is set to ") != std::string::npos,
+           "the renderer writes the level's sentence");
+    if (made == nullptr || !rendered) {
+      expect(false, "the plan is made");
+      continue;
+    }
+    const auto encoded = secure_frontend::encode_qwen_chatml_prompt(pack, *rendered);
+    expect(std::holds_alternative<std::vector<std::size_t>>(encoded) &&
+               made->prompt_token_ids == std::get<std::vector<std::size_t>>(encoded),
+           "the plan's prompt is that rendering, encoded");
+  }
+  const auto high = plan_for(secure_frontend::QwenEffort::high);
+  const auto low = plan_for(secure_frontend::QwenEffort::low);
+  const auto* high_plan = std::get_if<secure_frontend::ChatGenerationPlan>(&high);
+  const auto* low_plan = std::get_if<secure_frontend::ChatGenerationPlan>(&low);
+  expect(high_plan != nullptr && low_plan != nullptr && high_plan->prompt_token_ids != low_plan->prompt_token_ids,
+         "high and low are different prompts");
+}
+
 // Issue 26: the plan hands the reply's end-of-turn ids to the generation.
 void qwen_plan_carries_the_end_of_turn_tokens() {
   const auto request = secure_frontend::parse_chat_completion_request(
@@ -356,6 +403,7 @@ int main(int argc, char** argv) {
       {"does_not_parse_arbitrary_special_literals", does_not_parse_arbitrary_special_literals},
       {"sampling_defaults_merge_under_request_overrides", sampling_defaults_merge_under_request_overrides},
       {"qwen_plan_writes_the_template_think_block", qwen_plan_writes_the_template_think_block},
+      {"qwen_plan_writes_the_effort_sentence", qwen_plan_writes_the_effort_sentence},
       {"qwen_plan_carries_the_end_of_turn_tokens", qwen_plan_carries_the_end_of_turn_tokens},
   }, failures);
 }
