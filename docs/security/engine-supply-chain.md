@@ -57,8 +57,11 @@ the rules below are written to make that hard and to leave a record of who looke
   --allowlist docs/security/engine-binary-allowlist.json`: every imported DLL must be in
   the allowlist; no network library (`ws2_32`, `winhttp`, `wininet`, `urlmon`, `dnsapi`,
   …) may be imported or named; no process-launch, remote-thread, service, registry-write
-  or network function may be imported or named; every DLL name embedded in the binary (what
-  it can load at run time) must be allowlisted with a reason. A new name is a ruling in the
+  or network function may be imported or named; an import by ordinal (no name for that
+  rule to see) is refused unless the allowlist's `allowed_ordinals` rules it, naming what
+  it binds (added 2026-10-21; the v0.2.2 engine imports nothing by ordinal); every DLL
+  name embedded in the binary (what it can load at run time) must be allowlisted with a
+  reason. A new name is a ruling in the
   bump's review file and an allowlist edit. Windows PE only today; the Linux (ELF) gate is
   owed (C9).
 - **C6 — No foreign executables.** An added or changed binary file in the gated surfaces is

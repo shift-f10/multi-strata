@@ -154,9 +154,12 @@ Numbered in the order found. Status: **open**, **worked around**, **fixed**, **n
     undecodable token, so the cause had to be found by reading the source. A fixed, text-free
     log code (e.g. `undecodable_token`) would keep the privacy rule and save the next person
     the hunt.
-21. **`/v1/models` lists one model** — note. With `--expert`, the docs say `/v1/models`
+21. **`/v1/models` lists one model** — **resolved (docs, step 10).** With `--expert`, the docs say `/v1/models`
     "lists the whole inventory", but only `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002`
-    is returned although `roots.models` also holds the Swift shard 1. Not investigated.
+    is returned although `roots.models` also holds the Swift shard 1. The behaviour is the
+    SP3 spec's (E9: only the served model, plus `model.aliases`; `server_bootstrap.cpp`). The
+    README sentence and two "SP3 decides later" comments on SP4's `served_models` (computed,
+    never read by the server) were stale and now say so.
 22. **Engine outlives a force-killed frontend by a few seconds** — note, not a leak.
     After `Stop-Process -Force` on `strata-secure-server`, `strata.exe` was still listed for
     ~3 s, then gone with its VRAM freed.
@@ -531,12 +534,130 @@ read-only audit:
   (no second prefill), which a first attempt at this measurement ran into.
 
 29. **Two `http_socket_server_tests` cases fail deterministically under MSVC on Windows** —
-    open. `head_terminator_split_across_reads` and `send_all_bounded_stall_restarts_on_progress`
+    **fixed in the test harness (step 10), two different causes, both measured.**
+    `head_terminator_split_across_reads` and `send_all_bounded_stall_restarts_on_progress`
     (3 of 3 runs). First run ever under MSVC (the file did not compile before, issue 23); not
-    caused by the `small` rename (that is in `connected_pair`, :835). Likely a host-timing
-    assumption: the test sleeps 2 ms per byte, but Windows sleeps in ~15.6 ms steps, so ~190
-    header bytes take ~3 s against the fixture's header deadline. Not changed (a test is never
-    weakened); needs the owner's ruling or a Windows timer-resolution fix in the test harness.
+    caused by the `small` rename (that is in `connected_pair`, :835).
+    (a) The head case: `Sleep(2)` takes 15.84 ms here (100 × measured), so the byte-paced
+    header (~100 bytes) overran the fixture's 1 s header deadline. The test binary now asks
+    for 1 ms timer resolution (`timeBeginPeriod(1)`, per-process since Windows 10 2004,
+    `winmm`): 1.15 s fail → 0.42 s pass. (b) The stall case was **not** timing: it failed
+    at 2.3 s, before its 10 s deadline, with `stalled`. Winsock takes a whole
+    `kMaxSendChunk` (64 KiB) slice per non-blocking `send`, and the case's 1-byte client
+    receive buffer throttles loopback TCP to ~120 KB/s, so one slice drains in ~540 ms, past
+    the 200 ms bound (`out/tcp-window-gap.ps1`: 14 sender gaps ≥ 200 ms, max 540 ms; with a
+    4 KiB buffer: none, max ~90 ms, 1.3 s in all). On Windows the case now uses a 4 KiB
+    client buffer, which still keeps the 1 MiB payload waiting on the reader and still
+    outlasts the bound (Linux shape unchanged). Both pass 3/3. Product note: on Windows the
+    write-stall clock ticks per 64 KiB slice, so a response is cut when one slice takes
+    longer than `write_stall_ms` (default 10 s, i.e. a client reading below ~6.5 KB/s);
+    SSE events are far smaller than a slice. Not changed.
+
+### 10. The 32 Windows failures, triaged one by one (after `324191af`)
+
+Until now the 30 baseline failures were grouped by a guessed cause ("Windows-host"). Each
+was read to its root cause. Two were product bugs, one a gap in our own supply-chain gate,
+the rest test-harness portability. Each fix keeps the Linux shape of the test unchanged.
+
+| Tests | Root cause | Kind | Fix |
+|---|---|---|---|
+| `server_cli_tests` serve × 2 | `strata.exe` never starts Winsock, so `strata serve` cannot bind on Windows (issue 30) | **product bug** | `WinsockGuard` in `strata_main.cpp` |
+| `cli_verbs_tests` Task Scheduler × 1 | bare `schtasks` searched cwd/PATH; the case's `.cmd` shim never ran, the real schtasks did (issue 31) | **product security bug** | System32-only resolution, test-first |
+| `egress_tests` imports × 1 | MSVC's `ws2_32.lib` links Winsock 1.1 by ordinal; the tripwire failed closed on every ordinal (issue 32) | gate gap (test) | resolve through the system `ws2_32.dll` export table |
+| `api_server_tests` × 6 | the fake engine wrote its record in text mode (`STOP\r\n`); the cases match `\nSTOP\n` | harness | record in binary mode |
+| `engine_supervisor_tests` vision × 4 | same, in the fake vision child (`SPAWN\r\n`) | harness | record in binary mode |
+| `update_cli_tests` × 7 | the fixture built Linux symlinks; on Windows the product's D-4 pointers are `current.txt`/`previous.txt` | harness | fixture writes/reads the Windows pointers — first Windows runtime proof of `strata update` install, decline, digest/tamper refusal, mirror fallback and rollback |
+| `typed_config_tests` × 4 | POSIX absolute literals (`/state/slots`) are drive-relative on Windows and correctly refused | harness | host-absolute literals (`C:/state/slots`) |
+| `service_ops_tests` disable × 1 | the case never created its task directory (Win32 error 3) | harness | create it |
+| `service_ops_tests` systemd golden × 1 | the systemd renderer used the host's absolute rule (a unit's paths are POSIX on any host) | product (pure function) | POSIX rule (leading `/`), identical on Linux |
+| `acquire_tests` key show × 1 | Windows stores the token DPAPI-protected (`STRATAK1` + blob): plaintext is in no file | harness | Windows asserts 0 plaintext files and the DPAPI header |
+| `api_client_tests` probe × 1 | the probe was started with an empty environment; Winsock cannot start without `SystemRoot` | harness | pass `SystemRoot` |
+| `http_socket_server_tests` × 2 | issue 29 (a) timer resolution, (b) 1-byte window vs 64 KiB slices | harness | see issue 29 |
+| `api_server_tests` DOS-02 idle × 1 | the process handle total includes the OS thread pool's own objects (issue 33) | harness | compare the per-request kinds exactly |
+
+30. **`strata serve` cannot bind on Windows** — **fixed.** `secure_server_main.cpp` holds a
+    `WinsockGuard` (spec §10: Winsock once per process, `bind()` never calls `WSAStartup`);
+    `strata_main.cpp` did not, and `strata serve` reaches the same
+    `HttpSocketServer::bind`, so `socket()` failed and the boot printed "Unable to bind secure
+    listener." (the GPU sessions above used `strata-secure-server`). RED: the two
+    `server_cli_tests` serve cases (they always failed here); GREEN after the guard. Note: the
+    bootstrap captures the bind error text and does not print it (diagnosability; not changed).
+31. **Bare tool names ran from the current directory or PATH (CWE-427)** — **fixed test-first.**
+    `service::run_argv` handed `CreateProcessW` a bare `schtasks` (and `doctor`'s
+    `nvidia-smi`), which searches strata's own directory, then the **current directory**,
+    then System32, then PATH. The code comment said "searches PATH, like execvp". A
+    `schtasks.exe` planted where a user runs `strata service enable` would run in their
+    session. Now a bare name runs only as `GetSystemDirectoryW()\<name>.exe`, passed as
+    `lpApplicationName`, or not at all. Both tools ship in System32 (checked on this box).
+    New case `service_ops_tests.run_argv_never_runs_a_planted_tool`. RED: the copies planted on
+    PATH and in the current directory both ran; the latter only once the case cleared
+    `NoDefaultCurrentDirectoryInExePath=1`, which this session's harness sets and a user's
+    shell does not. GREEN: 14/14 service and CLI cases.
+    The Task Scheduler CLI case had been running the **real** `schtasks` on this machine all
+    session: `CreateProcessW` never runs a `.cmd`, so its PATH shim was never found. Its
+    `/Create` exited 1 every time, so nothing was registered (`schtasks /Query /TN strata`:
+    not found). It now uses a test-only fake (`tests/fake_system_tool_main.cpp`) through a
+    hooks-only `--test-system-dir`, like the other hooks-only options. **Unproven:** whether
+    the real `schtasks /Create` accepts strata's task XML for a standard user. It exited 1
+    with the cause unrecorded. Proving it registers a real logon task, so it is owner-run.
+32. **The engine binary gate (C5) ignored imports by ordinal** — **fixed test-first** (our
+    own gate). `engine_review.py`'s PE parser dropped ordinal-only thunks, so e.g.
+    `CreateProcessW` imported from kernel32 by number would pass both the name rule and the
+    text scan. Now every ordinal import fails unless the allowlist rules it
+    (`allowed_ordinals`). RED: a synthetic PE importing kernel32 #291 passed the gate. GREEN:
+    10 gate tests, and the gated `v0.2.2` engine (`strata.exe`, `strata_kq.dll`) still passes
+    (it imports nothing by ordinal). Contract C5 text updated.
+    The C++ egress tripwire (`tests/support/binary_imports.hpp`) had the opposite problem: it
+    failed closed on every `WS2_32` ordinal, which MSVC links for the Winsock 1.1 functions.
+    It now reads the export table of the system `ws2_32.dll` (the one the loader binds) and
+    applies the name rule. An ordinal it cannot name still fails. New synthetic export-table
+    cases go through the real reader.
+33. **DOS-02 idle check on Windows** — harness, measured. Handles by type
+    (`out/handle-types.ps1`, NtQuerySystemInformation): over 360 cancelled chats the server's
+    File handles (sockets, pipes, files) stay at 27 and Process at 1. The total drifts +5/+6
+    in Thread, Event and WaitCompletionPacket, the OS thread pool's own objects (the product
+    uses no thread pool; its one per-request event, `write_line`'s, is closed on every path).
+    A 480-chat run shows no per-request growth (175 → 180, 180, 180, 181). On Windows the
+    case now compares the per-request kinds exactly (`request_handle_count`: File + Process,
+    failing closed if none can be typed). Linux still compares every fd.
+34. **Windows `send` granularity** — note (issue 29 b): the write-stall clock ticks per 64 KiB
+    slice on Windows.
+35. **`run_argv` (Windows) drains stdout to EOF before stderr** — note. A tool that filled the
+    stderr pipe first would deadlock it; schtasks and nvidia-smi print a few lines. The POSIX
+    side reads both alternately. Not changed.
+
+36. **Latent use-after-free in three `typed_config_tests` cases** — **fixed (test bug).** The
+    first full run after these fixes crashed once in
+    `cfg01_derived_defaults_follow_worker_count` (SEGFAULT; 5/5 alone passed).
+    `config_of(with_literals(…))` returned a view into a temporary that died at the end of
+    the statement, and the next lines read through it. The file already recorded the same bug
+    fixed once in the sampling case. Fixed there and in two sibling cases (`…one_worker…`,
+    `…explicit_values…`): the result now outlives the reads.
+
+- **Full preset suite after these fixes** (`ctest --preset windows-msvc`,
+  `out/ctest-preset-harness2.xml`, clean `/W4 /WX` build): **867 tests, 866 passed, 0 failed,
+  1 skipped** (`cfg03_rejects_symlink_below_root`, symlink privilege), in 242 s. The first run
+  (`out/ctest-preset-harness.xml`) had the one crash of issue 36. Repo pytest: 55 passed (+3
+  gate tests), the same 7 host failures (bash/WSL, cross tree), 4 skipped. RED evidence:
+  `out/ctest-red-cwe427.*`, `out/pytest-red-ordinal.log`; the serve and harness REDs are the
+  failing cases of `out/ctest-preset-final.xml`.
+
+### 11. IQ3_S served on `0.0.0.0:8080` for the owner's own testing (owner request)
+
+- Binary: `out/frontend-msvc-serve` (current source, `BUILD_TESTING=OFF`,
+  `SECURE_FRONTEND_TEST_HOOKS=OFF`, `/WX`; no hooks marker in the exe), not the hooks-enabled
+  preset tree. Config `out/serve/config-iq3s-lan.json`: the IQ3_S config with
+  `listener.host` `0.0.0.0`, `allow_remote`, `allow_wildcard_bind`, and `host_aliases`
+  `192.168.1.96[:8080]`, `desktop-r7ebg8g:8080`, `127.0.0.1:8080`, `localhost:8080`;
+  `--check` valid. Started by `out/serve/serve-iq3s-lan.ps1` (token read from
+  `api-token.txt`, never printed; log `out/serve-iq3s-lan.log`).
+- Through `http://192.168.1.96:8080` from this machine: READY after 24 s; `/v1/models` lists
+  the one model; a chat answered "The capital of France is Paris." (`stop`, 2.4 s, reasoning
+  split out). No token → 401 `invalid_api_key`, a foreign `Host` → 403. Requests from the LAN
+  address are logged `remote`.
+- Not proven: a connection from another machine. The Ethernet network is a **Public** profile
+  with `NotifyOnListen` on, so Windows asks the owner to allow `strata-secure-server.exe`. No
+  firewall rule was read (needs admin) or changed.
 
 ### Not done in this session
 

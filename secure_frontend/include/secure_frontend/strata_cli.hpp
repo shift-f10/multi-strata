@@ -44,6 +44,10 @@ struct CliServices final {
   // executable. A release build never reads either. Empty = absent (production defaults).
   std::string test_pinned_release_key_hex;
   std::filesystem::path test_self_executable;
+  // SECURE_FRONTEND_TEST_HOOKS builds only, Windows: set from --test-system-dir; `service` and
+  // `uninstall` run their system tool (schtasks) from this directory instead of System32, so
+  // a test never reaches the real Task Scheduler. A release build never reads it. Empty = absent.
+  std::filesystem::path test_tool_directory;
 };
 
 class StreamConfirmer final : public Confirmer {

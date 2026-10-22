@@ -1,3 +1,4 @@
+#include "secure_frontend/socket_io.hpp"
 #include "secure_frontend/strata_cli.hpp"
 #include "secure_frontend/utf8_argv.hpp"
 
@@ -14,6 +15,9 @@
 #endif
 
 int main(int argc, char** argv) {
+  // Spec §10, as strata-secure-server: Winsock once per process. `strata serve`
+  // binds through the same HttpSocketServer::bind, which never calls WSAStartup.
+  const secure_frontend::WinsockGuard winsock;
 #if !defined(_WIN32)
   // SP4 §3.2: strata writes to pipes whose reader (the downloader) can die first;
   // that must be an EPIPE, never a SIGPIPE death.

@@ -1,5 +1,6 @@
 #include "secure_frontend/api_client.hpp"
 #include "secure_frontend/config.hpp"
+#include "secure_frontend/crt_environment.hpp"
 #include "secure_frontend/engine_process.hpp"
 #include "secure_frontend/run_target.hpp"
 #include "support/chat_json.hpp"
@@ -9,7 +10,9 @@
 #include <atomic>
 #include <cstdio>
 #include <chrono>
+#include <functional>
 #include <iostream>
+#include <map>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -182,6 +185,16 @@ void run_refuses_non_loopback_server_json() {
   expect(std::holds_alternative<RunTarget>(target) && std::get<RunTarget>(target).port == 8080U, "port carried");
 }
 
+// EngineProcess passes only its allowlist. A Windows child without SystemRoot
+// cannot start Winsock (WSAEPROVIDERFAILEDINIT), so the probe gets that one entry.
+std::map<std::string, std::string, std::less<>> probe_environment() {
+  std::map<std::string, std::string, std::less<>> environment;
+#if defined(_WIN32)
+  if (const char* root = secure_frontend::crt_getenv("SystemRoot")) environment.emplace("SystemRoot", root);
+#endif
+  return environment;
+}
+
 void probe_modes_pass_against_fake_engine() {
   auto server = test_support::start_stream_server({"--tokens=200", "--token-interval-ms=5"});
   expect(server != nullptr, "server ready");
@@ -194,7 +207,7 @@ void probe_modes_pass_against_fake_engine() {
     const bool started = !probe.start({.executable = STRATA_API_PROBE_PATH,
                                        .arguments = {"--port", std::to_string(server->port()), "--token-file", test_support::utf8_path(token_file),
                                                      "--model", "fake-model", mode},
-                                       .environment = {}}).has_value();
+                                       .environment = probe_environment()}).has_value();
     expect(started && probe.wait_for(60s) == 0, "strata-api-probe " + mode + " passes against the fake engine");
   }
 }

@@ -256,7 +256,11 @@ def _cstring(data: bytes, offset: int) -> str:
 
 
 def pe_imports(data: bytes) -> dict[str, list[str]]:
-    """{dll (lower case): [imported function names]} from the import and delay-import directories."""
+    """{dll (lower case): [imported function names]} from the import and delay-import directories.
+
+    An import by ordinal carries no name, so it is listed as "#<ordinal>": the gate refuses it
+    unless the allowlist rules it (allowed_ordinals), since no name rule can see what it binds.
+    """
     if data[:2] != b"MZ":
         raise ValueError("not a PE file (no MZ header)")
     pe = struct.unpack_from("<I", data, 0x3C)[0]
@@ -283,7 +287,9 @@ def pe_imports(data: bytes) -> dict[str, list[str]]:
             value = struct.unpack_from("<Q" if pe32_plus else "<I", data, offset)[0]
             if value == 0:
                 break
-            if not value & ordinal_flag:
+            if value & ordinal_flag:
+                names.append(f"#{value & 0xFFFF}")
+            else:
                 name_offset = _rva_to_offset(sections, value & 0x7FFFFFFF)
                 if name_offset is not None:
                     names.append(_cstring(data, name_offset + 2))
@@ -339,7 +345,11 @@ def binary_main(args: argparse.Namespace) -> int:
             elif not _allowed(dll, allow["imports"]):
                 problems.append(f"{exe}: imports {dll}, not in the allowlist")
             for function in functions:
-                if function in FORBIDDEN_NAMES and function not in allow.get("allowed_functions", []):
+                if function.startswith("#"):
+                    if f"{dll}{function}" not in allow.get("allowed_ordinals", {}):
+                        problems.append(f"{exe}: imports {dll} ordinal {function[1:]} by number (no name for the "
+                                        "forbidden-function rule to check); rule it in allowed_ordinals or refuse")
+                elif function in FORBIDDEN_NAMES and function not in allow.get("allowed_functions", []):
                     problems.append(f"{exe}: imports {function} from {dll}")
         for dll in sorted(embedded):
             if dll in NETWORK_DLLS:

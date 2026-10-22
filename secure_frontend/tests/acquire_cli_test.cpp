@@ -3,6 +3,7 @@
 #include "secure_frontend/catalog.hpp"  // SP5 M1 Task 14: the one version source
 #include "secure_frontend/model_index_store.hpp"
 #include "secure_frontend/test_hooks.hpp"
+#include "secure_frontend/token_reader.hpp"  // kDpapiTokenMagic: the Windows store's header
 #include "support/cli_harness.hpp"
 #include "support/config_json.hpp"  // SP5 M1 Task 14: the key-case config rewrite
 #include "support/expect.hpp"
@@ -285,7 +286,15 @@ void key_show_requires_local_token_and_never_logs() {
     if (body.find(token2) != std::string::npos) ++token2_files;
   }
   expect(token1_files == 0, "the rotated-out token lives in no file anywhere (nothing logged)");
+#if defined(_WIN32)
+  // Windows stores the DPAPI blob (STRATAK1 + CryptProtectData, token_store.cpp), so
+  // the plaintext lives in no file at all; show above proved the store round-trips.
+  expect(token2_files == 0, "the live token's plaintext lives in no file: the store holds the DPAPI blob");
+  expect(secure_frontend_test::read_file(store).rfind(std::string{secure_frontend::kDpapiTokenMagic}, 0) == 0,
+         "the store is the DPAPI-protected form (STRATAK1 header)");
+#else
   expect(token2_files == 1, "the live token lives in exactly one file: the store itself");
+#endif
   // Grammar: bad subcommand and --env misuse are usage errors.
   expect(h.run({"key", "frobnicate"}) == 1, "key takes show or rotate");
   expect(h.run({"key", "rotate", "--env"}) == 1, "--env belongs to show only");

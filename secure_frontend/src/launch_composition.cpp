@@ -61,7 +61,7 @@ std::variant<ComposedLaunch, LaunchFailure> expert_launch(const FrontendConfig& 
     // SP5 M1 Task 10 (serve/server.py:2955-2975): engine-internal parallelism renders --batch N.
     append_parallel_batch_arguments(argv, ParallelBatchArgs{config.replicas.parallel}, config.engine.args);
   }
-  std::vector<std::string> served;  // SP1's /v1/models lists the whole inventory; --expert keeps that (SP3 decides later)
+  std::vector<std::string> served;  // the inventory ids; /v1/models lists only the served model (SP3 E9 settled it)
   served.reserve(list.size());
   for (const auto& model : list) served.push_back(model.id);
   // SP5 M1 Task 6 (parity row mtp): the removals can only come from the operator args.

@@ -692,7 +692,7 @@ target_compile_definitions(secure_frontend_release_manifest PRIVATE
 # PX §2: the one user-facing binary. SP4 provides only its acquisition verbs (Controller note 1);
 # strata-secure-server never links secure_frontend_acquire or secure_frontend_strata_cli (§7.1).
 add_executable(strata src/strata_main.cpp)
-target_link_libraries(strata PRIVATE secure_frontend_strata_cli secure_frontend_utf8_argv)
+target_link_libraries(strata PRIVATE secure_frontend_strata_cli secure_frontend_utf8_argv secure_frontend_socket_io)
 target_compile_features(strata PRIVATE cxx_std_20)
 secure_frontend_set_warnings(strata)
 
@@ -846,6 +846,14 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     add_executable(strata-fake-vision-child tests/fake_vision_child_main.cpp)
     target_compile_features(strata-fake-vision-child PRIVATE cxx_std_20)
     secure_frontend_set_warnings(strata-fake-vision-child)
+    if(WIN32)
+        # Test-only stand-in for a System32 tool (schtasks): records its argv beside
+        # itself and exits 0 (tests/fake_system_tool_main.cpp). Never installed.
+        add_executable(strata-fake-system-tool tests/fake_system_tool_main.cpp)
+        target_compile_features(strata-fake-system-tool PRIVATE cxx_std_20)
+        target_include_directories(strata-fake-system-tool PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        secure_frontend_set_warnings(strata-fake-system-tool)
+    endif()
 
     # Paths every SP2 test needs (fixture directories come from SP1's
     # make_scratch_directory below ${SECURE_FRONTEND_TEST_TMP}).
@@ -1142,6 +1150,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     if(WIN32)
         secure_frontend_add_cases(secure_frontend_http_socket_server_tests win_send_chunks_respect_write_stall
             LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+        # timeBeginPeriod(1) for the byte-paced cases (session log issue 29).
+        target_link_libraries(secure_frontend_http_socket_server_tests PRIVATE winmm)
     endif()
 
     secure_frontend_add_test_executable(secure_frontend_concurrency_tests tests/concurrency_test.cpp
@@ -1543,9 +1553,13 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     if(WIN32)
         # Task 6: the Task Scheduler CLI roundtrip, windows-runtime labelled —
         # cross-compiled by the cross gate, run only on the owner's Windows box.
+        # Its schtasks is the fake tool, through the hooks-only --test-system-dir.
         secure_frontend_add_cases(secure_frontend_cli_verbs_tests
             cli_service_enable_status_disable_taskscheduler
             ARGS $<TARGET_FILE:strata> LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+        target_compile_definitions(secure_frontend_cli_verbs_tests PRIVATE
+            "STRATA_FAKE_SYSTEM_TOOL_PATH=\"$<TARGET_FILE:strata-fake-system-tool>\"")
+        add_dependencies(secure_frontend_cli_verbs_tests strata-fake-system-tool)
     endif()
     if(NOT WIN32)
         # Symlink layouts are POSIX-only here; the Windows pointer form
@@ -1564,6 +1578,12 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
             service_enable_writes_task_then_creates service_enable_without_task_scheduler_writes_nothing
             service_disable_refuses_foreign_task_file service_disable_removes_task_and_our_file
             service_status_task_one_line_each)
+        # CWE-427 (session log 2026-10-21): a bare tool name never runs a planted copy.
+        secure_frontend_add_cases(secure_frontend_service_ops_tests run_argv_never_runs_a_planted_tool
+            LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+        target_compile_definitions(secure_frontend_service_ops_tests PRIVATE
+            "STRATA_FAKE_SYSTEM_TOOL_PATH=\"$<TARGET_FILE:strata-fake-system-tool>\"")
+        add_dependencies(secure_frontend_service_ops_tests strata-fake-system-tool)
     endif()
     secure_frontend_add_cases(secure_frontend_server_cli_tests
         init_writes_config_and_token_then_server_starts init_refuses_to_overwrite_without_force

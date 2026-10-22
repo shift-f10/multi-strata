@@ -26,6 +26,11 @@ bool has_whitespace(const std::string& text) {
   return text.find_first_of(" \t\n\r") != std::string::npos;
 }
 
+// A systemd unit names POSIX paths whatever the host, so "absolute" is the POSIX
+// rule (a leading '/'), exactly path::is_absolute() on Linux. The host rule would
+// refuse every unit on Windows, where the renderer stays host-runnable (Task 6).
+bool posix_absolute(const std::string& text) { return !text.empty() && text.front() == '/'; }
+
 // Fixed messages (the finding, never a configured path): systemd splits
 // ExecStart on spaces and the ReadWritePaths list on spaces, so a path that
 // contains one cannot be named unquoted, and we refuse to guess at quoting.
@@ -36,9 +41,9 @@ std::optional<ServiceError> check_unit(const ServiceUnit& unit) {
     return ServiceError{"service: the program path contains whitespace; systemd splits ExecStart on spaces and "
                         "the service refuses to guess at quoting — install strata below a path without spaces"};
   }
-  if (!unit.exec_start.is_absolute()) return ServiceError{"service: the program path must be absolute"};
+  if (!posix_absolute(exec)) return ServiceError{"service: the program path must be absolute"};
   if (unit.config_file.empty()) return ServiceError{"service: no config file was given to the service"};
-  if (has_whitespace(unit.config_file) || !std::filesystem::path{unit.config_file}.is_absolute()) {
+  if (has_whitespace(unit.config_file) || !posix_absolute(unit.config_file)) {
     return ServiceError{"service: the config file path must be absolute and free of whitespace"};
   }
   if (unit.read_write_paths.empty()) {
@@ -46,7 +51,7 @@ std::optional<ServiceError> check_unit(const ServiceUnit& unit) {
                         "ReadWritePaths entry"};
   }
   for (const auto& path : unit.read_write_paths) {
-    if (path.empty() || has_whitespace(path) || !std::filesystem::path{path}.is_absolute()) {
+    if (path.empty() || has_whitespace(path) || !posix_absolute(path)) {
       return ServiceError{"service: every ReadWritePaths entry must be absolute and free of whitespace"};
     }
   }
@@ -174,58 +179,12 @@ std::variant<std::filesystem::path, ServiceError> resolve_current_target(const s
   return self;
 }
 
+#if defined(_WIN32)
+CmdResult run_argv(const std::vector<std::string>& argv) { return run_argv_in(system_tool_directory(), argv); }
+#else
 CmdResult run_argv(const std::vector<std::string>& argv) {
   CmdResult result;
   if (argv.empty()) return result;
-#if defined(_WIN32)
-  // Compile-proven here; runtime behaviour is the owner-box's (windows-runtime gates).
-  // CreateProcessW searches PATH for the bare application name, like execvp.
-  std::wstring command;
-  for (const auto& part : argv) {
-    if (!command.empty()) command += L' ';
-    const std::wstring wide(part.begin(), part.end());  // argv here is ASCII system commands
-    if (wide.find(L' ') != std::wstring::npos) { command += L'"'; command += wide; command += L'"'; }
-    else command += wide;
-  }
-  SECURITY_ATTRIBUTES inherit{static_cast<DWORD>(sizeof(SECURITY_ATTRIBUTES)), nullptr, TRUE};
-  HANDLE out_read = nullptr; HANDLE out_write = nullptr; HANDLE err_read = nullptr; HANDLE err_write = nullptr;
-  if (CreatePipe(&out_read, &out_write, &inherit, 0) == 0) return result;
-  if (CreatePipe(&err_read, &err_write, &inherit, 0) == 0) {
-    CloseHandle(out_read); CloseHandle(out_write);
-    return result;
-  }
-  STARTUPINFOW startup{};
-  startup.cb = sizeof(startup);
-  startup.dwFlags = STARTF_USESTDHANDLES;
-  startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-  startup.hStdOutput = out_write;
-  startup.hStdError = err_write;
-  PROCESS_INFORMATION info{};
-  std::vector<wchar_t> mutable_command(command.begin(), command.end());
-  mutable_command.push_back(L'\0');
-  const BOOL started = CreateProcessW(nullptr, mutable_command.data(), nullptr, nullptr, TRUE,
-                                      CREATE_NO_WINDOW, nullptr, nullptr, &startup, &info);
-  CloseHandle(out_write);
-  CloseHandle(err_write);
-  if (started == 0) {
-    CloseHandle(out_read); CloseHandle(err_read);
-    return result;  // exit_code stays negative: the program could not be started
-  }
-  const auto drain = [](HANDLE pipe, std::string& into) {
-    char buffer[4096];
-    DWORD got = 0;
-    while (ReadFile(pipe, buffer, sizeof buffer, &got, nullptr) != 0 && got != 0) into.append(buffer, got);
-  };
-  drain(out_read, result.out);
-  drain(err_read, result.err);
-  CloseHandle(out_read);
-  CloseHandle(err_read);
-  WaitForSingleObject(info.hProcess, INFINITE);
-  DWORD code = 0;
-  if (GetExitCodeProcess(info.hProcess, &code) != 0) result.exit_code = static_cast<int>(code);
-  CloseHandle(info.hThread);
-  CloseHandle(info.hProcess);
-#else
   int out_pipe[2] = {-1, -1};
   int err_pipe[2] = {-1, -1};
   if (pipe(out_pipe) != 0) return result;
@@ -280,9 +239,9 @@ CmdResult run_argv(const std::vector<std::string>& argv) {
   while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
   }
   if (WIFEXITED(status)) result.exit_code = WEXITSTATUS(status);
-#endif
   return result;
 }
+#endif
 
 namespace {
 
@@ -307,6 +266,79 @@ namespace {
 }
 
 }  // namespace
+
+#if defined(_WIN32)
+std::filesystem::path system_tool_directory() {
+  std::wstring buffer(MAX_PATH, L'\0');
+  const UINT length = GetSystemDirectoryW(buffer.data(), static_cast<UINT>(buffer.size()));
+  if (length == 0U || length >= buffer.size()) return {};
+  buffer.resize(length);
+  return std::filesystem::path{buffer};
+}
+
+CmdResult run_argv_in(const std::filesystem::path& tool_directory, const std::vector<std::string>& argv) {
+  CmdResult result;
+  // A bare tool name only (no separator, drive or quote), so it can never name a
+  // file outside `tool_directory`; the callers' argv is ASCII system commands.
+  if (argv.empty() || tool_directory.empty() || argv.front().empty() || argv.front() == "." || argv.front() == ".." ||
+      argv.front().find_first_of("\\/:\"") != std::string::npos) {
+    return result;
+  }
+  std::filesystem::path application = tool_directory / std::filesystem::path{argv.front()};
+  if (!application.has_extension()) application += L".exe";
+  std::error_code missing;
+  if (!std::filesystem::is_regular_file(application, missing)) return result;  // not there: no search anywhere else
+  // lpApplicationName is the resolved path, so CreateProcessW searches nothing; the
+  // command line repeats it, quoted, as the child's argv[0].
+  const std::wstring application_text = application.wstring();
+  std::wstring command = L"\"" + application_text + L"\"";
+  for (std::size_t i = 1; i < argv.size(); ++i) {
+    command += L' ';
+    const std::wstring wide(argv[i].begin(), argv[i].end());  // argv here is ASCII system commands
+    if (wide.find(L' ') != std::wstring::npos) { command += L'"'; command += wide; command += L'"'; }
+    else command += wide;
+  }
+  SECURITY_ATTRIBUTES inherit{static_cast<DWORD>(sizeof(SECURITY_ATTRIBUTES)), nullptr, TRUE};
+  HANDLE out_read = nullptr; HANDLE out_write = nullptr; HANDLE err_read = nullptr; HANDLE err_write = nullptr;
+  if (CreatePipe(&out_read, &out_write, &inherit, 0) == 0) return result;
+  if (CreatePipe(&err_read, &err_write, &inherit, 0) == 0) {
+    CloseHandle(out_read); CloseHandle(out_write);
+    return result;
+  }
+  STARTUPINFOW startup{};
+  startup.cb = sizeof(startup);
+  startup.dwFlags = STARTF_USESTDHANDLES;
+  startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+  startup.hStdOutput = out_write;
+  startup.hStdError = err_write;
+  PROCESS_INFORMATION info{};
+  std::vector<wchar_t> mutable_command(command.begin(), command.end());
+  mutable_command.push_back(L'\0');
+  const BOOL started = CreateProcessW(application_text.c_str(), mutable_command.data(), nullptr, nullptr, TRUE,
+                                      CREATE_NO_WINDOW, nullptr, nullptr, &startup, &info);
+  CloseHandle(out_write);
+  CloseHandle(err_write);
+  if (started == 0) {
+    CloseHandle(out_read); CloseHandle(err_read);
+    return result;  // exit_code stays negative: the program could not be started
+  }
+  const auto drain = [](HANDLE pipe, std::string& into) {
+    char buffer[4096];
+    DWORD got = 0;
+    while (ReadFile(pipe, buffer, sizeof buffer, &got, nullptr) != 0 && got != 0) into.append(buffer, got);
+  };
+  drain(out_read, result.out);
+  drain(err_read, result.err);
+  CloseHandle(out_read);
+  CloseHandle(err_read);
+  WaitForSingleObject(info.hProcess, INFINITE);
+  DWORD code = 0;
+  if (GetExitCodeProcess(info.hProcess, &code) != 0) result.exit_code = static_cast<int>(code);
+  CloseHandle(info.hThread);
+  CloseHandle(info.hProcess);
+  return result;
+}
+#endif
 
 ServiceOutcome plan_enable(const ServiceEnv& env, CommandRunner& runner) {
 #if defined(_WIN32)

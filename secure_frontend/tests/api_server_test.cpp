@@ -1075,7 +1075,10 @@ void dos02_resources_return_to_idle() {
   (void)raw(*r.server, raw_http::request("GET", "/health", authority(*r.server), {raw_http::bearer(token())}));
   std::this_thread::sleep_for(300ms);
   const auto threads0 = test_support::thread_count(r.server->pid());
-  const auto handles0 = test_support::handle_count(r.server->pid());
+  // The kinds a request opens (connection_scan.hpp): every fd on Linux; File and
+  // Process handles on Windows, whose total also holds the OS thread pool's own.
+  const auto handles0 = test_support::request_handle_count(r.server->pid());
+  expect(handles0.has_value(), "the server's handles can be counted");
   for (int i = 0; i < 100; ++i) {
     auto c = raw_http::Connection::open("127.0.0.1", r.server->port());
     if (c) (void)c->send(chat_request(*r.server, chat_body("")));
@@ -1089,11 +1092,14 @@ void dos02_resources_return_to_idle() {
   bool idle = false;
   for (int i = 0; i < 100 && !idle; ++i) {
     std::this_thread::sleep_for(50ms);
-    idle = test_support::thread_count(r.server->pid()) == threads0 && test_support::handle_count(r.server->pid()) == handles0;
+    idle = test_support::thread_count(r.server->pid()) == threads0 && handles0.has_value() &&
+           test_support::request_handle_count(r.server->pid()) == handles0;
   }
   expect(idle, "after 100 cancelled chats threads (" + std::to_string(test_support::thread_count(r.server->pid())) + "/" +
-               std::to_string(threads0) + ") and handles (" + std::to_string(test_support::handle_count(r.server->pid())) + "/" +
-               std::to_string(handles0) + ") return to their idle values");
+               std::to_string(threads0) + ") and request handles (" +
+               std::to_string(test_support::request_handle_count(r.server->pid()).value_or(0)) + "/" +
+               std::to_string(handles0.value_or(0)) + "; all handles " + std::to_string(test_support::handle_count(r.server->pid())) +
+               ") return to their idle values");
   const auto health = raw(*r.server, raw_http::request("GET", "/health", authority(*r.server), {raw_http::bearer(token())}));
   expect(health && health->status == 200, "and the service is healthy");
 }

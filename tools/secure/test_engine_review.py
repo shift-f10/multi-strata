@@ -8,6 +8,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -140,6 +141,57 @@ def test_binary_gate_flags_a_networking_binary(tmp_path):
     allow.write_text(json.dumps({"imports": ["*.dll"], "loadable": ["*.dll"]}), encoding="utf-8")
     result = run("binary", "--exe", str(curl), "--allowlist", str(allow))
     assert result.returncode == 1 and "network library ws2_32.dll" in result.stderr, result.stderr
+
+
+def _synthetic_pe(thunk: int, hint_name: bytes = b"") -> bytes:
+    """PE32+ with one section (VA 0x1000, raw 0x200) whose import directory names
+    KERNEL32.dll with one thunk: an ordinal (bit 63) or the RVA of a hint/name entry."""
+    image = bytearray(0x400)
+    image[0:2] = b"MZ"
+    struct.pack_into("<I", image, 0x3C, 0x40)
+    image[0x40:0x44] = b"PE\0\0"
+    struct.pack_into("<HH", image, 0x44, 0x8664, 1)  # machine x64, one section
+    struct.pack_into("<H", image, 0x54, 240)         # SizeOfOptionalHeader
+    struct.pack_into("<H", image, 0x58, 0x20B)       # PE32+ magic
+    struct.pack_into("<II", image, 0x58 + 120, 0x1000, 40)  # data directory 1: imports
+    struct.pack_into("<IIII", image, 0x58 + 240 + 8, 0x200, 0x1000, 0x200, 0x200)  # section header
+    struct.pack_into("<IIIII", image, 0x200, 0x1040, 0, 0, 0x1060, 0x1040)  # descriptor; the next stays zero
+    struct.pack_into("<Q", image, 0x240, thunk)       # one thunk, then a zero thunk
+    image[0x260:0x26C] = b"KERNEL32.dll"
+    image[0x280:0x280 + len(hint_name)] = hint_name   # hint (2 bytes) + name, at RVA 0x1080
+    return bytes(image)
+
+
+ORDINAL_THUNK = (1 << 63) | 0x123  # kernel32.dll ordinal 291: no name in the binary to check
+
+
+def test_binary_gate_refuses_an_unnamed_ordinal_import(tmp_path):
+    exe = tmp_path / "ordinal.exe"
+    exe.write_bytes(_synthetic_pe(ORDINAL_THUNK))
+    allow = tmp_path / "allow.json"
+    allow.write_text(json.dumps({"imports": ["kernel32.dll"], "loadable": []}), encoding="utf-8")
+    result = run("binary", "--exe", str(exe), "--allowlist", str(allow))
+    assert result.returncode == 1 and "imports kernel32.dll ordinal 291 by number" in result.stderr, result.stderr
+
+
+def test_binary_gate_passes_the_same_import_by_name(tmp_path):
+    exe = tmp_path / "named.exe"
+    exe.write_bytes(_synthetic_pe(0x1080, b"\0\0GetTickCount\0"))
+    allow = tmp_path / "allow.json"
+    allow.write_text(json.dumps({"imports": ["kernel32.dll"], "loadable": []}), encoding="utf-8")
+    result = run("binary", "--exe", str(exe), "--allowlist", str(allow))
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_binary_gate_accepts_a_ruled_ordinal(tmp_path):
+    exe = tmp_path / "ordinal.exe"
+    exe.write_bytes(_synthetic_pe(ORDINAL_THUNK))
+    allow = tmp_path / "allow.json"
+    allow.write_text(json.dumps({"imports": ["kernel32.dll"], "loadable": [],
+                                 "allowed_ordinals": {"kernel32.dll#291": "binds GetTickCount (ruled in the bump's review)"}}),
+                     encoding="utf-8")
+    result = run("binary", "--exe", str(exe), "--allowlist", str(allow))
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_pe_parser_refuses_a_non_pe_file():

@@ -55,6 +55,7 @@ struct Scene final {
   std::filesystem::path unit;
   std::uint16_t port{0};
   std::vector<std::pair<std::string, std::string>> env;
+  std::vector<std::string> hooks_args;  // hooks-only global options, before --config (e.g. --test-system-dir)
 
   explicit Scene(const std::uint16_t listener_port) {
     scratch = make_scratch_directory();
@@ -90,7 +91,9 @@ struct Scene final {
     env = {{"HOME", home.string()}, {"XDG_CONFIG_HOME", xdg.string()}, {"PATH", "/bin:/usr/bin"}};
   }
   ProcessResult run(const std::vector<std::string>& verb_args, const std::string& stdin_text = "") const {
-    ProcessSpec spec{cli_binary, {"--config", config.string()}, {}};
+    ProcessSpec spec{cli_binary, hooks_args, {}};
+    spec.arguments.push_back("--config");
+    spec.arguments.push_back(config.string());
     spec.environment = env;
     if (!stdin_text.empty()) {
       const auto stdin_path = scratch / "stdin";
@@ -206,17 +209,19 @@ void cli_uninstall_purge_with_typed_word_removes_models() {
 #if defined(_WIN32)
 // The Task Scheduler roundtrip as a real CLI run (windows-runtime label: runs
 // only in a Windows test build — the owner's box; the cross gate compiles it).
+// Its schtasks is the fake tool in a test directory (hooks-only --test-system-dir):
+// strata runs a bare tool name from System32 only, so a PATH shim is never found —
+// the .cmd shim this case used before never ran, and the REAL schtasks did
+// (session log 2026-10-21; its /Create failed, so nothing was registered).
 void cli_service_enable_status_disable_taskscheduler() {
   const Scene s(18448);
   const auto shim_dir = s.scratch / "shim";
   std::filesystem::create_directories(shim_dir);
-  const auto record = s.scratch / "schtasks.calls";
-  {
-    std::ofstream cmd(shim_dir / "schtasks.cmd", std::ios::binary | std::ios::trunc);
-    cmd << "@echo off\r\necho %* >> \"" << record.string() << "\"\r\nexit /b 0\r\n";
-  }
+  std::filesystem::copy_file(STRATA_FAKE_SYSTEM_TOOL_PATH, shim_dir / "schtasks.exe");
+  const auto record = shim_dir / "schtasks.calls";
   Scene scene = s;
-  scene.env = {{"HOME", scene.home.string()}, {"XDG_CONFIG_HOME", scene.xdg.string()}, {"PATH", shim_dir.string()}};
+  scene.env = {{"HOME", scene.home.string()}, {"XDG_CONFIG_HOME", scene.xdg.string()}};
+  scene.hooks_args = {"--test-system-dir", shim_dir.string()};
   const auto task_file = scene.xdg / "strata" / "strata-task.xml";
 
   const auto enable = scene.run({"service", "enable"});
@@ -233,6 +238,7 @@ void cli_service_enable_status_disable_taskscheduler() {
   const auto disable = scene.run({"service", "disable"});
   expect(disable.exit_code == 0, "service disable exits 0");
   expect(!std::filesystem::exists(task_file, ec), "disable removed our task file");
+  expect(contains(read_text(record), "/End /TN strata\n/Delete /F /TN strata\n"), "disable ran schtasks /End then /Delete /F");
 }
 #endif  // _WIN32
 

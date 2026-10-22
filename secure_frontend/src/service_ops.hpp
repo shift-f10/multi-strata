@@ -58,10 +58,12 @@ struct ServiceError final {
 
 // --- Task 2: the enable/disable/status verbs (spec D-5) -----------------------
 
-// Runs argv with no shell (argv[0] searched through PATH); exit_code < 0 when
-// the program could not be started at all. Production CommandRunners are this
-// function; unit tests inject recording fakes; the e2e puts a PATH shim named
-// systemctl first on PATH. Never runs a loginctl, never elevates.
+// Runs argv with no shell; exit_code < 0 when the program could not be started
+// at all. POSIX: argv[0] is searched through PATH (execvp). Windows: a bare
+// argv[0] is a system tool, run_argv_in(system_tool_directory()). Production
+// CommandRunners are this function; unit tests inject recording fakes; the POSIX
+// e2e puts a PATH shim named systemctl first on PATH. Never runs a loginctl,
+// never elevates.
 struct CmdResult final {
   int exit_code{-1};
   std::string out;
@@ -69,6 +71,17 @@ struct CmdResult final {
 };
 [[nodiscard]] CmdResult run_argv(const std::vector<std::string>& argv);
 using CommandRunner = std::function<CmdResult(const std::vector<std::string>&)>;
+#if defined(_WIN32)
+// %SystemRoot%\System32 (GetSystemDirectoryW), where every tool strata runs
+// ships (schtasks, nvidia-smi); empty if it cannot be read.
+[[nodiscard]] std::filesystem::path system_tool_directory();
+// run_argv with a bare argv[0] run as `tool_directory`\argv[0] (".exe" added when
+// it has no extension) and nothing else. CreateProcessW given a bare name would
+// search strata's own directory and the CURRENT directory before System32, then
+// PATH, so a schtasks.exe planted where the user runs `strata service enable`
+// would run instead (CWE-427; session log 2026-10-21). Not there: exit_code < 0.
+[[nodiscard]] CmdResult run_argv_in(const std::filesystem::path& tool_directory, const std::vector<std::string>& argv);
+#endif
 
 // Where the unit lives and what it must say. user_unit_dir is the systemd user
 // unit directory (XDG_CONFIG_HOME, else HOME/.config, plus /systemd/user —

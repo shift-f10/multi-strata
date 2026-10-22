@@ -258,7 +258,25 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
   `privacy-migration.md` re-reviewed for `v0.2.2`. The distribution check now refuses
   `apps/host`/`apps/desktop`. Swift served through the frontend; STOP during a 16k-token
   prefill frees the engine within ~0.3 s; READY in 39–48 s.
-- No Windows-runtime ctest proof was produced.
+- **After `324191af` (session log step 10): every Windows failure triaged to its root cause.**
+  Two product bugs fixed: `strata serve` never started Winsock, so it could not bind on
+  Windows (issue 30). And `service::run_argv` gave `CreateProcessW` a bare `schtasks` /
+  `nvidia-smi`, which searches the current directory and PATH before/after System32
+  (CWE-427, issue 31). Now System32 only, test-first; the Task Scheduler CLI case, which
+  had been reaching the real schtasks (nothing registered), runs a fake through the
+  hooks-only `--test-system-dir`. Our gate gap: `engine_review.py binary` ignored ordinal
+  imports. It now refuses them unless `allowed_ordinals` rules them; RED/GREEN, and the
+  `v0.2.2` engine still passes (issue 32, contract C5). The egress tripwire resolves MSVC's
+  ordinal `WS2_32` imports through the system DLL's export table. Harness portability:
+  CRLF records, D-4 Windows pointer files in the update fixture (the first Windows run of
+  `strata update`), host-absolute config literals, DPAPI token assertion, `SystemRoot` for
+  the probe, issue 29's two causes (timer resolution; 1-byte window vs 64 KiB slices),
+  DOS-02 typed handle counts (issue 33). The systemd renderer takes the POSIX absolute rule.
+  Issue 21 resolved as docs (`/v1/models` lists only the served model, SP3 E9).
+  Owner-run and still unproven: whether the real `schtasks /Create` accepts strata's task
+  XML for a standard user.
+- The `windows-runtime`-labelled cases run under the MSVC preset on the owner's box; the
+  supported Windows toolchains (MSYS2 clang, llvm-mingw) are still not installed (issue 3).
 
 ### SP7 M2 (branch `sp7-m2-release-side`, base `f4dff56d` — `main` with SP7 M1 merged; the branch waits for the controller's merge gate)
 

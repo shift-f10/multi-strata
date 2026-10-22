@@ -458,7 +458,8 @@ class StdinReader final {
       while (std::getline(std::cin, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (!record_file_.empty()) {
-          std::ofstream out(record_file_, std::ios::app);
+          // Binary: the tests match "\nSTOP\n"; a text stream writes \r\n on Windows.
+          std::ofstream out(record_file_, std::ios::app | std::ios::binary);
           out << line << '\n';
         }
         std::lock_guard lock(mutex_);

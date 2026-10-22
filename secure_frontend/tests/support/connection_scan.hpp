@@ -2,10 +2,13 @@
 // Test-only process socket/thread/handle inspection (spec §6.2 table scan,
 // DOS-02 idle counts, NET-01). Linux: /proc/<pid>/fd + /proc/<pid>/net/*;
 // Windows: GetExtendedTcpTable/GetExtendedUdpTable filtered by pid, Toolhelp
-// threads, GetProcessHandleCount.
+// threads, GetProcessHandleCount, and handles by object type (handle_types).
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
@@ -93,6 +96,102 @@ inline std::size_t handle_count(const long pid) {
   CloseHandle(process);
   return count;
 }
+// The handles of `pid` by object type name ("File", "Process", "Event", ...), from
+// NtQuerySystemInformation(SystemExtendedHandleInformation) typed through the object
+// type table (NtQueryObject ObjectTypesInformation). Empty when either query fails.
+inline std::optional<std::map<std::string, std::size_t>> handle_types(const long pid) {
+  using QuerySystemFn = LONG(NTAPI*)(ULONG, void*, ULONG, ULONG*);
+  using QueryObjectFn = LONG(NTAPI*)(HANDLE, ULONG, void*, ULONG, ULONG*);
+  const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+  if (ntdll == nullptr) return std::nullopt;
+  const auto query_system =
+      reinterpret_cast<QuerySystemFn>(reinterpret_cast<void (*)()>(GetProcAddress(ntdll, "NtQuerySystemInformation")));
+  const auto query_object = reinterpret_cast<QueryObjectFn>(reinterpret_cast<void (*)()>(GetProcAddress(ntdll, "NtQueryObject")));
+  if (query_system == nullptr || query_object == nullptr) return std::nullopt;
+  // Grows the buffer while the call answers STATUS_INFO_LENGTH_MISMATCH.
+  const auto fill = [](const auto& call) {
+    std::vector<unsigned char> buffer(std::size_t{1} << 20U);
+    for (;;) {
+      ULONG needed = 0;
+      const LONG status = call(buffer.data(), static_cast<ULONG>(buffer.size()), &needed);
+      if (status == 0) return buffer;
+      if (status != static_cast<LONG>(0xC0000004UL) || buffer.size() >= (std::size_t{1} << 28U)) return std::vector<unsigned char>{};
+      buffer.resize(buffer.size() * 2U);
+    }
+  };
+  struct ObjectTypeInformation final {  // OBJECT_TYPE_INFORMATION (Windows 8.1+: TypeIndex)
+    USHORT length;
+    USHORT maximum_length;
+    PWSTR name;
+    ULONG counters[12];
+    ULONG invalid_attributes;
+    GENERIC_MAPPING generic_mapping;
+    ULONG valid_access_mask;
+    BOOLEAN security_required;
+    BOOLEAN maintain_handle_count;
+    UCHAR type_index;
+    CHAR reserved_byte;
+    ULONG pool_type;
+    ULONG default_paged_pool_charge;
+    ULONG default_non_paged_pool_charge;
+  };
+  struct HandleEntry final {  // SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX
+    void* object;
+    ULONG_PTR process;
+    ULONG_PTR value;
+    ULONG access;
+    USHORT backtrace;
+    USHORT type_index;
+    ULONG attributes;
+    ULONG reserved;
+  };
+  const auto types = fill([&](void* b, ULONG n, ULONG* needed) { return query_object(nullptr, 3 /* ObjectTypesInformation */, b, n, needed); });
+  if (types.size() < sizeof(ULONG_PTR)) return std::nullopt;
+  std::map<unsigned, std::string> names;
+  ULONG type_count = 0;
+  std::memcpy(&type_count, types.data(), sizeof(type_count));
+  std::size_t offset = sizeof(ULONG_PTR);  // the first entry is pointer-aligned after the count
+  for (ULONG i = 0; i < type_count && offset + sizeof(ObjectTypeInformation) <= types.size(); ++i) {
+    ObjectTypeInformation type{};
+    std::memcpy(&type, types.data() + offset, sizeof(type));
+    std::string name;
+    for (USHORT c = 0; type.name != nullptr && c < type.length / sizeof(wchar_t); ++c) {
+      name.push_back(static_cast<char>(type.name[c] < 0x80 ? type.name[c] : L'?'));
+    }
+    names[type.type_index] = name;
+    offset += (sizeof(ObjectTypeInformation) + type.maximum_length + sizeof(ULONG_PTR) - 1U) & ~(sizeof(ULONG_PTR) - 1U);
+  }
+  const auto handles = fill([&](void* b, ULONG n, ULONG* needed) { return query_system(64 /* SystemExtendedHandleInformation */, b, n, needed); });
+  if (handles.size() < 2U * sizeof(ULONG_PTR) || names.empty()) return std::nullopt;
+  ULONG_PTR handle_total = 0;
+  std::memcpy(&handle_total, handles.data(), sizeof(handle_total));
+  std::map<std::string, std::size_t> counts;
+  for (ULONG_PTR i = 0; i < handle_total; ++i) {
+    const std::size_t at = 2U * sizeof(ULONG_PTR) + static_cast<std::size_t>(i) * sizeof(HandleEntry);
+    if (at + sizeof(HandleEntry) > handles.size()) break;
+    HandleEntry entry{};
+    std::memcpy(&entry, handles.data() + at, sizeof(entry));
+    if (entry.process != static_cast<ULONG_PTR>(pid)) continue;
+    const auto name = names.find(entry.type_index);
+    ++counts[name != names.end() ? name->second : "type#" + std::to_string(entry.type_index)];
+  }
+  return counts;
+}
+// DOS-02's per-request kinds: File (sockets, pipes, files) and Process (an engine
+// child), exact. The process total also holds the OS thread pool's own Thread, Event
+// and WaitCompletionPacket objects, which Winsock and RPC grow and trim on their own
+// (measured: File stays put while the total drifts by a few; session log, step 10).
+inline std::optional<std::size_t> request_handle_count(const long pid) {
+  const auto types = handle_types(pid);
+  // A live server always holds File handles (its listener, the engine pipes): none
+  // means the typing failed, which must not compare as a vacuous 0 == 0.
+  if (!types || !types->contains("File")) return std::nullopt;
+  std::size_t n = 0;
+  for (const char* kind : {"File", "Process"}) {
+    if (const auto it = types->find(kind); it != types->end()) n += it->second;
+  }
+  return n;
+}
 #else
 inline std::set<std::string> socket_inodes(const long pid) {
   std::set<std::string> inodes;
@@ -150,6 +249,8 @@ inline std::size_t count_entries(const std::string& dir) {
 }
 inline std::size_t thread_count(const long pid) { return count_entries("/proc/" + std::to_string(pid) + "/task"); }
 inline std::size_t handle_count(const long pid) { return count_entries("/proc/" + std::to_string(pid) + "/fd"); }
+// Every descriptor is a per-request kind here (sockets, pipes, files).
+inline std::optional<std::size_t> request_handle_count(const long pid) { return handle_count(pid); }
 #endif
 
 // Loopback in the kernel's /proc hex form (127.x.y.z little-endian ends in "7F"; ::1 is ...01000000) or Windows numbers.

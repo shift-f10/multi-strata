@@ -54,6 +54,18 @@ bool has_issue(const secure_frontend::ConfigValidationResult& result, const std:
          });
 }
 
+// Pre-flight F-4 again, for path rows that load never touches: a POSIX
+// absolute path is drive-relative on Windows (the config refuses it there), so
+// those cases spell it with a drive.
+std::string host_absolute(const std::string& posix) {
+#if defined(_WIN32)
+  return "C:" + posix;
+#else
+  return posix;
+#endif
+}
+std::string quoted(const std::string& text) { return "\"" + text + "\""; }
+
 std::string issues_of(const secure_frontend::ConfigValidationResult& result) {
   std::string text;
   if (const auto* errors = std::get_if<secure_frontend::ConfigErrors>(&result)) {
@@ -874,7 +886,10 @@ void cfg01_remote_cap_le_workers() {
 
 void cfg01_sp1_config_with_one_worker_still_valid() {
   ConfigFixture f;
-  const auto* c = config_of(with_literals(f, {{"limits.concurrency.max_concurrent_requests", "1"}}));
+  // config_of views into its argument: the result must outlive every read (a
+  // dangling view of the temporary crashed the MSVC suite once, session log step 10).
+  const auto result = with_literals(f, {{"limits.concurrency.max_concurrent_requests", "1"}});
+  const auto* c = config_of(result);
   expect(c != nullptr, "an SP1-era file with one worker validates");
   if (c != nullptr) {
     expect(c->limits.concurrency.max_queued_generations == 0U && c->limits.concurrency.max_connections_per_remote_address == 1U,
@@ -887,7 +902,8 @@ void cfg01_derived_defaults_follow_worker_count() {
   const std::pair<int, std::pair<unsigned, unsigned>> table[] = {{1, {0U, 1U}}, {2, {0U, 2U}}, {3, {1U, 3U}},
                                                                   {6, {4U, 4U}}, {8, {4U, 4U}}, {256, {4U, 4U}}};
   for (const auto& [workers, expected] : table) {
-    const auto* c = config_of(with_literals(f, {{"limits.concurrency.max_concurrent_requests", std::to_string(workers)}}));
+    const auto result = with_literals(f, {{"limits.concurrency.max_concurrent_requests", std::to_string(workers)}});
+    const auto* c = config_of(result);  // `result` outlives the reads (see above)
     expect(c != nullptr && c->limits.concurrency.max_queued_generations == expected.first &&
            c->limits.concurrency.max_connections_per_remote_address == expected.second,
            "derived for " + std::to_string(workers) + " workers");
@@ -902,7 +918,8 @@ void cfg01_explicit_values_are_not_adjusted() {
   const auto result = with_literals(f, {{"limits.concurrency.max_concurrent_requests", "1"}, {"limits.concurrency.max_queued_generations", "4"}});
   expect(config_of(result) == nullptr && has_issue(result, "limits.concurrency.max_queued_generations", ConfigIssueCode::conflicting_values),
          "an explicit queue of 4 with one worker is an error naming the key, never silently lowered");
-  const auto* c = config_of(with_literals(f, {{"limits.concurrency.max_queued_generations", "2"}}));
+  const auto kept = with_literals(f, {{"limits.concurrency.max_queued_generations", "2"}});
+  const auto* c = config_of(kept);  // `kept` outlives the reads (see above)
   expect(c != nullptr && c->limits.concurrency.max_queued_generations == 2U && !c->limits.concurrency.queue_derived,
          "an explicit valid value is kept as written");
 }
@@ -920,7 +937,7 @@ void each_rejected_upstream_key_errors_at_load_naming_it() {
   expect(has_issue(nested, "engine.mcp", ConfigIssueCode::excluded_key),
          "a nested excluded member names its full path: " + issues_of(nested));
   // A schema-typed path that shares a rejected flat name stays valid (typed wins).
-  const auto typed = with_literals(f, {{"engine.lib_dirs", "[\"/opt/lib\"]"}});
+  const auto typed = with_literals(f, {{"engine.lib_dirs", "[" + quoted(host_absolute("/opt/lib")) + "]"}});
   expect(std::holds_alternative<secure_frontend::ValidatedConfig>(typed),
          "engine.lib_dirs remains a typed key: " + issues_of(typed));
 }
@@ -1004,7 +1021,7 @@ void glm_keys_parse_with_mayas_kinds_and_defaults() {
       {"glm.experimental_speed_projection", "true"},
       {"glm.layer_split", "\"18,32\""},
       {"glm.gpu", "\"0,1\""},
-      {"glm.tokenizer", "\"/opt/tokenizer-pack\""},
+      {"glm.tokenizer", quoted(host_absolute("/opt/tokenizer-pack"))},
       {"glm.model_name", "\"glm-5.3-flash\""}}));
   expect(std::holds_alternative<secure_frontend::ValidatedConfig>(accepted),
          "the full glm.* block validates on the glm53 profile: " + issues_of(accepted));
@@ -1499,16 +1516,17 @@ void session_rows_match_the_pin() {
   accept("session.env_to_user", "false");
   reject("session.codex_thread_titles", "\"true\"");  // the pin's strict bool, :8043
   reject("session.codex_compaction_cache", "1");
-  accept("session.slot_save_path", "\"/state/slots\"");
-  accept("session.expert_profile_save", "\"/state/learned.bin\"");
-  const auto set_result = with_literals(f, {{"session.slot_save_path", "\"/state/slots\""},
-                                            {"session.expert_profile_save", "\"/state/learned.bin\""},
+  accept("session.slot_save_path", quoted(host_absolute("/state/slots")));
+  accept("session.expert_profile_save", quoted(host_absolute("/state/learned.bin")));
+  const auto set_result = with_literals(f, {{"session.slot_save_path", quoted(host_absolute("/state/slots"))},
+                                            {"session.expert_profile_save", quoted(host_absolute("/state/learned.bin"))},
                                             {"session.expert_profile_save_every", "0"},
                                             {"session.tool_call_recovery", "true"}, {"session.env_to_user", "true"},
                                             {"session.codex_thread_titles", "true"}, {"session.codex_compaction_cache", "true"},
                                             {"session.keep_files", "1"}});
   const auto* set = config_of(set_result);
-  expect(set != nullptr && set->session.slot_save_path == "/state/slots" && set->session.expert_profile_save == "/state/learned.bin" &&
+  expect(set != nullptr && set->session.slot_save_path == host_absolute("/state/slots") &&
+             set->session.expert_profile_save == host_absolute("/state/learned.bin") &&
              set->session.expert_profile_save_every == 0 && set->session.tool_call_recovery && set->session.env_to_user &&
              set->session.codex_thread_titles && set->session.codex_compaction_cache && set->session.keep_files == 1,
          "the session family is typed: " + issues_of(set_result));
@@ -1528,11 +1546,11 @@ void slot_save_path_is_a_bounded_private_path() {
     const auto result = with_literals(f, {{path, value}});
     expect(std::holds_alternative<secure_frontend::ConfigErrors>(result), std::string{"rejects "} + value + " for " + path);
   };
-  accept("session.slot_save_path", "\"/state/slots\"");
+  accept("session.slot_save_path", quoted(host_absolute("/state/slots")));
   reject("session.slot_save_path", "\"slots\"");           // no cwd concept (T9-b)
   reject("session.slot_save_path", "\"\"");                // the pin's "must be a directory path" (:3472)
   reject("session.slot_save_path", "\"a\\u0001b\"");       // control characters (:3475)
-  accept("session.expert_profile_save", "\"/state/learned.bin\"");
+  accept("session.expert_profile_save", quoted(host_absolute("/state/learned.bin")));
   reject("session.expert_profile_save", "\"learned.bin\"");
   reject("session.expert_profile_save", "\"\"");
 }

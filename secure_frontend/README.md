@@ -900,7 +900,8 @@ The launch described in this section is the `--expert` bring-up mode: the
 operator supplies `engine.profile`, `roots.tokenizer_pack` (required) and the
 weight flags other than `--native` in `engine.args`, and `engine.model_id`
 names a `.gguf` in the local inventory (no managed model; `/v1/models` lists
-the whole inventory). Pass `--expert` when serving and with `--check` (which
+only `engine.model_id` and its `model.aliases`, as for a managed model — SP3
+E9). Pass `--expert` when serving and with `--check` (which
 then validates this mode); `init` accepts it and ignores it.
 
 The model directory must already contain the selected `.gguf`; the tokenizer

@@ -10,11 +10,18 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#include "secure_frontend/win32_prelude.hpp"
+#endif
 
 namespace {
 using namespace std::chrono_literals;
@@ -30,16 +37,37 @@ bool has(const std::vector<std::string>& values, std::string_view wanted) {
   });
 }
 
+#if defined(_WIN32)
+// The export names of the ws2_32.dll the loader binds (%SystemRoot%\System32), for
+// the ordinal-only imports MSVC's ws2_32.lib links (session log 2026-10-21).
+test_support::OrdinalNames system_ws2_32_ordinal_names() {
+  wchar_t directory[MAX_PATH];
+  const UINT length = GetSystemDirectoryW(directory, MAX_PATH);
+  if (length == 0U || length >= MAX_PATH) return {};
+  std::ifstream in(std::filesystem::path{std::wstring{directory, length}} / L"ws2_32.dll", std::ios::binary);
+  const std::vector<unsigned char> bytes{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+  const auto exports = test_support::read_pe_exports(bytes);
+  test_support::OrdinalNames names;
+  for (const auto& [ordinal, name] : exports.names) names["ws2_32.dll"][ordinal] = name;
+  return names;
+}
+#endif
+
 void egress_server_imports_no_resolver_or_http_client() {
   const auto report = test_support::read_binary_imports(test_support::server_path());
   expect(report.ok, "the server binary has an import table: " + report.error);
+  test_support::OrdinalNames ordinal_names;
   // Positive controls: the reader really sees the socket imports the listener needs.
 #if defined(_WIN32)
   expect(has(report.libraries, "ws2_32.dll"), "ws2_32.dll is imported");
+  ordinal_names = system_ws2_32_ordinal_names();
+  expect(!ordinal_names.empty(), "the system ws2_32.dll export table was read");
+  const auto names = test_support::import_names(report, ordinal_names);
+  expect(has(names, "accept") && has(names, "listen"), "accept and listen are seen, by name or by resolved ordinal");
 #else
   expect(has(report.symbols, "accept") || has(report.symbols, "accept4"), "accept is an undefined dynamic symbol");
 #endif
-  const auto forbidden = test_support::forbidden_imports(report);
+  const auto forbidden = test_support::forbidden_imports(report, ordinal_names);
   std::string list;
   for (const auto& f : forbidden) list += f + " ";
   expect(forbidden.empty(), "no resolver, HTTP client or outbound-connect import: " + list);
@@ -114,6 +142,28 @@ std::vector<unsigned char> synthetic_pe() {
   put_text(b, 0x260, "WS2_32.dll");
   return b;
 }
+// The same layout as a DLL: export directory at RVA 0x1000 (data directory 0), Base 51,
+// two functions named gethostbyaddr (ordinal 51) and gethostbyname (ordinal 52).
+std::vector<unsigned char> synthetic_pe_exports() {
+  std::vector<unsigned char> b = synthetic_pe();
+  std::fill(b.begin() + 0x200, b.end(), static_cast<unsigned char>(0));
+  put(b, 0x58 + 120, 0, 8);           // no import directory
+  put(b, 0x58 + 112, 0x1000, 4);      // export directory RVA
+  put(b, 0x58 + 116, 0x90, 4);        // export directory size
+  put(b, 0x200 + 16, 51, 4);          // Base
+  put(b, 0x200 + 20, 2, 4);           // NumberOfFunctions
+  put(b, 0x200 + 24, 2, 4);           // NumberOfNames
+  put(b, 0x200 + 28, 0x1040, 4);      // AddressOfFunctions
+  put(b, 0x200 + 32, 0x1050, 4);      // AddressOfNames
+  put(b, 0x200 + 36, 0x1060, 4);      // AddressOfNameOrdinals
+  put(b, 0x250, 0x1070, 4);           // name 0 -> "gethostbyaddr"
+  put(b, 0x254, 0x1080, 4);           // name 1 -> "gethostbyname"
+  put(b, 0x260, 0, 2);                // name 0 is function index 0 (ordinal 51)
+  put(b, 0x262, 1, 2);                // name 1 is function index 1 (ordinal 52)
+  put_text(b, 0x270, "gethostbyaddr");
+  put_text(b, 0x280, "gethostbyname");
+  return b;
+}
 
 void egress_static_tripwire_fails_on_binary_without_dynamic_section() {
   const auto stripped = test_support::read_elf_imports(synthetic_elf(false));
@@ -128,6 +178,20 @@ void egress_static_tripwire_fails_on_binary_without_dynamic_section() {
   expect(pe.ok && has(pe.libraries, "ws2_32.dll") && pe.ordinals.size() == 1U && pe.ordinals.front().second == 52U,
          "the PE parser walks the import directory to the ordinal thunk: " + pe.error);
   expect(!test_support::forbidden_imports(pe).empty(), "an ordinal-only ws2_32 import (gethostbyname #52) is flagged");
+  // Ordinal resolution goes through the real export reader (ruling R-I), and only a
+  // resolved name can clear an ordinal: an unresolved ws2_32 ordinal stays flagged.
+  const auto exported = test_support::read_pe_exports(synthetic_pe_exports());
+  expect(exported.ok && exported.names == std::vector<std::pair<std::uint16_t, std::string>>{{std::uint16_t{51}, "gethostbyaddr"}, {std::uint16_t{52}, "gethostbyname"}},
+         "the export reader maps Base + name-ordinal index to each name: " + exported.error);
+  test_support::OrdinalNames resolved;
+  for (const auto& [ordinal, name] : exported.names) resolved["ws2_32.dll"][ordinal] = name;
+  const auto named = test_support::forbidden_imports(pe, resolved);
+  expect(named == std::vector<std::string>{"WS2_32.dll#52 (gethostbyname)"}, "a resolved #52 is flagged by its name");
+  expect(test_support::forbidden_imports(pe, {{"ws2_32.dll", {{std::uint16_t{52}, "accept"}}}}).empty(), "a resolved, allowed ordinal passes");
+  expect(test_support::forbidden_imports(pe, {{"ws2_32.dll", {{std::uint16_t{1}, "accept"}}}}) == std::vector<std::string>{"WS2_32.dll#52"},
+         "an ordinal the table does not name stays flagged (fail closed)");
+  const auto no_exports = test_support::read_pe_exports(synthetic_pe());
+  expect(!no_exports.ok && no_exports.error.find("no export directory") != std::string::npos, "a PE without exports fails the reader");
   std::vector<unsigned char> no_imports = synthetic_pe();
   put(no_imports, 0x58 + 120, 0, 8);   // clear the import directory entry
   const auto empty = test_support::read_pe_imports(no_imports);

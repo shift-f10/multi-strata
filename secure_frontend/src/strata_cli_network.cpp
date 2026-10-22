@@ -1048,8 +1048,24 @@ int verb_update(const FrontendConfig& config, const std::filesystem::path& confi
 }
 
 
+// The system-tool runner of `service` and `uninstall`: run_argv (on Windows,
+// System32 only). A Windows hooks build's --test-system-dir points it at a test
+// directory, so a test never reaches the real Task Scheduler.
+service::CommandRunner system_tool_runner(const CliServices& services) {
+#if defined(_WIN32) && defined(SECURE_FRONTEND_TEST_HOOKS)
+  if (!services.test_tool_directory.empty()) {
+    return [directory = services.test_tool_directory](const std::vector<std::string>& argv) {
+      return service::run_argv_in(directory, argv);
+    };
+  }
+#else
+  (void)services;  // the test directory exists in Windows hooks builds only
+#endif
+  return &service::run_argv;
+}
+
 int verb_service(const FrontendConfig& config, const std::filesystem::path& config_file, const std::span<const std::string> rest,
-                 CliStreams& io) {
+                 CliStreams& io, const CliServices& services) {
   const auto args = parse_args(rest, {}, {});
   if (!args || args->positional.size() != 1U ||
       (args->positional.front() != "enable" && args->positional.front() != "disable" && args->positional.front() != "status")) {
@@ -1088,7 +1104,7 @@ int verb_service(const FrontendConfig& config, const std::filesystem::path& conf
     if (config.roots.logs) env.unit.read_write_paths.push_back(config.roots.logs->generic_string());
     if (config.roots.cache) env.unit.read_write_paths.push_back(config.roots.cache->generic_string());
   }
-  service::CommandRunner runner = &service::run_argv;
+  service::CommandRunner runner = system_tool_runner(services);
   if (sub == "status") {
     const auto status = service::plan_status(env, runner);
     io.out << status.enabled_line << '\n' << status.active_line << '\n';
@@ -1100,7 +1116,7 @@ int verb_service(const FrontendConfig& config, const std::filesystem::path& conf
 }
 
 int verb_uninstall(const FrontendConfig& config, const std::filesystem::path& config_file, const std::span<const std::string> rest,
-                   CliStreams& io) {
+                   CliStreams& io, const CliServices& services) {
   const auto args = parse_args(rest, {"--purge"}, {});
   if (!args || !args->positional.empty()) return usage(io, "uninstall [--purge]");
 
@@ -1121,7 +1137,7 @@ int verb_uninstall(const FrontendConfig& config, const std::filesystem::path& co
     env.unit_installed = true;
     env.unit_path = unit_path;
   }
-  service::CommandRunner runner = &service::run_argv;
+  service::CommandRunner runner = system_tool_runner(services);
   env.manager_available = service::user_manager_reachable(runner);
   env.server_listening = uninstall::server_answers_on(config.listener.host, config.listener.port);
   // M1 has no install metadata yet — the versioned layout and `current` pointer
@@ -1189,8 +1205,8 @@ int run_network_verb(const std::string& verb, const FrontendConfig& config, cons
   if (verb == "pull") return verb_pull(config, config_file, rest, io, services);
   if (verb == "run") return verb_run(config, config_file, rest, io, services);
   if (verb == "doctor") return verb_doctor(config, config_file, rest, io, services);
-  if (verb == "service") return verb_service(config, config_file, rest, io);
-  if (verb == "uninstall") return verb_uninstall(config, config_file, rest, io);
+  if (verb == "service") return verb_service(config, config_file, rest, io, services);
+  if (verb == "uninstall") return verb_uninstall(config, config_file, rest, io, services);
   return verb_update(config, config_file, rest, io, services);
 }
 

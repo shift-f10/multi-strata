@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <sstream>
@@ -71,10 +72,27 @@ bool lines_in_order(const std::string& haystack, const std::vector<std::string>&
   return true;
 }
 
-std::string symlink_name(const std::filesystem::path& p) {
+// The D-4 pointer as the update verb writes it: the `current`/`previous` symlink
+// on Linux, current.txt/previous.txt (one line, the version) on Windows.
+std::string pointer_name(const std::filesystem::path& p) {
+#if defined(_WIN32)
+  std::ifstream in{p.string() + ".txt", std::ios::binary};
+  if (!in) return std::string{"<no pointer file>"};
+  const std::string text{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
+  if (text.empty() || text.back() != '\n') return "<not one line: " + text + ">";
+  return text.substr(0, text.size() - 1U);
+#else
   std::error_code ec;
   return std::filesystem::is_symlink(p) ? std::filesystem::read_symlink(p).string() : std::string{"<not a symlink>"};
+#endif
 }
+
+#if defined(_WIN32)
+void write_pointer_file(const std::filesystem::path& p, const std::string& version) {
+  std::ofstream out{p.string() + ".txt", std::ios::binary | std::ios::trunc};
+  out << version << '\n';
+}
+#endif
 
 bool path_exists(const std::filesystem::path& p) {
   std::error_code ec;
@@ -119,8 +137,13 @@ struct UpdateEnv final {
       std::filesystem::create_directories(install_root / version / "bin");
       secure_frontend_test::write_file(install_root / version / "bin" / "strata", "#!/bin/sh\n", 0700);
     }
+#if defined(_WIN32)
+    write_pointer_file(install_root / "current", current);
+    if (!previous.empty()) write_pointer_file(install_root / "previous", previous);
+#else
     std::filesystem::create_symlink(current, install_root / "current");
     if (!previous.empty()) std::filesystem::create_symlink(previous, install_root / "previous");
+#endif
   }
 
   void serve(const std::string& scenario, const std::map<std::string, std::string>& bodies) {
@@ -220,8 +243,8 @@ void update_installs_and_flips_current() {
       "update: restart strata to run the new version",
   });
   expect(order, "the offered versions, components, confirmation and restart hint print in order; out was:\n" + e.cli.out);
-  expect(symlink_name(e.install_root / "current") == "1.0.1", "current flipped to 1.0.1");
-  expect(symlink_name(e.install_root / "previous") == "1.0.0", "the previous version is kept in the pointer");
+  expect(pointer_name(e.install_root / "current") == "1.0.1", "current flipped to 1.0.1");
+  expect(pointer_name(e.install_root / "previous") == "1.0.0", "the previous version is kept in the pointer");
   expect(read_bytes(e.install_root / "1.0.1" / "bin" / kFrontendFile) == std::string{kFrontendBytes}, "the frontend component is installed byte-exact");
   expect(read_bytes(e.install_root / "1.0.1" / "bin" / kEngineFile) == std::string{kEngineBytes}, "the engine component is installed byte-exact");
   expect(!path_exists(e.install_root / ".update-staging"), "the staging directory is gone after a clean install");
@@ -235,7 +258,7 @@ void update_declines_without_yes() {
   const int code = e.cli.run({"update"}, "n\n", true);
   expect(code == 2, "declining exits 2 (declined), got " + std::to_string(code));
   expect(contains(e.cli.out, "update: declined; current version 1.0.0 untouched"), "the decline line, out was: " + e.cli.out);
-  expect(symlink_name(e.install_root / "current") == "1.0.0", "the pointer is untouched after a decline");
+  expect(pointer_name(e.install_root / "current") == "1.0.0", "the pointer is untouched after a decline");
   expect(!path_exists(e.install_root / "1.0.1"), "nothing was installed");
 }
 
@@ -253,7 +276,7 @@ void update_digest_mismatch_keeps_current() {
   expect(code == 12, "a component digest mismatch exits 12, got " + std::to_string(code));
   expect(contains(e.cli.err, "digest_mismatch"), "the failure names the digest mismatch, err was: " + e.cli.err);
   expect(contains(e.cli.out, "update: failed; current version 1.0.0 untouched"), "the failure line, out was: " + e.cli.out);
-  expect(symlink_name(e.install_root / "current") == "1.0.0", "current was not touched by a failed update");
+  expect(pointer_name(e.install_root / "current") == "1.0.0", "current was not touched by a failed update");
   expect(!path_exists(e.install_root / "1.0.1"), "the half-staged version directory was not installed");
   expect(!path_exists(e.install_root / ".update-staging"), "the staging directory was cleaned after the failure");
 }
@@ -269,7 +292,7 @@ void update_tampered_envelope_rejected() {
   expect(code == 12, "a tampered envelope exits 12, got " + std::to_string(code));
   expect(contains(e.cli.err, "release signature invalid"), "the failure names the invalid signature, err was: " + e.cli.err);
   expect(contains(e.cli.out, "update: failed; current version 1.0.0 untouched"), "the failure line, out was: " + e.cli.out);
-  expect(symlink_name(e.install_root / "current") == "1.0.0", "current was not touched");
+  expect(pointer_name(e.install_root / "current") == "1.0.0", "current was not touched");
 }
 
 void update_falls_back_to_next_source() {
@@ -286,7 +309,7 @@ void update_falls_back_to_next_source() {
   const int code = e.cli.run({"update", "--yes"});
   expect(code == 0, "the second mirror carries the update, got " + std::to_string(code) + "; err was: " + e.cli.err);
   expect(contains(e.cli.out, "update: source 1 refused the envelope; trying source 2"), "the fallback is reported; out was:\n" + e.cli.out);
-  expect(symlink_name(e.install_root / "current") == "1.0.1", "current flipped to 1.0.1 through the second mirror");
+  expect(pointer_name(e.install_root / "current") == "1.0.1", "current flipped to 1.0.1 through the second mirror");
 }
 
 // --- rollback -------------------------------------------------------------------
@@ -305,15 +328,15 @@ void update_rollback_flips_both_directions() {
       "update: restart strata to run the rolled-back version",
   });
   expect(order, "the rollback lines print in order; out was:\n" + e.cli.out);
-  expect(symlink_name(e.install_root / "current") == "1.0.0", "current points at the kept version");
-  expect(symlink_name(e.install_root / "previous") == "1.0.1", "the pointer swap keeps the other side kept");
+  expect(pointer_name(e.install_root / "current") == "1.0.0", "current points at the kept version");
+  expect(pointer_name(e.install_root / "previous") == "1.0.1", "the pointer swap keeps the other side kept");
   // The other direction: the user now runs the binary that is current (1.0.0).
   e.cli.services.test_self_executable = e.install_root / "1.0.0" / "bin" / "strata";
   e.cli.out.clear();
   e.cli.err.clear();
   const int second = e.cli.run({"update", "--rollback"}, "y\n", true);
   expect(second == 0, "rolling back again exits 0, got " + std::to_string(second));
-  expect(symlink_name(e.install_root / "current") == "1.0.1", "current points back at 1.0.1");
+  expect(pointer_name(e.install_root / "current") == "1.0.1", "current points back at 1.0.1");
   expect(!net.used, "rollback runs with no transport, probe or resolver");
 }
 
@@ -324,7 +347,7 @@ void update_rollback_without_previous() {
   const int code = e.cli.run({"update", "--rollback"}, "y\n", true);
   expect(code == 12, "rollback without a kept version exits 12, got " + std::to_string(code));
   expect(contains(e.cli.out, "update: nothing kept to roll back to"), "the honest empty-rollback line, out was: " + e.cli.out);
-  expect(symlink_name(e.install_root / "current") == "1.0.0", "the pointer is untouched");
+  expect(pointer_name(e.install_root / "current") == "1.0.0", "the pointer is untouched");
 }
 
 // PX §7 invariant (the plan's "no auto-update anywhere" non-goal): the update

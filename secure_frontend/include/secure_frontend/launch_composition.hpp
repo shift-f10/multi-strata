@@ -24,7 +24,8 @@ struct ComposedLaunch final {
   std::vector<std::string> engine_args;         // argv tail after --serve; paths are UTF-8 (never path::string())
   std::optional<CanonicalRoot> tokenizer_root;  // opened once; set on success (never re-opened by path)
   std::string model_id;                         // the model chat requests must name
-  std::vector<std::string> served_models;       // /v1/models: SP1's whole inventory under --expert, else {model_id}
+  std::vector<std::string> served_models;       // inventory ids under --expert, else {model_id}; not what /v1/models
+                                                // lists: that is model_id + model.aliases only (SP3 E9, server_bootstrap)
   bool managed;                                 // false only with --expert
   // SP5 M1 Task 6 (parity row mtp): non-empty when engine.mtp=false dropped the draft
   // layer's own flags; the startup line reports them once, like the pin (serve/server.py:2925).

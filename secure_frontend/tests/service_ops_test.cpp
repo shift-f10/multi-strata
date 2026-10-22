@@ -12,6 +12,10 @@
 #include <variant>
 #include <vector>
 
+#if defined(_WIN32)
+#include "secure_frontend/win32_prelude.hpp"
+#endif
+
 namespace {
 int failures = 0;
 void expect(const bool condition, const std::string& message) {
@@ -177,6 +181,7 @@ void service_disable_refuses_foreign_task_file() {
 void service_disable_removes_task_and_our_file() {
   const auto dir = secure_frontend_test::make_scratch_directory() / "task";
   auto env = task_env(dir);
+  std::filesystem::create_directories(dir);  // an enabled task left its directory behind
   secure_frontend_test::write_file(env.task_xml_path, "<xml/>", 0600);
   TaskRecorder fake;
   secure_frontend::service::CommandRunner runner{std::ref(fake)};
@@ -188,6 +193,52 @@ void service_disable_removes_task_and_our_file() {
   if (fake.calls.size() == 3U) {
     expect(contains(fake.calls[1], "/End") && contains(fake.calls[2], "/Delete /F"), "the stop then the delete");
   }
+}
+
+// Session log 2026-10-21 (CWE-427): CreateProcessW given a bare name searches the
+// caller's own directory, then the CURRENT directory, before System32, then PATH.
+// A bare tool name runs from System32 or not at all: a copy planted in the current
+// directory or on PATH never runs. The name is one System32 does not have.
+void run_argv_never_runs_a_planted_tool() {
+  const auto scratch = secure_frontend_test::make_scratch_directory();
+  const auto empty_dir = scratch / "empty";
+  const auto cwd_dir = scratch / "cwd";
+  const auto path_dir = scratch / "on-path";
+  for (const auto& dir : {empty_dir, cwd_dir, path_dir}) std::filesystem::create_directories(dir);
+  const std::string tool = "strata-planted-tool";
+  std::filesystem::copy_file(STRATA_FAKE_SYSTEM_TOOL_PATH, cwd_dir / (tool + ".exe"));
+  std::filesystem::copy_file(STRATA_FAKE_SYSTEM_TOOL_PATH, path_dir / (tool + ".exe"));
+  const auto saved_cwd = std::filesystem::current_path();
+  std::wstring saved_path(32768, L'\0');
+  saved_path.resize(GetEnvironmentVariableW(L"PATH", saved_path.data(), static_cast<DWORD>(saved_path.size())));
+  std::error_code ec;
+  // On PATH only (the current directory holds no copy).
+  std::filesystem::current_path(empty_dir);
+  SetEnvironmentVariableW(L"PATH", path_dir.wstring().c_str());
+  const auto via_path = secure_frontend::service::run_argv({tool, "via-path"});
+  SetEnvironmentVariableW(L"PATH", saved_path.c_str());
+  expect(!std::filesystem::exists(path_dir / (tool + ".calls"), ec), "the copy on PATH never ran");
+  expect(via_path.exit_code < 0, "a tool System32 does not have is not started at all (PATH)");
+  // In the current directory, as on a user's machine: NoDefaultCurrentDirectoryInExePath
+  // (set by some shells and harnesses, never by default) turns that search off.
+  std::wstring saved_switch(16, L'\0');
+  saved_switch.resize(GetEnvironmentVariableW(L"NoDefaultCurrentDirectoryInExePath", saved_switch.data(),
+                                              static_cast<DWORD>(saved_switch.size())));
+  SetEnvironmentVariableW(L"NoDefaultCurrentDirectoryInExePath", nullptr);
+  std::filesystem::current_path(cwd_dir);
+  const auto via_cwd = secure_frontend::service::run_argv({tool, "via-cwd"});
+  std::filesystem::current_path(saved_cwd);
+  if (!saved_switch.empty()) SetEnvironmentVariableW(L"NoDefaultCurrentDirectoryInExePath", saved_switch.c_str());
+  expect(!std::filesystem::exists(cwd_dir / (tool + ".calls"), ec), "the copy in the current directory never ran");
+  expect(via_cwd.exit_code < 0, "a tool System32 does not have is not started at all (current directory)");
+  // The resolution: System32 for run_argv; an explicit directory (the hooks seam) runs its own copy.
+  wchar_t system[MAX_PATH];
+  const UINT length = GetSystemDirectoryW(system, MAX_PATH);
+  expect(length > 0U && secure_frontend::service::system_tool_directory() == std::filesystem::path{std::wstring{system, length}},
+         "bare tool names resolve into GetSystemDirectoryW's directory");
+  const auto direct = secure_frontend::service::run_argv_in(path_dir, {tool, "direct", "run"});
+  expect(direct.exit_code == 0 && secure_frontend_test::read_file(path_dir / (tool + ".calls")) == "direct run\n",
+         "run_argv_in runs the tool from the directory it is given, with its arguments");
 }
 
 void service_status_task_one_line_each() {
@@ -513,6 +564,7 @@ int main(int argc, char** argv) {
       {"service_disable_refuses_foreign_task_file", service_disable_refuses_foreign_task_file},
       {"service_disable_removes_task_and_our_file", service_disable_removes_task_and_our_file},
       {"service_status_task_one_line_each", service_status_task_one_line_each},
+      {"run_argv_never_runs_a_planted_tool", run_argv_never_runs_a_planted_tool},
   }, failures);
 #else
   return secure_frontend_test::run_cases(argc, argv, {

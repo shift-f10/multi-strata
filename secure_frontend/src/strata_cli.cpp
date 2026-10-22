@@ -489,6 +489,9 @@ int run_strata(const std::span<const std::string> all_args, CliStreams& io, CliS
     } else if (all_args[first] == "--test-force-no-landlock") {
       services.test_force_no_landlock = true;
       first += 1;
+    } else if (all_args[first] == "--test-system-dir" && first + 1 < all_args.size()) {
+      services.test_tool_directory = path_from_utf8(all_args[first + 1]);
+      first += 2;
     } else {
       break;
     }

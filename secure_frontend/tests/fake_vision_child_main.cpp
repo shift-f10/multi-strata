@@ -39,7 +39,8 @@ int main(int argc, char** argv) {
   const std::string mode = option_value(args, "--mode=");
 
   if (!record.empty()) {
-    std::ofstream out(std::filesystem::path(record), std::ios::app);  // test paths are ASCII; no u8path deprecation
+    // Binary: the tests match "SPAWN\n"; a text stream writes \r\n on Windows.
+    std::ofstream out(std::filesystem::path(record), std::ios::app | std::ios::binary);  // test paths are ASCII; no u8path deprecation
     out << "SPAWN\n";
     for (const auto& arg : args) out << "ARG " << arg << "\n";
     out.flush();

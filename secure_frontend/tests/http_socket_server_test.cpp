@@ -30,6 +30,7 @@
 
 #ifdef _WIN32
 #include "secure_frontend/win32_prelude.hpp"
+#include <mmsystem.h>  // timeBeginPeriod (winmm), see main
 #else
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -714,7 +715,15 @@ void send_all_bounded_meets_deadline_and_completes() {
 // that drains slowly but steadily for well past the stall bound completes; a
 // stall measured from the call (or per call return) would report `stalled`.
 void send_all_bounded_stall_restarts_on_progress() {
+#if defined(_WIN32)
+  // Winsock takes a whole kMaxSendChunk (64 KiB) slice at once, so progress comes per
+  // slice, and a 1-byte receive window throttles loopback TCP to ~120 KB/s: ~540 ms a
+  // slice, past the 200 ms bound (session log issue 29, measured). A 4 KiB window still
+  // keeps the 1 MiB payload waiting on the reader (~1.3 s in all, slices ~90 ms apart).
+  auto pair = make_loopback_pair(4096, 4096);
+#else
   auto pair = make_loopback_pair(1, 4096);
+#endif
   if (!pair) { expect(false, "loopback pair"); return; }
   const std::string payload(1024U * 1024U, 's');
   std::size_t received = 0;
@@ -879,6 +888,14 @@ void stream_socket_peek_and_nonblocking_send() {
 }  // namespace
 
 int main(int argc, char** argv) {
+#if defined(_WIN32)
+  // Session log issue 29: Windows sleeps in 15.6 ms timer ticks by default, so the
+  // byte-paced cases' 2 ms steps took ~16 ms each (head_terminator_split_across_reads
+  // overran its 1 s header deadline; the paced reader in
+  // send_all_bounded_stall_restarts_on_progress overran the 10 s write deadline).
+  // 1 ms resolution for this process only (per-process since Windows 10 2004).
+  (void)timeBeginPeriod(1);
+#endif
   secure_frontend::install_process_defaults();
   const secure_frontend::WinsockGuard winsock;
   if (!winsock.ok()) { std::cerr << "WSAStartup failed\n"; return 1; }
