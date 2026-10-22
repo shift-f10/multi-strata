@@ -1332,6 +1332,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_parity_table_tests
         scan_upstream_knobs_need_dispositions_and_current_citations
         scan_maya_knobs_need_dispositions_and_current_citations
+        maya_engine_knobs_are_never_mapped_away
         ARGS ${CMAKE_CURRENT_SOURCE_DIR}/.. TIMEOUT 120)
 
     secure_frontend_add_test_executable(secure_frontend_typed_config_tests tests/typed_config_test.cpp
@@ -1355,6 +1356,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         thinking_budget_default_is_mayas_32768
         glm_environment_projection_moves_the_split_default
         glm_max_context_typed_and_glm53_args_refused
+        glm_ram_headroom_gb_typed_and_always_projected
+        glm_idle_unload_s_wins_for_the_glm_profile
         glm_vision_flags_reach_both_children
         lifecycle_rows_match_the_pin
         vram_family_rows_match_the_pin

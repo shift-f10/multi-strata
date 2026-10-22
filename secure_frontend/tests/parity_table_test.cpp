@@ -505,7 +505,8 @@ void scan_maya_knobs_need_dispositions_and_current_citations() {
   }
   std::vector<std::pair<std::filesystem::path, std::string>> src;
   collect_source_files(root / "src", root, src);
-  expect(src.size() >= 100U, "the vendored Maya engine tree is present (" + std::to_string(src.size()) + " source files)");
+  collect_source_files(root / "include", root, src);
+  expect(src.size() >= 250U, "the vendored Maya engine trees are present (" + std::to_string(src.size()) + " source files)");
   for (const auto& [file, rel] : src) {
     const auto& lines = file_lines_cached(file);
     for (std::size_t i = 0; i < lines.size(); ++i) scan_quoted(lines[i], {"STRATA_", "DS4_"}, env, rel, i + 1);
@@ -543,6 +544,75 @@ void maya_alias_rows_name_a_target() {
   }
 }
 
+void maya_engine_knobs_are_never_mapped_away() {
+  // Plan 2026-10-22-sp5-p2 Task 4 (D-7, the owner's full-surface ruling: "we
+  // need the same knobs as the project maya has"): every name the engine
+  // BINARY itself reads — the fully-quoted STRATA_/DS4_ literals across
+  // src/** and include/**, the same scan the inventory was generated from —
+  // must be typed or rejected on a security/licence ground, never mapped
+  // away. Out of scope is allowed only on named grounds: a DeepSeek DS4-path
+  // name (§Non-goals), an env_alias.hpp alias row whose engine target carries
+  // the knob (that target must itself not be mapped away), or a name the
+  // reference docs never mention — an engine-internal switch, off the parity
+  // surface D-7 describes, and unreachable anyway: the closed child-env
+  // allowlist takes its names from the typed rows.
+  const std::string root_text = scan_root_or_fail();
+  if (root_text.empty()) return;
+  const std::filesystem::path root{std::filesystem::path{root_text} / "engines" / "maya-ref"};
+  std::vector<std::pair<std::filesystem::path, std::string>> src;
+  collect_source_files(root / "src", root, src);
+  collect_source_files(root / "include", root, src);
+  expect(src.size() >= 250U, "the vendored Maya engine trees are present (" + std::to_string(src.size()) + " source files)");
+  Sites knobs;
+  for (const auto& [file, rel] : src) {
+    const auto& lines = file_lines_cached(file);
+    for (std::size_t i = 0; i < lines.size(); ++i) scan_quoted(lines[i], {"STRATA_", "DS4_"}, knobs, rel, i + 1);
+  }
+  expect(knobs.size() >= 250U, "the engine-knob scan is plausible (" + std::to_string(knobs.size()) + " names)");
+  // The reference docs' documented spellings: `MAYA_X` backticks and any
+  // literal STRATA_X in docs/SETTINGS.md at the pin.
+  const std::filesystem::path settings_path = root / "docs" / "SETTINGS.md";
+  const auto& settings_lines = file_lines_cached(settings_path);
+  expect(settings_lines.size() >= 100U, "the vendored Maya docs/SETTINGS.md is present (" + std::to_string(settings_lines.size()) + " lines)");
+  const auto contains_token = [](const std::string& line, const std::string& token) {
+    for (std::size_t pos = line.find(token); pos != std::string::npos; pos = line.find(token, pos + 1)) {
+      const std::size_t end = pos + token.size();
+      if (pos > 0 && is_upper_name_char(line[pos - 1])) continue;
+      if (end < line.size() && is_upper_name_char(line[end])) continue;
+      return true;
+    }
+    return false;
+  };
+  const auto documented = [&](const std::string& name) {
+    const std::string maya_alias = name.rfind("STRATA_", 0) == 0 ? "MAYA_" + name.substr(7) : name;
+    for (const auto& line : settings_lines) {
+      if (contains_token(line, name)) return true;
+      if (name.rfind("STRATA_", 0) == 0 && contains_token(line, maya_alias)) return true;
+    }
+    return false;
+  };
+  for (const auto& [name, site] : knobs) {
+    const auto* row = maya_parity_row(name);
+    if (row == nullptr) {
+      expect(false, "engine knob '" + name + "' (" + site + ") has no GLM parity row at all");
+      continue;
+    }
+    if (row->disposition == ParityDisposition::mapped_away) {
+      expect(false, "engine knob '" + name + "' (" + site + ") is mapped away; D-7 demands typed or rejected");
+      continue;
+    }
+    if (row->disposition == ParityDisposition::out_of_scope) {
+      const bool ds4_path = name.rfind("DS4_", 0) == 0 || name.rfind("STRATA_DS4_", 0) == 0;
+      const auto* target = row->target.empty() ? nullptr : maya_parity_row(row->target);
+      const bool internal = !ds4_path && target == nullptr && !documented(name);
+      if (!ds4_path && target == nullptr && !internal)
+        expect(false, "engine knob '" + name + "' (" + site + ") is out of scope on no named ground (not DS4, no alias target, documented)");
+      if (target != nullptr && target->disposition == ParityDisposition::mapped_away)
+        expect(false, "alias row '" + name + "' targets '" + std::string{row->target} + "', which is mapped away");
+    }
+  }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -557,5 +627,6 @@ int main(int argc, char** argv) {
       {"scan_upstream_knobs_need_dispositions_and_current_citations", scan_upstream_knobs_need_dispositions_and_current_citations},
       {"scan_maya_knobs_need_dispositions_and_current_citations", scan_maya_knobs_need_dispositions_and_current_citations},
       {"maya_alias_rows_name_a_target", maya_alias_rows_name_a_target},
+      {"maya_engine_knobs_are_never_mapped_away", maya_engine_knobs_are_never_mapped_away},
   }, failures);
 }

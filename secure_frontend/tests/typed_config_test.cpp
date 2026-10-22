@@ -1120,6 +1120,59 @@ void glm_max_context_typed_and_glm53_args_refused() {
   expect(has_issue(zero, "glm.max_context", ConfigIssueCode::out_of_range), "a context of 0 tokens is refused");
 }
 
+// SP5-P2 Task 4 (D-7 refresh; SP6 §4.9 sheet M2): glm.ram_headroom_gb is the
+// typed value source for the STRATA_GLM_RAM_HEADROOM_GB child-env row — integer
+// 6..1024, default 16 (the owner's M2 value: MAYA's own default is 6, but
+// SETTINGS.md:28 reports a desktop that stayed responsive at 16 and swapped at
+// 12; the engine reads it at glm_fast_path.cu:1110/:1510). It projects at the
+// default, so the row is always forced on the glm child unless the operator moves it.
+void glm_ram_headroom_gb_typed_and_always_projected() {
+  ConfigFixture f;
+  expect(secure_frontend::find_config_key("glm.ram_headroom_gb") != nullptr, "the schema row glm.ram_headroom_gb exists");
+  const auto accepted = with_literals(f, {{"engine.profile", "\"glm53\""}});
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(accepted), "the bare glm53 config validates: " + issues_of(accepted));
+  if (std::holds_alternative<secure_frontend::ValidatedConfig>(accepted))
+    expect(describe_of(accepted).find("glm.ram_headroom_gb = 16") != std::string::npos, "the M2 default is 16 GB (SP6 §4.9 M2)");
+  const auto* bare = config_of(accepted);
+  if (bare != nullptr) {
+    const auto knobs = secure_frontend::glm_environment_knobs(*bare);
+    const auto row = std::find_if(knobs.begin(), knobs.end(),
+                                  [](const auto& k) { return k.name == "STRATA_GLM_RAM_HEADROOM_GB"; });
+    expect(row != knobs.end() && row->value == "16", "the headroom projects at its default onto the closed allowlist row");
+  }
+  const auto moved = with_literals(f, {{"engine.profile", "\"glm53\""}, {"glm.ram_headroom_gb", "6"}});
+  const auto* moved_config = config_of(moved);
+  expect(moved_config != nullptr, "6 GB validates: " + issues_of(moved));
+  if (moved_config != nullptr) {
+    const auto knobs = secure_frontend::glm_environment_knobs(*moved_config);
+    const auto row = std::find_if(knobs.begin(), knobs.end(),
+                                  [](const auto& k) { return k.name == "STRATA_GLM_RAM_HEADROOM_GB"; });
+    expect(row != knobs.end() && row->value == "6", "the operator moves the typed row (MAYA's own default 6)");
+  }
+  const auto low = with_literals(f, {{"engine.profile", "\"glm53\""}, {"glm.ram_headroom_gb", "5"}});
+  expect(has_issue(low, "glm.ram_headroom_gb", ConfigIssueCode::out_of_range), "5 GB is refused (the M2 floor, 6)");
+  const auto over = with_literals(f, {{"engine.profile", "\"glm53\""}, {"glm.ram_headroom_gb", "1025"}});
+  expect(has_issue(over, "glm.ram_headroom_gb", ConfigIssueCode::out_of_range), "1025 GB is refused (the M2 bound, 1024)");
+}
+
+// SP5-P2 Task 4 (D-7): Maya v1.1.21's server gained the idle-unload timer —
+// the config's "idle_unload_s" (serve/server.py:8298, 0 = never, the default
+// at :3753). The glm profile names it glm.idle_unload_s and it wins over
+// engine.idle_unload_s for that family; unset keeps the M1 key's value.
+void glm_idle_unload_s_wins_for_the_glm_profile() {
+  ConfigFixture f;
+  expect(secure_frontend::find_config_key("glm.idle_unload_s") != nullptr, "the schema row glm.idle_unload_s exists");
+  const auto both = with_literals(f, {{"engine.profile", "\"glm53\""}, {"engine.idle_unload_s", "30"}, {"glm.idle_unload_s", "120"}});
+  const auto* c = config_of(both);
+  expect(c != nullptr, "both windows validate together: " + issues_of(both));
+  if (c != nullptr) expect(c->engine.idle_unload == std::chrono::seconds(120), "the Maya-named key drives the glm53 window");
+  const auto only_engine = with_literals(f, {{"engine.profile", "\"glm53\""}, {"engine.idle_unload_s", "30"}});
+  const auto* kept = config_of(only_engine);
+  expect(kept != nullptr && kept->engine.idle_unload == std::chrono::seconds(30), "unset (0) keeps the M1 engine.idle_unload_s");
+  const auto over = with_literals(f, {{"engine.profile", "\"glm53\""}, {"glm.idle_unload_s", "86401"}});
+  expect(has_issue(over, "glm.idle_unload_s", ConfigIssueCode::out_of_range), "the same 86400 cap as engine.idle_unload_s (C-1)");
+}
+
 // SP5 M2 Task 4 (D-7): the config-to-env projection — glm.layer_split moves
 // the STRATA_GLM_SPLIT forced default in the glm child environment
 // (maya-ref docs/SETTINGS.md:44), and glm.gpu renders the family's CUDA
@@ -1134,8 +1187,17 @@ void glm_environment_projection_moves_the_split_default() {
   expect(config != nullptr, "the glm53 config validates: " + issues_of(result));
   if (config == nullptr) return;
   const auto knobs = secure_frontend::glm_environment_knobs(*config);
-  expect(knobs.size() == 1U && knobs[0].name == "STRATA_GLM_SPLIT" && knobs[0].value == "7,12",
-         "layer_split projects to the SPLIT typed row, and nothing else does today");
+  // SP5-P2 Task 4: the always-projected RAM headrow row joins the moved split
+  // (glm.ram_headroom_gb, default 16, SP6 §4.9 M2) — exactly these two project here.
+  const auto knob_named = [&knobs](const char* name) -> const secure_frontend::ForcedEnvironmentValue* {
+    const auto it = std::find_if(knobs.begin(), knobs.end(),
+                                 [name](const auto& k) { return k.name == name; });
+    return it == knobs.end() ? nullptr : &*it;
+  };
+  expect(knobs.size() == 2U && knob_named("STRATA_GLM_SPLIT") != nullptr &&
+             knob_named("STRATA_GLM_SPLIT")->value == "7,12" && knob_named("STRATA_GLM_RAM_HEADROOM_GB") != nullptr &&
+             knob_named("STRATA_GLM_RAM_HEADROOM_GB")->value == "16",
+         "layer_split projects to the SPLIT row and the headroom projects at its default; nothing else does");
   const secure_frontend::EngineEnvironment environment{
       .lib_dirs = {},
       .temp_dir = "/state/engine-tmp/1",
@@ -1146,8 +1208,9 @@ void glm_environment_projection_moves_the_split_default() {
   };
   const auto block = secure_frontend::render_family_environment(environment);
   expect(block != std::nullopt && block->at("STRATA_GLM_SPLIT") == "7,12" && block->at("CUDA_VISIBLE_DEVICES") == "1" &&
-             block->at("CUDA_DEVICE_ORDER") == "PCI_BUS_ID" && block->at("STRATA_GLM_SLOTS") == "0",
-         "the rendered glm child environment carries the moved split and the selector");
+             block->at("CUDA_DEVICE_ORDER") == "PCI_BUS_ID" && block->at("STRATA_GLM_SLOTS") == "0" &&
+             block->at("STRATA_GLM_RAM_HEADROOM_GB") == "16",
+         "the rendered glm child environment carries the moved split, the headroom and the selector");
 }
 
 // SP5 M2 Task 8 (D-8): the GLM vision rows reach BOTH children. On the engine side
@@ -1856,6 +1919,8 @@ int main(int argc, char** argv) {
       {"thinking_budget_default_is_mayas_32768", thinking_budget_default_is_mayas_32768},
       {"glm_environment_projection_moves_the_split_default", glm_environment_projection_moves_the_split_default},
       {"glm_max_context_typed_and_glm53_args_refused", glm_max_context_typed_and_glm53_args_refused},
+      {"glm_ram_headroom_gb_typed_and_always_projected", glm_ram_headroom_gb_typed_and_always_projected},
+      {"glm_idle_unload_s_wins_for_the_glm_profile", glm_idle_unload_s_wins_for_the_glm_profile},
       {"glm_vision_flags_reach_both_children", glm_vision_flags_reach_both_children},
       {"lifecycle_rows_match_the_pin", lifecycle_rows_match_the_pin},
       {"vram_family_rows_match_the_pin", vram_family_rows_match_the_pin},

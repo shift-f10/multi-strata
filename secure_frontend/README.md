@@ -370,6 +370,8 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `glm.tokenizer` | string | unset | - | - | Absolute tokenizer-pack path for the GLM engine (default: the pack named by the model). |
 | `glm.model_name` | string | unset | - | - | Served model id for the GLM engine (1-256 characters; a managed model takes its identity from the manifest). |
 | `glm.max_context` | integer | `32768` | 1-1048576 | - | GLM context length in tokens the engine is started with (Maya's default 32768). |
+| `glm.ram_headroom_gb` | integer | `16` | 6-1024 | - | Gigabytes of RAM the GLM engine leaves free when sizing its pinned tier (6-1024; default 16). |
+| `glm.idle_unload_s` | integer | `0` | 0-86400 | - | Seconds a GLM engine idles unloaded before it gives back the memory (0 = never; under glm53 this wins over engine.idle_unload_s). |
 <!-- config-keys:end -->
 
 `roots.secret` defaults to the config file's directory only for a `file:` token
@@ -589,7 +591,7 @@ The vendored MAYA reference (`engines/maya-ref/`, tag `v1.1.21`, read-only —
 nothing of it is compiled by our presets; `docs/PROVENANCE.md`) is the
 `glm53` profile's reference surface. Its parity table
 (`secure_frontend/src/parity_table.cpp`, `kMayaRows`) gives all 730 options —
-137 typed, 50 rejected, 73 mapped, 470 out of scope — exactly one disposition,
+183 typed, 50 rejected, 33 mapped, 464 out of scope — exactly one disposition,
 cited to a read site live at the pin. The option inventory was generated at
 `v1.1.21` (`tests/parity_keys_maya.hpp`: 38 config keys, 575 env names) and the
 drift tripwires `secure_frontend_parity_table_tests.scan_*` re-check it. That tag's `docs/SETTINGS.md` spells every
@@ -599,7 +601,7 @@ row behind it (`include/strata/platform/env_alias.hpp` maps `MAYA_X` to
 `STRATA_X` at engine start). The blocks below mirror that
 table for humans; the pytest gate
 `tools/secure/test_parity_readme_coverage.py` re-checks them against it. The
-typed **child-env** rows form a closed 100-name allowlist for the glm-family
+typed **child-env** rows form a closed 146-name allowlist for the glm-family
 child (`kFamilyForcibleEnvironment`): no other `STRATA_*`/`MAYA_*` name can
 reach that child at all (D-7). Free-form launch is retired: a `glm53`
 manifest refuses any `engine.args` (D-8) — the launch is composed from the
@@ -618,7 +620,7 @@ engine at v1.1.21), and `--parallel` is bounded 1..8 at composition (`docs/valid
 | `fit_max_tokens` | typed config | serve/server.py:4077; Task 3: glm.fit_max_tokens (M1 engine.fit_max_tokens pattern) |
 | `gpu` | engine argv | already typed (SP2 engine.gpu renders --gpu); serve/server.py:1264, child_env :1280-1288, maya.py:2429; Task 7 |
 | `host` | frontend behaviour | already typed (SP1 listen.host); serve/server.py:3983, maya.py:2790 |
-| `idle_unload_s` | typed config | serve/server.py:4091 (the v1.1.21 Maya server gained the idle-unload timer; SP5-P2 Task 4: glm.idle_unload_s — the M1 engine.idle_unload_s pattern) |
+| `idle_unload_s` | typed config | serve/server.py:4091 (the v1.1.21 Maya server gained the idle-unload timer, default 0 = never at :3753; typed as glm.idle_unload_s — it wins over engine.idle_unload_s for a glm53 profile, R-T4-b) |
 | `layer_split` | engine argv | serve/server.py:1274-1277 renders --layer-split; docs/SETTINGS.md:44; Task 7 |
 | `max_tokens` | request rule | serve/server.py:1053, :1213 (the vision block), shared settings :3815; engine.max_tokens stays the request output ceiling (M1 Ruling T8-e pattern) |
 | `min_p` | typed config | serve/server.py:3808 (shared settings: 0 <= min_p < 1), sampling-block validator :3848; defaults.sampling.min_p |
@@ -646,7 +648,9 @@ engine at v1.1.21), and `--parallel` is bounded 1..8 at composition (`docs/valid
 | `STRATA_GLM_AHEAD` | typed child env | docs/SETTINGS.md:87 |
 | `STRATA_GLM_CKPTS` | typed child env | docs/SETTINGS.md:69 |
 | `STRATA_GLM_CKPT_EVERY` | typed child env | docs/SETTINGS.md:69 |
+| `STRATA_GLM_COMPLETE_POOL` | typed child env | src/core/glm_fast_path.cu:1189 (docs/SETTINGS.md:40 documents it as MAYA_GLM_COMPLETE_POOL: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_CPU_1T` | typed child env | docs/SETTINGS.md:104 |
+| `STRATA_GLM_CPU_CONCURRENT` | typed child env | src/core/glm_fast_path.cu:2627 (docs/SETTINGS.md:50 documents it as MAYA_GLM_CPU_CONCURRENT: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_CPU_LANE` | typed child env | docs/SETTINGS.md:46 |
 | `STRATA_GLM_CPU_LANE0` | typed child env | src/core/glm_fast_path.cu:2735 (the per-GPU CPU-lane form: the engine getenvs the constructed name STRATA_GLM_CPU_LANE+<dev> at this line; documented as MAYA_GLM_CPU_LANE0/1, docs/SETTINGS.md:47) |
 | `STRATA_GLM_CPU_LANE1` | typed child env | src/core/glm_fast_path.cu:2735 (the per-GPU CPU-lane form: the engine getenvs the constructed name STRATA_GLM_CPU_LANE+<dev> at this line; documented as MAYA_GLM_CPU_LANE0/1, docs/SETTINGS.md:47) |
@@ -661,8 +665,20 @@ engine at v1.1.21), and `--parallel` is bounded 1..8 at composition (`docs/valid
 | `STRATA_GLM_DISK_SKIP_FROM` | typed child env | docs/SETTINGS.md:87 |
 | `STRATA_GLM_DISK_SKIP_W` | typed child env | docs/SETTINGS.md:87 |
 | `STRATA_GLM_DROP_CACHE` | typed child env | docs/SETTINGS.md:119 |
+| `STRATA_GLM_DSA_ALL` | typed child env | src/kernels/cuda/glm_fast.cu:5400 (docs/SETTINGS.md:110 documents it as MAYA_GLM_DSA_ALL: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_DSA_SCORE` | typed child env | docs/SETTINGS.md:109 |
+| `STRATA_GLM_DUAL_PREFILL` | typed child env | src/core/glm_prefill.cu:4192 (docs/SETTINGS.md:56 documents it as MAYA_GLM_DUAL_PREFILL: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_EVEN_GROUPS` | typed child env | src/program/generate.cpp:2264 (docs/SETTINGS.md:74 documents it as MAYA_GLM_EVEN_GROUPS: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_EXL3_DECODE` | typed child env | src/kernels/cuda/exl3.cu:1853 (docs/SETTINGS.md:116 documents it as MAYA_GLM_EXL3_DECODE: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_EXL3_MMA_ROWS` | typed child env | docs/SETTINGS.md:115 |
+| `STRATA_GLM_EXL3_ROT` | typed child env | src/core/glm_prefill.cu:434 (docs/SETTINGS.md:117 documents it as MAYA_GLM_EXL3_ROT: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_EXPERT_CACHE` | typed child env | src/core/glm_fast_path.cu:5821 (docs/SETTINGS.md:192 documents it as MAYA_GLM_EXPERT_CACHE: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_EXPERT_HELPER` | typed child env | src/core/glm_fast_path.cu:1839 (docs/SETTINGS.md:37 documents it as MAYA_GLM_EXPERT_HELPER: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_FLUSH` | typed child env | src/core/glm_fast_state.hpp:78 (docs/SETTINGS.md:42 documents it as MAYA_GLM_FLUSH: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_GROUP_EXPERTS` | typed child env | src/core/glm_memory.hpp:33 (docs/SETTINGS.md:76 documents it as MAYA_GLM_GROUP_EXPERTS: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_GU_STAGE` | typed child env | src/kernels/cuda/glm_fast.cu:1942 (docs/SETTINGS.md:113 documents it as MAYA_GLM_GU_STAGE: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_HEAD_SPLIT` | typed child env | src/core/glm_model.cu:1241 (docs/SETTINGS.md:124 documents it as MAYA_GLM_HEAD_SPLIT: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_HEAD_SPLIT_CHECK` | typed child env | src/core/glm_window.cu:1366 (docs/SETTINGS.md:124 documents it as MAYA_GLM_HEAD_SPLIT_CHECK: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_KDA_GRAPH` | typed child env | docs/SETTINGS.md:52 |
 | `STRATA_GLM_KQ` | typed child env | docs/SETTINGS.md:103 |
 | `STRATA_GLM_KV_INT8` | typed child env | docs/SETTINGS.md:107 |
@@ -670,19 +686,29 @@ engine at v1.1.21), and `--parallel` is bounded 1..8 at composition (`docs/valid
 | `STRATA_GLM_KV_RESIDENT` | typed child env | docs/SETTINGS.md:108 |
 | `STRATA_GLM_LOOP_ANSWER` | typed child env | docs/SETTINGS.md:121 (the loop guard: SP6 §4.9 keeps the guards a forced default the table may move; Task 4) |
 | `STRATA_GLM_LOOP_THINK` | typed child env | docs/SETTINGS.md:121 (the loop guard: SP6 §4.9 keeps the guards a forced default the table may move; Task 4) |
+| `STRATA_GLM_MISS_SKIP_FROM` | typed child env | src/core/glm_fast_path.cu:1740 (docs/SETTINGS.md:88 documents it as MAYA_GLM_MISS_SKIP_FROM: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_MISS_SKIP_W` | typed child env | src/core/glm_fast_path.cu:1739 (docs/SETTINGS.md:88 documents it as MAYA_GLM_MISS_SKIP_W: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_MLA_MMA` | typed child env | src/kernels/cuda/glm_fast.cu:5462 (docs/SETTINGS.md:111 documents it as MAYA_GLM_MLA_MMA: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_MMQ_GLU` | typed child env | docs/SETTINGS.md:118 |
+| `STRATA_GLM_MMQ_RESERVE_MB` | typed child env | src/core/glm_fast_path.cu:5848 (docs/SETTINGS.md:101 documents it as MAYA_GLM_MMQ_RESERVE_MB: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_MTP_DECODE` | typed child env | src/core/glm_mtp.cu:83 (docs/SETTINGS.md:85 documents it as MAYA_GLM_MTP_DECODE: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_MTP_KEEP` | typed child env | docs/SETTINGS.md:84 |
 | `STRATA_GLM_MTP_MISS` | typed child env | docs/SETTINGS.md:84 |
 | `STRATA_GLM_MULTI_BENCH` | typed child env | docs/SETTINGS.md:140 |
 | `STRATA_GLM_MULTI_BOUNDARY` | typed child env | docs/SETTINGS.md:77 |
+| `STRATA_GLM_MULTI_DUMP` | typed child env | src/program/generate.cpp:3038 (docs/SETTINGS.md:140 documents it as MAYA_GLM_MULTI_DUMP — an embedded `MAYA_X=value` span the pin scan missed at regeneration; typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_MULTI_ROOM` | typed child env | docs/SETTINGS.md:77 |
 | `STRATA_GLM_MULTI_SPEC` | typed child env | docs/SETTINGS.md:77 |
+| `STRATA_GLM_MV_P100` | typed child env | src/kernels/cuda/glm_fast.cu:1960 (docs/SETTINGS.md:112 documents it as MAYA_GLM_MV_P100: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_MV_P100_R` | typed child env | src/kernels/cuda/glm_fast.cu:1961 (docs/SETTINGS.md:112 documents it as MAYA_GLM_MV_P100_R: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_MV_RDNA` | typed child env | docs/SETTINGS.md:82 |
 | `STRATA_GLM_NO_MTP` | typed child env | docs/SETTINGS.md:83 |
+| `STRATA_GLM_NO_PREFILL` | typed child env | src/core/glm_prefill.cu:1030 (docs/SETTINGS.md:247 documents it as MAYA_GLM_NO_PREFILL — an embedded `MAYA_X=value` span the pin scan missed at regeneration; typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_NO_SPEC` | typed child env | docs/SETTINGS.md:89 |
 | `STRATA_GLM_NUMA` | typed child env | docs/SETTINGS.md:59 |
 | `STRATA_GLM_PARALLEL_LOAD` | typed child env | docs/SETTINGS.md:45 |
 | `STRATA_GLM_PCIE_SHARE` | typed child env | docs/SETTINGS.md:54 |
+| `STRATA_GLM_POOL_CHECK` | typed child env | src/core/glm_fast_path.cu:5889 (docs/SETTINGS.md:197 documents it as MAYA_GLM_POOL_CHECK — an embedded `MAYA_X=value` span the pin scan missed at regeneration; typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_POOL_STATS` | typed child env | docs/SETTINGS.md:137 |
 | `STRATA_GLM_PREFETCH_AT` | typed child env | docs/SETTINGS.md:58 |
 | `STRATA_GLM_PREFETCH_BLOCKS` | typed child env | docs/SETTINGS.md:58 |
@@ -690,10 +716,17 @@ engine at v1.1.21), and `--parallel` is bounded 1..8 at composition (`docs/valid
 | `STRATA_GLM_PREFETCH_RANK` | typed child env | docs/SETTINGS.md:58 |
 | `STRATA_GLM_PREFILL_ATTN` | typed child env | docs/SETTINGS.md:114 |
 | `STRATA_GLM_PREFILL_ATTN_CHECK` | typed child env | docs/SETTINGS.md:114 |
+| `STRATA_GLM_PREFILL_CALC` | typed child env | src/core/glm_prefill.cu:4284 (docs/SETTINGS.md:57 documents it as MAYA_GLM_PREFILL_CALC: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_PREFILL_CALC_CHECK` | typed child env | src/core/glm_prefill.cu:3852 (docs/SETTINGS.md:57 documents it as MAYA_GLM_PREFILL_CALC_CHECK — an embedded `MAYA_X=value` span the pin scan missed at regeneration; typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_PREFILL_CALC_SHARE` | typed child env | src/core/glm_prefill.cu:4291 (docs/SETTINGS.md:57 documents it as MAYA_GLM_PREFILL_CALC_SHARE — an embedded `MAYA_X=value` span the pin scan missed at regeneration; typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_PREFILL_CHUNK` | typed child env | docs/SETTINGS.md:61 |
 | `STRATA_GLM_PREFILL_CPU` | typed child env | docs/SETTINGS.md:95 |
 | `STRATA_GLM_PREFILL_CPU_ROW_MS` | typed child env | docs/SETTINGS.md:95 |
+| `STRATA_GLM_PREFILL_FLUSH` | typed child env | src/core/glm_fast_state.hpp:92 (docs/SETTINGS.md:42 documents it as MAYA_GLM_PREFILL_FLUSH: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_PREFILL_FUSED` | typed child env | src/prefill/moe_fused_rdna4.cu:665 (docs/SETTINGS.md:65 documents it as MAYA_GLM_PREFILL_FUSED: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_PREFILL_KEEP` | typed child env | src/core/glm_fast_path.cu:6038 (docs/SETTINGS.md:100 documents it as MAYA_GLM_PREFILL_KEEP: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_PREFILL_MB` | typed child env | docs/SETTINGS.md:62 |
+| `STRATA_GLM_PREFILL_STAGES` | typed child env | src/core/glm_prefill.cu:1388 (docs/SETTINGS.md:99 documents it as MAYA_GLM_PREFILL_STAGES: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_PREFILL_SUB` | typed child env | docs/SETTINGS.md:106 |
 | `STRATA_GLM_PREFILL_TAIL_SKIP` | typed child env | docs/SETTINGS.md:63 |
 | `STRATA_GLM_PREFILL_TRACE` | typed child env | docs/SETTINGS.md:98 |
@@ -705,43 +738,58 @@ engine at v1.1.21), and `--parallel` is bounded 1..8 at composition (`docs/valid
 | `STRATA_GLM_PROMOTE_FILL` | typed child env | docs/SETTINGS.md:80 |
 | `STRATA_GLM_PROMOTE_MIN` | typed child env | docs/SETTINGS.md:79 |
 | `STRATA_GLM_RAM_GB` | typed child env | docs/SETTINGS.md:39 |
-| `STRATA_GLM_RAM_HEADROOM_GB` | typed child env | docs/SETTINGS.md:38 |
+| `STRATA_GLM_RAM_HEADROOM_GB` | typed child env | docs/SETTINGS.md:38 (typed value source glm.ram_headroom_gb, 6..1024 default 16 per the SP6 §4.9 sheet M2; always projected by glm_environment_knobs) |
 | `STRATA_GLM_RAM_RESIDENT` | typed child env | docs/SETTINGS.md:43 |
 | `STRATA_GLM_RAM_SLACK` | typed child env | docs/SETTINGS.md:43 |
 | `STRATA_GLM_READ_CHUNKS` | typed child env | docs/SETTINGS.md:60 |
+| `STRATA_GLM_RESERVE_LATER_MB` | typed child env | src/core/glm_fast_path.cu:1160 (docs/SETTINGS.md:193 documents it as MAYA_GLM_RESERVE_LATER_MB: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_RESERVE_MB` | typed child env | maya.py:2241 (value from hip_reserve_mib, :642-648; the HIP calibration writes it into the config env); docs/SETTINGS.md:190-193 now documents MAYA_GLM_RESERVE_MB; the calibration flow is docs/SETTINGS.md:29 |
+| `STRATA_GLM_RESIDENT_SKIP` | typed child env | src/core/glm_fast_state.hpp:542 (docs/SETTINGS.md:41 documents it as MAYA_GLM_RESIDENT_SKIP: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_SCORE` | typed child env | docs/SETTINGS.md:139 |
 | `STRATA_GLM_SCORE_PREFILL` | typed child env | docs/SETTINGS.md:139 |
 | `STRATA_GLM_SEQS` | typed child env | docs/SETTINGS.md:72 |
 | `STRATA_GLM_SEQ_CTX` | typed child env | docs/SETTINGS.md:72 |
 | `STRATA_GLM_SERVICE_IDLE_MS` | typed child env | docs/SETTINGS.md:94 |
+| `STRATA_GLM_SKIP_EMPTY` | typed child env | src/core/glm_memory.hpp:41 (docs/SETTINGS.md:75 documents it as MAYA_GLM_SKIP_EMPTY: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_SLOTS` | typed child env | docs/SETTINGS.md:68 (SP6 §4.9: slots off is the forced default — the table may move it, nothing unknown is ever sent; Task 4) |
 | `STRATA_GLM_SLOT_DAYS` | typed child env | docs/SETTINGS.md:71 |
 | `STRATA_GLM_SLOT_GB` | typed child env | docs/SETTINGS.md:70 |
 | `STRATA_GLM_SLOT_KEEP` | typed child env | docs/SETTINGS.md:71 |
 | `STRATA_GLM_SLOT_MIN` | typed child env | docs/SETTINGS.md:70 |
 | `STRATA_GLM_SPEC_CANCEL` | typed child env | docs/SETTINGS.md:90 |
+| `STRATA_GLM_SPEC_FOLLOW` | typed child env | src/program/generate.cpp:1023 (docs/SETTINGS.md:92 documents it as MAYA_GLM_SPEC_FOLLOW: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_SPEC_FOLLOW_SAVE` | typed child env | src/program/generate.cpp:1024 (docs/SETTINGS.md:93 documents it as MAYA_GLM_SPEC_FOLLOW_SAVE: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_SPEC_HEAD` | typed child env | docs/SETTINGS.md:89 |
 | `STRATA_GLM_SPEC_SAMPLE` | typed child env | docs/SETTINGS.md:90 |
 | `STRATA_GLM_SPLIT` | typed child env | docs/SETTINGS.md:44 (SP6 §4.9: the forced split; glm.layer_split also renders --layer-split, serve/server.py:1274-1277; Task 4/7) |
 | `STRATA_GLM_SPLIT_LAYER_MS` | typed child env | docs/SETTINGS.md:44 |
 | `STRATA_GLM_SPLIT_LOG` | typed child env | docs/SETTINGS.md:44 |
+| `STRATA_GLM_SPLIT_ROWS` | typed child env | src/core/glm_rows.cu:82 (docs/SETTINGS.md:73 documents it as MAYA_GLM_SPLIT_ROWS: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_THINK_RESERVE` | typed config | docs/SETTINGS.md:141, serve/server.py:2279 (server-side reserve; rides glm.thinking_budget — C-3; Task 3) |
 | `STRATA_GLM_TIMING` | typed child env | docs/SETTINGS.md:137 |
 | `STRATA_GLM_TRUNK_KEEP` | typed child env | docs/SETTINGS.md:86 |
 | `STRATA_GLM_TRUNK_KEEP_MAP` | typed child env | docs/SETTINGS.md:86 |
 | `STRATA_GLM_VISION_LEND_MB` | typed child env | serve/server.py:4026 (the vision turn lends MB from the expert pool; the flow is docs/SETTINGS.md:29) |
 | `STRATA_GLM_VRAM_EVICT` | typed child env | docs/SETTINGS.md:81 |
+| `STRATA_GLM_WARM_PROMPT` | typed child env | src/program/generate.cpp:3181 (docs/SETTINGS.md:102 documents it as MAYA_GLM_WARM_PROMPT: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_WIN_ALLCPU` | typed child env | docs/SETTINGS.md:130 |
+| `STRATA_GLM_WIN_BATCH` | typed child env | src/core/glm_window.cu:585 (docs/SETTINGS.md:131 documents it as MAYA_GLM_WIN_BATCH: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_WIN_COMMIT_WAIT` | typed child env | src/core/glm_dflash.cu:2007 (docs/SETTINGS.md:128 documents it as MAYA_GLM_WIN_COMMIT_WAIT: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_WIN_CPU` | typed child env | docs/SETTINGS.md:130 |
 | `STRATA_GLM_WIN_LANES` | typed child env | docs/SETTINGS.md:130 |
+| `STRATA_GLM_WIN_MULTI` | typed child env | src/core/glm_window.cu:593 (docs/SETTINGS.md:132 documents it as MAYA_GLM_WIN_MULTI: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_WIN_PIPE` | typed child env | docs/SETTINGS.md:122 |
+| `STRATA_GLM_WIN_REPLAY` | typed child env | src/core/glm_window.cu:1753 (docs/SETTINGS.md:129 documents it as MAYA_GLM_WIN_REPLAY: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_WIN_SKIP` | typed child env | docs/SETTINGS.md:123 |
 | `STRATA_GLM_WIN_STAGGER` | typed child env | docs/SETTINGS.md:130 |
 | `STRATA_GLM_WIN_THREADS` | typed child env | docs/SETTINGS.md:123 |
 | `STRATA_GLM_WIN_X3` | typed child env | docs/SETTINGS.md:133 |
 | `STRATA_GLM_WIN_X3_POOLS` | typed child env | docs/SETTINGS.md:133 |
 | `STRATA_MAX_BODY_MIB` | frontend behaviour | already typed: limits.chat.max_body_bytes (SP1); serve/server.py:2922, docs/SETTINGS.md:144 |
+| `STRATA_NO_IQ512` | typed child env | src/kernels/cpu/native_expert.cpp:91 (docs/SETTINGS.md:105 documents it as MAYA_NO_IQ512 — an embedded `MAYA_X=value` span the pin scan missed at regeneration; typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_PF_WMMA` | typed child env | src/core/glm_prefill.cu:186 (docs/SETTINGS.md:66 documents it as MAYA_PF_WMMA: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_PREFILL_LEND_PCT` | typed child env | src/core/glm_prefill.cu:1144 (docs/SETTINGS.md:62 documents it as MAYA_PREFILL_LEND_PCT: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_SPLIT_COVER_B` | typed child env | src/core/glm_model.cu:1674 (docs/SETTINGS.md:44 documents it as MAYA_SPLIT_COVER_B: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_WATCHDOG_S` | typed child env | docs/SETTINGS.md:143, src/program/generate.cpp:747 (engine-side watchdog; SP6 §4.9/M5 forces 0 pending the owner's sheet; Task 4) |
 | `--expert-profile-save` | engine argv | maya.py:2285 |
 | `--expert-profile-save-every` | engine argv | maya.py:2285 |
@@ -763,47 +811,7 @@ engine at v1.1.21), and `--parallel` is bounded 1..8 at composition (`docs/valid
 | `STRATA_ENGINE_QUIT_S` | — | the SP2 shutdown order (§3.7) is fixed by the supervisor; serve/server.py:1010, docs/SETTINGS.md:145 |
 | `STRATA_ENGINE_WRAP_S` | — | the SP3 shutdown drain is fixed in the frontend (no per-request wrap-up); serve/server.py:4172, docs/SETTINGS.md:146 |
 | `STRATA_FAIR_SLICE_S` | — | SP3 admission/pool scheduling (B8/B9) is the frontend's policy; serve/server.py:234, docs/SETTINGS.md:147 |
-| `STRATA_GLM_COMPLETE_POOL` | — | src/core/glm_fast_path.cu:1189 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_CPU_CONCURRENT` | — | src/core/glm_fast_path.cu:2627 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_DSA_ALL` | — | src/kernels/cuda/glm_fast.cu:5400 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_DUAL_PREFILL` | — | src/core/glm_prefill.cu:4192 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_EVEN_GROUPS` | — | src/program/generate.cpp:2264 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_EXL3_DECODE` | — | src/kernels/cuda/exl3.cu:1853 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_EXL3_ROT` | — | src/core/glm_prefill.cu:434 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_EXPERT_CACHE` | — | src/core/glm_fast_path.cu:5821 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_EXPERT_HELPER` | — | src/core/glm_fast_path.cu:1839 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_FLUSH` | — | src/core/glm_fast_state.hpp:78 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_GROUP_EXPERTS` | — | src/core/glm_memory.hpp:33 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_GU_STAGE` | — | src/kernels/cuda/glm_fast.cu:1942 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_HEAD_SPLIT` | — | src/core/glm_model.cu:1241 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_HEAD_SPLIT_CHECK` | — | src/core/glm_window.cu:1366 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_MISS_SKIP_FROM` | — | src/core/glm_fast_path.cu:1740 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_MISS_SKIP_W` | — | src/core/glm_fast_path.cu:1739 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_MLA_MMA` | — | src/kernels/cuda/glm_fast.cu:5462 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_MMQ_RESERVE_MB` | — | src/core/glm_fast_path.cu:5848 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_MTP_DECODE` | — | src/core/glm_mtp.cu:83 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_MV_P100` | — | src/kernels/cuda/glm_fast.cu:1960 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_MV_P100_R` | — | src/kernels/cuda/glm_fast.cu:1961 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_PREFILL_CALC` | — | src/core/glm_prefill.cu:4284 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_PREFILL_FLUSH` | — | src/core/glm_fast_state.hpp:92 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_PREFILL_FUSED` | — | src/prefill/moe_fused_rdna4.cu:665 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_PREFILL_KEEP` | — | src/core/glm_fast_path.cu:6038 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_PREFILL_STAGES` | — | src/core/glm_prefill.cu:1388 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_RESERVE_LATER_MB` | — | src/core/glm_fast_path.cu:1160 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_RESIDENT_SKIP` | — | src/core/glm_fast_state.hpp:542 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_SKIP_EMPTY` | — | src/core/glm_memory.hpp:41 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_SPEC_FOLLOW` | — | src/program/generate.cpp:1023 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_SPEC_FOLLOW_SAVE` | — | src/program/generate.cpp:1024 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_SPLIT_ROWS` | — | src/core/glm_rows.cu:82 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_WARM_PROMPT` | — | src/program/generate.cpp:3181 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_WIN_BATCH` | — | src/core/glm_window.cu:585 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_WIN_COMMIT_WAIT` | — | src/core/glm_dflash.cu:2007 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_WIN_MULTI` | — | src/core/glm_window.cu:593 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_GLM_WIN_REPLAY` | — | src/core/glm_window.cu:1753 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
 | `STRATA_HTTP_BACKLOG` | — | the listener backlog is fixed by the SP3 poll design (128 entries); serve/server.py:2913, docs/SETTINGS.md:144 |
-| `STRATA_PF_WMMA` | — | src/core/glm_prefill.cu:186 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_PREFILL_LEND_PCT` | — | src/core/glm_prefill.cu:1144 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
-| `STRATA_SPLIT_COVER_B` | — | src/core/glm_model.cu:1674 (SP5-P2 Task 4 types this documented knob per D-7 and regenerates the closed child-env allowlist from this table) |
 | `STRATA_TOKENIZER` | — | serve/test_detok.py:21 (the SP4 manifest carries the tokenizer (the T2-c pattern); Maya passes it to its own tools — the engine reads no STRATA_TOKENIZER) |
 | `--bench` | — | maya.py:3907 (the engine's own argv; the SP4 manifest-composed launch at v1.1.21 is SP5-P2 Task 6) |
 | `--check` | — | maya.py:3850 (the engine's own argv; the SP4 manifest-composed launch at v1.1.21 is SP5-P2 Task 6) |
@@ -1177,18 +1185,15 @@ The engine reads each of these via `getenv`, but none is part of the parity surf
 | `STRATA_GLM_MTP_FIXED` | src/core/glm_mtp.cu:468 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
 | `STRATA_GLM_MTP_START` | src/core/glm_mtp.cu:472 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
 | `STRATA_GLM_MTP_TRACE` | src/core/glm_mtp.cu:549 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
-| `STRATA_GLM_MULTI_DUMP` | src/program/generate.cpp:3038 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
 | `STRATA_GLM_MV_APPROX` | src/kernels/cuda/glm_fast.cu:1808 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
 | `STRATA_GLM_MV_GENERIC` | src/kernels/cuda/glm_fast.cu:5006 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
 | `STRATA_GLM_MV_MMA` | src/kernels/cuda/glm_fast.cu:1828 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
 | `STRATA_GLM_MV_TILED` | src/kernels/cuda/glm_fast.cu:5051 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
-| `STRATA_GLM_NO_PREFILL` | src/core/glm_prefill.cu:1030 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
 | `STRATA_GLM_NO_REUSE` | src/program/generate.cpp:1270 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
 | `STRATA_GLM_NO_STAGE` | src/core/glm_model.cu:3581 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
 | `STRATA_GLM_NSYS` | src/core/glm_fast_path.cu:6523 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
 | `STRATA_GLM_PIN_CAP_MB` | src/core/glm_fast_path.cu:460 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
 | `STRATA_GLM_PIPE` | src/core/glm_model.cu:1009 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
-| `STRATA_GLM_POOL_CHECK` | src/core/glm_fast_path.cu:5889 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
 | `STRATA_GLM_POOL_CHECK_TEST_MB` | src/core/glm_fast_path.cu:5993 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
 | `STRATA_GLM_POOL_GB` | src/core/glm_fast_path.cu:1124 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
 | `STRATA_GLM_POOL_SLOTS0` | src/core/glm_model.cu:3530 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
@@ -1196,8 +1201,6 @@ The engine reads each of these via `getenv`, but none is part of the parity surf
 | `STRATA_GLM_PREFETCH_RANKS` | src/core/glm_model.cu:2665 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
 | `STRATA_GLM_PREFILL` | src/core/glm_prefill.cu:961 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
 | `STRATA_GLM_PREFILL_BLAS` | src/core/glm_prefill.cu:3333 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
-| `STRATA_GLM_PREFILL_CALC_CHECK` | src/core/glm_prefill.cu:3852 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
-| `STRATA_GLM_PREFILL_CALC_SHARE` | src/core/glm_prefill.cu:4291 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
 | `STRATA_GLM_PREFILL_LAND` | src/core/glm_prefill.cu:1288 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
 | `STRATA_GLM_PREFILL_LIGHT` | src/core/glm_prefill.cu:2779 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
 | `STRATA_GLM_PREFILL_LIGHT_CHECK` | src/core/glm_prefill.cu:3457 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
@@ -1257,7 +1260,6 @@ The engine reads each of these via `getenv`, but none is part of the parity surf
 | `STRATA_MTP_PREFILL_SYNC` | src/core/mtp.cpp:591 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
 | `STRATA_NO_IQ256` | src/kernels/cpu/native_expert.cpp:92 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
 | `STRATA_NO_IQ4NL` | src/kernels/cpu/native_expert.cpp:331 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
-| `STRATA_NO_IQ512` | src/kernels/cpu/native_expert.cpp:91 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
 | `STRATA_NO_LARGEPAGES` | src/core/pinned.cu:61 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
 | `STRATA_PLE_BATCH` | src/prefill/prefill.cpp:1000 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
 | `STRATA_PLE_GGUF` | src/kernels/ple_parity.cpp:255 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |

@@ -261,6 +261,8 @@ struct VisionConfig final {
 struct GlmSettings final {
   std::int64_t thinking_budget{32768};              // glm.thinking_budget (server.py:4090 default 32768; cap added, C-1)
   std::int64_t max_context{32768};                  // glm.max_context (Maya's DEFAULT_CONTEXT, maya.py:3148; bound added, C-1)
+  std::int64_t ram_headroom_gb{16};                 // glm.ram_headroom_gb (SP6 §4.9 M2: 6-1024, default 16; SETTINGS.md:38; the engine reads glm_fast_path.cu:1110/:1510)
+  std::int64_t idle_unload_s{0};                    // glm.idle_unload_s (v1.1.21 serve/server.py:8298, default 0 = never at :3753; under glm53 it wins over engine.idle_unload_s, R-T4-b)
   std::optional<GlmReasoningEffort> reasoning_effort;  // glm.reasoning_effort (unset: the request's; validator server.py:3798)
   bool fit_max_tokens{false};                       // glm.fit_max_tokens (Maya reads `is True` — server.py:4077; unlike engine's true)
   bool experimental_speed_projection{false};        // glm.experimental_speed_projection (server.py:3819/3877/789: truthy or)
