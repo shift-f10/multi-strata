@@ -1228,6 +1228,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         next_event_finish_forms_and_nonfinite_stays_idle
         maya_flavor_consumes_note_and_progress strata_flavor_still_fails_closed_on_note maya_pp_grammar_is_bounded
         maya_slot_mode_records_are_protocol_errors maya_full_v1_1_21_done_record_feeds_the_done_event
+        penalty_window_zero_means_no_penalty_on_glm_only
         maya_flavor_accepts_vram_and_note_before_ready)
 
     secure_frontend_add_test_executable(secure_frontend_model_inventory_tests tests/model_inventory_test.cpp

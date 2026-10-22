@@ -77,7 +77,10 @@ inline constexpr std::array<std::string_view, 4> kEngineFatalPrefixes{
 // SP3 B6: the GEN sampling keys for these params — " temperature=0.5 top_p=0.9
 // seed=42", shortest round-trip form, "" when nothing is set (engine stays
 // greedy). Values are already bounded by the chat schema (finite, in range).
-[[nodiscard]] std::string render_sampling_keys(const SamplingParams& sampling);
+// zero_window_disables: the GLM engine's semantics for a window of 0 (no penalty at
+// all — generate.cpp:3467 pen_on at the pin, maya serve/server.py:274-275); the strata
+// pin instead renders its default window of 64. Only the maya_118 flavor passes true.
+[[nodiscard]] std::string render_sampling_keys(const SamplingParams& sampling, bool zero_window_disables = false);
 
 struct EngineProtocolError final {
   EngineProtocolErrorCode code;

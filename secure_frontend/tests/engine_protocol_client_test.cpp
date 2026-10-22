@@ -793,6 +793,34 @@ void info_and_stat_readings_are_captured() {
          "the STAT cadence keeps the last value seen per key");
 }
 
+// SP5-P2 Task 7 (issue 27, penalty semantics): the two engines disagree on a window
+// of 0. The strata pin (serve/server.py:1360-1394) treats a penalty without a usable
+// window as the default window of 64; the GLM engine at 451f9cb6 treats window 0 as
+// NO PENALTY AT ALL — `pen_on = pen_n > 0` (generate.cpp:3467), and maya's own server
+// says it in words (serve/server.py:274-275: "0 = no penalty, -1 = the whole context,
+// below -1 refused"). The client renders per flavor so an operator's 0 means the same
+// thing on the wire as it means on that engine; negative windows never reach here
+// (config bounds penalty_last_n to 0..8192, frontend_config.cpp:167).
+void penalty_window_zero_means_no_penalty_on_glm_only() {
+  secure_frontend::SamplingParams p;
+  p.repetition_penalty = 1.2;
+  p.penalty_last_n = 0;
+  expect(secure_frontend::render_sampling_keys(p) == " penalty_repeat=1.2 penalty_last_n=64",
+         "the strata rule is untouched: 0 renders the default window");
+  expect(secure_frontend::render_sampling_keys(p, true).empty(),
+         "the GLM rule: window 0 switches the penalties off — no keys at all");
+
+  FakeTransport maya;
+  maya.reads = {line("READY 64")};
+  EngineProtocolClient mc(maya, {}, secure_frontend::EngineProtocolFlavor::maya_118);
+  secure_frontend::EngineReady ready{};
+  (void)mc.await_ready(std::chrono::seconds(1), ready);
+  expect(!mc.begin_generation(8, {1}, secure_frontend::deadline_after(std::chrono::seconds(5)), p).has_value(),
+         "the maya_118 GEN is written");
+  expect(maya.writes.back().find("penalty") == std::string::npos,
+         "no penalty keys on the GLM GEN line: " + maya.writes.back());
+}
+
 int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
       {"maya_flavor_accepts_vram_and_note_before_ready", maya_flavor_accepts_vram_and_note_before_ready},
@@ -823,5 +851,6 @@ int main(int argc, char** argv) {
       {"maya_pp_grammar_is_bounded", maya_pp_grammar_is_bounded},
       {"maya_slot_mode_records_are_protocol_errors", maya_slot_mode_records_are_protocol_errors},
       {"maya_full_v1_1_21_done_record_feeds_the_done_event", maya_full_v1_1_21_done_record_feeds_the_done_event},
+      {"penalty_window_zero_means_no_penalty_on_glm_only", penalty_window_zero_means_no_penalty_on_glm_only},
   }, failures);
 }
