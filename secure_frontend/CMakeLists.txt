@@ -1325,7 +1325,14 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         every_upstream_key_has_exactly_one_disposition every_env_knob_is_dispositioned
         typed_rows_name_a_destination every_maya_key_has_exactly_one_disposition
         every_maya_env_knob_is_dispositioned dflash_is_rejected_on_licence
-        updater_and_installer_rows_are_rejected)
+        updater_and_installer_rows_are_rejected maya_alias_rows_name_a_target)
+    # SP5-P2 Task 1: the drift tripwires re-enumerate the CURRENT vendored trees;
+    # the worktree root (holding upstream/ and the read-only engines/ reference)
+    # is passed as the scan root.
+    secure_frontend_add_cases(secure_frontend_parity_table_tests
+        scan_upstream_knobs_need_dispositions_and_current_citations
+        scan_maya_knobs_need_dispositions_and_current_citations
+        ARGS ${CMAKE_CURRENT_SOURCE_DIR}/.. TIMEOUT 120)
 
     secure_frontend_add_test_executable(secure_frontend_typed_config_tests tests/typed_config_test.cpp
         secure_frontend_typed_config secure_frontend_engine_supervisor)
