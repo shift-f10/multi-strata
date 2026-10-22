@@ -392,11 +392,28 @@
     $("stop-btn").hidden = !on;
     $("new-btn").disabled = on;
   }
+  // What the server takes: user and assistant turns in strict alternation (this page sends no
+  // system turn). A question that never got an answer, as in a chat saved by an older page,
+  // would make every later request a 400 (session log issue 40), so the newer question takes
+  // its place.
+  function conversation(history) {
+    var turns = [];
+    history.forEach(function (m) {
+      if (!m || typeof m.content !== "string" || !m.content) { return; }
+      var last = turns.length ? turns[turns.length - 1].role : "";
+      if (m.role === "user" && last === "user") {
+        turns[turns.length - 1] = m;
+      } else if (m.role === "user" || (m.role === "assistant" && last === "user")) {
+        turns.push(m);
+      }
+    });
+    return turns;
+  }
   function requestBody() {
     var s = state.settings;
     var body = {
       model: state.model,
-      messages: state.history.filter(function (m) { return m.content; }).map(function (m) { return { role: m.role, content: m.content }; }),
+      messages: conversation(state.history).map(function (m) { return { role: m.role, content: m.content }; }),
       stream: true,
       stream_options: { include_usage: true },
       reasoning_effort: s.thinking === "off" ? "none" : "high"
@@ -526,7 +543,7 @@
     if (run.answer) { state.history.push(reply); } else { state.history.pop(); }
     parts.bubble.hidden = !run.answer;
     fillMeta(parts, reply);
-    save(SLOT_CHAT, state.history.filter(function (m) { return m.content; }));
+    save(SLOT_CHAT, conversation(state.history));
     pollHealth();
     scrollToEnd();
     $("input").focus();
@@ -683,8 +700,10 @@
 
   async function start() {
     state.settings = Object.assign({}, DEFAULTS, load(SLOT_SETTINGS, {}));
-    state.history = load(SLOT_CHAT, []);
-    if (!Array.isArray(state.history)) { state.history = []; }
+    // A saved chat is repaired on the way in: it never ends on an unanswered question.
+    var saved = load(SLOT_CHAT, []);
+    state.history = Array.isArray(saved) ? conversation(saved) : [];
+    if (state.history.length && state.history[state.history.length - 1].role === "user") { state.history.pop(); }
     wire();
     syncThemeIcon();
     var key = load(SLOT_KEY, null);

@@ -821,6 +821,23 @@ mode only as an explicit loopback-only switch with a warning). Both are now buil
       website URL" (`https://www.python.org`) then "which language?" (`Python`) both
       answered.
 
+40. **The same error survived the issue 39 fix and a page refresh (owner report)** —
+    **fixed in the page.** The page keeps the chat in sessionStorage, and a refresh
+    restores it. A chat saved by the page before its step-14 history fix could hold a
+    question that never got an answer (the one the issue 39 rule refused). Every later
+    request then sent `user, assistant, user, user`, and the Qwen renderer takes only
+    strict alternation, so every turn was a 400.
+    - Reproduced in the built-in browser: that saved chat gave the owner's exact log line
+      (`chat 400 invalid_request 2 488`) on every turn, across reloads.
+    - Fix (app.js): one `conversation()` rule for what is sent, saved and loaded. Turns
+      alternate; a newer question replaces an unanswered one; an assistant turn only
+      follows a question. A loaded chat never ends on an unanswered question. The server
+      rule is unchanged.
+    - Checked: the same saved chat now loads as `user, assistant`. The next two
+      questions answered (200, 200). Page and router tests: 18/18. No CSP violations.
+      There is no JS test harness here: the browser reproduction was the RED, the
+      same run after the fix the GREEN.
+
 ### Not done in this session
 
 - Resume doc §8 item 3 (`qwen35moe` family behaviour): not applicable to these packs (no

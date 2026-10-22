@@ -308,6 +308,10 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
     text (SP3 §6.2 allows "rejected or treated as text"; nothing fetches it). The model
     field and image URLs keep their guards; the egress test keeps its no-egress checks.
     Test-first; suite 886/885, 1 skipped.
+  - **Issue 40 (owner bug):** a chat saved by an older page held an unanswered question,
+    so every later turn sent two user turns in a row (renderer refuses: 400), even after
+    a refresh. The page now sends, saves and loads only strictly alternating turns
+    (`conversation()` in app.js). Verified in the browser; no JS test harness exists.
 - The `windows-runtime`-labelled cases run under the MSVC preset on the owner's box; the
   supported Windows toolchains (MSYS2 clang, llvm-mingw) are still not installed (issue 3).
 
