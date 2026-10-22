@@ -659,6 +659,65 @@ the rest test-harness portability. Each fix keeps the Linux shape of the test un
   with `NotifyOnListen` on, so Windows asks the owner to allow `strata-secure-server.exe`. No
   firewall rule was read (needs admin) or changed.
 
+### 12. Built-in chat page and the keyless loopback mode (owner decisions, test-first)
+
+The owner asked for a page to land on, with the API key as its login, and then for "an
+explicit opt-in no-key mode for the page and API, loopback binds only". The secure server
+was API-only by design (privacy-migration.md: no web UI; threat model: an unauthenticated
+mode only as an explicit loopback-only switch with a warning). Both are now built that way:
+
+- **`listener.web_ui`** (off by default): a chat page at `/`, `/ui/app.js` and
+  `/ui/app.css`. These are three ASCII files in `secure_frontend/web/` (LF via
+  `.gitattributes`), embedded at configure time by `cmake/EmbedWebUi.cmake`, which refuses
+  non-ASCII and CR. They are public only at those exact `GET` targets, after the Host and
+  Origin checks, and outside `kRouteTable` (which stays the authenticated API).
+  - The page's responses carry their own CSP (self-only script, style and connect; no
+    inline code; `form-action 'none'`; `frame-ancestors 'none'`) through a new
+    `HttpResponse::content_security_policy` field. It replaces the fixed policy once; the
+    reserved-header guard still drops a CSP set in `headers`.
+  - The page uses the key as its login: checked against `/v1/models`, kept in
+    `sessionStorage`, sent only as a same-origin bearer header with cookies off.
+  - It streams the chat with the reasoning shown separately, has Stop, and renders text
+    only.
+- **`listener.loopback_without_key`** (off by default, config file only): no key for the
+  API or the page.
+  - At load it is refused for a non-loopback host, and refused next to a `token.source`
+    (the file, `--token-file` or `--token-env`).
+  - At bind the core `validate_config` accepts a keyless listener only with the opt-in
+    *and* a loopback address. `HttpSocketServer::bind` re-applies that.
+  - The boot prints a `strata: warning:` line, the ready line says
+    `no API key: loopback only`, and `--check` says `token: not used`.
+  - Host, Origin and Content-Type checks still apply. The page detects the mode (the
+    model list answers without a key) and skips the login.
+  - `server_cli_tests`' switch inventory now names it as the one switch that turns the
+    key off, and checks that it has no flag and is off by default.
+- **TDD:** 11 new cases.
+  - Router (6): off by default; page served without a key; every API route still keyed;
+    Host/Origin still checked; the files bundled and inert; the keyless router.
+  - Core config (1), wire (1), typed config (1), and over a socket (2: the page plus the
+    keyed API; keyless serving, with Host/Origin refusals and a `token.source` refusal).
+  - RED: 10 failed for the right reason (`out/ctest-red-webui.*`). One test expectation
+    was corrected: the parser already refuses `?` in a target with 400, not 401. GREEN:
+    all 11 pass.
+  - Full preset suite: **878 tests, 877 passed, 0 failed, 1 skipped**
+    (`out/ctest-preset-webui.xml`). README table regenerated from the schema; README,
+    threat model and privacy-migration row updated.
+- **Browser check (built-in browser, this box, real model):**
+  - Keyless loopback (`out/serve/config-iq3s-local-keyless.json`): `/` went straight to the
+    chat ("No API key needed (loopback server)"). A question streamed back with the
+    reasoning collapsed: `stop | 73 tokens, 19.2 tok/s | 3.8 s`. The console was clean.
+  - Keyed LAN server (`config-iq3s-lan.json` plus `web_ui`, `0.0.0.0:8080`): `/` showed
+    the key login. A wrong key got "That API key was not accepted." and the URL stayed
+    clean. The dev key signed in, and Stop mid-essay was logged
+    `chat_stream 200 client_gone`.
+  - A reload stayed signed in, and the next chat answered at once. The only console lines
+    were the two expected 401s.
+  - Note: in keyed mode each page load makes one probe without a key (to detect keyless
+    mode), which the request log shows as one `other 401`.
+- **Left running for the owner:** the LAN server with the page, `http://192.168.1.96:8080/`
+  (terminal tab, `out/serve/serve-iq3s-lan.ps1`). From another machine, Windows Firewall
+  must allow `strata-secure-server.exe` (Public profile; not changed here).
+
 ### Not done in this session
 
 - Resume doc §8 item 3 (`qwen35moe` family behaviour): not applicable to these packs (no

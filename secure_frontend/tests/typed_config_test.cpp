@@ -1560,6 +1560,41 @@ void slot_save_path_is_a_bounded_private_path() {
 // frontend and the Codex routes, none of which we serve), and the expert pair is typed/engine_arg.
 // slot_save_path sits config_only after Ruling T9-a (no argv append at the pin: every use is
 // svc-side, :8096/:3698-3715); keep_files after T9-e (ImageService is D-9 out).
+// Owner decisions 2026-10-21 (session log step 12): listener.web_ui serves the built-in page;
+// listener.loopback_without_key is the one keyless listener — loopback only, no token.source.
+void web_ui_and_loopback_without_key_rows() {
+  ConfigFixture f;
+  const auto bare_result = with_literals(f, {});
+  const auto* bare = config_of(bare_result);
+  expect(bare != nullptr && !bare->listener.web_ui && !bare->listener.loopback_without_key, "both default to false");
+  const std::string described = describe_of(bare_result);
+  expect(described.find("listener.web_ui = false\n") != std::string::npos &&
+             described.find("listener.loopback_without_key = false\n") != std::string::npos,
+         "--check reports both: " + described);
+  const auto page_result = with_literals(f, {{"listener.web_ui", "true"}});
+  const auto* page = config_of(page_result);
+  expect(page != nullptr && page->listener.web_ui && !page->listener.loopback_without_key, "web_ui alone keeps the key");
+  expect(std::holds_alternative<secure_frontend::ConfigErrors>(with_literals(f, {{"listener.web_ui", "\"yes\""}})), "a strict boolean");
+  for (const char* host : {"\"127.0.0.1\"", "\"::1\"", "\"localhost\""}) {
+    const auto keyless_result = with_literals(f, {{"listener.host", host}, {"listener.loopback_without_key", "true"}});
+    const auto* keyless = config_of(keyless_result);
+    expect(keyless != nullptr && keyless->listener.loopback_without_key,
+           std::string{"keyless on a loopback host: "} + host + ": " + issues_of(keyless_result));
+  }
+  const auto remote = with_literals(f, {{"listener.host", "\"192.0.2.10\""}, {"listener.allow_remote", "true"},
+                                        {"listener.loopback_without_key", "true"}});
+  expect(has_issue(remote, "listener.loopback_without_key", ConfigIssueCode::conflicting_values),
+         "a remote host never runs keyless: " + issues_of(remote));
+  const auto wildcard = with_literals(f, {{"listener.host", "\"0.0.0.0\""}, {"listener.allow_remote", "true"},
+                                          {"listener.allow_wildcard_bind", "true"}, {"listener.host_aliases", "[\"box:8080\"]"},
+                                          {"listener.loopback_without_key", "true"}});
+  expect(has_issue(wildcard, "listener.loopback_without_key", ConfigIssueCode::conflicting_values),
+         "a wildcard bind never runs keyless: " + issues_of(wildcard));
+  const auto named_key = with_literals(f, {{"listener.loopback_without_key", "true"}, {"token.source", "\"env:STRATA_TOKEN\""}});
+  expect(has_issue(named_key, "token.source", ConfigIssueCode::conflicting_values),
+         "a configured key that would never be read is refused, not ignored: " + issues_of(named_key));
+}
+
 void codex_and_tool_call_rows_are_dispositioned() {
   struct Expected { const char* key; const char* path; };
   for (const Expected e : {Expected{"slot_save_path", "session.slot_save_path"},
@@ -1774,6 +1809,7 @@ int main(int argc, char** argv) {
       {"timeout_shape_rows_at_each_edge", timeout_shape_rows_at_each_edge},
       {"session_rows_match_the_pin", session_rows_match_the_pin},
       {"slot_save_path_is_a_bounded_private_path", slot_save_path_is_a_bounded_private_path},
+      {"web_ui_and_loopback_without_key_rows", web_ui_and_loopback_without_key_rows},
       {"codex_and_tool_call_rows_are_dispositioned", codex_and_tool_call_rows_are_dispositioned},
       {"session_rows_at_each_edge", session_rows_at_each_edge},
       {"replicas_parallel_row_at_the_pin", replicas_parallel_row_at_the_pin},

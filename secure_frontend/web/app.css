@@ -1,0 +1,88 @@
+/* Strata built-in chat page (listener.web_ui). System fonts only; nothing is fetched. */
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --text: #1c1f24;
+  --muted: #5f6672;
+  --border: #d9dde3;
+  --accent: #2f5bd3;
+  --accent-text: #ffffff;
+  --user: #e8eefc;
+  --error: #b42318;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161a;
+    --panel: #1c1f24;
+    --text: #e6e8eb;
+    --muted: #9aa1ac;
+    --border: #30353d;
+    --accent: #6b8cff;
+    --accent-text: #0d1020;
+    --user: #232a3b;
+    --error: #ff8a80;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+button {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-text);
+  border-radius: 6px;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+button:disabled { opacity: 0.5; cursor: default; }
+button.ghost { background: transparent; color: var(--text); border-color: var(--border); }
+input, select, textarea {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+textarea { width: 100%; resize: vertical; min-height: 4.5em; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+.error { color: var(--error); }
+.spacer { flex: 1; }
+
+.login { display: flex; align-items: center; justify-content: center; min-height: 100%; padding: 16px; }
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 24px;
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.card h1 { margin: 0; font-size: 22px; }
+.card p { margin: 0; }
+
+.app { display: flex; flex-direction: column; height: 100%; max-width: 900px; margin: 0 auto; padding: 0 16px; }
+.bar { display: flex; align-items: center; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.brand { font-weight: 600; }
+.bar select { max-width: 100%; }
+.messages { flex: 1; overflow-y: auto; padding: 16px 0; display: flex; flex-direction: column; gap: 12px; }
+.message { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; }
+.message.user { background: var(--user); align-self: flex-end; max-width: 85%; }
+.message .who { font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 4px; }
+.message .text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.thinking { margin: 4px 0 8px; color: var(--muted); }
+.thinking summary { cursor: pointer; font-size: 13px; }
+.thinking .text { font-size: 13px; border-left: 2px solid var(--border); padding-left: 10px; margin-top: 4px; }
+.meta { margin-top: 6px; }
+.composer { padding: 12px 0 16px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+.actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.actions input { width: 7em; }

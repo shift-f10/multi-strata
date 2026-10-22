@@ -98,13 +98,17 @@ ConfigValidation validate_config(const ConfigInput& input) {
                        "a wildcard bind requires explicit wildcard-listening opt-in"};
   }
   const bool has_api_key = input.api_key.has_value() && !input.api_key->empty() && !is_blank(*input.api_key);
-  if (!has_api_key) {
-    return ConfigError{ConfigErrorCode::api_key_required, "a nonempty API key is required for every listener"};
+  // listener.loopback_without_key (owner decision 2026-10-21): the one keyless listener needs
+  // the explicit opt-in AND a loopback address; a remote or wildcard bind always needs the key.
+  const bool keyless = !has_api_key && input.allow_loopback_without_key && loopback;
+  if (!has_api_key && !keyless) {
+    return ConfigError{ConfigErrorCode::api_key_required,
+                       "a nonempty API key is required for every listener but an opted-in loopback one"};
   }
   // The authentication layer, not the long-lived validated configuration,
   // owns the secret. Only evidence that validation saw a non-blank key is kept.
   return Config{address->canonical_text(), static_cast<std::uint16_t>(requested_port), has_api_key, loopback,
-                input.allow_remote, input.allow_wildcard_bind};
+                input.allow_remote, input.allow_wildcard_bind, keyless};
 }
 
 }  // namespace secure_frontend

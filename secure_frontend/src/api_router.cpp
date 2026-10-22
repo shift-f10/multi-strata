@@ -4,6 +4,7 @@
 #include "secure_frontend/api_errors.hpp"
 #include "secure_frontend/http_request_head.hpp"
 #include "secure_frontend/json.hpp"
+#include "secure_frontend/web_ui.hpp"
 
 #include <algorithm>
 #include <optional>
@@ -83,20 +84,33 @@ RouteDecision ApiRouter::authorize(const RequestHead& head) {
   }
   decision.allow_origin = origin.allow_origin;
 
-  // Step 5: exactly one `Bearer <non-empty>` the validator accepts.
-  const auto authorizations = head.values("authorization");
-  if (authorizations.size() > 1U) return early(make_error_response(ApiError::invalid_request));
-  constexpr std::string_view kBearer = "Bearer ";
-  bool authorized = false;
-  if (authorizations.size() == 1U && authorizations.front().size() > kBearer.size() &&
-      authorizations.front().substr(0, kBearer.size()) == kBearer) {
-    try {
-      authorized = config_.validator && config_.validator(authorizations.front().substr(kBearer.size()));
-    } catch (...) {
-      authorized = false;
-    }
+  // The built-in page (listener.web_ui): its bundled files are public — they hold no secret
+  // and reach no route. Exact GET targets only, after Host and Origin; anything else goes on
+  // to the key check like every API request.
+  if (config_.web_ui && head.method == "GET" && find_web_asset(head.target) != nullptr) {
+    decision.route = RouteId::web;
+    decision.expect_continue = head.expect_continue;
+    decision.body_limit = head.content_length.value_or(0U);
+    return decision;
   }
-  if (!authorized) return early(make_error_response(ApiError::invalid_api_key));
+
+  // Step 5: exactly one `Bearer <non-empty>` the validator accepts — unless this is the
+  // keyless loopback listener (listener.loopback_without_key; require_key false).
+  if (config_.require_key) {
+    const auto authorizations = head.values("authorization");
+    if (authorizations.size() > 1U) return early(make_error_response(ApiError::invalid_request));
+    constexpr std::string_view kBearer = "Bearer ";
+    bool authorized = false;
+    if (authorizations.size() == 1U && authorizations.front().size() > kBearer.size() &&
+        authorizations.front().substr(0, kBearer.size()) == kBearer) {
+      try {
+        authorized = config_.validator && config_.validator(authorizations.front().substr(kBearer.size()));
+      } catch (...) {
+        authorized = false;
+      }
+    }
+    if (!authorized) return early(make_error_response(ApiError::invalid_api_key));
+  }
 
   // Step 6: kRouteTable, byte-exact; a prefix route needs a non-empty rest.
   const RouteEntry* matched = nullptr;
@@ -179,6 +193,16 @@ RouteResult ApiRouter::handle(const RequestHead& head, const std::string_view bo
         // A StreamHandler gets the CORS headers from deliver_route_result (Task 8b), which adds them to its head.
         if (auto* complete = std::get_if<HttpResponse>(&result)) add_cors(complete, decision.allow_origin);
         return result;
+      }
+      case RouteId::web: {
+        const WebAsset* asset = find_web_asset(head.target);
+        if (asset == nullptr) break;  // internal_error: authorize matched it
+        response = HttpResponse{.status = 200,
+                                .headers = {{"Content-Type", std::string{asset->content_type}},
+                                            {"Cross-Origin-Opener-Policy", "same-origin"}},
+                                .body = std::string{asset->body},
+                                .content_security_policy = kWebUiContentSecurityPolicy};
+        break;
       }
       case RouteId::other:
         response = make_error_response(ApiError::not_found);

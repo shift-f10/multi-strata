@@ -35,7 +35,7 @@ std::string decimal_text(const double value) {
   return ec == std::errc{} ? std::string{buffer, end} : std::string{"?"};
 }
 
-constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 + 1> kSchema{{
+constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 + 1 + 2> kSchema{{
     {"schema_version", T::integer, false, 1, 1, d::kSchemaVersion, false, "", "",
      "Config format version; must be 1. Required in a config file."},
     {"listener.host", T::string, false, 0, 0, 0, false, "127.0.0.1", "--host",
@@ -50,6 +50,10 @@ constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 
      "Exact browser origins allowed CORS: http:// or https://, a lower-case host, an optional port, no path; never * or null; at most 16."},
     {"listener.host_aliases", T::string_array, false, 0, 0, 0, false, "", "",
      "Extra exact Host values (host or host:port) clients use; required when the bind is a wildcard; at most 16."},
+    {"listener.web_ui", T::boolean, false, 0, 0, 0, false, "", "",
+     "Serve the built-in chat page at / (bundled files only). The page asks for the API key and keeps it in that tab; every API route still needs the key."},
+    {"listener.loopback_without_key", T::boolean, false, 0, 0, 0, false, "", "",
+     "Answer the API and the page without the API key: only with a loopback listener.host, and with no token.source; Host and Origin checks still apply."},
     {"limits.http.request_deadline_ms", T::integer, false, 1, 3'600'000, d::kRequestDeadlineMs, false, "", "",
      "Total time to read one request, header and body."},
     {"limits.http.max_request_bytes", T::integer, false, 4096, 16'777'216, d::kMaxRequestBytes, false, "", "",
@@ -720,6 +724,8 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   const auto port = read.integer("listener.port");
   const bool allow_remote = read.boolean("listener.allow_remote");
   const bool allow_wildcard = read.boolean("listener.allow_wildcard_bind");
+  const bool web_ui = read.boolean("listener.web_ui");
+  const bool loopback_without_key = read.boolean("listener.loopback_without_key");
   const auto backlog = read.integer("listener.backlog");
   const auto host = parse_listener_address(host_text);
   if (!host.has_value()) {
@@ -731,6 +737,18 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   } else if (host->scope() == AddressScope::wildcard && !allow_wildcard) {
     add(errors, "listener.host", ConfigIssueCode::wildcard_bind_not_enabled,
         "a wildcard address also needs listener.allow_wildcard_bind (--allow-wildcard-bind)");
+  }
+  // listener.loopback_without_key (owner decision 2026-10-21, session log step 12): the one
+  // keyless listener — a loopback host only, and no key source that would go unread.
+  if (loopback_without_key) {
+    if (host.has_value() && host->scope() != AddressScope::loopback) {
+      add(errors, "listener.loopback_without_key", ConfigIssueCode::conflicting_values,
+          "needs a loopback listener.host (127.0.0.1, ::1 or localhost); a remote or wildcard bind always needs the key");
+    }
+    if (read.present("token.source")) {  // named in the file or by --token-file/--token-env
+      add(errors, "token.source", ConfigIssueCode::conflicting_values,
+          "no key is read when listener.loopback_without_key is true; remove one of the two");
+    }
   }
   // SP3 §4.3/§4.4: a wildcard bind trusts only the configured Host aliases.
   std::vector<std::string> cors_origins = read_bounded_strings(read, errors, "listener.cors_origins");
@@ -1170,7 +1188,7 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   }
   const auto u32 = [](const std::int64_t v) { return static_cast<std::uint32_t>(v); };
   ListenerConfig listener{*host, static_cast<std::uint16_t>(port), allow_remote, allow_wildcard, u32(backlog),
-                          std::move(cors_origins), std::move(host_aliases)};
+                          std::move(cors_origins), std::move(host_aliases), web_ui, loopback_without_key};
   const Limits limits{
       HttpLimits{std::chrono::milliseconds(deadline_ms), u32(max_request), u32(max_header), u32(max_headers), u32(max_line),
                  std::chrono::milliseconds(header_deadline_ms), std::chrono::milliseconds(write_stall_ms),
@@ -1248,6 +1266,8 @@ std::string describe(const FrontendConfig& c) {
   };
   line("listener.cors_origins", list_text(c.listener.cors_origins));
   line("listener.host_aliases", list_text(c.listener.host_aliases));
+  line("listener.web_ui", c.listener.web_ui ? "true" : "false");
+  line("listener.loopback_without_key", c.listener.loopback_without_key ? "true" : "false");
   line("limits.http.request_deadline_ms", std::to_string(c.limits.http.request_deadline.count()));
   line("limits.http.max_request_bytes", std::to_string(c.limits.http.max_request_bytes));
   line("limits.http.max_header_bytes", std::to_string(c.limits.http.max_header_bytes));
@@ -1428,9 +1448,10 @@ std::vector<ForcedEnvironmentValue> glm_environment_knobs(const FrontendConfig& 
 }
 
 Config listener_config(const FrontendConfig& c) {
-  return Config{c.listener.host.canonical_text(), c.listener.port, true,
+  // A keyless listener says so; HttpSocketServer::bind re-validates it (loopback only).
+  return Config{c.listener.host.canonical_text(), c.listener.port, !c.listener.loopback_without_key,
                 c.listener.host.scope() == AddressScope::loopback, c.listener.allow_remote,
-                c.listener.allow_wildcard_bind};
+                c.listener.allow_wildcard_bind, c.listener.loopback_without_key};
 }
 
 ConfigErrors create_runtime_roots(const FrontendConfig& c) {

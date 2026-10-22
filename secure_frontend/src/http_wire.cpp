@@ -29,8 +29,11 @@ bool is_reserved_header(std::string_view name, const bool complete) {
          ascii_iequal(name, "Server") || ascii_iequal(name, "X-Powered-By") || (complete && ascii_iequal(name, "Transfer-Encoding"));
 }
 
+// `policy`: a response's own Content-Security-Policy (the built-in page's), replacing the
+// fixed value in place; empty, or carrying CR/LF, keeps the fixed default-src 'none'.
 std::string head_text(const int status, const std::vector<std::pair<std::string, std::string>>& headers,
-                      const std::chrono::system_clock::time_point now, const std::optional<std::size_t> content_length) {
+                      const std::chrono::system_clock::time_point now, const std::optional<std::size_t> content_length,
+                      const std::string_view policy = {}) {
   std::string output{"HTTP/1.1 "};
   output += std::to_string(status);
   output += ' ';
@@ -39,10 +42,11 @@ std::string head_text(const int status, const std::vector<std::pair<std::string,
   output += imf_fixdate(now);
   output += "\r\nConnection: close\r\n";
   if (content_length.has_value()) output += "Content-Length: " + std::to_string(*content_length) + "\r\n";
+  const bool own_policy = !policy.empty() && policy.find_first_of("\r\n") == std::string_view::npos;
   for (const auto& [name, value] : kSecurityHeaders) {
     output += name;
     output += ": ";
-    output += value;
+    output += own_policy && name == "Content-Security-Policy" ? policy : value;
     output += "\r\n";
   }
   for (const auto& [name, value] : headers) {
@@ -130,7 +134,8 @@ std::string serialize_head(const HttpHead& head, const std::chrono::system_clock
 
 std::string serialize_response(const HttpResponse& response, const std::chrono::system_clock::time_point now) {
   std::string output = head_text(response.status, response.headers, now,
-                                 response.status == 204 ? std::nullopt : std::optional<std::size_t>{response.body.size()});
+                                 response.status == 204 ? std::nullopt : std::optional<std::size_t>{response.body.size()},
+                                 response.content_security_policy);
   if (response.status != 204) output += response.body;
   return output;
 }

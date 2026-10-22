@@ -1,6 +1,7 @@
 #include "secure_frontend/api_errors.hpp"
 #include "secure_frontend/request_router.hpp"
 #include "secure_frontend/socket_io.hpp"
+#include "secure_frontend/web_ui.hpp"
 #include "support/chat_json.hpp"
 #include "support/stream_client.hpp"
 #include "support/connection_scan.hpp"
@@ -1262,6 +1263,64 @@ void undecodable_output_logs_its_own_code() {
   expect(stream_logged, "the streamed reply logs undecodable_token: " + log);
 }
 
+// Owner decisions 2026-10-21 (session log step 12), over a real socket: the built-in page
+// (listener.web_ui) answers without the key while the API keeps it; the keyless loopback
+// listener (listener.loopback_without_key) answers without one and still checks Host/Origin.
+void web_ui_page_is_served_and_the_api_keeps_its_key() {
+  auto server = start_server({{"listener.web_ui", "true"}, {"logging.requests", "true"}});
+  expect(server != nullptr, "the server starts with listener.web_ui");
+  if (!server) return;
+  const auto page = raw(*server, raw_http::request("GET", "/", authority(*server), {}));
+  expect(page && page->status == 200 && page->body.find("<title>Strata</title>") != std::string::npos, "GET / without a key is the page");
+  if (page) {
+    expect(page->header("Content-Security-Policy") == std::optional<std::string>{std::string{secure_frontend::kWebUiContentSecurityPolicy}},
+           "the page policy is on the wire, once");
+    expect(page->header("Content-Type") == std::optional<std::string>{"text/html; charset=utf-8"} &&
+               page->header("X-Content-Type-Options") == std::optional<std::string>{"nosniff"},
+           "HTML, and nosniff stays");
+  }
+  const auto script = raw(*server, raw_http::request("GET", "/ui/app.js", authority(*server), {}));
+  expect(script && script->status == 200 && script->header("Content-Type") == std::optional<std::string>{"text/javascript; charset=utf-8"},
+         "the bundled script");
+  const auto models = raw(*server, raw_http::request("GET", "/v1/models", authority(*server), {}));
+  expect(models && models->status == 401, "the API still needs the key with the page on");
+  const auto keyed = raw(*server, raw_http::request("GET", "/v1/models", authority(*server), {raw_http::bearer(token())}));
+  expect(keyed && keyed->status == 200, "and answers with it");
+  std::this_thread::sleep_for(200ms);
+  const std::string log = server->stderr_text();
+  expect(log.find(" web 200 - ") != std::string::npos, "the request log names the page route 'web': " + log);
+}
+
+void keyless_loopback_server_answers_without_a_key() {
+  test_support::ServerOptions options;
+  options.no_token = true;
+  options.config_literals = {{"listener.loopback_without_key", "true"}, {"listener.web_ui", "true"}};
+  auto server = test_support::ServerProcess::start(options);
+  const bool ready = server != nullptr && server->wait_until_listening(10s) && server->wait_for_health(test_support::kHealthReady, 15s);
+  expect(ready, "a keyless loopback server starts with no key source");
+  if (!ready) return;
+  const std::string a = authority(*server);
+  const auto models = raw(*server, raw_http::request("GET", "/v1/models", a, {}));
+  expect(models && models->status == 200 && models->body.find("fake-model") != std::string::npos, "/v1/models without a key");
+  const auto chat = raw(*server, raw_http::request("POST", "/v1/chat/completions", a, {"Content-Type: application/json"}, chat_body()));
+  expect(chat && chat->status == 200, "a chat without a key");
+  const auto rebound = raw(*server, raw_http::request("GET", "/v1/models", "evil.example:" + std::to_string(server->port()), {}));
+  expect(rebound && rebound->status == 403, "a foreign Host is still refused (DNS rebinding)");
+  const auto cross = raw(*server, raw_http::request("GET", "/v1/models", a, {"Origin: https://evil.example"}));
+  expect(cross && cross->status == 403, "a foreign Origin is still refused (another site's page)");
+  expect(server->stderr_text().find("listener.loopback_without_key") != std::string::npos,
+         "the boot says, on stderr, that it runs without a key: " + server->stderr_text());
+  // A key source next to the keyless switch is a configuration error, not a silently unused key.
+  test_support::ServerOptions keyed = options;
+  keyed.no_token = false;
+  auto refused = test_support::ServerProcess::start(keyed);
+  expect(refused != nullptr, "the refused server was launched");
+  if (!refused) return;
+  const auto code = refused->wait_exit(10s);
+  expect(code.has_value() && *code != 0 && refused->stderr_text().find("token.source") != std::string::npos,
+         "token.source with listener.loopback_without_key exits non-zero naming the key: " + refused->stderr_text());
+}
+
 void err_no_token_prompt_or_path_in_any_body_or_log() {
   const std::string marker = "ZZPROMPTMARKERZZ";
   auto server = start_server({{"logging.requests", "true"}});
@@ -1735,6 +1794,8 @@ int main(int argc, char** argv) {
       {"ext02_http_headers_cannot_enable_extensions", ext02_http_headers_cannot_enable_extensions},
       {"log_line_format_and_rate_limit", log_line_format_and_rate_limit},
       {"undecodable_output_logs_its_own_code", undecodable_output_logs_its_own_code},
+      {"web_ui_page_is_served_and_the_api_keeps_its_key", web_ui_page_is_served_and_the_api_keeps_its_key},
+      {"keyless_loopback_server_answers_without_a_key", keyless_loopback_server_answers_without_a_key},
       {"err_no_token_prompt_or_path_in_any_body_or_log", err_no_token_prompt_or_path_in_any_body_or_log},
       {"utf8_non_stream_max_tokens_cut_mid_character_returns_length", utf8_non_stream_max_tokens_cut_mid_character_returns_length},
       {"generation_timeout_returns_text_with_length", generation_timeout_returns_text_with_length},

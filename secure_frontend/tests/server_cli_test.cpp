@@ -359,8 +359,16 @@ void auth04_no_switch_disables_auth() {
       // SP5 M1 Task 11: vision.enabled/no_flash_attn/resident are the pin's image-INPUT
       // booleans (serve/server.py:2511, :2930). SP5 M2 Task 3: glm.fit_max_tokens and
       // glm.experimental_speed_projection are Maya's file-only GLM booleans
-      // (serve/server.py:4077, :3819). None touches authentication.
-      expect(path == "listener.allow_remote" || path == "listener.allow_wildcard_bind" ||
+      // (serve/server.py:4077, :3819). None of those touches authentication.
+      // Owner decisions 2026-10-21 (session log step 12): listener.web_ui serves the built-in
+      // page and leaves every API route keyed; listener.loopback_without_key is the ONE switch
+      // that turns the key off — config-file only (no flag, no environment variable), false
+      // by default, loopback binds only (refused at load and again at bind).
+      if (path == "listener.loopback_without_key") {
+        expect(key.flag.empty() && key.default_string.empty(), "the keyless switch has no flag and is off by default");
+        continue;
+      }
+      expect(path == "listener.allow_remote" || path == "listener.allow_wildcard_bind" || path == "listener.web_ui" ||
                  path == "engine.allow_new_privileges" || path == "pull.allow_private_addresses" ||
                  path == "logging.requests" || path == "engine.fit_max_tokens" || path == "reasoning.close_retry" ||
                  path == "engine.lazy_load" || path == "engine.mtp" || path == "engine.vram_elastic" ||

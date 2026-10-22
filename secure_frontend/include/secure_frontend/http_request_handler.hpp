@@ -20,6 +20,9 @@ struct HttpResponse final {
   std::vector<std::pair<std::string, std::string>> headers;
   std::string body;
   std::string_view log_code{};   // §7.2 code for the request log (spec §8); never sent
+  // Empty: the fixed `default-src 'none'` policy. Set only by the built-in page's own
+  // responses (kWebUiContentSecurityPolicy); it replaces that one header, never adds one.
+  std::string_view content_security_policy{};
 
   [[nodiscard]] std::optional<std::string_view> header_value(std::string_view name) const;
 };

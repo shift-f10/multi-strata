@@ -275,6 +275,20 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
   Issue 21 resolved as docs (`/v1/models` lists only the served model, SP3 E9).
   Owner-run and still unproven: whether the real `schtasks /Create` accepts strata's task
   XML for a standard user.
+- **Built-in chat page and keyless loopback mode (owner decisions, session log step 12).**
+  `listener.web_ui` (off by default) serves three bundled, ASCII files from
+  `secure_frontend/web/` at exact `GET` targets (`/`, `/ui/app.js`, `/ui/app.css`), after
+  Host/Origin. They are embedded by `cmake/EmbedWebUi.cmake`, kept outside `kRouteTable`,
+  and served with their own CSP (`HttpResponse::content_security_policy`).
+  - The page's login is the API key (`sessionStorage`, that tab). Every API route stays
+    keyed.
+  - `listener.loopback_without_key` (off by default, config file only) is the one switch
+    that turns the key off. It is loopback only: refused at load, and the core
+    `validate_config` re-checks it at bind. It is refused next to a `token.source`, and
+    the boot warns on stderr. Host, Origin and Content-Type checks still apply.
+  - Test-first: 11 cases, RED then GREEN. Full preset suite 878/877 pass, 1 skipped.
+    Checked in the built-in browser against the real model, in both modes.
+  - Threat model, privacy-migration and README updated.
 - The `windows-runtime`-labelled cases run under the MSVC preset on the owner's box; the
   supported Windows toolchains (MSYS2 clang, llvm-mingw) are still not installed (issue 3).
 

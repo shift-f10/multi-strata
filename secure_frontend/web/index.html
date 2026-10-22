@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Strata</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/ui/app.css">
+<script src="/ui/app.js" defer></script>
+</head>
+<body>
+<main id="login" class="login" hidden>
+  <form id="login-form" class="card" autocomplete="off" novalidate>
+    <h1>Strata</h1>
+    <p class="muted">Sign in with this server's API key.</p>
+    <label for="key">API key</label>
+    <input id="key" type="password" autocomplete="off" spellcheck="false" autocapitalize="off">
+    <button type="submit" id="sign-in">Sign in</button>
+    <p id="login-error" class="error" role="alert"></p>
+    <p class="muted small">The key stays in this browser tab and is sent only to this server.</p>
+  </form>
+</main>
+<div id="app" class="app" hidden>
+  <header class="bar">
+    <span class="brand">Strata</span>
+    <select id="model" aria-label="Model"></select>
+    <span id="mode" class="muted small"></span>
+    <span class="spacer"></span>
+    <button type="button" id="new-chat" class="ghost">New chat</button>
+    <button type="button" id="sign-out" class="ghost">Sign out</button>
+  </header>
+  <section id="messages" class="messages" aria-live="polite"></section>
+  <form id="composer" class="composer" novalidate>
+    <textarea id="prompt" rows="3" placeholder="Message (Enter to send, Shift+Enter for a new line)"></textarea>
+    <div class="actions">
+      <label class="small" for="max-tokens">Max tokens</label>
+      <input id="max-tokens" type="number" min="1" step="1" placeholder="auto">
+      <span id="status" class="muted small"></span>
+      <span class="spacer"></span>
+      <button type="button" id="stop" class="ghost" hidden>Stop</button>
+      <button type="submit" id="send">Send</button>
+    </div>
+  </form>
+</div>
+<noscript><p class="card">This page needs JavaScript.</p></noscript>
+</body>
+</html>

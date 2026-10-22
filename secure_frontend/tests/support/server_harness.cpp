@@ -366,8 +366,10 @@ std::unique_ptr<ServerProcess> ServerProcess::start(const ServerOptions& options
   arguments.push_back(utf8_path(server->engine_path_));
   arguments.push_back("--model-id");
   arguments.push_back(options.managed_vision ? "m:t" : "fake-model");
-  arguments.push_back("--token-env");
-  arguments.push_back(std::string(kHarnessTokenEnv));
+  if (!options.no_token) {
+    arguments.push_back("--token-env");
+    arguments.push_back(std::string(kHarnessTokenEnv));
+  }
   arguments.push_back("--port");
   arguments.push_back(std::to_string(server->port_));
   arguments.push_back("--state-dir");

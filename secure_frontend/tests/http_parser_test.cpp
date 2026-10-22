@@ -152,6 +152,34 @@ void wire_response_has_security_headers_and_date() {
   }
   expect(secure_frontend::kContinueResponse == "HTTP/1.1 100 Continue\r\n\r\n", "interim 100 response");
 }
+// The built-in page (session log step 12): a response's own policy replaces the fixed
+// default-src 'none' line, once; the reserved-header guard still drops a CSP in `headers`.
+void wire_response_carries_a_page_policy_once() {
+  using namespace std::chrono;
+  const auto now = system_clock::time_point{seconds{1791963785}};
+  secure_frontend::HttpResponse page{.status = 200,
+                                     .headers = {{"Content-Type", "text/html; charset=utf-8"},
+                                                 {"Content-Security-Policy", "default-src *"}},
+                                     .body = "<!doctype html>\n",
+                                     .content_security_policy = "default-src 'none'; script-src 'self'"};
+  const std::string wire = secure_frontend::serialize_response(page, now);
+  const auto count = [&wire](std::string_view needle) {
+    std::size_t n = 0;
+    for (std::size_t at = wire.find(needle); at != std::string::npos; at = wire.find(needle, at + 1U)) ++n;
+    return n;
+  };
+  expect(count("Content-Security-Policy: ") == 1U && wire.find("Content-Security-Policy: default-src 'none'; script-src 'self'\r\n") != std::string::npos,
+         "exactly one CSP line, the page's own:\n" + wire);
+  expect(wire.find("default-src *") == std::string::npos, "a CSP in the route's headers is still dropped (reserved)");
+  for (const auto line : {"Cache-Control: no-store\r\n", "X-Content-Type-Options: nosniff\r\n", "Referrer-Policy: no-referrer\r\n",
+                          "Cross-Origin-Resource-Policy: same-origin\r\n"}) {
+    expect(wire.find(line) != std::string::npos, std::string{"the other fixed headers stay: "} + line);
+  }
+  const secure_frontend::HttpResponse plain{.status = 200, .headers = {}, .body = "{}"};
+  expect(secure_frontend::serialize_response(plain, now).find("Content-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\n") !=
+             std::string::npos,
+         "without one, the fixed default stays");
+}
 constexpr secure_frontend::HeadLimits kLimits{.max_request_line_bytes = 4096, .max_header_bytes = 16384,
                                               .max_headers = 64, .max_request_bytes = 65536};
 
@@ -547,6 +575,7 @@ int main(int argc, char** argv) {
       {"err_every_code_renders_fixed_body", err_every_code_renders_fixed_body},
       {"err_param_is_key_only", err_param_is_key_only},
       {"wire_response_has_security_headers_and_date", wire_response_has_security_headers_and_date},
+      {"wire_response_carries_a_page_policy_once", wire_response_carries_a_page_policy_once},
       {"dos01_request_line_over_limit_is_414", dos01_request_line_over_limit_is_414},
       {"dos01_header_block_over_limit_is_431", dos01_header_block_over_limit_is_431},
       {"dos01_too_many_headers_is_431", dos01_too_many_headers_is_431},

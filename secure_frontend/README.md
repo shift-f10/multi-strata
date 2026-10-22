@@ -32,7 +32,12 @@ the SP2 merge).
 ## Security contract
 
 - The default bind is the IPv4 loopback literal `127.0.0.1:8080`.
-- Every listener requires a bearer token, including on loopback. `init`
+- Every listener requires a bearer token, including on loopback — with one
+  owner-approved exception: `listener.loopback_without_key = true` (config file
+  only; no flag, no environment variable) runs a loopback listener with no key.
+  It is refused for a remote or wildcard bind, at load and again at bind, and
+  refused next to a `token.source`; see "Built-in chat page and the keyless
+  loopback mode" below. `init`
   generates it from the OS random generator (CSPRNG, base64url, 43
   characters). An operator-made token must be at least 32 bytes (at most 256);
   a token file may end in one LF or CRLF. Tokens are compared in a fixed
@@ -250,6 +255,8 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `listener.backlog` | integer | `16` | 1-4096 | - | listen() backlog. |
 | `listener.cors_origins` | string array | `[]` | - | - | Exact browser origins allowed CORS: http:// or https://, a lower-case host, an optional port, no path; never * or null; at most 16. |
 | `listener.host_aliases` | string array | `[]` | - | - | Extra exact Host values (host or host:port) clients use; required when the bind is a wildcard; at most 16. |
+| `listener.web_ui` | boolean | `false` | - | - | Serve the built-in chat page at / (bundled files only). The page asks for the API key and keeps it in that tab; every API route still needs the key. |
+| `listener.loopback_without_key` | boolean | `false` | - | - | Answer the API and the page without the API key: only with a loopback listener.host, and with no token.source; Host and Origin checks still apply. |
 | `limits.http.request_deadline_ms` | integer | `30000` | 1-3600000 | - | Total time to read one request, header and body. |
 | `limits.http.max_request_bytes` | integer | `65536` | 4096-16777216 | - | Largest request (header and body) the listener and parser accept. |
 | `limits.http.max_header_bytes` | integer | `16384` | 1024-65536 | - | Largest header block; at most limits.http.max_request_bytes. |
@@ -822,9 +829,45 @@ this uid — the SP1 store rules), and `strata key rotate` replaces it atomicall
 after a rotate, restart the server and reconfigure every app that used the old
 token.
 
+### Built-in chat page and the keyless loopback mode (owner decisions 2026-10-21)
+
+`listener.web_ui = true` serves a small chat page at `/` (with `/ui/app.js`
+and `/ui/app.css`). It is three bundled files from `secure_frontend/web/`,
+embedded in the binary at configure time (`cmake/EmbedWebUi.cmake`: ASCII, LF,
+nothing read from disk at run time). It loads nothing from any other server,
+and every model reply is rendered as text, never as HTML. Only these exact
+`GET` targets are public, and only after the `Host` and `Origin` checks: the
+files hold no secret and reach no route.
+
+- **The login is the API key.** The page asks for it, checks it against
+  `/v1/models` and keeps it in that browser tab only (`sessionStorage`). It
+  sends it only as `Authorization: Bearer` to this server, with cookies off.
+  Every API route still requires the key; the key field has no form name, so
+  no submission can put it in a URL.
+- **Its own policy:** the page's responses carry `Content-Security-Policy:
+  default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self';
+  img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
+  (no inline script, style or handler) and `Cross-Origin-Opener-Policy:
+  same-origin`. Every other response keeps `default-src 'none'`.
+- **Streaming chat** through `/v1/chat/completions` (`stream: true`, with usage),
+  with the reasoning shown apart from the answer, Stop (which disconnects, so the
+  server sends STOP), a model picker and an optional `max_tokens`.
+
+`listener.loopback_without_key = true` answers the API and the page with no key
+at all. On the page, the login is skipped. It is accepted only with a loopback
+`listener.host` (`127.0.0.1`, `::1`, `localhost`), and refused next to a
+`token.source` (a key that would never be read). `--check` reports `token: not
+used`, and the boot prints a warning line on stderr. `Host` and `Origin` are
+still checked, and chat still needs `Content-Type: application/json`. So
+another web site cannot use it from a browser: DNS rebinding fails the Host
+check, a page on another origin fails the Origin check, and a plain form post
+fails the Content-Type check. Any program or user on the same machine can
+use it.
+
 ### Routes, errors, headers (SP3)
 
-Every route requires `Authorization: Bearer <token>`; authentication happens
+Every route requires `Authorization: Bearer <token>` (except the built-in
+page's files and the keyless loopback mode, above); authentication happens
 when the request header is complete, before any body byte. Unknown paths are
 404 `not_found` and wrong methods 405 `method_not_allowed` (with `Allow`) only
 after authentication — unauthenticated requests get 401 on every path, so the
@@ -859,7 +902,8 @@ literal, `param` names at most a fixed-list key, never request bytes:
 
 Every response carries `Cache-Control: no-store`,
 `X-Content-Type-Options: nosniff`,
-`Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`,
+`Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` (the
+built-in page's files carry their own, above),
 `Referrer-Policy: no-referrer` and `Date`. `Vary: Origin` and (only for
 configured origins) `Access-Control-Allow-Origin` appear as per §4.4.
 

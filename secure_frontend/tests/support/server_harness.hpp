@@ -73,6 +73,8 @@ struct ServerOptions final {
   // Key path -> JSON literal. Non-empty: <root>/config.json (owner-only) holds
   // schema_version 1 plus these keys and the server gets --config <path>.
   std::map<std::string, std::string> config_literals{};
+  // listener.loopback_without_key cases: no --token-env (a keyless server refuses a key source).
+  bool no_token{false};
 };
 
 // strata-secure-server as a test child: fixture models (fake-model.gguf, 0600)

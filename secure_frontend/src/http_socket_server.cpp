@@ -129,7 +129,8 @@ std::optional<HttpSocketServer> HttpSocketServer::bind(const Config& listener, c
                                  .port = listener.port == 0U ? 1U : listener.port,
                                  .api_key = listener.has_api_key ? std::optional<std::string>{"present"} : std::nullopt,
                                  .allow_remote = listener.allow_remote,
-                                 .allow_wildcard_bind = listener.allow_wildcard_bind};
+                                 .allow_wildcard_bind = listener.allow_wildcard_bind,
+                                 .allow_loopback_without_key = listener.loopback_without_key};
   const ConfigValidation verified = validate_config(verification);
   const auto* checked = std::get_if<Config>(&verified);
   if (checked == nullptr) {

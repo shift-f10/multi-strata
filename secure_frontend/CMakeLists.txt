@@ -315,6 +315,13 @@ target_include_directories(secure_frontend_api_router
 )
 target_link_libraries(secure_frontend_api_router PUBLIC secure_frontend_http_policy secure_frontend_http_request_handler)
 target_link_libraries(secure_frontend_api_router PUBLIC secure_frontend_api_core)
+# The built-in chat page (listener.web_ui, session log step 12): web/ is embedded at
+# configure time, so the server serves bundled bytes and reads no file to do it.
+include(cmake/EmbedWebUi.cmake)
+secure_frontend_embed_web_ui("${CMAKE_CURRENT_BINARY_DIR}/generated/web_ui_assets.cpp")
+secure_frontend_add_library(secure_frontend_web_ui
+    SOURCES src/web_ui.cpp "${CMAKE_CURRENT_BINARY_DIR}/generated/web_ui_assets.cpp")
+target_link_libraries(secure_frontend_api_router PUBLIC secure_frontend_web_ui)
 
 target_compile_features(secure_frontend_engine_process PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_engine_process
@@ -786,7 +793,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         requires_separate_opt_in_for_wildcard_host rejects_invalid_ports rejects_invalid_hosts_and_blank_remote_keys
         net03_wildcard_spellings_need_wildcard_opt_in net03_remote_opt_in_alone_rejects_wildcard
         net01_loopback_spellings_classified_from_bytes net02_hostname_rejected_before_bind
-        net01_localhost_maps_to_ipv4_loopback)
+        net01_localhost_maps_to_ipv4_loopback keyless_listener_needs_opt_in_and_loopback)
 
     secure_frontend_add_test_executable(secure_frontend_secret_source_tests tests/secret_source_test.cpp secure_frontend_config)
     secure_frontend_add_cases(secure_frontend_secret_source_tests
@@ -985,7 +992,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         dos01_service_healthy_after_each_attack
         ext01_upstream_control_routes_are_404_after_auth ext02_http_headers_cannot_enable_extensions
         log_line_format_and_rate_limit err_no_token_prompt_or_path_in_any_body_or_log
-        undecodable_output_logs_its_own_code)
+        undecodable_output_logs_its_own_code web_ui_page_is_served_and_the_api_keeps_its_key
+        keyless_loopback_server_answers_without_a_key)
     if(WIN32)
         # SP3 Task 22: Winsock parity cases (the same code paths run on Linux by hand; see the test file note).
         secure_frontend_add_cases(secure_frontend_api_server_tests win_refusal_is_read_not_reset
@@ -1101,7 +1109,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_http_parser_tests
         err_every_code_renders_fixed_body err_param_is_key_only
         imf_fixdate_is_bounded_for_out_of_range_clocks
-        wire_response_has_security_headers_and_date
+        wire_response_has_security_headers_and_date wire_response_carries_a_page_policy_once
         dos01_request_line_over_limit_is_414 dos01_header_block_over_limit_is_431 dos01_too_many_headers_is_431
         dos01_transfer_encoding_variants_are_411 dos01_content_length_variants head_request_line_and_header_syntax
         wire_head_has_no_content_length route_result_seam_returns_complete_response
@@ -1171,7 +1179,10 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         health_is_503_with_engine_state_when_unavailable dispatches_exact_health_route
         dispatches_models_with_json_escaping rejects_non_exact_routes
         fails_closed_when_provider_throws_or_returns_invalid_model health_carries_recovery_only_with_failed
-        auth01_every_route_rejects_missing_malformed_wrong_token models_list_keeps_utf8_model_id)
+        auth01_every_route_rejects_missing_malformed_wrong_token models_list_keeps_utf8_model_id
+        web_ui_off_by_default_serves_nothing_public web_ui_serves_the_bundled_page_without_a_key
+        web_ui_leaves_every_api_route_authenticated web_ui_still_checks_host_and_origin
+        web_ui_assets_are_bundled_and_inert keyless_router_answers_without_a_key)
     target_link_libraries(secure_frontend_api_router_tests PRIVATE
         secure_frontend_secrets secure_frontend_api_router secure_frontend_http_policy)
 
@@ -1325,6 +1336,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         timeout_shape_rows_at_each_edge
         session_rows_match_the_pin
         slot_save_path_is_a_bounded_private_path
+        web_ui_and_loopback_without_key_rows
         codex_and_tool_call_rows_are_dispositioned
         session_rows_at_each_edge
         replicas_parallel_row_at_the_pin

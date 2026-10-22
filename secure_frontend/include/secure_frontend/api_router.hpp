@@ -36,6 +36,12 @@ struct ApiRouterConfig final {
   std::size_t chat_body_limit;
   HealthProvider health;
   ChatHandler chat;
+  // listener.web_ui: serve the built-in page's bundled files (web_ui.hpp) at their exact
+  // GET targets without the key. Nothing else changes: every kRouteTable route still needs it.
+  bool web_ui{false};
+  // false only for listener.loopback_without_key (a loopback bind, validated at load and
+  // again at bind): routes answer without the key. Host and Origin checks still apply.
+  bool require_key{true};
 };
 
 // application/json, optionally followed by `; charset=utf-8`; ASCII

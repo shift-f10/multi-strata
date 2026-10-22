@@ -5,13 +5,16 @@
 #include "secure_frontend/request_router.hpp"
 #include "secure_frontend/secret_bytes.hpp"
 #include "secure_frontend/token_verifier.hpp"
+#include "secure_frontend/web_ui.hpp"
 #include "support/test_support.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -201,6 +204,143 @@ void models_list_keeps_utf8_model_id() {
     expect(get(bad_owner, "/v1/models").status == 500, "an invalid UTF-8 owned_by fails closed");
   }
 }
+// --- The built-in chat page (listener.web_ui) and the keyless loopback listener -------
+// (owner decisions 2026-10-21, session log step 12)
+
+secure_frontend::ApiRouter page_router(const bool web_ui, const bool require_key) {
+  secure_frontend::SecretBytes secret;
+  (void)secret.assign(kRouterToken);
+  return secure_frontend::ApiRouter({
+      .policy = secure_frontend::make_http_policy(*secure_frontend::parse_listener_address("127.0.0.1"), 8080, {}, {}),
+      .validator = secure_frontend::make_bearer_validator(std::make_shared<const secure_frontend::TokenVerifier>(std::move(secret))),
+      .model_id = "fake-model", .owned_by = "local", .chat_body_limit = 49152,
+      .health = [] { return secure_frontend::HealthView{true, "ready", ""}; },
+      .chat = {}, .web_ui = web_ui, .require_key = require_key});
+}
+// One request with no Authorization header; `fields` are extra header lines.
+secure_frontend::HttpResponse bare(secure_frontend::ApiRouter& router, const std::string& method, const std::string& target,
+                                   const std::string& fields = "") {
+  std::string request = method + " " + target + " HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n" + fields;
+  request += method == "POST" ? "Content-Length: 2\r\nContent-Type: application/json\r\n\r\n{}" : "\r\n";
+  return secure_frontend::handle_http_request(request, router, kRouterLimits);
+}
+
+void web_ui_off_by_default_serves_nothing_public() {
+  auto router = router_with({});
+  for (const auto& asset : secure_frontend::web_ui_assets()) {
+    const auto response = bare(router, "GET", std::string{asset.target});
+    expect(response.status == 401 && response.content_security_policy.empty(),
+           "web_ui off: " + std::string{asset.target} + " needs the key like every other target");
+    expect(get(router, std::string{asset.target}).status == 404, "web_ui off: with the key it is not a route at all");
+  }
+}
+
+void web_ui_serves_the_bundled_page_without_a_key() {
+  auto router = page_router(true, true);
+  expect(secure_frontend::web_ui_assets().size() == 3U, "three bundled files");
+  for (const auto& asset : secure_frontend::web_ui_assets()) {
+    const std::string target{asset.target};
+    const auto response = bare(router, "GET", target);
+    expect(response.status == 200, target + " answers 200 without a key");
+    expect(response.body == asset.body, target + " is the bundled file, byte for byte");
+    expect(response.header_value("Content-Type") == std::optional<std::string_view>{asset.content_type},
+           target + " has its own type: " + std::string{response.header_value("Content-Type").value_or("<none>")});
+    expect(response.content_security_policy == secure_frontend::kWebUiContentSecurityPolicy,
+           target + " carries the page policy (self only), not default-src 'none'");
+    expect(response.header_value("Cross-Origin-Opener-Policy") == std::optional<std::string_view>{"same-origin"},
+           target + " isolates its browsing context");
+  }
+  const auto types = [](std::string_view target) { return std::string{secure_frontend::find_web_asset(target)->content_type}; };
+  expect(types("/") == "text/html; charset=utf-8" && types("/ui/app.js") == "text/javascript; charset=utf-8" &&
+             types("/ui/app.css") == "text/css; charset=utf-8",
+         "HTML, JavaScript and CSS types (nosniff needs them exact)");
+  const auto authorized = get(router, "/");
+  expect(authorized.status == 200 && authorized.body == secure_frontend::find_web_asset("/")->body,
+         "a request that carries the key gets the same page");
+}
+
+void web_ui_leaves_every_api_route_authenticated() {
+  auto router = page_router(true, true);
+  for (const auto& entry : secure_frontend::kRouteTable) {
+    const std::string target = entry.prefix ? std::string{entry.path} + "fake-model" : std::string{entry.path};
+    const auto response = bare(router, std::string{entry.method}, target);
+    expect(response.status == 401 && response.body.find("fake-model") == std::string::npos,
+           std::string{entry.method} + " " + target + " still needs the key with web_ui on");
+  }
+  // Only the exact GET targets are public: no other method, suffix or neighbour (401, the
+  // key is asked for), and no query at all (the parser refuses '?' in a target: 400).
+  for (const auto& [method, target, status] : std::vector<std::tuple<std::string, std::string, int>>{
+           {"POST", "/", 401}, {"HEAD", "/", 401}, {"GET", "/ui/", 401}, {"GET", "/ui/other.js", 401},
+           {"GET", "/index.html", 401}, {"GET", "//", 401}, {"GET", "/UI/app.js", 401}, {"POST", "/ui/app.js", 401},
+           {"GET", "/?a=1", 400}, {"GET", "/ui/app.js?v=1", 400}}) {
+    const auto response = bare(router, method, target);
+    expect(response.status == status && response.content_security_policy.empty() && response.body.find("<html") == std::string::npos,
+           method + " " + target + " is not a page file (" + std::to_string(response.status) + ")");
+  }
+}
+
+void web_ui_still_checks_host_and_origin() {
+  auto router = page_router(true, true);
+  expect(bare(router, "GET", "/").status == 200, "control: the page answers");
+  const auto rebound = secure_frontend::handle_http_request("GET / HTTP/1.1\r\nHost: evil.example:8080\r\n\r\n", router, kRouterLimits);
+  expect(rebound.status == 403 && rebound.body.find("<html") == std::string::npos, "a foreign Host (DNS rebinding) gets no page");
+  const auto cross = bare(router, "GET", "/", "Origin: https://evil.example\r\n");
+  expect(cross.status == 403, "a foreign Origin gets no page");
+  const auto same = bare(router, "GET", "/ui/app.js", "Origin: http://127.0.0.1:8080\r\n");
+  expect(same.status == 200, "the page's own origin is same-origin");
+}
+
+// The bundled files themselves: ASCII, no carriage return, nothing fetched from anywhere
+// else, no inline script, style or handler (the CSP would refuse them anyway), and the
+// script renders text only and keeps the key in sessionStorage (this tab), never localStorage.
+void web_ui_assets_are_bundled_and_inert() {
+  const auto body = [](std::string_view target) { return std::string{secure_frontend::find_web_asset(target)->body}; };
+  for (const auto& asset : secure_frontend::web_ui_assets()) {
+    const std::string text{asset.body};
+    const std::string name{asset.target};
+    expect(!text.empty() && std::all_of(text.begin(), text.end(), [](char c) { return static_cast<unsigned char>(c) < 0x80U && c != '\r'; }),
+           name + " is ASCII with LF line ends");
+    expect(text.find("http://") == std::string::npos && text.find("https://") == std::string::npos && text.find("//cdn") == std::string::npos,
+           name + " names no other server");
+  }
+  const std::string html = body("/");
+  expect(html.find("<script src=\"/ui/app.js\" defer></script>") != std::string::npos &&
+             html.find("<link rel=\"stylesheet\" href=\"/ui/app.css\">") != std::string::npos,
+         "the page loads exactly its two bundled files");
+  std::size_t scripts = 0;
+  for (std::size_t at = html.find("<script"); at != std::string::npos; at = html.find("<script", at + 1U)) ++scripts;
+  expect(scripts == 1U, "one script element, the bundled one (no inline script)");
+  expect(html.find(" style=") == std::string::npos && html.find("<style") == std::string::npos, "no inline style");
+  for (const char* handler : {" onclick=", " onload=", " onerror=", " onsubmit=", " oninput=", " onkeydown="}) {
+    expect(html.find(handler) == std::string::npos, std::string{"no inline handler:"} + handler);
+  }
+  expect(html.find("id=\"key\" type=\"password\"") != std::string::npos && html.find("name=\"key\"") == std::string::npos,
+         "the key field is a password input with no name, so no form can ever put it in a URL");
+  const std::string js = body("/ui/app.js");
+  for (const char* sink : {"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function",
+                           "localStorage", "setAttribute(\"on", "javascript:"}) {
+    expect(js.find(sink) == std::string::npos, std::string{"app.js never uses "} + sink);
+  }
+  expect(js.find("sessionStorage") != std::string::npos && js.find("textContent") != std::string::npos &&
+             js.find("credentials = \"omit\"") != std::string::npos,
+         "the key lives in sessionStorage, output is text, no cookies are sent");
+}
+
+void keyless_router_answers_without_a_key() {
+  auto keyless = page_router(true, false);
+  const auto models = bare(keyless, "GET", "/v1/models");
+  expect(models.status == 200 && models.body.find("fake-model") != std::string::npos, "keyless: /v1/models without a key");
+  expect(bare(keyless, "GET", "/health").status == 200, "keyless: /health without a key");
+  expect(get(keyless, "/v1/models").status == 200, "keyless: a request that still sends a key is served too");
+  const auto rebound =
+      secure_frontend::handle_http_request("GET /v1/models HTTP/1.1\r\nHost: evil.example:8080\r\n\r\n", keyless, kRouterLimits);
+  expect(rebound.status == 403, "keyless: a foreign Host is still refused (DNS rebinding)");
+  expect(bare(keyless, "GET", "/v1/models", "Origin: https://evil.example\r\n").status == 403,
+         "keyless: a foreign Origin is still refused (another site's page)");
+  expect(bare(keyless, "POST", "/v1/chat/completions", "").status != 401, "keyless: chat needs no key");
+  auto keyed = page_router(true, true);
+  expect(bare(keyed, "GET", "/v1/models").status == 401, "control: the same router with require_key answers 401");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -215,5 +355,11 @@ int main(int argc, char** argv) {
       {"fails_closed_when_provider_throws_or_returns_invalid_model", fails_closed_when_provider_throws_or_returns_invalid_model},
       {"auth01_every_route_rejects_missing_malformed_wrong_token", auth01_every_route_rejects_missing_malformed_wrong_token},
       {"models_list_keeps_utf8_model_id", models_list_keeps_utf8_model_id},
+      {"web_ui_off_by_default_serves_nothing_public", web_ui_off_by_default_serves_nothing_public},
+      {"web_ui_serves_the_bundled_page_without_a_key", web_ui_serves_the_bundled_page_without_a_key},
+      {"web_ui_leaves_every_api_route_authenticated", web_ui_leaves_every_api_route_authenticated},
+      {"web_ui_still_checks_host_and_origin", web_ui_still_checks_host_and_origin},
+      {"web_ui_assets_are_bundled_and_inert", web_ui_assets_are_bundled_and_inert},
+      {"keyless_router_answers_without_a_key", keyless_router_answers_without_a_key},
   }, failures);
 }

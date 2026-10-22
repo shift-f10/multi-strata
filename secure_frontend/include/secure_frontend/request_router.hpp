@@ -17,7 +17,9 @@
 
 namespace secure_frontend {
 
-enum class RouteId { health, models, model, chat, other };
+// web: one of the built-in page's bundled files (listener.web_ui; web_ui.hpp), public and
+// outside kRouteTable, which stays the authenticated API.
+enum class RouteId { health, models, model, chat, other, web };
 
 struct RouteEntry final {
   std::string_view method;

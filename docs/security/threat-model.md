@@ -49,6 +49,12 @@ Trust boundaries:
   secure RNG, never logged, and compared in constant time.
 - An unauthenticated mode is permitted only with an explicit development-only
   switch; it must refuse non-loopback binds and emit a high-severity warning.
+  Implemented 2026-10-21 (owner decision) as `listener.loopback_without_key`:
+  config file only (no flag, no environment variable), refused for a remote or
+  wildcard bind at load and again by the listener's own validation at bind,
+  refused next to a `token.source`, and announced by a `strata: warning:` line
+  on stderr and in the ready line. Host, Origin and Content-Type checks still
+  apply (residual risk below).
 - Rate/size/concurrency limits are configured with safe finite defaults.
   Streaming requests must be cancellable on client disconnect and shutdown.
 
@@ -80,6 +86,16 @@ Trust boundaries:
 - Reject browser `Origin` values unless the origin is same-origin or exactly in
   an explicit allowlist. Missing `Origin` is allowed for non-browser API
   clients after token authentication.
+- The built-in chat page (`listener.web_ui`, off by default, 2026-10-21) is the
+  only unauthenticated content: three bundled, ASCII files embedded at build
+  time, served at exact `GET` targets after the Host and Origin checks, under
+  their own CSP (`script-src`/`style-src`/`connect-src 'self'`, no inline code,
+  `form-action 'none'`, `frame-ancestors 'none'`) and
+  `Cross-Origin-Opener-Policy: same-origin`. They hold no secret and reach no
+  route. The page keeps the key in `sessionStorage` (that tab), sends it only as
+  a same-origin bearer header with cookies off, and renders model output as text
+  only. Tests pin those properties of the files (no inline script or handler, no
+  HTML sinks, no other host, no `localStorage`).
 - CORS is disabled by default: no `Access-Control-Allow-Origin` header is
   emitted. When configured, emit only exact allowed origins; never reflect an
   arbitrary origin and never combine `*` with credentials.
@@ -309,6 +325,11 @@ Trust boundaries:
   must treat it as a password.
 - Local users with the same OS account can generally read that account's files
   and are outside this service's isolation boundary.
+- **Keyless loopback residual (accepted by the owner, 2026-10-21):** with
+  `listener.loopback_without_key`, every program and every user on the machine
+  can use the model. Browsers cannot: DNS rebinding fails the Host check, a page
+  on another origin fails the Origin check, and a plain form post fails the
+  Content-Type check. Use it only on a single-user machine.
 - Model outputs can be harmful or unreliable. Prompt injection is not solved by
   transport security; the initial release has no tool execution surface.
 - GPU drivers, inference libraries, and upstream engine vulnerabilities remain

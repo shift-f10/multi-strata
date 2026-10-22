@@ -192,6 +192,36 @@ void net01_localhost_maps_to_ipv4_loopback() {
   }
 }
 
+// listener.loopback_without_key (owner decision 2026-10-21): the one keyless listener needs
+// the explicit opt-in AND a loopback address; a remote or wildcard bind always needs the key.
+void keyless_listener_needs_opt_in_and_loopback() {
+  for (const char* host : {"127.0.0.1", "::1", "localhost", "127.0.0.2"}) {
+    const auto result = secure_frontend::validate_config(
+        {.host = std::string{host}, .port = 8080, .api_key = std::nullopt, .allow_loopback_without_key = true});
+    const auto* config = config_from(result);
+    expect(config != nullptr && config->is_loopback && !config->has_api_key && config->loopback_without_key,
+           std::string{"a loopback bind with the opt-in runs keyless: "} + host);
+  }
+  const auto keyed = secure_frontend::validate_config(
+      {.host = std::string{"127.0.0.1"}, .port = 8080, .api_key = std::string{"k"}, .allow_loopback_without_key = true});
+  expect(config_from(keyed) != nullptr && config_from(keyed)->has_api_key && !config_from(keyed)->loopback_without_key,
+         "a key, when there is one, is still required (the opt-in never drops a configured key)");
+  const auto remote = secure_frontend::validate_config({.host = std::string{"192.0.2.10"}, .port = 8080, .api_key = std::nullopt,
+                                                        .allow_remote = true, .allow_loopback_without_key = true});
+  expect(error_from(remote) != nullptr && error_from(remote)->code == secure_frontend::ConfigErrorCode::api_key_required,
+         "a remote bind never runs keyless, opt-in or not");
+  for (const char* wildcard : {"0.0.0.0", "::"}) {
+    const auto open = secure_frontend::validate_config({.host = std::string{wildcard}, .port = 8080, .api_key = std::nullopt,
+                                                        .allow_remote = true, .allow_wildcard_bind = true,
+                                                        .allow_loopback_without_key = true});
+    expect(error_from(open) != nullptr && error_from(open)->code == secure_frontend::ConfigErrorCode::api_key_required,
+           std::string{"a wildcard bind never runs keyless: "} + wildcard);
+  }
+  const auto no_opt_in = secure_frontend::validate_config({.host = std::string{"127.0.0.1"}, .port = 8080, .api_key = std::nullopt});
+  expect(error_from(no_opt_in) != nullptr && error_from(no_opt_in)->code == secure_frontend::ConfigErrorCode::api_key_required,
+         "without the opt-in a loopback bind still needs the key");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -209,5 +239,6 @@ int main(int argc, char** argv) {
       {"net01_loopback_spellings_classified_from_bytes", net01_loopback_spellings_classified_from_bytes},
       {"net02_hostname_rejected_before_bind", net02_hostname_rejected_before_bind},
       {"net01_localhost_maps_to_ipv4_loopback", net01_localhost_maps_to_ipv4_loopback},
+      {"keyless_listener_needs_opt_in_and_loopback", keyless_listener_needs_opt_in_and_loopback},
   }, failures);
 }

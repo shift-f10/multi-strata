@@ -47,6 +47,9 @@ struct ConfigInput final {
   std::optional<std::string> api_key;
   bool allow_remote{false};
   bool allow_wildcard_bind{false};
+  // listener.loopback_without_key (owner decision 2026-10-21): the one keyless listener,
+  // an explicit opt-in that a loopback address alone can use.
+  bool allow_loopback_without_key{false};
 };
 
 struct Config final {
@@ -56,6 +59,7 @@ struct Config final {
   bool is_loopback;
   bool allow_remote;
   bool allow_wildcard_bind;
+  bool loopback_without_key;   // no key, by the opt-in, on a loopback address
 };
 
 enum class ConfigErrorCode {

@@ -70,6 +70,10 @@ int server_check_impl(const FrontendConfig& config, const std::vector<std::strin
     for (const auto& issue : issues) std::cerr << "Configuration error: " << issue << '\n';
     return EXIT_FAILURE;
   }
+  if (config.listener.loopback_without_key) {
+    std::cout << "token: not used (listener.loopback_without_key: loopback only)\nConfiguration is valid.\n";
+    return EXIT_SUCCESS;
+  }
   // The verdict follows the token read: a configuration whose token cannot be
   // read is not reported valid first.
   const auto token = read_configured_token(config);
@@ -136,13 +140,19 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
   }
   // Every reason below is fixed text (plus, for the inventory, an entry name
   // below roots.models, spec §6.1): never a token or a configured value.
-  auto token_result = read_configured_token(config);
-  auto* token = std::get_if<secure_frontend::SecretBytes>(&token_result);
-  if (token == nullptr) {
-    std::cerr << "Unable to read API token: " << std::get<secure_frontend::TokenReadError>(token_result).message << '\n';
-    return EXIT_FAILURE;
+  // listener.loopback_without_key (owner decision 2026-10-21): no key is read at all; load
+  // refused a token.source next to it, and bind re-checks that the listener is loopback.
+  const bool keyless = config.listener.loopback_without_key;
+  secure_frontend::BearerTokenValidator validator;
+  if (!keyless) {
+    auto token_result = read_configured_token(config);
+    auto* token = std::get_if<secure_frontend::SecretBytes>(&token_result);
+    if (token == nullptr) {
+      std::cerr << "Unable to read API token: " << std::get<secure_frontend::TokenReadError>(token_result).message << '\n';
+      return EXIT_FAILURE;
+    }
+    validator = secure_frontend::make_bearer_validator(std::make_shared<const secure_frontend::TokenVerifier>(std::move(*token)));
   }
-  auto verifier = std::make_shared<const secure_frontend::TokenVerifier>(std::move(*token));
 
   const secure_frontend::Config listener = secure_frontend::listener_config(config);
   // Derived once, before bind/spawn; each subsystem keeps its own const copy.
@@ -356,7 +366,7 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
   secure_frontend::ApiRouter router(secure_frontend::ApiRouterConfig{
       .policy = secure_frontend::make_http_policy(config.listener.host, config.listener.port, config.listener.host_aliases,
                                                   config.listener.cors_origins),
-      .validator = secure_frontend::make_bearer_validator(verifier),
+      .validator = validator,
       .model_id = model_id,
       .owned_by = "local",
       .aliases = model_aliases,
@@ -369,7 +379,9 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
       // (spec §2.2). The route answers its own refusals.
       .chat = [&chat_route](const std::string_view body, const secure_frontend::RequestContext& context) -> secure_frontend::RouteResult {
         return chat_route.handle(body, context);
-      }});
+      },
+      .web_ui = config.listener.web_ui,
+      .require_key = !keyless});
   const secure_frontend::ConnectionLimits connection_bounds = secure_frontend::connection_limits(config);
   std::string bind_error;
   auto server = secure_frontend::HttpSocketServer::bind(listener, static_cast<int>(config.listener.backlog), &bind_error);
@@ -405,7 +417,12 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
     }
     std::cerr << "[strata] vision: the encoder is resident\n";
   }
-  std::cout << "Secure server listening on http://" << authority << " (authenticated; Ctrl-C to stop)\n";
+  if (keyless) {
+    std::cerr << "strata: warning: listener.loopback_without_key is true: the API and the page answer without a key on "
+              << authority << " (loopback only; Host and Origin are still checked)\n";
+  }
+  std::cout << "Secure server listening on http://" << authority
+            << (keyless ? " (no API key: loopback only; Ctrl-C to stop)\n" : " (authenticated; Ctrl-C to stop)\n");
   std::cout.flush();
   // Task 12: the server is concurrent (spec §2.1). The accept loop runs on this
   // thread; the workers exist for the life of the pool, which is constructed
