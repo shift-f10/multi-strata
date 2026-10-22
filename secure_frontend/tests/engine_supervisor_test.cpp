@@ -1100,7 +1100,8 @@ secure_frontend::ProcessFactory vision_factory(const std::filesystem::path& reco
     secure_frontend::EngineCommand command{.executable = test_support::fake_vision_child_path(),
                                            .arguments = std::move(argv),
                                            .environment = {},
-                                           .working_directory = cwd};
+                                           .working_directory = cwd,
+                                           .insert_serve = false};  // like the bootstrap: the reader takes no --serve (T11-ff)
     if (const auto error = child->start(command)) {
       return secure_frontend::SpawnFailure{error->message};
     }
@@ -1118,19 +1119,35 @@ int spawns_in(const std::string& record_text) {
 
 }  // namespace
 
-// The pin's vision block form (serve/server.py:2556-2568): --mmproj, --model, then the
-// optional --threads / --max-tokens / --min-tokens; our added --no-flash-attn rides last.
-// The role opens on the child's READY line and QUITs it down.
+// SP5-P2 Task 6: the encoder is the engine's own `maya-vision` at the new pin, and its
+// grammar (engines/maya-ref tools/vision/strata_vision.cpp:61-79 at 451f9cb6) has NO
+// --min-tokens slot — an unknown argument exits 2 there, where upstream v0.2.2's
+// reader_args (serve/server.py:2573) still carried the #767 hand-edit. The composition
+// must land inside the engine's accepted set.
+void vision_child_argv_matches_maya_vision_grammar_at_pin() {
+  const auto argv = secure_frontend::compose_vision_arguments({
+      .mmproj = "/p/mmproj.gguf", .model = "/p/model.gguf", .threads = 4, .max_tokens = 2048, .no_flash_attn = true});
+  expect(std::find(argv.begin(), argv.end(), "--min-tokens") == argv.end(),
+         "no --min-tokens: the maya-vision grammar at the pin rejects unknown arguments (exit 2)");
+  expect((argv == std::vector<std::string>{"--mmproj", "/p/mmproj.gguf", "--model", "/p/model.gguf", "--threads", "4",
+                                           "--max-tokens", "2048", "--no-flash-attn"}),
+         "the encoder argv sits inside the maya-vision grammar at the pin");
+}
+
+// The pin's vision block form, re-anchored by SP5-P2 Task 6 on maya-vision's grammar at
+// 451f9cb6: --mmproj, --model, then the optional --threads / --max-tokens; our added
+// --no-flash-attn rides last and the grammar itself carries it. The role opens on the
+// child's READY line and QUITs it down.
 void vision_child_launches_with_pinned_args_when_enabled() {
   const auto dir = test_support::make_temp_dir("vision-launch");
   const auto record = dir / "record.txt";
   const auto argv = secure_frontend::compose_vision_arguments({
       .mmproj = test_support::utf8_path(dir / "mmproj.gguf"), .model = test_support::utf8_path(dir / "native.gguf"),
-      .threads = 4, .max_tokens = 2048, .min_tokens = 16, .no_flash_attn = true});
+      .threads = 4, .max_tokens = 2048, .no_flash_attn = true});
   expect((argv == std::vector<std::string>{"--mmproj", test_support::utf8_path(dir / "mmproj.gguf"), "--model",
                                            test_support::utf8_path(dir / "native.gguf"), "--threads", "4", "--max-tokens",
-                                           "2048", "--min-tokens", "16", "--no-flash-attn"}),
-         "compose_vision_arguments renders the pin's argv shape (:2556-2568; the added flag last)");
+                                           "2048", "--no-flash-attn"}),
+         "compose_vision_arguments renders the grammar at the maya-vision pin (the added flag last)");
   secure_frontend::VisionLimits limits;
   limits.policy.backoff_initial = std::chrono::milliseconds{10};
   secure_frontend::VisionSupervisor supervisor(vision_factory(record, argv), limits);
@@ -1143,9 +1160,8 @@ void vision_child_launches_with_pinned_args_when_enabled() {
   expect(text.find("ARG --mmproj\nARG " + test_support::utf8_path(dir / "mmproj.gguf") + "\nARG --model\nARG " +
                          test_support::utf8_path(dir / "native.gguf") + "\n") != std::string::npos,
          "the child received the mmproj/model pair first, like the pin");
-  expect(text.find("ARG --threads\nARG 4\nARG --max-tokens\nARG 2048\nARG --min-tokens\nARG 16\nARG --no-flash-attn\n") !=
-             std::string::npos,
-         "threads and the token bounds ride the pin's flag names (:2562-2567; Ruling T11-dd)");
+  expect(text.find("ARG --threads\nARG 4\nARG --max-tokens\nARG 2048\nARG --no-flash-attn\n") != std::string::npos,
+         "threads and the token bounds ride the flag names of the grammar at the pin (:2562-2565 at the old pin; maya-vision strata_vision.cpp at 451f9cb6; Ruling T11-dd)");
 }
 
 // SP2 policy on this role (plan): an oversize stdout line is a failure (the shared
@@ -1161,7 +1177,8 @@ void vision_child_respects_resource_limits() {
   supervisor.start();
   expect(supervisor.state() == secure_frontend::VisionState::circuit_open,
          "the oversize line kills; one restart; then the circuit (SP2 policy, PROC/DOS rows)");
-  expect(spawns_in(read_whole_file(record)) == 2, "restart once then circuit (spawn count)");
+  const int oversize_spawns = spawns_in(read_whole_file(record));
+  expect(oversize_spawns == 2, "restart once then circuit (spawn count): " + std::to_string(oversize_spawns));
   supervisor.stop();
 }
 
@@ -2194,6 +2211,7 @@ int main(int argc, char* argv[]) {
 #endif
                                                 {"proc04_slow_stdin_write_bounded_by_request_deadline", proc04_slow_stdin_write_bounded_by_request_deadline},
                                                 {"vision_child_launches_with_pinned_args_when_enabled", vision_child_launches_with_pinned_args_when_enabled},
+                                                {"vision_child_argv_matches_maya_vision_grammar_at_pin", vision_child_argv_matches_maya_vision_grammar_at_pin},
                                                 {"vision_child_respects_resource_limits", vision_child_respects_resource_limits},
                                                 {"vision_encode_round_trip_at_the_pin", vision_encode_round_trip_at_the_pin},
                                                 {"vision_encode_failures_take_the_pinned_paths", vision_encode_failures_take_the_pinned_paths},

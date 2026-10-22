@@ -90,8 +90,10 @@ EngineArgumentsResult build_engine_arguments(const EngineArgumentsProfile profil
   if (auto rejected = validate_engine_user_arguments(profile, user_arguments)) return *rejected;
   std::vector<std::string> arguments = user_arguments;
   if (profile == EngineArgumentsProfile::lighttransport_glm53) {
-    // SP5 M2 Task 7 (D-8): Maya's launcher base (write_config, maya.py:2228-2230) composed
-    // from the inventory model's directory (its pack — Maya keeps the tokenizer at
+    // SP5 M2 Task 7 (D-8): Maya's launcher base (write_config, maya.py:2228-2230 at
+    // v1.1.8; SP5-P2 Task 6 re-anchored it at 451f9cb6 — the base renders
+    // "--expert-cache auto" after --max-context, maya.py:2228) composed from the
+    // inventory model's directory (its pack — Maya keeps the tokenizer at
     // <pack>/tokenizer, :2231) plus the typed options. --prefill auto and --kv-streaming on
     // are every Maya config's fixed base; --parallel renders only for 2..8 (set_arg :2291,
     // choices :3885). --expert-profile needs a manifest role schema 1 does not carry (ruling:
@@ -114,7 +116,7 @@ EngineArgumentsResult build_engine_arguments(const EngineArgumentsProfile profil
     }
     const auto pack = models_root.join(*relative).parent_path();
     std::vector<std::string> composed{"--glm-pack", path_to_utf8(pack), "--max-context", std::to_string(glm.max_context),
-                                      "--prefill", "auto", "--kv-streaming", "on"};
+                                      "--expert-cache", "auto", "--prefill", "auto", "--kv-streaming", "on"};
     if (glm.parallel > 1) {
       composed.emplace_back("--parallel");
       composed.push_back(std::to_string(glm.parallel));

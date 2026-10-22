@@ -35,7 +35,7 @@ std::string decimal_text(const double value) {
   return ec == std::errc{} ? std::string{buffer, end} : std::string{"?"};
 }
 
-constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 + 1 + 2 + 1 + 1> kSchema{{
+constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 + 1 + 2 + 1 + 1 + 2> kSchema{{
     {"schema_version", T::integer, false, 1, 1, d::kSchemaVersion, false, "", "",
      "Config format version; must be 1. Required in a config file."},
     {"listener.host", T::string, false, 0, 0, 0, false, "127.0.0.1", "--host",
@@ -294,7 +294,7 @@ constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 
     // the pin's eager encoder (server.py:2511/:2552; false: the first image wakes it);
     // threads 0 = the pin's unset (truthy -> --threads, server.py:2562).
     {"vision.enabled", T::boolean, false, 0, 0, 0, false, "", "",
-     "Read images: a supervised strata-vision child encodes image_url parts for the engine."},
+     "Read images: a supervised maya-vision child encodes image_url parts for the engine."},
     {"vision.max_side", T::integer, false, 1, 16384, 2048, false, "", "",
      "Largest image side accepted before decoding (pin default 2048; cap added, C-1)."},
     {"vision.max_n", T::integer, false, 1, 64, 4, false, "", "",
@@ -344,6 +344,19 @@ constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 
     // --max-context row's destination).
     {"glm.max_context", T::integer, false, 1, 1048576, 32768, false, "", "",
      "GLM context length in tokens the engine is started with (Maya's default 32768)."},
+    // SP5-P2 Task 4 (D-7; SP6 §4.9 sheet M2): MAYA's RAM headroom gains a typed
+    // value source. Integer 6-1024, default 16: MAYA's own default is 6
+    // (glm_fast_path.cu:1110/:1510) while SETTINGS.md:28 records 16 as the value a
+    // desktop stayed responsive at; the row projects at its default onto the
+    // closed child-env allowlist (glm_environment_knobs).
+    {"glm.ram_headroom_gb", T::integer, false, 6, 1024, 16, false, "", "",
+     "Gigabytes of RAM the GLM engine leaves free when sizing its pinned tier (6-1024; default 16)."},
+    // SP5-P2 Task 4 (D-7): the Maya v1.1.21 server gained the idle-unload timer —
+    // the config's "idle_unload_s" (serve/server.py:8298; default 0 = never,
+    // :3753). It wins over engine.idle_unload_s for a glm53 profile; the 86400
+    // cap is added, same as the M1 key (C-1).
+    {"glm.idle_unload_s", T::integer, false, 0, 86400, 0, false, "", "",
+     "Seconds a GLM engine idles unloaded before it gives back the memory (0 = never; under glm53 this wins over engine.idle_unload_s)."},
 }};
 
 void add(ConfigErrors& errors, std::string key, const ConfigIssueCode code, std::string reason) {
@@ -1096,6 +1109,8 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   }
   glm.thinking_budget = read.integer("glm.thinking_budget");
   glm.max_context = read.integer("glm.max_context");
+  glm.ram_headroom_gb = read.integer("glm.ram_headroom_gb");
+  glm.idle_unload_s = read.integer("glm.idle_unload_s");
   glm.rows_present = any_glm_row;  // R-T3-a: refused at launch when the manifest names the qwen profile
   if (const auto text = read.string("glm.reasoning_effort")) {
     if (*text == "none") glm.reasoning_effort = GlmReasoningEffort::none;
@@ -1211,6 +1226,11 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
       ConcurrencyLimits{u32(concurrent), u32(queued), std::chrono::milliseconds(queue_timeout_ms), u32(remote_cap), !queue_set,
                         !cap_set}};
   Roots roots{*models, tokenizer, secret, logs, cache, state};
+  // SP5-P2 Task 4 (D-7, R-T4-b): under the glm53 profile the Maya-named key
+  // (glm.idle_unload_s, serve/server.py:8298 at v1.1.21) drives the idle-unload
+  // window; 0 means unset and the M1 engine.idle_unload_s keeps driving.
+  const std::int64_t idle_window_s =
+      profile == EngineProfile::glm53 && glm.idle_unload_s > 0 ? glm.idle_unload_s : idle_unload_s;
   EngineLaunch engine{profile,
                       *executable,
                       std::move(*model_id),
@@ -1220,7 +1240,7 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
                       allow_new_privileges,
                       fit_max_tokens,
                       lazy_load,
-                      std::chrono::seconds(idle_unload_s),
+                      std::chrono::seconds(idle_window_s),
                       mtp,
                       vram_reserve_mib,
                       min_free_vram,
@@ -1395,6 +1415,8 @@ std::string describe(const FrontendConfig& c) {
   // SP5 M2 Task 3: the glm.* family (spec §D-2).
   line("glm.thinking_budget", std::to_string(c.glm.thinking_budget));
   line("glm.max_context", std::to_string(c.glm.max_context));
+  line("glm.ram_headroom_gb", std::to_string(c.glm.ram_headroom_gb));
+  line("glm.idle_unload_s", std::to_string(c.glm.idle_unload_s));
   line("glm.reasoning_effort",
        !c.glm.reasoning_effort.has_value()
            ? std::string{"(unset)"}
@@ -1451,6 +1473,10 @@ std::vector<ForcedEnvironmentValue> glm_environment_knobs(const FrontendConfig& 
   // §4.9 forced single-device default in place — Task 7 renders the split argv
   // and checks the count against the cards.
   if (config.glm.layer_split != "auto") knobs.push_back({std::string{"STRATA_GLM_SPLIT"}, config.glm.layer_split});
+  // SP5-P2 Task 4 (D-7; SP6 §4.9 M2): the RAM headroom row always projects —
+  // the typed config's default 16 IS the forced-safe value, and the operator
+  // moves it (6..1024) through glm.ram_headroom_gb (SETTINGS.md:38).
+  knobs.push_back({std::string{"STRATA_GLM_RAM_HEADROOM_GB"}, std::to_string(config.glm.ram_headroom_gb)});
   // SP5 M2 Task 8 (D-8): the vision turn — an on-demand encoder (vision.enabled,
   // not resident; maya-ref serve/server.py:4015) runs in memory the engine lends
   // from its expert pool, sized by STRATA_GLM_VISION_LEND_MB (server.py:4026).

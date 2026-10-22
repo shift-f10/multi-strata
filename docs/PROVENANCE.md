@@ -330,11 +330,17 @@ rules above.
 box): gitlink `451f9cb6a21ea65673bdde2e57b4a670ae2b8859`, tag object
 `ba26442d5c8b833fe8be466277ca52b09bf1ec63` (124 commits; no file renamed or
 deleted). The Maya citations across `secure_frontend` and the kit docs were
-re-pinned to it; the GLM key inventory (`parity_keys_maya.hpp`) is kept as
-generated at `v1.1.8`, because at `v1.1.21` its documented greps no longer apply
-(`docs/SETTINGS.md` respells every setting `MAYA_*`) — regenerating it is open,
-as are the changed GLM penalty semantics
-(`docs/validation/2026-10-21-windows-gpu-session.md`, issue 27). The `maya_118`
+re-pinned to it. **Refreshed 2026-10-22 (SP5-P2, `sp5-p2-parity-refresh`):**
+the GLM key inventory `parity_keys_maya.hpp` was REGENERATED at `v1.1.21`
+(183 typed / 33 mapped / 50 rejected / 464 out-of-scope rows over the
+`MAYA_*`/`DS4_*`/`STRATA_GLM_*` surface), the upstream table's citations
+were refreshed at `v0.2.2`, and the meta-tests now enumerate the CURRENT
+vendored trees and demand a disposition for every knob (the drift tripwire).
+The changed GLM penalty semantics are closed: a penalty window of 0 means
+NO penalty on the GLM engine (`src/program/generate.cpp:3467`), and the
+client now renders that flavor rule (`render_sampling_keys`).
+(`docs/validation/2026-10-21-windows-gpu-session.md`, issue 27, closed.) The
+`maya_118`
 dialect now also accepts the bounded `VRAM`/`NOTE` records `v1.1.21` prints
 before READY. The tag's `VERSION` file is empty, so a built Maya server reports
 no version; record the tag and commit instead.

@@ -15,7 +15,7 @@
 
 namespace secure_frontend::parity {
 
-enum class ParityDisposition { typed, rejected, mapped_away };
+enum class ParityDisposition { typed, rejected, mapped_away, out_of_scope };
 
 enum class ParityDestination {
   frontend_behavior,  // changes what the frontend itself does
@@ -32,6 +32,11 @@ struct ParityRow final {
   ParityDisposition disposition;
   ParityDestination destination;
   std::string_view citation;
+  // SP5-P2 Task 1 (C-R, ledger ruling R-T1-e): for a GLM row named by Maya's
+  // documented `MAYA_*` spelling, the engine's own name whose row carries the
+  // behavior (env_alias.hpp maps MAYA_X to STRATA_X at engine start); empty
+  // for every other row.
+  std::string_view target{};
 };
 
 // The generated inventory of the pin (secure_frontend/tests/parity_keys_upstream.hpp).

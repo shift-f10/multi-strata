@@ -343,13 +343,15 @@ void managed_launch_renders_typed_gpu_list() {
 }
 
 // SP5 M2 Task 7 (D-8): the GLM launch is composed, not passed through — Maya's launcher
-// base (maya.py:2228-2230) plus --parallel last (set_arg :2291; choices 1..8 :3885).
-// The manifest's model directory is the pack (--glm-pack is the pack root; Maya puts the
-// tokenizer at <pack>/tokenizer, maya.py:2231).
+// base (maya.py:2228-2230 at v1.1.8; at v1.1.21/451f9cb6 the base gained --expert-cache
+// auto, maya.py:2228, SP5-P2 Task 6) plus --parallel last (set_arg :2291; choices
+// 1..8 :3885). The manifest's model directory is the pack (--glm-pack is the pack root;
+// Maya puts the tokenizer at <pack>/tokenizer, maya.py:2231).
 void glm_launch_argv_matches_mayas_launcher_form() {
   const auto root = models_root();
   const std::vector<std::string> base{"--glm-pack", secure_frontend::path_to_utf8((root.path() / "qwen").make_preferred()),
-                                      "--max-context", "32768", "--prefill", "auto", "--kv-streaming", "on"};
+                                      "--max-context", "32768", "--expert-cache", "auto", "--prefill", "auto",
+                                      "--kv-streaming", "on"};
   const secure_frontend::Glm53LaunchArgs defaults;  // Maya's DEFAULT_CONTEXT and parallel 1
   const auto result = secure_frontend::build_engine_arguments(kGlm, manifest(), root, {}, {}, true, defaults);
   const auto* args = std::get_if<std::vector<std::string>>(&result);

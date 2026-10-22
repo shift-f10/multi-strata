@@ -637,6 +637,54 @@ void strata_flavor_still_fails_closed_on_note() {
 // Our flavor bounds it like the others: 3 to 6 fields after `PP`, decimal
 // counters, optional non-negative decimal metrics, optional decimal reuse —
 // anything else is unexpected_line and closes the protocol.
+//
+// SP5-P2 Task 5: two more pins on the maya_118 framing at the new pin.
+// (1) The slot-mode records — `T <rid> <tok>` (generate.cpp:2295) and the
+// rid-prefixed DONE (:2400) — exist only when the engine runs with slots
+// enabled; a glm53 launch forces STRATA_GLM_SLOTS=0 (SP6 §4.9, sheet S5;
+// kGlmSafetyDefaults), so a slot line reaching the client is a protocol error:
+// fail closed, never parse. (2) The v1.1.21 DONE record (:2111) — DONE
+// <produced> <prompt> <prompt_ms> <decode_ms> <finish> <spec-hits>
+// <spec-steps> <reuse> <tier-hits> <tier-total> — is consumed fail-closed:
+// timings and reuse from the positional fields, the spec/tier counters
+// accepted and untrusted; the tagged-form PP (:1757, empty tag in a single
+// session) is a 6-field heartbeat and stays progress, not output.
+void maya_slot_mode_records_are_protocol_errors() {
+  secure_frontend::EngineReady ready{};
+  for (const char* slot_line : {"T 3 42", "DONE 3 0 100 0.0 0.0 cancel 0 0 0 0 0"}) {
+    FakeTransport transport;
+    transport.reads = {line("READY 64"), line(slot_line)};
+    EngineProtocolClient client(transport, {}, secure_frontend::EngineProtocolFlavor::maya_118);
+    (void)client.await_ready(std::chrono::seconds(1), ready);
+    (void)client.begin_generation(1, {1}, secure_frontend::deadline_after(std::chrono::seconds(5)));
+    secure_frontend::EngineGeneration generation;
+    const auto error = client.read_generation(std::chrono::seconds(1), generation);
+    expect(error.has_value() && client.closed(), std::string{"the slot-mode line fails closed: "} + slot_line);
+  }
+}
+
+void maya_full_v1_1_21_done_record_feeds_the_done_event() {
+  FakeTransport transport;
+  transport.reads = {line("READY 64"), line("T 9"), line("PP 12 100 300.0 40.5 80"),
+                     line("DONE 1 100 300.0 40.5 stop 2 3 80 90 120")};
+  EngineProtocolClient client(transport, {}, secure_frontend::EngineProtocolFlavor::maya_118);
+  secure_frontend::EngineReady ready{};
+  (void)client.await_ready(std::chrono::seconds(1), ready);
+  (void)client.begin_generation(1, {1}, secure_frontend::deadline_after(std::chrono::seconds(5)));
+  const auto token = client.next_event(std::chrono::seconds(1));
+  const auto progress = client.next_event(std::chrono::seconds(1));
+  const auto event = client.next_event(std::chrono::seconds(1));
+  const auto* done = std::get_if<secure_frontend::DoneEvent>(&event);
+  expect(std::holds_alternative<secure_frontend::TokenEvent>(token) &&
+             std::holds_alternative<secure_frontend::ProgressEvent>(progress) && done != nullptr && !client.closed(),
+         "the PP heartbeat is consumed and the full record terminates the generation");
+  expect(done != nullptr && done->finish == "stop" && done->figures.prompt_tokens == std::optional<std::size_t>{100U} &&
+             done->figures.prompt_ms == std::optional<double>{300.0} &&
+             done->figures.decode_ms == std::optional<double>{40.5} &&
+             done->figures.reused == std::optional<std::size_t>{80U},
+         "the v1.1.21 record yields timings and reuse; the spec/tier counters stay untrusted");
+}
+
 void maya_pp_grammar_is_bounded() {
   secure_frontend::EngineReady ready{};
   for (const char* good : {"PP 512 4096 120 33.3 0", "PP 512 4096 120.0 33.3 2048", "PP 16 32",
@@ -745,6 +793,34 @@ void info_and_stat_readings_are_captured() {
          "the STAT cadence keeps the last value seen per key");
 }
 
+// SP5-P2 Task 7 (issue 27, penalty semantics): the two engines disagree on a window
+// of 0. The strata pin (serve/server.py:1360-1394) treats a penalty without a usable
+// window as the default window of 64; the GLM engine at 451f9cb6 treats window 0 as
+// NO PENALTY AT ALL — `pen_on = pen_n > 0` (generate.cpp:3467), and maya's own server
+// says it in words (serve/server.py:274-275: "0 = no penalty, -1 = the whole context,
+// below -1 refused"). The client renders per flavor so an operator's 0 means the same
+// thing on the wire as it means on that engine; negative windows never reach here
+// (config bounds penalty_last_n to 0..8192, frontend_config.cpp:167).
+void penalty_window_zero_means_no_penalty_on_glm_only() {
+  secure_frontend::SamplingParams p;
+  p.repetition_penalty = 1.2;
+  p.penalty_last_n = 0;
+  expect(secure_frontend::render_sampling_keys(p) == " penalty_repeat=1.2 penalty_last_n=64",
+         "the strata rule is untouched: 0 renders the default window");
+  expect(secure_frontend::render_sampling_keys(p, true).empty(),
+         "the GLM rule: window 0 switches the penalties off — no keys at all");
+
+  FakeTransport maya;
+  maya.reads = {line("READY 64")};
+  EngineProtocolClient mc(maya, {}, secure_frontend::EngineProtocolFlavor::maya_118);
+  secure_frontend::EngineReady ready{};
+  (void)mc.await_ready(std::chrono::seconds(1), ready);
+  expect(!mc.begin_generation(8, {1}, secure_frontend::deadline_after(std::chrono::seconds(5)), p).has_value(),
+         "the maya_118 GEN is written");
+  expect(maya.writes.back().find("penalty") == std::string::npos,
+         "no penalty keys on the GLM GEN line: " + maya.writes.back());
+}
+
 int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
       {"maya_flavor_accepts_vram_and_note_before_ready", maya_flavor_accepts_vram_and_note_before_ready},
@@ -773,5 +849,8 @@ int main(int argc, char** argv) {
       {"maya_flavor_consumes_note_and_progress", maya_flavor_consumes_note_and_progress},
       {"strata_flavor_still_fails_closed_on_note", strata_flavor_still_fails_closed_on_note},
       {"maya_pp_grammar_is_bounded", maya_pp_grammar_is_bounded},
+      {"maya_slot_mode_records_are_protocol_errors", maya_slot_mode_records_are_protocol_errors},
+      {"maya_full_v1_1_21_done_record_feeds_the_done_event", maya_full_v1_1_21_done_record_feeds_the_done_event},
+      {"penalty_window_zero_means_no_penalty_on_glm_only", penalty_window_zero_means_no_penalty_on_glm_only},
   }, failures);
 }

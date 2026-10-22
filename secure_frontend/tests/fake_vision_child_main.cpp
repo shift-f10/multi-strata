@@ -1,4 +1,4 @@
-// strata-fake-vision-child: a test-only stand-in for `strata-vision` (SP5 M1 Task 11).
+// strata-fake-vision-child: a test-only stand-in for `maya-vision` (SP5 M1 Task 11).
 // Never installed. It speaks the pin's encoder lifecycle (upstream/serve/server.py
 // VisionServer :2511-2620, :2755-2792): on start it records its argv (one "ARG" line
 // each, after a "SPAWN" line) into --record-file=PATH, prints "READY ..." on stdout,
@@ -10,8 +10,12 @@
 //   badenc   : READY, then every ENC is answered "ERR broken" (the child stays up)
 //   silentenc: READY, then ENC is never answered (the encode timeout must fire)
 //   dieenc   : READY, the FIRST ENC is answered "OK 5" and the child then exits
-// Unknown arguments (--mmproj PATH, --model PATH, --threads N, ...) are accepted and
-// echoed; the launch-proof tests read the record, not behaviour.
+// Unknown arguments (--mmproj PATH, --model PATH, --threads N, ...) were accepted and
+// echoed while the child modelled the upstream reader; SP5-P2 Task 6 pins the grammar
+// of the engine's own maya-vision at 451f9cb6 (tools/vision/strata_vision.cpp:61-79):
+// the set is --mmproj/--model/--gpu/--threads/--max-tokens/--no-flash-attn/--no-warmup/
+// --measure, and any other argument prints "unknown argument X" and exits 2. The
+// test-only options (--record-file=, --mode=) are consumed before that check.
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -29,6 +33,32 @@ std::string option_value(const std::vector<std::string>& args, const std::string
   return {};
 }
 
+// The maya-vision grammar at the pin: value-taking flags consume their value, the rest
+// are bare. Anything else is the pin's exit-2 path.
+bool grammar_accepts(const std::vector<std::string>& args) {
+  for (std::size_t i = 0; i < args.size(); ++i) {
+    const std::string& arg = args[i];
+    if (arg.starts_with("--record-file=") || arg.starts_with("--mode=")) continue;
+    auto take_value = [&args, &i](const std::string& flag) {
+      if (i + 1 >= args.size()) {
+        std::cerr << flag << " needs a value\n";
+        return false;
+      }
+      ++i;
+      return true;
+    };
+    if (arg == "--mmproj" || arg == "--model") {
+      if (!take_value(arg)) return false;
+    } else if (arg == "--threads" || arg == "--max-tokens") {
+      if (!take_value(arg)) return false;
+    } else if (arg != "--gpu" && arg != "--no-flash-attn" && arg != "--no-warmup" && arg != "--measure") {
+      std::cerr << "unknown argument " << arg << "\n";
+      return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -37,6 +67,7 @@ int main(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
   const std::string record = option_value(args, "--record-file=");
   const std::string mode = option_value(args, "--mode=");
+  if (!grammar_accepts(args)) return 2;  // the pin's exit-2 path for an unknown argument
 
   if (!record.empty()) {
     // Binary: the tests match "SPAWN\n"; a text stream writes \r\n on Windows.

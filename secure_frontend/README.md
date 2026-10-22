@@ -352,7 +352,7 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `session.codex_compaction_cache` | boolean | `false` | - | - | Codex compaction cache (#924; the pin's opt-in; the route is not served here). |
 | `session.keep_files` | integer | `64` | 1-1024 | - | How many image-scratch files to retain (pin default 64; bounds added, C-1; the consumer is out per D-9). |
 | `replicas.parallel` | integer | `1` | 1-1024 | - | Decode up to N requests together inside the one engine (1: one at a time; the N-child scheduler is not implemented). |
-| `vision.enabled` | boolean | `false` | - | - | Read images: a supervised strata-vision child encodes image_url parts for the engine. |
+| `vision.enabled` | boolean | `false` | - | - | Read images: a supervised maya-vision child encodes image_url parts for the engine. |
 | `vision.max_side` | integer | `2048` | 1-16384 | - | Largest image side accepted before decoding (pin default 2048; cap added, C-1). |
 | `vision.max_n` | integer | `4` | 1-64 | - | Most images one request may carry (pin default 4; cap added, C-1). |
 | `vision.need_mib` | integer | unset | 1-1048576 | - | Override the free-VRAM figure the encoder is checked against (unset: computed; bounds added, C-1). |
@@ -370,6 +370,8 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `glm.tokenizer` | string | unset | - | - | Absolute tokenizer-pack path for the GLM engine (default: the pack named by the model). |
 | `glm.model_name` | string | unset | - | - | Served model id for the GLM engine (1-256 characters; a managed model takes its identity from the manifest). |
 | `glm.max_context` | integer | `32768` | 1-1048576 | - | GLM context length in tokens the engine is started with (Maya's default 32768). |
+| `glm.ram_headroom_gb` | integer | `16` | 6-1024 | - | Gigabytes of RAM the GLM engine leaves free when sizing its pinned tier (6-1024; default 16). |
+| `glm.idle_unload_s` | integer | `0` | 0-86400 | - | Seconds a GLM engine idles unloaded before it gives back the memory (0 = never; under glm53 this wins over engine.idle_unload_s). |
 <!-- config-keys:end -->
 
 `roots.secret` defaults to the config file's directory only for a `file:` token
@@ -448,21 +450,21 @@ consumer is out of M1 — every request cleans up after itself instead.
 | `codex_compaction_cache` | typed config | serve/server.py:8261 (M1 Task 9: session.codex_compaction_cache) |
 | `codex_thread_titles` | typed config | serve/server.py:8260 (M1 Task 9: session.codex_thread_titles) |
 | `cors_origins` | frontend behaviour | already typed (SP3 B12: listener.cors_origins); serve/server.py:8280 |
-| `effort_position` | engine argv | serve/server.py:2880 (M1 Task 5: reasoning.effort_position composes the engine's --tail-role-token; session log step 16: then a low or medium level's sentence goes right before the answer, :4557 render_prompt) |
+| `effort_position` | engine argv | serve/server.py:2885 (M1 Task 5: reasoning.effort_position composes the engine's --tail-role-token; session log step 16: then a low or medium level's sentence goes right before the answer, :4557 render_prompt) |
 | `elastic` | frontend behaviour | serve/server.py:2557, :8138 (M1 Task 7: engine.elastic; Tasks 11-12 consume it) |
 | `elastic_idle_s` | frontend behaviour | serve/server.py:2559, :4041 (M1 Task 7: engine.elastic_idle_s) |
 | `elastic_mib` | frontend behaviour | serve/server.py:2558, :4019 (M1 Task 7: engine.elastic_mib; /v1/vram headroom) |
 | `engine_silence_s` | frontend behaviour | serve/server.py:942, default 300 at :277, engine_silence_s() :2905-2912; runconfig.py:39 (M1 Task 8: the pump's silence watchdog) |
 | `env_to_user` | typed config | serve/server.py:8327 (M1 Task 9: session.env_to_user) |
-| `expert_profile_save` | engine argv | serve/server.py:3071-3076 (M1 Task 9: --expert-profile-save; an operator-owned flag wins, :3072) |
-| `expert_profile_save_every` | engine argv | serve/server.py:3075-3076, default 10 at :3067 (M1 Task 9: --expert-profile-save-every; rides the save, :3072) |
+| `expert_profile_save` | engine argv | serve/server.py:3070 (M1 Task 9: --expert-profile-save; an operator-owned flag wins, :3071) |
+| `expert_profile_save_every` | engine argv | serve/server.py:3074, default 10 documented at :3066 (M1 Task 9: --expert-profile-save-every; rides the save, :3073) |
 | `fit_max_tokens` | frontend behaviour | serve/server.py:8213 (M1 Task 5: engine.fit_max_tokens) |
 | `gpu` | engine argv | already typed (SP2 engine.gpu; compose renders --gpu); serve/server.py:2826 (gpu_list :2819-2826: a set `gpu` wins; unset, a saved `gpu_roles` picks the cards, Main last, :2822-2825 — see the gpu_roles row) |
 | `gpu_order` | engine argv | serve/server.py:3224 (M1 Task 7: `as_given` keeps the order; at v0.2.2 active `gpu_roles` keep it too and a HIP built-in Radeon goes first before the speed sort, :3230-3247 — the typed auto or as_given vocabulary is unchanged) |
 | `gpu_policy` | typed config | serve/images.py:174 (M1 Task 7: engine.gpu_policy, re-scoped to the vision child's GPU turn; the pin's use is the image-generation turn) |
 | `hip_ordinal` | engine argv | serve/server.py:3094 (M1 Task 7) |
 | `host` | frontend behaviour | already typed (SP1 listen.host); serve/server.py:8071 |
-| `idle_unload_s` | frontend behaviour | serve/server.py:4287-4296, :8298 (M1 Task 6: supervisor idle timer) |
+| `idle_unload_s` | frontend behaviour | serve/server.py:4288, :8298 (M1 Task 6: supervisor idle timer) |
 | `keep_files` | typed config | serve/images.py:189 (`or 64`); typed only: the consumer is the pin's ImageService and D-9 keeps image generation out (Ruling T9-e, M1 Task 9) |
 | `layer_split` | engine argv | serve/server.py:2921 (M1 Task 7) |
 | `lazy_load` | frontend behaviour | serve/server.py:8134, :967-994 (M1 Task 6: the first request spawns the same composed launch) |
@@ -473,12 +475,12 @@ consumer is out of M1 — every request cleans up after itself instead.
 | `min_tokens` | request rule | serve/server.py:2573 (vision encoder at the pin); engine.min_tokens re-scoped as the request output floor (added, C-1; Ruling T8-e: lifts at the §7.2 resolve site) |
 | `mtp` | engine argv | strata_control/draft_layer.py is_off; serve/server.py:2966-2969 (M1 Task 6: engine.mtp drops --mtp/--spec-min-p/--batch-mtp at every start) |
 | `need_mib` | frontend behaviour | serve/images.py:157 (M1 Task 11: vision.need_mib; added security bound) |
-| `parallel` | engine argv | serve/server.py:3000-3020 (replicas.parallel renders --batch N, :3020; window PARALLEL_MAX 8 at :2999; cap 1024 from the pin's own bound :8054, M1 Task 10) |
+| `parallel` | engine argv | serve/server.py:3008 (replicas.parallel renders --batch N, :3020; window PARALLEL_MAX 8 at :2999; cap 1024 from the pin's own bound :8054, M1 Task 10) |
 | `reasoning_budget_tokens` | typed config | serve/server.py:8337 (M1 Task 5: reasoning.budget_tokens) |
 | `reasoning_close_retry` | typed config | serve/server.py:8232 (M1 Task 5: reasoning.close_retry) |
 | `reasoning_effort` | frontend behaviour | serve/server.py:7642 (M1 Task 5: reasoning.effort; the qwen think tail, issue 19: none writes the closed block, unset/low/medium/high open it; session log step 14: the same words per request on the qwen profile; step 16: low and high (unset) write the template's effort sentence, medium none) |
 | `reasoning_loop_recovery` | typed config | serve/server.py:8346 (M1 Task 5: reasoning.loop_recovery) |
-| `repeat_stop_tokens` | frontend behaviour | serve/server.py:198 (REPEAT_STOP_TOKENS 256), the pin's detector is frontend-side at :5098, notice :5278, 0 = off :8332 (Ruling T8-f: no GEN key) |
+| `repeat_stop_tokens` | frontend behaviour | serve/server.py:8332 (REPEAT_STOP_TOKENS 256 at :198, the pin's detector is frontend-side at :5098, notice :5278, 0 = off at :8334; Ruling T8-f: no GEN key) |
 | `sampling` | typed config | serve/server.py:7691 (M1 Task 4: defaults.sampling.*) |
 | `slot_save_path` | typed config | serve/server.py:8311 + slot_save_dir :3656-3668; the pin uses it FRONTEND-side for its /slots file store (:3885-3902) — no argv append (Ruling T9-a, M1 Task 9) |
 | `split_skip_if_fits` | engine argv | serve/server.py:2985 (M1 Task 7) |
@@ -588,23 +590,25 @@ consumer is out of M1 — every request cleans up after itself instead.
 The vendored MAYA reference (`engines/maya-ref/`, tag `v1.1.21`, read-only —
 nothing of it is compiled by our presets; `docs/PROVENANCE.md`) is the
 `glm53` profile's reference surface. Its parity table
-(`secure_frontend/src/parity_table.cpp`, `kMayaRows`) gives all 178 options —
-138 typed, 30 rejected, 10 mapped — exactly one disposition, cited to the
-read site. The option inventory is the set generated at `v1.1.8`
-(`tests/parity_keys_maya.hpp`; regenerating it at `v1.1.21` is open), while
-the citations follow `v1.1.21`. That tag's `docs/SETTINGS.md` spells every
-setting `MAYA_*`; the rows keep the `STRATA_*` names the engine reads (the
-older spelling still works, its lines 6-8). The blocks below mirror that
+(`secure_frontend/src/parity_table.cpp`, `kMayaRows`) gives all 730 options —
+183 typed, 50 rejected, 33 mapped, 464 out of scope — exactly one disposition,
+cited to a read site live at the pin. The option inventory was generated at
+`v1.1.21` (`tests/parity_keys_maya.hpp`: 38 config keys, 575 env names) and the
+drift tripwires `secure_frontend_parity_table_tests.scan_*` re-check it. That tag's `docs/SETTINGS.md` spells every
+setting `MAYA_*`; the rows keep the `STRATA_*` names the engine reads and each
+documented `MAYA_*` spelling carries its own alias row naming the `STRATA_*`
+row behind it (`include/strata/platform/env_alias.hpp` maps `MAYA_X` to
+`STRATA_X` at engine start). The blocks below mirror that
 table for humans; the pytest gate
 `tools/secure/test_parity_readme_coverage.py` re-checks them against it. The
-typed **child-env** rows form a closed 100-name allowlist for the glm-family
+typed **child-env** rows form a closed 146-name allowlist for the glm-family
 child (`kFamilyForcibleEnvironment`): no other `STRATA_*`/`MAYA_*` name can
 reach that child at all (D-7). Free-form launch is retired: a `glm53`
 manifest refuses any `engine.args` (D-8) — the launch is composed from the
 manifest and this table. Declared gaps the acceptance kit runs without, on
-both sides: `--expert-profile`, `--expert-profile-save(-every)`,
-`--kv-resident` and `--spec*` have no typed value source yet, and
-`--parallel` is bounded 1..8 at composition (`docs/validation/sp5-parity-kit.md` §0).
+both sides: `--expert-profile`, `--expert-profile-save(-every)` and
+`--kv-resident` have no typed value source yet (`--spec*` was retired by the
+engine at v1.1.21), and `--parallel` is bounded 1..8 at composition (`docs/validation/sp5-parity-kit.md` §0).
 
 ### Kept as typed options
 
@@ -616,6 +620,7 @@ both sides: `--expert-profile`, `--expert-profile-save(-every)`,
 | `fit_max_tokens` | typed config | serve/server.py:4077; Task 3: glm.fit_max_tokens (M1 engine.fit_max_tokens pattern) |
 | `gpu` | engine argv | already typed (SP2 engine.gpu renders --gpu); serve/server.py:1264, child_env :1280-1288, maya.py:2429; Task 7 |
 | `host` | frontend behaviour | already typed (SP1 listen.host); serve/server.py:3983, maya.py:2790 |
+| `idle_unload_s` | typed config | serve/server.py:4091 (the v1.1.21 Maya server gained the idle-unload timer, default 0 = never at :3753; typed as glm.idle_unload_s — it wins over engine.idle_unload_s for a glm53 profile, R-T4-b) |
 | `layer_split` | engine argv | serve/server.py:1274-1277 renders --layer-split; docs/SETTINGS.md:44; Task 7 |
 | `max_tokens` | request rule | serve/server.py:1053, :1213 (the vision block), shared settings :3815; engine.max_tokens stays the request output ceiling (M1 Ruling T8-e pattern) |
 | `min_p` | typed config | serve/server.py:3808 (shared settings: 0 <= min_p < 1), sampling-block validator :3848; defaults.sampling.min_p |
@@ -629,9 +634,9 @@ both sides: `--expert-profile`, `--expert-profile-save(-every)`,
 | `temperature` | typed config | serve/server.py:3802 (shared settings: 0..2), config-block validator :3840 (>= 0, 0 = greedy); defaults.sampling.temperature |
 | `thinking_budget` | typed config | serve/server.py:4090 (default 32768); C-3 keeps Maya's name: Task 3 glm.thinking_budget; STRATA_GLM_THINK_RESERVE rides it (docs/SETTINGS.md:141) |
 | `threads` | engine argv | serve/server.py:1051 (the vision block; the flag lands on the encoder child :1221-1222); Task 8 (M1 Task 11 vision.threads pattern) |
+| `tokenizer` | typed config | serve/server.py:3989, maya.py:2758, :3144; Task 3: glm.tokenizer — managed launches still compose the tokenizer from the SP4 manifest (Ruling T2-c) |
 | `top_k` | typed config | serve/server.py:3811 (shared settings: integer 1..64), validator :3852; defaults.sampling.top_k |
 | `top_p` | typed config | serve/server.py:3805 (shared settings: 0 < top_p <= 1), validator :3844; defaults.sampling.top_p |
-| `tokenizer` | typed config | serve/server.py:3989, maya.py:2758, :3144; Task 3: glm.tokenizer — managed launches still compose the tokenizer from the SP4 manifest (Ruling T2-c) |
 | `vision` | typed config | serve/server.py:4008, :4011, :4015; the vision.* block (M1 Task 11); Task 8 the GLM side |
 | `mmproj` | manifest artifact | serve/server.py:1221 (the vision child's --mmproj); M1 Task 11: manifest files[] role mmproj (at most one entry) |
 | `model` | manifest artifact | serve/server.py:1221 (the vision child's --model file); the SP4 manifest composes the vision model artifact (Task 8) |
@@ -641,12 +646,14 @@ both sides: `--expert-profile`, `--expert-profile-save(-every)`,
 | `penalty_last_n` | typed config | serve/server.py:263-265, :280-283, :305-306 (repeat_last_n maps; 0 = no penalties, -1 = the whole context up to PENALTY_WINDOW_MAX 4096 :260, below -1 refused); defaults.sampling.penalty_last_n |
 | `STRATA_ENGINE_STALL_S` | frontend behaviour | serve/server.py:343, docs/SETTINGS.md:142 (the pump's silence watchdog — M1 engine.silence_s pattern) |
 | `STRATA_GLM_AHEAD` | typed child env | docs/SETTINGS.md:87 |
-| `STRATA_GLM_CKPT_EVERY` | typed child env | docs/SETTINGS.md:69 |
 | `STRATA_GLM_CKPTS` | typed child env | docs/SETTINGS.md:69 |
+| `STRATA_GLM_CKPT_EVERY` | typed child env | docs/SETTINGS.md:69 |
+| `STRATA_GLM_COMPLETE_POOL` | typed child env | src/core/glm_fast_path.cu:1189 (docs/SETTINGS.md:40 documents it as MAYA_GLM_COMPLETE_POOL: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_CPU_1T` | typed child env | docs/SETTINGS.md:104 |
+| `STRATA_GLM_CPU_CONCURRENT` | typed child env | src/core/glm_fast_path.cu:2627 (docs/SETTINGS.md:50 documents it as MAYA_GLM_CPU_CONCURRENT: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_CPU_LANE` | typed child env | docs/SETTINGS.md:46 |
-| `STRATA_GLM_CPU_LANE0` | typed child env | docs/SETTINGS.md:47 |
-| `STRATA_GLM_CPU_LANE1` | typed child env | docs/SETTINGS.md:47 |
+| `STRATA_GLM_CPU_LANE0` | typed child env | src/core/glm_fast_path.cu:2735 (the per-GPU CPU-lane form: the engine getenvs the constructed name STRATA_GLM_CPU_LANE+<dev> at this line; documented as MAYA_GLM_CPU_LANE0/1, docs/SETTINGS.md:47) |
+| `STRATA_GLM_CPU_LANE1` | typed child env | src/core/glm_fast_path.cu:2735 (the per-GPU CPU-lane form: the engine getenvs the constructed name STRATA_GLM_CPU_LANE+<dev> at this line; documented as MAYA_GLM_CPU_LANE0/1, docs/SETTINGS.md:47) |
 | `STRATA_GLM_CPU_MT` | typed child env | docs/SETTINGS.md:104 |
 | `STRATA_GLM_CPU_PIN` | typed child env | docs/SETTINGS.md:48 |
 | `STRATA_GLM_CPU_PLAN` | typed child env | docs/SETTINGS.md:54 |
@@ -658,8 +665,20 @@ both sides: `--expert-profile`, `--expert-profile-save(-every)`,
 | `STRATA_GLM_DISK_SKIP_FROM` | typed child env | docs/SETTINGS.md:87 |
 | `STRATA_GLM_DISK_SKIP_W` | typed child env | docs/SETTINGS.md:87 |
 | `STRATA_GLM_DROP_CACHE` | typed child env | docs/SETTINGS.md:119 |
+| `STRATA_GLM_DSA_ALL` | typed child env | src/kernels/cuda/glm_fast.cu:5400 (docs/SETTINGS.md:110 documents it as MAYA_GLM_DSA_ALL: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_DSA_SCORE` | typed child env | docs/SETTINGS.md:109 |
+| `STRATA_GLM_DUAL_PREFILL` | typed child env | src/core/glm_prefill.cu:4192 (docs/SETTINGS.md:56 documents it as MAYA_GLM_DUAL_PREFILL: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_EVEN_GROUPS` | typed child env | src/program/generate.cpp:2264 (docs/SETTINGS.md:74 documents it as MAYA_GLM_EVEN_GROUPS: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_EXL3_DECODE` | typed child env | src/kernels/cuda/exl3.cu:1853 (docs/SETTINGS.md:116 documents it as MAYA_GLM_EXL3_DECODE: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_EXL3_MMA_ROWS` | typed child env | docs/SETTINGS.md:115 |
+| `STRATA_GLM_EXL3_ROT` | typed child env | src/core/glm_prefill.cu:434 (docs/SETTINGS.md:117 documents it as MAYA_GLM_EXL3_ROT: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_EXPERT_CACHE` | typed child env | src/core/glm_fast_path.cu:5821 (docs/SETTINGS.md:192 documents it as MAYA_GLM_EXPERT_CACHE: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_EXPERT_HELPER` | typed child env | src/core/glm_fast_path.cu:1839 (docs/SETTINGS.md:37 documents it as MAYA_GLM_EXPERT_HELPER: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_FLUSH` | typed child env | src/core/glm_fast_state.hpp:78 (docs/SETTINGS.md:42 documents it as MAYA_GLM_FLUSH: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_GROUP_EXPERTS` | typed child env | src/core/glm_memory.hpp:33 (docs/SETTINGS.md:76 documents it as MAYA_GLM_GROUP_EXPERTS: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_GU_STAGE` | typed child env | src/kernels/cuda/glm_fast.cu:1942 (docs/SETTINGS.md:113 documents it as MAYA_GLM_GU_STAGE: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_HEAD_SPLIT` | typed child env | src/core/glm_model.cu:1241 (docs/SETTINGS.md:124 documents it as MAYA_GLM_HEAD_SPLIT: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_HEAD_SPLIT_CHECK` | typed child env | src/core/glm_window.cu:1366 (docs/SETTINGS.md:124 documents it as MAYA_GLM_HEAD_SPLIT_CHECK: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_KDA_GRAPH` | typed child env | docs/SETTINGS.md:52 |
 | `STRATA_GLM_KQ` | typed child env | docs/SETTINGS.md:103 |
 | `STRATA_GLM_KV_INT8` | typed child env | docs/SETTINGS.md:107 |
@@ -667,19 +686,29 @@ both sides: `--expert-profile`, `--expert-profile-save(-every)`,
 | `STRATA_GLM_KV_RESIDENT` | typed child env | docs/SETTINGS.md:108 |
 | `STRATA_GLM_LOOP_ANSWER` | typed child env | docs/SETTINGS.md:121 (the loop guard: SP6 §4.9 keeps the guards a forced default the table may move; Task 4) |
 | `STRATA_GLM_LOOP_THINK` | typed child env | docs/SETTINGS.md:121 (the loop guard: SP6 §4.9 keeps the guards a forced default the table may move; Task 4) |
+| `STRATA_GLM_MISS_SKIP_FROM` | typed child env | src/core/glm_fast_path.cu:1740 (docs/SETTINGS.md:88 documents it as MAYA_GLM_MISS_SKIP_FROM: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_MISS_SKIP_W` | typed child env | src/core/glm_fast_path.cu:1739 (docs/SETTINGS.md:88 documents it as MAYA_GLM_MISS_SKIP_W: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_MLA_MMA` | typed child env | src/kernels/cuda/glm_fast.cu:5462 (docs/SETTINGS.md:111 documents it as MAYA_GLM_MLA_MMA: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_MMQ_GLU` | typed child env | docs/SETTINGS.md:118 |
+| `STRATA_GLM_MMQ_RESERVE_MB` | typed child env | src/core/glm_fast_path.cu:5848 (docs/SETTINGS.md:101 documents it as MAYA_GLM_MMQ_RESERVE_MB: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_MTP_DECODE` | typed child env | src/core/glm_mtp.cu:83 (docs/SETTINGS.md:85 documents it as MAYA_GLM_MTP_DECODE: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_MTP_KEEP` | typed child env | docs/SETTINGS.md:84 |
 | `STRATA_GLM_MTP_MISS` | typed child env | docs/SETTINGS.md:84 |
 | `STRATA_GLM_MULTI_BENCH` | typed child env | docs/SETTINGS.md:140 |
 | `STRATA_GLM_MULTI_BOUNDARY` | typed child env | docs/SETTINGS.md:77 |
+| `STRATA_GLM_MULTI_DUMP` | typed child env | src/program/generate.cpp:3038 (docs/SETTINGS.md:140 documents it as MAYA_GLM_MULTI_DUMP — an embedded `MAYA_X=value` span the pin scan missed at regeneration; typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_MULTI_ROOM` | typed child env | docs/SETTINGS.md:77 |
 | `STRATA_GLM_MULTI_SPEC` | typed child env | docs/SETTINGS.md:77 |
+| `STRATA_GLM_MV_P100` | typed child env | src/kernels/cuda/glm_fast.cu:1960 (docs/SETTINGS.md:112 documents it as MAYA_GLM_MV_P100: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_MV_P100_R` | typed child env | src/kernels/cuda/glm_fast.cu:1961 (docs/SETTINGS.md:112 documents it as MAYA_GLM_MV_P100_R: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_MV_RDNA` | typed child env | docs/SETTINGS.md:82 |
 | `STRATA_GLM_NO_MTP` | typed child env | docs/SETTINGS.md:83 |
+| `STRATA_GLM_NO_PREFILL` | typed child env | src/core/glm_prefill.cu:1030 (docs/SETTINGS.md:247 documents it as MAYA_GLM_NO_PREFILL — an embedded `MAYA_X=value` span the pin scan missed at regeneration; typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_NO_SPEC` | typed child env | docs/SETTINGS.md:89 |
 | `STRATA_GLM_NUMA` | typed child env | docs/SETTINGS.md:59 |
 | `STRATA_GLM_PARALLEL_LOAD` | typed child env | docs/SETTINGS.md:45 |
 | `STRATA_GLM_PCIE_SHARE` | typed child env | docs/SETTINGS.md:54 |
+| `STRATA_GLM_POOL_CHECK` | typed child env | src/core/glm_fast_path.cu:5889 (docs/SETTINGS.md:197 documents it as MAYA_GLM_POOL_CHECK — an embedded `MAYA_X=value` span the pin scan missed at regeneration; typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_POOL_STATS` | typed child env | docs/SETTINGS.md:137 |
 | `STRATA_GLM_PREFETCH_AT` | typed child env | docs/SETTINGS.md:58 |
 | `STRATA_GLM_PREFETCH_BLOCKS` | typed child env | docs/SETTINGS.md:58 |
@@ -687,10 +716,17 @@ both sides: `--expert-profile`, `--expert-profile-save(-every)`,
 | `STRATA_GLM_PREFETCH_RANK` | typed child env | docs/SETTINGS.md:58 |
 | `STRATA_GLM_PREFILL_ATTN` | typed child env | docs/SETTINGS.md:114 |
 | `STRATA_GLM_PREFILL_ATTN_CHECK` | typed child env | docs/SETTINGS.md:114 |
+| `STRATA_GLM_PREFILL_CALC` | typed child env | src/core/glm_prefill.cu:4284 (docs/SETTINGS.md:57 documents it as MAYA_GLM_PREFILL_CALC: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_PREFILL_CALC_CHECK` | typed child env | src/core/glm_prefill.cu:3852 (docs/SETTINGS.md:57 documents it as MAYA_GLM_PREFILL_CALC_CHECK — an embedded `MAYA_X=value` span the pin scan missed at regeneration; typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_PREFILL_CALC_SHARE` | typed child env | src/core/glm_prefill.cu:4291 (docs/SETTINGS.md:57 documents it as MAYA_GLM_PREFILL_CALC_SHARE — an embedded `MAYA_X=value` span the pin scan missed at regeneration; typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_PREFILL_CHUNK` | typed child env | docs/SETTINGS.md:61 |
 | `STRATA_GLM_PREFILL_CPU` | typed child env | docs/SETTINGS.md:95 |
 | `STRATA_GLM_PREFILL_CPU_ROW_MS` | typed child env | docs/SETTINGS.md:95 |
+| `STRATA_GLM_PREFILL_FLUSH` | typed child env | src/core/glm_fast_state.hpp:92 (docs/SETTINGS.md:42 documents it as MAYA_GLM_PREFILL_FLUSH: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_PREFILL_FUSED` | typed child env | src/prefill/moe_fused_rdna4.cu:665 (docs/SETTINGS.md:65 documents it as MAYA_GLM_PREFILL_FUSED: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_PREFILL_KEEP` | typed child env | src/core/glm_fast_path.cu:6038 (docs/SETTINGS.md:100 documents it as MAYA_GLM_PREFILL_KEEP: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_PREFILL_MB` | typed child env | docs/SETTINGS.md:62 |
+| `STRATA_GLM_PREFILL_STAGES` | typed child env | src/core/glm_prefill.cu:1388 (docs/SETTINGS.md:99 documents it as MAYA_GLM_PREFILL_STAGES: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_PREFILL_SUB` | typed child env | docs/SETTINGS.md:106 |
 | `STRATA_GLM_PREFILL_TAIL_SKIP` | typed child env | docs/SETTINGS.md:63 |
 | `STRATA_GLM_PREFILL_TRACE` | typed child env | docs/SETTINGS.md:98 |
@@ -702,53 +738,66 @@ both sides: `--expert-profile`, `--expert-profile-save(-every)`,
 | `STRATA_GLM_PROMOTE_FILL` | typed child env | docs/SETTINGS.md:80 |
 | `STRATA_GLM_PROMOTE_MIN` | typed child env | docs/SETTINGS.md:79 |
 | `STRATA_GLM_RAM_GB` | typed child env | docs/SETTINGS.md:39 |
-| `STRATA_GLM_RAM_HEADROOM_GB` | typed child env | docs/SETTINGS.md:38 |
+| `STRATA_GLM_RAM_HEADROOM_GB` | typed child env | docs/SETTINGS.md:38 (typed value source glm.ram_headroom_gb, 6..1024 default 16 per the SP6 §4.9 sheet M2; always projected by glm_environment_knobs) |
 | `STRATA_GLM_RAM_RESIDENT` | typed child env | docs/SETTINGS.md:43 |
 | `STRATA_GLM_RAM_SLACK` | typed child env | docs/SETTINGS.md:43 |
 | `STRATA_GLM_READ_CHUNKS` | typed child env | docs/SETTINGS.md:60 |
+| `STRATA_GLM_RESERVE_LATER_MB` | typed child env | src/core/glm_fast_path.cu:1160 (docs/SETTINGS.md:193 documents it as MAYA_GLM_RESERVE_LATER_MB: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_RESERVE_MB` | typed child env | maya.py:2241 (value from hip_reserve_mib, :642-648; the HIP calibration writes it into the config env); docs/SETTINGS.md:190-193 now documents MAYA_GLM_RESERVE_MB; the calibration flow is docs/SETTINGS.md:29 |
+| `STRATA_GLM_RESIDENT_SKIP` | typed child env | src/core/glm_fast_state.hpp:542 (docs/SETTINGS.md:41 documents it as MAYA_GLM_RESIDENT_SKIP: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_SCORE` | typed child env | docs/SETTINGS.md:139 |
 | `STRATA_GLM_SCORE_PREFILL` | typed child env | docs/SETTINGS.md:139 |
-| `STRATA_GLM_SEQ_CTX` | typed child env | docs/SETTINGS.md:72 |
 | `STRATA_GLM_SEQS` | typed child env | docs/SETTINGS.md:72 |
+| `STRATA_GLM_SEQ_CTX` | typed child env | docs/SETTINGS.md:72 |
 | `STRATA_GLM_SERVICE_IDLE_MS` | typed child env | docs/SETTINGS.md:94 |
+| `STRATA_GLM_SKIP_EMPTY` | typed child env | src/core/glm_memory.hpp:41 (docs/SETTINGS.md:75 documents it as MAYA_GLM_SKIP_EMPTY: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_SLOTS` | typed child env | docs/SETTINGS.md:68 (SP6 §4.9: slots off is the forced default — the table may move it, nothing unknown is ever sent; Task 4) |
 | `STRATA_GLM_SLOT_DAYS` | typed child env | docs/SETTINGS.md:71 |
 | `STRATA_GLM_SLOT_GB` | typed child env | docs/SETTINGS.md:70 |
 | `STRATA_GLM_SLOT_KEEP` | typed child env | docs/SETTINGS.md:71 |
 | `STRATA_GLM_SLOT_MIN` | typed child env | docs/SETTINGS.md:70 |
-| `STRATA_GLM_SLOTS` | typed child env | docs/SETTINGS.md:68 (SP6 §4.9: slots off is the forced default — the table may move it, nothing unknown is ever sent; Task 4) |
 | `STRATA_GLM_SPEC_CANCEL` | typed child env | docs/SETTINGS.md:90 |
+| `STRATA_GLM_SPEC_FOLLOW` | typed child env | src/program/generate.cpp:1023 (docs/SETTINGS.md:92 documents it as MAYA_GLM_SPEC_FOLLOW: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_SPEC_FOLLOW_SAVE` | typed child env | src/program/generate.cpp:1024 (docs/SETTINGS.md:93 documents it as MAYA_GLM_SPEC_FOLLOW_SAVE: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_SPEC_HEAD` | typed child env | docs/SETTINGS.md:89 |
 | `STRATA_GLM_SPEC_SAMPLE` | typed child env | docs/SETTINGS.md:90 |
 | `STRATA_GLM_SPLIT` | typed child env | docs/SETTINGS.md:44 (SP6 §4.9: the forced split; glm.layer_split also renders --layer-split, serve/server.py:1274-1277; Task 4/7) |
 | `STRATA_GLM_SPLIT_LAYER_MS` | typed child env | docs/SETTINGS.md:44 |
 | `STRATA_GLM_SPLIT_LOG` | typed child env | docs/SETTINGS.md:44 |
+| `STRATA_GLM_SPLIT_ROWS` | typed child env | src/core/glm_rows.cu:82 (docs/SETTINGS.md:73 documents it as MAYA_GLM_SPLIT_ROWS: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_THINK_RESERVE` | typed config | docs/SETTINGS.md:141, serve/server.py:2279 (server-side reserve; rides glm.thinking_budget — C-3; Task 3) |
 | `STRATA_GLM_TIMING` | typed child env | docs/SETTINGS.md:137 |
 | `STRATA_GLM_TRUNK_KEEP` | typed child env | docs/SETTINGS.md:86 |
 | `STRATA_GLM_TRUNK_KEEP_MAP` | typed child env | docs/SETTINGS.md:86 |
 | `STRATA_GLM_VISION_LEND_MB` | typed child env | serve/server.py:4026 (the vision turn lends MB from the expert pool; the flow is docs/SETTINGS.md:29) |
 | `STRATA_GLM_VRAM_EVICT` | typed child env | docs/SETTINGS.md:81 |
+| `STRATA_GLM_WARM_PROMPT` | typed child env | src/program/generate.cpp:3181 (docs/SETTINGS.md:102 documents it as MAYA_GLM_WARM_PROMPT: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_WIN_ALLCPU` | typed child env | docs/SETTINGS.md:130 |
+| `STRATA_GLM_WIN_BATCH` | typed child env | src/core/glm_window.cu:585 (docs/SETTINGS.md:131 documents it as MAYA_GLM_WIN_BATCH: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_GLM_WIN_COMMIT_WAIT` | typed child env | src/core/glm_dflash.cu:2007 (docs/SETTINGS.md:128 documents it as MAYA_GLM_WIN_COMMIT_WAIT: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_WIN_CPU` | typed child env | docs/SETTINGS.md:130 |
 | `STRATA_GLM_WIN_LANES` | typed child env | docs/SETTINGS.md:130 |
+| `STRATA_GLM_WIN_MULTI` | typed child env | src/core/glm_window.cu:593 (docs/SETTINGS.md:132 documents it as MAYA_GLM_WIN_MULTI: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_WIN_PIPE` | typed child env | docs/SETTINGS.md:122 |
+| `STRATA_GLM_WIN_REPLAY` | typed child env | src/core/glm_window.cu:1753 (docs/SETTINGS.md:129 documents it as MAYA_GLM_WIN_REPLAY: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_GLM_WIN_SKIP` | typed child env | docs/SETTINGS.md:123 |
 | `STRATA_GLM_WIN_STAGGER` | typed child env | docs/SETTINGS.md:130 |
 | `STRATA_GLM_WIN_THREADS` | typed child env | docs/SETTINGS.md:123 |
 | `STRATA_GLM_WIN_X3` | typed child env | docs/SETTINGS.md:133 |
 | `STRATA_GLM_WIN_X3_POOLS` | typed child env | docs/SETTINGS.md:133 |
 | `STRATA_MAX_BODY_MIB` | frontend behaviour | already typed: limits.chat.max_body_bytes (SP1); serve/server.py:2922, docs/SETTINGS.md:144 |
+| `STRATA_NO_IQ512` | typed child env | src/kernels/cpu/native_expert.cpp:91 (docs/SETTINGS.md:105 documents it as MAYA_NO_IQ512 — an embedded `MAYA_X=value` span the pin scan missed at regeneration; typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_PF_WMMA` | typed child env | src/core/glm_prefill.cu:186 (docs/SETTINGS.md:66 documents it as MAYA_PF_WMMA: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_PREFILL_LEND_PCT` | typed child env | src/core/glm_prefill.cu:1144 (docs/SETTINGS.md:62 documents it as MAYA_PREFILL_LEND_PCT: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
+| `STRATA_SPLIT_COVER_B` | typed child env | src/core/glm_model.cu:1674 (docs/SETTINGS.md:44 documents it as MAYA_SPLIT_COVER_B: typed per D-7 onto the closed child-env allowlist — a value reaches the child only through a forced row this frontend composes) |
 | `STRATA_WATCHDOG_S` | typed child env | docs/SETTINGS.md:143, src/program/generate.cpp:747 (engine-side watchdog; SP6 §4.9/M5 forces 0 pending the owner's sheet; Task 4) |
-| `--max-context` | engine argv | maya.py:3148 (default 32768 when unset), :2228; Task 7 types glm.max_context at the pin default |
-| `--prefill` | engine argv | maya.py:2229 (auto), :2284 keeps an operator's value; docs/SETTINGS.md:178-182; Task 7 |
-| `--kv-streaming` | engine argv | maya.py:2229 (the KV_STREAMING constant :104), :2285; docs/SETTINGS.md:108; Task 7 |
-| `--kv-resident` | engine argv | maya.py:2286; docs/SETTINGS.md:108 (the window stays at least 20480); Task 7 |
-| `--parallel` | engine argv | maya.py:3885 (choices 1..8), :2291; replicas.parallel renders --parallel N inside the one child (C-4, M1 Task 10 pattern); Task 7 |
-| `--expert-profile-save` | engine argv | docs/SETTINGS.md:164, maya.py:2285 (rides the save; M1 session.expert_profile_save pattern); Task 7 |
-| `--expert-profile-save-every` | engine argv | docs/SETTINGS.md:164 (default 10 minutes), maya.py:2285; Task 7 |
-| `--spec` | engine argv | docs/SETTINGS.md:323 (the verify window's tokens; MTP drafting, the DFlash2 drafter itself stays out per C-5); Task 7 |
-| `--spec-min-p` | engine argv | docs/SETTINGS.md:324 (the confidence cut); Task 7 |
+| `--expert-profile-save` | engine argv | maya.py:2285 |
+| `--expert-profile-save-every` | engine argv | maya.py:2285 |
+| `--kv-resident` | engine argv | maya.py:2286 |
+| `--kv-streaming` | engine argv | maya.py:102 |
+| `--max-context` | engine argv | serve/server.py:508 |
+| `--parallel` | engine argv | maya.py:2285 |
+| `--prefill` | engine argv | maya.py:2229 |
 <!-- maya-typed:end -->
 
 ### Mapped to a Strata mechanism instead
@@ -763,9 +812,32 @@ both sides: `--expert-profile`, `--expert-profile-save(-every)`,
 | `STRATA_ENGINE_WRAP_S` | — | the SP3 shutdown drain is fixed in the frontend (no per-request wrap-up); serve/server.py:4172, docs/SETTINGS.md:146 |
 | `STRATA_FAIR_SLICE_S` | — | SP3 admission/pool scheduling (B8/B9) is the frontend's policy; serve/server.py:234, docs/SETTINGS.md:147 |
 | `STRATA_HTTP_BACKLOG` | — | the listener backlog is fixed by the SP3 poll design (128 entries); serve/server.py:2913, docs/SETTINGS.md:144 |
-| `--serve` | — | the supervision composes the engine's serve mode at every start; serve/server.py:437, maya.py:3158 |
-| `--glm-pack` | manifest artifact | the SP4 manifest composes the pack role (Task 7); maya.py:2228 (the launcher's form) |
-| `--expert-profile` | manifest artifact | the expert profile is an install/manifest artifact, not an operator path (Task 7); maya.py:2280, :2372-2374 |
+| `STRATA_TOKENIZER` | — | serve/test_detok.py:21 (the SP4 manifest carries the tokenizer (the T2-c pattern); Maya passes it to its own tools — the engine reads no STRATA_TOKENIZER) |
+| `--bench` | — | maya.py:3907 (the engine's own argv; the SP4 manifest-composed launch at v1.1.21 is SP5-P2 Task 6) |
+| `--check` | — | maya.py:3850 (the engine's own argv; the SP4 manifest-composed launch at v1.1.21 is SP5-P2 Task 6) |
+| `--cpu-threads` | — | maya.py:3719 (the engine's own argv; the SP4 manifest-composed launch at v1.1.21 is SP5-P2 Task 6) |
+| `--dir` | — | maya.py:3445 (the engine's own argv; the SP4 manifest-composed launch at v1.1.21 is SP5-P2 Task 6) |
+| `--expert-cache` | — | maya.py:2228 (the engine's own argv; the SP4 manifest-composed launch at v1.1.21 is SP5-P2 Task 6) |
+| `--expert-profile` | manifest artifact | maya.py:2280 |
+| `--gguf` | — | maya.py:2064 (the engine's own argv; the SP4 manifest-composed launch at v1.1.21 is SP5-P2 Task 6) |
+| `--glm-pack` | manifest artifact | serve/server.py:4107 |
+| `--glm-ram-resident` | — | docs/SETTINGS.md:43 (the engine's own argv; the SP4 manifest-composed launch at v1.1.21 is SP5-P2 Task 6) |
+| `--gpus` | — | maya.py:2931 (the engine's own argv; the SP4 manifest-composed launch at v1.1.21 is SP5-P2 Task 6) |
+| `--layer-split` | — | serve/server.py:1275 (the engine's own argv; the SP4 manifest-composed launch at v1.1.21 is SP5-P2 Task 6) |
+| `--native` | — | serve/server.py:365 (the engine's own argv; the SP4 manifest-composed launch at v1.1.21 is SP5-P2 Task 6) |
+| `--out` | — | maya.py:2064 (the engine's own argv; the SP4 manifest-composed launch at v1.1.21 is SP5-P2 Task 6) |
+| `--pack` | — | serve/server.py:428 (the engine's own argv; the SP4 manifest-composed launch at v1.1.21 is SP5-P2 Task 6) |
+| `--prefill-chunk` | — | maya.py:3718 (the engine's own argv; the SP4 manifest-composed launch at v1.1.21 is SP5-P2 Task 6) |
+| `--reserve-mib` | — | maya.py:3718 (the engine's own argv; the SP4 manifest-composed launch at v1.1.21 is SP5-P2 Task 6) |
+| `--serve` | — | serve/server.py:437 |
+| `--threads` | — | serve/server.py:1052 (the engine's own argv; the SP4 manifest-composed launch at v1.1.21 is SP5-P2 Task 6) |
+| `--tokens` | — | docs/SETTINGS.md:139 (the engine's own argv; the SP4 manifest-composed launch at v1.1.21 is SP5-P2 Task 6) |
+| `--tokens-file` | — | docs/SETTINGS.md:92 (the engine's own argv; the SP4 manifest-composed launch at v1.1.21 is SP5-P2 Task 6) |
+| `--tp` | — | maya.py:3717 (the engine's own argv; the SP4 manifest-composed launch at v1.1.21 is SP5-P2 Task 6) |
+| `--vision` | — | maya.py:3693 (the engine's own argv; the SP4 manifest-composed launch at v1.1.21 is SP5-P2 Task 6) |
+| `--vram-experts` | — | maya.py:3718 (the engine's own argv; the SP4 manifest-composed launch at v1.1.21 is SP5-P2 Task 6) |
+| `--vram-reserve-later-mib` | — | maya.py:2284 (the engine's own argv; the SP4 manifest-composed launch at v1.1.21 is SP5-P2 Task 6) |
+| `--vram-reserve-mib` | — | maya.py:2284 (the engine's own argv; the SP4 manifest-composed launch at v1.1.21 is SP5-P2 Task 6) |
 <!-- maya-mapped:end -->
 
 ### Excluded keys — refused at config load
@@ -786,24 +858,518 @@ both sides: `--expert-profile`, `--expert-profile-save(-every)`,
 | `mcp_servers` | spec §4 MCP; serve/mcp.py:645 |
 | `type` | spec §4 MCP entry type; serve/mcp.py:598 |
 | `url` | spec §4 MCP url; serve/mcp.py:378, :597 |
-| `mcpServers` | spec §4 MCP (Claude Desktop block); serve/mcp.py:646, serve/server.py:3970 (--mcp-config) |
+| `mcpServers` | spec §4 MCP (Claude Desktop block); serve/mcp.py:643, serve/server.py:3970 (--mcp-config) |
+| `MAYA_GLM_DFLASH` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0); docs/SETTINGS.md:322 |
+| `MAYA_GLM_DFLASH_AHEAD` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0); docs/SETTINGS.md:126 |
+| `MAYA_GLM_DFLASH_HEAD_SPLIT` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0); docs/SETTINGS.md:125 |
+| `MAYA_GLM_DFLASH_INJ_OVERLAP` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0); docs/SETTINGS.md:127 |
+| `MAYA_GLM_DFLASH_MIN` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0); docs/SETTINGS.md:328 |
+| `MAYA_GLM_DFLASH_PRIO` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0); docs/SETTINGS.md:136 |
+| `MAYA_GLM_DFLASH_PROF` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0); docs/SETTINGS.md:134 |
+| `MAYA_GLM_DFLASH_STATS` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0); docs/SETTINGS.md:134 |
+| `MAYA_GLM_DFLASH_TL` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0); docs/SETTINGS.md:135 |
 | `MAYA_RESTART_ON_UPDATE` | spec §4 PRIV-01 forbids the self-updater restart; maya.py:2809 |
 | `MAYA_UPDATE_CHECK` | spec §4 PRIV-01 forbids update checks (the Maya self-updater block); serve/update.py:75 |
 | `STRATA_DEBUG` | spec §4 no new diagnostics surface (debug logging switch); serve/server.py:2430, :2465 |
 | `STRATA_GLM_CPU_CAL` | spec §4 free-form process control (the `log` rule: a timing cache in an operator-named file); docs/SETTINGS.md:51 |
 | `STRATA_GLM_DFLASH` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0, docs/SETTINGS.md:293) — not a knob-visibility call; docs/SETTINGS.md:322 |
+| `STRATA_GLM_DFLASH_AHEAD` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0); src/core/glm_dflash.cu:1820 |
+| `STRATA_GLM_DFLASH_ATTN` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0); src/core/glm_dflash.cu:1250 |
+| `STRATA_GLM_DFLASH_CTX` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0); src/core/glm_dflash.cu:844 |
+| `STRATA_GLM_DFLASH_CUM` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0); src/core/glm_dflash.cu:1795 |
+| `STRATA_GLM_DFLASH_DUMP` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0); src/core/glm_dflash.cu:590 |
+| `STRATA_GLM_DFLASH_EXPLORE` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0); src/core/glm_dflash.cu:1774 |
+| `STRATA_GLM_DFLASH_HEAD_MMA` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0); src/core/glm_dflash.cu:1356 |
+| `STRATA_GLM_DFLASH_HEAD_SPLIT` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0); src/core/glm_dflash.cu:1463 |
+| `STRATA_GLM_DFLASH_INJ_OVERLAP` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0); src/core/glm_dflash.cu:1124 |
 | `STRATA_GLM_DFLASH_MIN` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0, docs/SETTINGS.md:293) — not a knob-visibility call; docs/SETTINGS.md:328 |
+| `STRATA_GLM_DFLASH_PRIO` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0); src/core/glm_dflash.cu:733 |
 | `STRATA_GLM_DFLASH_PROF` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0, docs/SETTINGS.md:293) — not a knob-visibility call; docs/SETTINGS.md:134 |
 | `STRATA_GLM_DFLASH_STATS` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0, docs/SETTINGS.md:293) — not a knob-visibility call; docs/SETTINGS.md:134 |
+| `STRATA_GLM_DFLASH_TL` | spec C-5: the DFlash2 drafter and its knobs stay rejected on the A7 licence ground (the drafter weights are CC BY-NC-ND 4.0); src/core/glm_dflash.cu:1721 |
 | `STRATA_GLM_MTP_GGUF` | spec §4 model files come from the SP4 manifest (a draft GGUF picked by free path); docs/SETTINGS.md:83 |
 | `STRATA_GLM_ROUTE_LOG` | spec §4 free-form process control (the `log` rule: every route written to an operator-named prefix); docs/SETTINGS.md:138 |
 | `STRATA_GLM_SLOT_DIR` | spec §4 free-form process control (the `cwd` rule: the slot folder moves off the pack root); docs/SETTINGS.md:70 |
 | `STRATA_GLM_USAGE` | spec §4 free-form process control (the `log` rule: an operator-named file the engine writes after every request); docs/SETTINGS.md:67 |
 | `STRATA_MOCK_RELOAD_S` | spec §4 the mock engine is excluded (serve/server.py:3945 --engine mock); serve/server.py:1587 |
-| `--dflash` | spec C-5: DFlash2 drafter rejected on the A7 licence ground (CC BY-NC-ND weights, docs/SETTINGS.md:293); maya.py:2301 |
-| `--dump-routing` | spec §4 free-form process control (the trace dump writes an operator-named file); docs/SETTINGS.md:165 |
-| `--engine` | spec §4 free-form process control (server-mode select; the mock engine is excluded, serve/server.py:3945); maya.py:2792 |
+| `--dflash` | spec C-5: DFlash2 drafter rejected on the A7 licence ground (CC BY-NC-ND weights, docs/SETTINGS.md:353); engine-parsed at src/program/generate.cpp:3772 |
+| `--engine` | serve/server.py:3945 |
+| `--mcp-config` | spec §4 MCP (Maya's own MCP loader flag); serve/server.py:3970 |
 <!-- maya-rejected:end -->
+
+### Out of scope — never reachable in a managed launch
+
+The engine reads each of these via `getenv`, but none is part of the parity surface we ship: the DeepSeek DS4 path is out of scope (plan 2026-10-22-sp5-p2 §Non-goals); a `MAYA_*` row is the SETTINGS.md spelling of the `STRATA_*` row that carries the knob (`include/strata/platform/env_alias.hpp` maps it at engine start); and an engine-internal switch is undocumented — the closed child-env allowlist never hands its name to the child. Every row still carries its citation and disposition.
+
+<!-- maya-out:begin -->
+| Maya knob | Read site and why it never renders |
+| --- | --- |
+| `DS4_AHEAD` | src/ds4/ds4_model.cu:1076 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_AHEAD_EXTRA` | src/ds4/ds4_model.cu:1077 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_AHEAD_ORDER` | src/ds4/ds4_model.cu:1079 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_APU_DEDICATED_GB` | src/ds4/ds4_model.cu:103 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_AR_F16` | src/ds4/ds4_kernels.cu:2276 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_ASYNC_T` | src/ds4/ds4_model.cu:1065 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_ATTN_SLAB_MB` | src/ds4/ds4_model.cu:3053 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_ATTN_WMMA` | src/ds4/ds4_kernels.cu:2130 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_BORROW` | src/ds4/ds4_model.cu:2999 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_CACHE_BONUS` | src/ds4/ds4_model.cu:1099 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_CACHE_DECAY` | src/ds4/ds4_model.cu:1100 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_CACHE_INFLIGHT` | src/ds4/ds4_model.cu:1101 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_CACHE_MARGIN` | src/ds4/ds4_model.cu:1099 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_CACHE_THREADS` | src/ds4/ds4_model.cu:2911 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_CHECK_LEND` | src/ds4/ds4_model.cu:8689 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_CHECK_SWAPS` | src/ds4/ds4_model.cu:1307 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_CHUNK` | src/ds4/ds4_model.cu:2251 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_CHUNK_MIN` | src/ds4/ds4_model.cu:2254 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_COMMIT_CAP_GB` | src/ds4/ds4_model.cu:1262 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_COPY_GB` | src/ds4/ds4_model.cu:4529 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_COPY_NUMA` | src/ds4/ds4_model.cu:4543 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_DEBUG_DROP_BEFORE_REQ` | src/ds4/ds4_model.cu:1163 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_DSPARK_CONF` | src/ds4/ds4_model.cu:975 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_DSPARK_DUMP` | src/ds4/ds4_model.cu:1002 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_DSPARK_MAX` | src/ds4/ds4_model.cu:1001 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_DSPARK_QTEMP` | src/ds4/ds4_model.cu:1000 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_DSPARK_SAMPLE` | src/ds4/ds4_model.cu:999 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_DUMP_H` | src/ds4/ds4_model.cu:1310 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_DUMP_L` | src/ds4/ds4_model.cu:1313 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_DUMP_R` | src/ds4/ds4_model.cu:1318 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_DUMP_Y` | src/ds4/ds4_model.cu:1322 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_ENGRAM_CACHE_MB` | src/ds4/ds4_model.cu:2715 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_ENGRAM_THREADS` | src/ds4/ds4_model.cu:2712 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_FLOW` | src/ds4/ds4_model.cu:2819 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_FLOW_BUFFERED` | src/ds4/ds4_model.cu:8101 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_FLOW_STATS` | src/ds4/ds4_model.cu:9000 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_FLOW_TP` | src/ds4/ds4_model.cu:2823 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_HOST_FREE` | src/ds4/ds4_model.cu:1069 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_IQ_AVX2` | src/ds4/ds4_iq_cpu.cpp:490 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_IQ_GATHER` | src/ds4/ds4_iq_cpu.cpp:640 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_IQ_OWN` | src/ds4/ds4_iq_cpu.cpp:636 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_IQ_Q8K` | src/ds4/ds4_gguf.cu:257 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_IQ_VERBOSE` | src/ds4/ds4_iq_cpu.cpp:676 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_LANE_CAL` | src/ds4/ds4_model.cu:6342 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_LANE_CHECK` | src/ds4/ds4_model.cu:6966 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_LAST_WINDOW` | src/ds4/ds4_main.cpp:453 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_LAYER_CACHE_MB` | src/ds4/ds4_model.cu:8568 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_LAYER_MAJOR` | src/ds4/ds4_model.cu:8545 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_LT` | src/ds4/ds4_lt.cu:82 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_LT_VERBOSE` | src/ds4/ds4_lt.cu:138 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_MK_SPLIT` | src/ds4/ds4_model.cu:2654 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_MOE_TOKEN` | src/ds4/ds4_model.cu:1064 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_MX_PF` | src/ds4/ds4_gguf_cpu.cpp:322 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_MX_TIER` | src/ds4/ds4_gguf_cpu.cpp:267 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_PATH_PICK` | src/ds4/ds4_model.cu:8269 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_PF_ALL` | src/ds4/ds4_os.hpp:294 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_PROF` | src/ds4/ds4_model.cu:1332 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_READAHEAD_MB` | src/ds4/ds4_model.cu:3295 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_READERS` | src/ds4/ds4_model.cu:2817 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_RING_MB` | src/ds4/ds4_model.cu:3100 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_ROUTER_ROWS` | src/ds4/ds4_kernels.cu:2051 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_SERVE_DUMP` | src/ds4/ds4_main.cpp:339 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_SPEC_Q` | src/ds4/ds4_model.cu:3464 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_SPEC_WASTE` | src/ds4/ds4_model.cu:3483 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_SPLIT` | src/ds4/ds4_model.cu:2376 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_STREAM` | src/ds4/ds4_model.cu:6303 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_STREAM_DIRECT` | src/ds4/ds4_model.cu:6928 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_STREAM_FORCE` | src/ds4/ds4_model.cu:6344 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_STREAM_THREADS` | src/ds4/ds4_model.cu:6830 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_SYNC` | src/ds4/ds4_model.cu:1061 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_W16_MB` | src/ds4/ds4_model.cu:3054 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_WARM_GB` | src/ds4/ds4_model.cu:8750 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_WARM_MIN` | src/ds4/ds4_model.cu:8748 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_YOCO` | src/ds4/ds4_model.cu:8811 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `DS4_YOCO_KEEP` | src/ds4/ds4_model.cu:8855 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `MAYA_DS4_CPU_LANE` | docs/SETTINGS.md:437 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_DS4_DISK_SKIP_AUTO` | docs/SETTINGS.md:415 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_DS4_DISK_SKIP_BUDGET` | docs/SETTINGS.md:415 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_DS4_DISK_SKIP_FROM` | docs/SETTINGS.md:414 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_DS4_DISK_SKIP_W` | docs/SETTINGS.md:407 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_DS4_DSPARK_CUM` | docs/SETTINGS.md:402 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_DS4_PROMPT_SKIP` | docs/SETTINGS.md:401 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_DS4_STREAM` | docs/SETTINGS.md:384 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_ENGINE_QUIT_S` | docs/SETTINGS.md:145 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_ENGINE_STALL_S` | docs/SETTINGS.md:142 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_ENGINE_WRAP_S` | docs/SETTINGS.md:146 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_FAIR_SLICE_S` | docs/SETTINGS.md:147 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_AHEAD` | docs/SETTINGS.md:87 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_CKPTS` | docs/SETTINGS.md:69 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_CKPT_EVERY` | docs/SETTINGS.md:69 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_COMPLETE_POOL` | docs/SETTINGS.md:40 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_CPU_1T` | docs/SETTINGS.md:104 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_CPU_CAL` | docs/SETTINGS.md:51 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_CPU_CONCURRENT` | docs/SETTINGS.md:50 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_CPU_LANE` | docs/SETTINGS.md:29 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_CPU_MT` | docs/SETTINGS.md:104 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_CPU_PIN` | docs/SETTINGS.md:48 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_CPU_PLAN` | docs/SETTINGS.md:54 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_CPU_RETIME` | docs/SETTINGS.md:55 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_CPU_SHARED` | docs/SETTINGS.md:49 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_CPU_SPLIT` | docs/SETTINGS.md:53 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_DISK_QD` | docs/SETTINGS.md:97 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_DISK_READERS` | docs/SETTINGS.md:97 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_DISK_SKIP_FROM` | docs/SETTINGS.md:87 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_DISK_SKIP_W` | docs/SETTINGS.md:87 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_DROP_CACHE` | docs/SETTINGS.md:119 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_DSA_ALL` | docs/SETTINGS.md:110 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_DSA_SCORE` | docs/SETTINGS.md:109 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_DUAL_PREFILL` | docs/SETTINGS.md:56 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_EVEN_GROUPS` | docs/SETTINGS.md:74 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_EXL3_DECODE` | docs/SETTINGS.md:116 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_EXL3_MMA_ROWS` | docs/SETTINGS.md:115 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_EXL3_ROT` | docs/SETTINGS.md:117 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_EXPERT_CACHE` | docs/SETTINGS.md:192 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_EXPERT_HELPER` | docs/SETTINGS.md:37 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_FLUSH` | docs/SETTINGS.md:42 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_GROUP_EXPERTS` | docs/SETTINGS.md:76 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_GU_STAGE` | docs/SETTINGS.md:113 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_HEAD_SPLIT` | docs/SETTINGS.md:124 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_HEAD_SPLIT_CHECK` | docs/SETTINGS.md:124 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_KDA_GRAPH` | docs/SETTINGS.md:52 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_KQ` | docs/SETTINGS.md:103 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_KV_INT8` | docs/SETTINGS.md:107 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_KV_RESIDENT` | docs/SETTINGS.md:108 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_LOOP_ANSWER` | docs/SETTINGS.md:121 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_LOOP_THINK` | docs/SETTINGS.md:121 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_MISS_SKIP_FROM` | docs/SETTINGS.md:88 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_MISS_SKIP_W` | docs/SETTINGS.md:88 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_MLA_MMA` | docs/SETTINGS.md:111 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_MMQ_GLU` | docs/SETTINGS.md:118 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_MMQ_RESERVE_MB` | docs/SETTINGS.md:101 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_MTP_DECODE` | docs/SETTINGS.md:85 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_MTP_GGUF` | docs/SETTINGS.md:83 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_MTP_KEEP` | docs/SETTINGS.md:84 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_MULTI_BENCH` | docs/SETTINGS.md:140 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_MULTI_BOUNDARY` | docs/SETTINGS.md:77 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_MULTI_ROOM` | docs/SETTINGS.md:77 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_MULTI_SPEC` | docs/SETTINGS.md:77 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_MV_P100` | docs/SETTINGS.md:112 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_MV_P100_R` | docs/SETTINGS.md:112 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_MV_RDNA` | docs/SETTINGS.md:82 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_NUMA` | docs/SETTINGS.md:59 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_PARALLEL_LOAD` | docs/SETTINGS.md:45 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_PCIE_SHARE` | docs/SETTINGS.md:29 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_POOL_STATS` | docs/SETTINGS.md:137 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_PREFETCH_AT` | docs/SETTINGS.md:58 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_PREFETCH_BLOCKS` | docs/SETTINGS.md:58 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_PREFETCH_N` | docs/SETTINGS.md:58 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_PREFETCH_RANK` | docs/SETTINGS.md:58 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_PREFILL_ATTN` | docs/SETTINGS.md:114 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_PREFILL_CALC` | docs/SETTINGS.md:57 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_PREFILL_CHUNK` | docs/SETTINGS.md:61 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_PREFILL_CPU` | docs/SETTINGS.md:95 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_PREFILL_CPU_ROW_MS` | docs/SETTINGS.md:95 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_PREFILL_FLUSH` | docs/SETTINGS.md:42 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_PREFILL_FUSED` | docs/SETTINGS.md:65 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_PREFILL_KEEP` | docs/SETTINGS.md:100 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_PREFILL_MB` | docs/SETTINGS.md:62 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_PREFILL_STAGES` | docs/SETTINGS.md:99 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_PREFILL_SUB` | docs/SETTINGS.md:106 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_PREFILL_TAIL_SKIP` | docs/SETTINGS.md:63 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_PREFILL_TRACE` | docs/SETTINGS.md:98 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_PREFILL_WINDOW` | docs/SETTINGS.md:64 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_PRESTAGE` | docs/SETTINGS.md:96 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_PROFILE_WEIGHT` | docs/SETTINGS.md:120 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_PROMOTE` | docs/SETTINGS.md:78 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_PROMOTE_FILL` | docs/SETTINGS.md:80 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_PROMOTE_MIN` | docs/SETTINGS.md:79 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_RAM_GB` | serve/test_dashboard.py:116 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_RAM_HEADROOM_GB` | docs/SETTINGS.md:38 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_RAM_RESIDENT` | docs/SETTINGS.md:43 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_RAM_SLACK` | docs/SETTINGS.md:43 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_READ_CHUNKS` | docs/SETTINGS.md:29 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_RESERVE_LATER_MB` | docs/SETTINGS.md:193 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_RESERVE_MB` | docs/SETTINGS.md:193 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_RESIDENT_SKIP` | docs/SETTINGS.md:41 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_RESPONSES_CACHE_ENTRIES` | serve/test_response_store.py:93 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_ROUTE_LOG` | docs/SETTINGS.md:138 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_SCORE_PREFILL` | docs/SETTINGS.md:139 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_SEQS` | docs/SETTINGS.md:72 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_SEQ_CTX` | docs/SETTINGS.md:72 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_SERVICE_IDLE_MS` | docs/SETTINGS.md:94 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_SKIP_EMPTY` | docs/SETTINGS.md:75 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_SLOTS` | docs/SETTINGS.md:68 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_SLOT_DAYS` | docs/SETTINGS.md:71 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_SLOT_DIR` | docs/SETTINGS.md:70 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_SLOT_GB` | docs/SETTINGS.md:70 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_SLOT_KEEP` | docs/SETTINGS.md:71 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_SLOT_MIN` | docs/SETTINGS.md:70 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_SPEC_CANCEL` | docs/SETTINGS.md:90 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_SPEC_FOLLOW` | docs/SETTINGS.md:92 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_SPEC_FOLLOW_SAVE` | docs/SETTINGS.md:93 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_SPEC_HEAD` | docs/SETTINGS.md:89 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_SPEC_SAMPLE` | docs/SETTINGS.md:91 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_SPLIT` | docs/SETTINGS.md:44 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_SPLIT_LAYER_MS` | docs/SETTINGS.md:44 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_SPLIT_ROWS` | docs/SETTINGS.md:73 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_THINK_RESERVE` | docs/SETTINGS.md:141 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_TIMING` | docs/SETTINGS.md:137 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_TRUNK_KEEP` | docs/SETTINGS.md:86 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_TRUNK_KEEP_MAP` | docs/SETTINGS.md:86 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_USAGE` | docs/SETTINGS.md:27 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_VRAM_EVICT` | docs/SETTINGS.md:81 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_WARM_PROMPT` | docs/SETTINGS.md:102 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_WIN_ALLCPU` | docs/SETTINGS.md:130 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_WIN_BATCH` | docs/SETTINGS.md:131 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_WIN_COMMIT_WAIT` | docs/SETTINGS.md:128 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_WIN_CPU` | docs/SETTINGS.md:130 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_WIN_LANES` | docs/SETTINGS.md:130 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_WIN_MULTI` | docs/SETTINGS.md:132 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_WIN_PIPE` | docs/SETTINGS.md:122 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_WIN_REPLAY` | docs/SETTINGS.md:129 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_WIN_SKIP` | docs/SETTINGS.md:123 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_WIN_STAGGER` | docs/SETTINGS.md:130 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_WIN_THREADS` | docs/SETTINGS.md:123 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_WIN_X3` | docs/SETTINGS.md:133 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_GLM_WIN_X3_POOLS` | docs/SETTINGS.md:133 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_HTTP_BACKLOG` | docs/SETTINGS.md:144 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_MAX_BODY_MIB` | docs/SETTINGS.md:144 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_PACK_TEMPLATE` | serve/server.py:4070 (launcher internal: the pack-template path override (R-T2-b lineage)) |
+| `MAYA_PF_WMMA` | docs/SETTINGS.md:66 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_PREFILL_LEND_PCT` | docs/SETTINGS.md:62 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_SH` | maya.py:3934 (launcher internal: the maya.sh self-detection marker (R-T2-b lineage); never an engine or server knob) |
+| `MAYA_SPLIT_COVER_B` | docs/SETTINGS.md:44 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `MAYA_WATCHDOG_S` | docs/SETTINGS.md:143 (the MAYA_ spelling of the target row: include/strata/platform/env_alias.hpp maps MAYA_X to STRATA_X at engine start — the target row carries the knob) |
+| `STRATA_ARENA_LOCK` | src/core/pinned.cu:175 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_CKPT_REREAD` | src/program/generate.cpp:6578 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_COMMIT_GROWTH` | include/strata/platform/commit.hpp:33 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_CPU_YMM` | src/kernels/cpu/expert.cpp:155 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_DBG_NAN` | src/core/verify.cpp:1097 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_DECODE_TIMING` | src/program/generate.cpp:6835 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_DEC_BATCH` | src/core/verify.cpp:338 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_DS4_CPU_LANE` | src/ds4/ds4_model.cu:4906 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_DS4_DISK_SKIP_AUTO` | src/ds4/ds4_model.cu:1159 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_DS4_DISK_SKIP_BUDGET` | src/ds4/ds4_model.cu:1162 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_DS4_DISK_SKIP_FROM` | src/ds4/ds4_model.cu:1133 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_DS4_DISK_SKIP_SETTLE` | src/ds4/ds4_model.cu:1161 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_DS4_DISK_SKIP_W` | src/ds4/ds4_model.cu:1129 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_DS4_DISK_SKIP_WINDOW` | src/ds4/ds4_model.cu:1160 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_DS4_DSPARK_CUM` | src/ds4/ds4_main.cpp:168 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_DS4_NO_LIGHT` | src/ds4/ds4_iq.cu:921 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_DS4_NO_TC` | src/ds4/ds4_gguf.cu:1002 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_DS4_PROMPT_SKIP` | src/ds4/ds4_model.cu:8812 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_DS4_RAM_TIER` | src/ds4/ds4_model.cu:1121 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_DS4_STREAM` | src/ds4/ds4_model.cu:6304 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_FORCE_AVX2` | src/kernels/cpu/exl3_cpu.cpp:1178 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GDN_CONV_SERIAL` | src/prefill/kernels.cu:629 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GDN_REC_HEADS` | src/prefill/kernels.cu:642 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_AHEAD_READ` | src/core/glm_fast_path.cu:1747 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_APU_DEDICATED_GB` | src/core/glm_fast_path.cu:5877 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_BOUNCE` | src/core/glm_model.cu:3575 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_CKPT_TURN` | src/program/generate.cpp:1713 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_COMMIT_CAP_GB` | src/core/glm_fast_path.cu:5929 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_CPU_COLD` | src/core/glm_fast_path.cu:3088 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_CPU_EXPERTS` | src/core/glm_model.cu:3491 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_CPU_LANE_CHECK` | src/core/glm_fast_path.cu:2827 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_CPU_LANE_VERIFY` | src/core/glm_fast_path.cu:2579 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_DEFER_CPU` | src/core/glm_fast_path.cu:5386 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_DEV1` | src/core/glm_model.cu:1994 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_DEVS` | src/core/glm_model.cu:1978 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_EMB_PROBE` | src/core/glm_model.cu:2075 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_HC1` | src/kernels/cuda/glm_fast.cu:5300 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_HC2` | src/kernels/cuda/glm_fast.cu:5301 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_KDA_SPLIT` | src/core/glm_prefill.cu:2463 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_KDA_SPLIT_CHECK` | src/core/glm_prefill.cu:2469 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_KEEP_MAP` | src/core/glm_model.cu:2797 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_KL_DUMP` | src/program/generate.cpp:1086 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_LEND_DROP` | src/core/glm_prefill.cu:1705 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_MLA1` | src/kernels/cuda/glm_fast.cu:5425 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_MLA_ATTN1` | src/kernels/cuda/glm_fast.cu:5463 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_MLA_F16` | src/core/glm_prefill.cu:159 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_MLA_WMMA` | src/core/glm_prefill.cu:155 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_MTP` | src/core/glm_model.cu:3350 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_MTP_ACC_WINDOW` | src/core/glm_mtp.cu:577 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_MTP_ADAPT` | src/core/glm_mtp.cu:462 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_MTP_CHAIN` | src/core/glm_mtp.cu:70 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_MTP_DRAFT` | src/core/glm_mtp.cu:57 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_MTP_DRAFT_VOCAB` | src/core/glm_mtp.cu:151 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_MTP_FIXED` | src/core/glm_mtp.cu:468 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_MTP_START` | src/core/glm_mtp.cu:472 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_MTP_TRACE` | src/core/glm_mtp.cu:549 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_MV_APPROX` | src/kernels/cuda/glm_fast.cu:1808 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_MV_GENERIC` | src/kernels/cuda/glm_fast.cu:5006 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_MV_MMA` | src/kernels/cuda/glm_fast.cu:1828 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_MV_TILED` | src/kernels/cuda/glm_fast.cu:5051 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_NO_REUSE` | src/program/generate.cpp:1270 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_NO_STAGE` | src/core/glm_model.cu:3581 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_NSYS` | src/core/glm_fast_path.cu:6523 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_PIN_CAP_MB` | src/core/glm_fast_path.cu:460 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_PIPE` | src/core/glm_model.cu:1009 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_POOL_CHECK_TEST_MB` | src/core/glm_fast_path.cu:5993 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_POOL_GB` | src/core/glm_fast_path.cu:1124 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_POOL_SLOTS0` | src/core/glm_model.cu:3530 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_PREFETCH` | src/core/glm_model.cu:2663 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_PREFETCH_RANKS` | src/core/glm_model.cu:2665 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_PREFILL` | src/core/glm_prefill.cu:961 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_PREFILL_BLAS` | src/core/glm_prefill.cu:3333 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_PREFILL_LAND` | src/core/glm_prefill.cu:1288 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_PREFILL_LIGHT` | src/core/glm_prefill.cu:2779 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_PREFILL_LIGHT_CHECK` | src/core/glm_prefill.cu:3457 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_PREFILL_LIGHT_LAYER` | src/core/glm_prefill.cu:2783 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_PREFILL_MIN` | src/core/glm_prefill.cu:4143 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_PREFILL_PRED_T` | src/core/glm_prefill.cu:2199 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_PREFILL_PROF` | src/core/glm_prefill.cu:1098 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_PREFILL_SERIAL` | src/core/glm_prefill.cu:4403 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_PREFILL_SH_SUB` | src/core/glm_prefill.cu:339 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_PREFILL_VERBOSE` | src/core/glm_prefill.cu:4670 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_PROF` | src/core/glm_fast_path.cu:643 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_RAM_EVICT` | src/core/glm_fast_path.cu:4635 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_RAM_FREE` | src/core/glm_fast_path.cu:4847 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_RAM_PROTECT` | src/core/glm_fast_path.cu:4639 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_RESPONSES_` | serve/response_config.py:13 (the Maya Responses-API store settings, docs/RESPONSES.md; the Responses route is not part of the frontend surface (spec C-8)) |
+| `STRATA_GLM_RESPONSES_CACHE_BYTES` | serve/test_response_store.py:89 (the Maya Responses-API store settings, docs/RESPONSES.md; the Responses route is not part of the frontend surface (spec C-8)) |
+| `STRATA_GLM_RESPONSES_CACHE_ENTRIES` | serve/test_response_store.py:94 (the Maya Responses-API store settings, docs/RESPONSES.md; the Responses route is not part of the frontend surface (spec C-8)) |
+| `STRATA_GLM_RESPONSES_OWNER_ENTRIES` | serve/test_response_store.py:86 (the Maya Responses-API store settings, docs/RESPONSES.md; the Responses route is not part of the frontend surface (spec C-8)) |
+| `STRATA_GLM_ROUTE_AFFINITY` | src/kernels/cuda/glm_fast.cu:5590 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_SCORE_DUMP` | src/program/generate.cpp:3070 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_SCORE_REF` | src/program/generate.cpp:3071 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_SCORE_TOPK` | src/program/generate.cpp:3072 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_SLOT_RAM_GB` | src/program/generate.cpp:1276 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_SLOT_ROUNDTRIP` | src/program/generate.cpp:1727 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_SLOT_TIMING` | src/core/glm_fast_path.cu:6975 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_SLOW` | src/core/glm_model.cu:1489 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_SPEC_PROF` | src/core/glm_fast_path.cu:6182 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_STALL_TEST` | src/core/glm_prefill.cu:4163 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_SVC_TRACE` | src/core/glm_fast_path.cu:4299 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_TEST_PIPE` | src/core/glm_pack_test.cpp:36 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_TIER_DIAG` | src/core/glm_fast_path.cu:5036 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_TIER_GC` | src/core/glm_fast_path.cu:4664 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_TRACE` | src/core/glm_model.cu:2561 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_UNIFORM_SLOTS` | src/core/glm_fast_path.cu:1247 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_VRAM_GB` | src/core/glm_fast_path.cu:1128 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_WARM` | src/core/glm_fast_path.cu:1758 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_WIN_L3` | src/core/glm_fast_path.cu:2909 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_WIN_MLA` | src/core/glm_window.cu:431 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_WIN_PROF` | src/core/glm_window.cu:379 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GLM_WIN_UNION` | src/core/glm_window.cu:276 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GROUP_COPY` | src/prefill/prefill.cpp:549 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_GR_UNFUSED` | src/prefill/prefill.cpp:92 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_HIPBLASLT_TUNING` | maya.py:2265 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_HIPBLASLT_TUNING_V1` | src/prefill/hipblaslt_tuning.hpp:47 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_HIPBLASLT_VERBOSE` | src/prefill/gemm.cu:77 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_HIP_EXPERTS_LEGACY` | src/kernels/cuda/glm_fast.cu:5674 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_IDX_FP16_CHECK` | src/prefill/prefill.cpp:1440 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_INDEXER_PER_TOKEN` | src/prefill/prefill.cpp:1386 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_IO_THREADS` | src/platform/direct_file.cpp:63 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_IQ_GATHER` | src/kernels/cpu/iq_avx512.cpp:37 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_IQ_PREFETCH` | src/kernels/cpu/iq_avx512.cpp:41 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_KV_MAIN_OFF` | src/core/layer.cpp:501 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_KV_RING_OFF` | src/core/layer.cpp:500 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_KV_STAGE_OWN` | src/prefill/prefill.cpp:334 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_MTP_BATCH` | src/prefill/prefill.cpp:721 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_MTP_BATCH_F16` | src/prefill/prefill.cpp:753 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_MTP_PREFILL_SYNC` | src/core/mtp.cpp:591 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_NO_IQ256` | src/kernels/cpu/native_expert.cpp:92 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_NO_IQ4NL` | src/kernels/cpu/native_expert.cpp:331 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_NO_LARGEPAGES` | src/core/pinned.cu:61 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_PLE_BATCH` | src/prefill/prefill.cpp:1000 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_PLE_GGUF` | src/kernels/ple_parity.cpp:255 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_POOL_SPIN_US` | src/kernels/cpu/pool.cpp:177 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_POOL_TRACE` | src/core/expert_source.cpp:864 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_PREFILL_DUMP_R` | src/prefill/prefill.cpp:1860 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_PREFILL_ISSUER` | src/prefill/prefill.cpp:1174 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_PREFILL_MMQ` | src/prefill/prefill.cpp:427 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_PREFILL_RING` | src/prefill/prefill.cpp:83 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_PREFILL_TIMING` | src/prefill/prefill.cpp:935 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_PROMPT_ATTN_OLD` | src/prefill/prefill.cpp:1508 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_PROMPT_ATTN_V1` | src/kernels/cuda/qsa_prompt_attn.cu:709 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_QSA_DUMP` | src/prefill/prefill.cpp:1486 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_QSA_DUMP_LAST` | src/prefill/prefill.cpp:1487 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_REFILL_BLOCKING` | src/program/generate.cpp:99 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_REMOTE_SPIN` | src/core/remote_experts.cpp:279 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_REMOTE_ZEROCOPY` | src/core/remote_experts.cpp:404 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_SELECT_OLD` | src/prefill/prefill.cpp:1407 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_SEL_OVERLAP` | src/prefill/prefill.cpp:1418 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_SPLIT_MISS_MS` | src/program/generate.cpp:4699 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_SPLIT_TIMING` | src/program/generate.cpp:7079 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_STAGER_RING` | src/prefill/prefill.cpp:153 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_STAGER_THREADS` | src/prefill/prefill.cpp:541 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_STATE_HASH` | src/program/generate.cpp:6973 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_STATE_HASH_GDN` | src/prefill/prefill.cpp:1934 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_TEST_CACHE_FAIL` | src/program/generate.cpp:4887 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_TG_FLUSH_US` | src/core/session.cpp:884 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_TOPK_OLD` | src/kernels/cuda/qsa_select.cu:510 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_TRACE` | src/prefill/prefill.cpp:1026 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_VERIFY_DEBUG` | src/core/verify.cpp:57 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_VERIFY_DEVICE_PLAN` | src/core/verify.cpp:292 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_VERIFY_NODES` | src/core/verify.cpp:840 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `STRATA_VERIFY_PROFILE` | src/core/verify.cpp:269 (undocumented engine-internal knob; it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `--allow-empty` | serve/test_update.py:132 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--api-key` | serve/server.py:3967 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--backend` | maya.py:2930 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--bin` | maya.py:686 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--build` | maya.py:1380 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--calibrate` | maya.py:3910 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--compat-bf16` | maya.py:2065 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--config` | serve/server.py:3946 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--connect-timeout` | maya.py:1806 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--context` | maya.py:3884 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--crash-at-start` | serve/mcp_fake_server.py:165 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--disable-pip-version-check` | maya.py:725 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--download-model` | maya.py:3856 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--draft` | maya.py:3869 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--drafting` | maya.py:3918 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--ds4-quant` | maya.py:3864 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `--dspark` | maya.py:3719 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `--dspark-conf` | maya.py:3719 (out of scope: the DeepSeek DS4 engine path is not part of the GLM parity surface (plan 2026-10-22-sp5-p2 §Non-goals); it never renders: the closed child-env allowlist takes its names from the typed rows) |
+| `--engram` | maya.py:3694 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--env` | maya.py:3896 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--equal` | docs/SETTINGS.md:170 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--fail` | maya.py:1827 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--ff-only` | serve/update.py:163 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--find-links` | maya.py:3250 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--fit-max-tokens` | serve/server.py:3964 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--gguf-dir` | maya.py:3874 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--gpu` | serve/server.py:1050 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--host` | serve/server.py:3948 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--host-compiler` | maya.py:3899 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--http` | serve/mcp_fake_server.py:168 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--idle-unload` | serve/server.py:3960 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--index-url` | maya.py:725 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--json` | maya.py:2991 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--llama-dir` | maya.py:3901 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--max-tokens` | serve/server.py:1054 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--measure` | serve/server.py:1222 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--mmproj` | serve/server.py:1048 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--model` | serve/server.py:1048 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--model-dir` | maya.py:3861 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--models-dir` | maya.py:3878 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--no-flash-attn` | serve/server.py:1056 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--no-index` | maya.py:3249 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--no-speed-calibration` | maya.py:3922 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--no-start` | maya.py:3851 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--no-vision` | maya.py:3872 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--no-warmup` | serve/server.py:1072 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--nvcc` | maya.py:3898 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--nvml-child` | serve/telemetry.py:52 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--open` | serve/server.py:3959 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--page` | serve/mcp_fake_server.py:163 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--parent-pipe` | serve/server.py:3973 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--plain` | maya.py:3854 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--porcelain` | serve/update.py:117 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--port` | serve/server.py:3954 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--quiet` | maya.py:3249 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--rebuild` | maya.py:3902 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--repack` | maya.py:3903 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--report` | maya.py:3904 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--retry` | maya.py:1877 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--root` | maya.py:684 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--script` | serve/server.py:3951 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--setup` | maya.py:3849 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--shards` | maya.py:3695 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--showdriverversion` | maya.py:2991 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--showmeminfo` | maya.py:2991 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--showproductname` | maya.py:2991 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--skip` | serve/telemetry.py:90 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--speed-calibration` | maya.py:3913 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--speed-limit` | maya.py:1806 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--speed-time` | maya.py:1806 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--tags` | serve/update.py:160 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--target` | maya.py:535 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--tokenizer` | serve/server.py:3957 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--version` | maya.py:541 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+| `--yes` | maya.py:2927 (maya.py's own CLI: the launcher the SP4 manifest + supervision replace (T2-b)) |
+<!-- maya-out:end -->
+
 
 ## Run the native inference server
 

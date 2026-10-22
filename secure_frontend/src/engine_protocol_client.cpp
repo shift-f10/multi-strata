@@ -109,7 +109,7 @@ bool is_engine_fatal_line(const std::string_view line) noexcept {
                      [line](const std::string_view prefix) { return line.substr(0, prefix.size()) == prefix; });
 }
 
-std::string render_sampling_keys(const SamplingParams& sampling) {
+std::string render_sampling_keys(const SamplingParams& sampling, const bool zero_window_disables) {
   std::string out;
   const auto number = [&out](std::string_view key, const double value) {
     char buffer[64];
@@ -135,13 +135,20 @@ std::string render_sampling_keys(const SamplingParams& sampling) {
   const bool repeat_on = sampling.repetition_penalty.has_value() && *sampling.repetition_penalty != 1.0;
   const bool frequency_on = sampling.frequency_penalty.has_value() && *sampling.frequency_penalty != 0.0;
   const bool presence_on = sampling.presence_penalty.has_value() && *sampling.presence_penalty != 0.0;
-  if (repeat_on) number("penalty_repeat", *sampling.repetition_penalty);
-  if (frequency_on) number("penalty_freq", *sampling.frequency_penalty);
-  if (presence_on) number("penalty_present", *sampling.presence_penalty);
-  if (repeat_on || frequency_on || presence_on) {
-    const auto window =
-        (sampling.penalty_last_n.has_value() && *sampling.penalty_last_n > 0) ? *sampling.penalty_last_n : 64;
-    out += " penalty_last_n=" + std::to_string(window);
+  // SP5-P2 Task 7: on the GLM engine a window of 0 means NO penalty (generate.cpp:3467
+  // `pen_on = pen_n > 0`; maya serve/server.py:274-275 in words) — the keys are omitted
+  // entirely, so the picks are exactly as without them. The strata pin keeps its
+  // default-window-of-64 rule for the same input (serve/server.py:1360-1394).
+  const bool glm_zero_off = zero_window_disables && sampling.penalty_last_n.has_value() && *sampling.penalty_last_n == 0;
+  if (!glm_zero_off) {
+    if (repeat_on) number("penalty_repeat", *sampling.repetition_penalty);
+    if (frequency_on) number("penalty_freq", *sampling.frequency_penalty);
+    if (presence_on) number("penalty_present", *sampling.presence_penalty);
+    if (repeat_on || frequency_on || presence_on) {
+      const auto window =
+          (sampling.penalty_last_n.has_value() && *sampling.penalty_last_n > 0) ? *sampling.penalty_last_n : 64;
+      out += " penalty_last_n=" + std::to_string(window);
+    }
   }
   if (sampling.seed.has_value() && *sampling.seed > 0U) out += " seed=" + std::to_string(*sampling.seed);
   return out;
@@ -306,7 +313,8 @@ std::optional<EngineProtocolError> EngineProtocolClient::begin_generation(
     return EngineProtocolError{EngineProtocolErrorCode::invalid_argument, "embeddings path is not a protocol field"};
   }
   std::string command = embeddings.empty() ? "GEN " : "GENI ";
-  command += std::to_string(max_new_tokens) + render_sampling_keys(sampling) + " ";
+  command += std::to_string(max_new_tokens) +
+             render_sampling_keys(sampling, flavor_ == EngineProtocolFlavor::maya_118) + " ";
   for (std::size_t index = 0; index < prompt_token_ids.size(); ++index) {
     if (index != 0) command.push_back(',');
     command += std::to_string(prompt_token_ids[index]);
