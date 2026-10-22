@@ -22,6 +22,13 @@ per-task gates; TDD RED first; `-Werror`; no pushes.
 - `tools/secure/secure_tokenizer.py` already wraps `glm4`/`chatglm-bpe` (with
   `test_glm_tokenizer.py`); the §5.5 fix (ignore_merges, `glm5` accepted) is genuinely
   unimplemented (grep: no `ignore_merges` anywhere).
+- **2026-10-22 SP5-P2 correction (binding):** the pins moved — `engines/maya-ref` is now
+  **v1.1.21 @ `451f9cb6`** and the GLM parity table was REGENERATED there (183 typed /
+  33 mapped / 50 rejected / 464 out; 146-name env allowlist; `glm.*` 127 rows incl.
+  `glm.idle_unload_s`), penalty window-0 rule per flavor. Cite the NEW table surface, not
+  "178 rows"; `glm.*` config verification above means: re-check §4.9/sheet M2 against the
+  regenerated surface. The maya_118 wire is now certified at v1.1.21 (slot-mode rejects,
+  ten-field DONE) — the fake engine already emits the v1.1.21 cadence.
 
 ## Tasks
 
