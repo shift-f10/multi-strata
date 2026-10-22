@@ -2,6 +2,7 @@
 
 #include "secure_frontend/api_constants.hpp"
 #include "secure_frontend/engine_protocol_client.hpp"
+#include "secure_frontend/glm_output.hpp"
 #include "secure_frontend/tokenizer_pack.hpp"
 
 #include <chrono>
@@ -58,6 +59,12 @@ struct GenerationRunLimits final {
   // CONTROL/USER_DEFINED token does.
   std::optional<ThinkTokens> think_tokens{};
   bool starts_in_reasoning{false};
+  // SP6 §4.10: the glm53 output rules (nullopt: not a glm53 generation). With them the
+  // pump applies the §4.10 rules instead of the Qwen ones above: reasoning is stripped
+  // (buffered for the stop-without-</think> flush), type-3/4 ids in the content are
+  // stripped and counted, and decoding never fails because of such ids. starts_in_reasoning
+  // is true: the fixed GLM renderer opens the think block. The Qwen fields stay untouched.
+  std::optional<Glm53OutputRules> glm53_rules{};
   // Issue 26: end-of-turn ids (find_qwen_end_of_turn_tokens). One ends the reply as stop: it
   // is never output, and anything the engine sends after it before DONE is dropped
   // (upstream breaks out of its token loop there, serve/server.py:5086-5091).
@@ -72,6 +79,10 @@ struct GenerationRunResult final {
   bool timed_out{false};
   bool bytes_capped{false};
   RunCancel cancel{RunCancel::none};
+  // SP6 §4.10 rule 3: the type-3/4 ids stripped inside the glm53 content region
+  // (the fixed log literal `engine emitted control token` counts them; 0 without
+  // limits.glm53_rules or without any such id).
+  std::size_t control_tokens_stripped{0};
 };
 
 // Receives the decoded text and the liveness beat of one driven generation.

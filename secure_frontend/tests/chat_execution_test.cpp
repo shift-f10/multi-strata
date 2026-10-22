@@ -104,6 +104,14 @@ secure_frontend::TokenizerPack glm_tokenizer_for(const std::string& text) {
   return pack;
 }
 
+// SP6 §4.10: the pack's single USER_DEFINED </think> entry, type 4 exactly as
+// MAYA marks it (strata_tokenizer.py). A valid glm53 pack must carry it; tests
+// that want the invalid-pack case add their own variant instead.
+void add_glm_close(secure_frontend::TokenizerPack& pack) {
+  pack.tokens_by_id.emplace_back("</think>");
+  pack.token_types.push_back(4);
+}
+
 void executes_a_bounded_non_streaming_completion() {
   const std::string prompt = "<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n";
   const auto tokenizer = tokenizer_for(prompt + "OK");
@@ -179,12 +187,13 @@ void fails_closed_on_invalid_engine_output() {
 
 void executes_glm53_only_when_explicitly_selected() {
   const std::string prompt = "[gMASK]<sop><|user|>Hi<|assistant|><think>";
-  const auto tokenizer = glm_tokenizer_for(prompt + "OK");
+  auto tokenizer = glm_tokenizer_for(prompt + "OK");
+  add_glm_close(tokenizer);  // §4.10: a valid glm53 pack carries its single type-4 </think>
   const auto output_o = token_id_for(tokenizer, "O");
   const auto output_k = token_id_for(tokenizer, "K");
   FakeTransport transport;
   transport.reads = {line("READY 512"), line("PP 8 16 2.0 4.0"), line("T " + std::to_string(output_o)),
-                     line("T " + std::to_string(output_k)), line("DONE 2")};
+                     line("T " + std::to_string(output_k)), line("DONE 2 1 1.0 2.0 stop")};
   secure_frontend::EngineProtocolClient protocol(
       transport, {}, secure_frontend::EngineProtocolFlavor::lighttransport_glm53);
   secure_frontend::ChatExecutionService service(
@@ -203,7 +212,8 @@ void executes_glm53_only_when_explicitly_selected() {
 // GEN write or the decoded answer.
 void glm_profile_generation_completes_over_maya_dialect() {
   const std::string prompt = "[gMASK]<sop><|user|>Hi<|assistant|><think>";
-  const auto tokenizer = glm_tokenizer_for(prompt + "OK");
+  auto tokenizer = glm_tokenizer_for(prompt + "OK");
+  add_glm_close(tokenizer);  // §4.10
   const auto output_o = token_id_for(tokenizer, "O");
   const auto output_k = token_id_for(tokenizer, "K");
   // Non-stream: Maya's records around the same T payload (generate.cpp:1347 NOTE,
@@ -268,7 +278,8 @@ void glm_profile_generation_completes_over_maya_dialect() {
 // cadence records, the protocol recovers idle and the next request serves.
 void maya_dialect_cancellation_round_trips() {
   const std::string prompt = "[gMASK]<sop><|user|>Hi<|assistant|><think>";
-  const auto tokenizer = glm_tokenizer_for(prompt + "OK");
+  auto tokenizer = glm_tokenizer_for(prompt + "OK");
+  add_glm_close(tokenizer);  // §4.10
   const auto output_o = token_id_for(tokenizer, "O");
   const auto output_k = token_id_for(tokenizer, "K");
   FakeTransport transport;
@@ -967,6 +978,141 @@ void run_generation_returns_reasoning_beside_the_answer() {
          "answer and reasoning come back apart: [" + result->text + "] [" + result->reasoning + "]");
 }
 
+// SP6 Plan 1 Task 2 (§4.10): the glm53 pump rules. A separate branch keyed by
+// limits.glm53_rules — the Qwen cases above pin the old behaviour unchanged.
+secure_frontend::Glm53OutputRules glm_rules(const secure_frontend::TokenizerPack& pack) {
+  const auto found = secure_frontend::find_glm53_think_close_id(pack);
+  const auto* id = std::get_if<std::size_t>(&found);
+  expect(id != nullptr, "the fixture pack must answer the §4.10 close lookup");
+  return secure_frontend::Glm53OutputRules{id != nullptr ? *id : 0U};
+}
+
+void drive_generation_glm53_strips_reasoning_and_emits_after_close() {
+  const auto pack = think_tokenizer();
+  const auto rules = glm_rules(pack);
+  const secure_frontend::TokenByteDecoder decoder(pack);
+  Running run({"T " + byte_id('h'), "T " + byte_id('m'), id_line(rules.think_close_id), "T " + byte_id('\n'), "T " + byte_id('O'),
+               "T " + byte_id('K'), "DONE 6 1 0 0 stop"});
+  ReasoningCollector collector;
+  const auto result = secure_frontend::drive_generation(
+      run.protocol, decoder, {.max_tokens = 16U, .starts_in_reasoning = true, .glm53_rules = rules}, collector);
+  expect(result.end == secure_frontend::RunEnd::stop && result.completion_tokens == 6U, "the reply ends normally, every token counted");
+  expect(collector.reasoning.empty(), "glm53 reasoning is never emitted, on_reasoning included");
+  expect(collector.text == "\nOK", "content = the decoded ids after the first </think>, newlines included: [" + collector.text + "]");
+  expect(result.control_tokens_stripped == 0U, "no control strip happened");
+}
+
+void drive_generation_glm53_stop_without_close_flushes_buffered_text() {
+  const auto pack = think_tokenizer();
+  const auto rules = glm_rules(pack);
+  const secure_frontend::TokenByteDecoder decoder(pack);
+  Running run({"T " + byte_id('A'), "T " + byte_id('B'), id_line(154827U), "DONE 3 1 0 0 stop"});
+  ReasoningCollector collector;
+  const auto result = secure_frontend::drive_generation(
+      run.protocol, decoder, {.max_tokens = 16U, .starts_in_reasoning = true, .glm53_rules = rules}, collector);
+  expect(result.end == secure_frontend::RunEnd::stop, "the reply ends as stop");
+  expect(collector.text == "AB" && collector.order == "c", "the whole buffered text goes out as ONE content chunk: [" + collector.text + "] " + collector.order);
+  expect(result.control_tokens_stripped == 0U, "the one trailing end-of-turn id is the rule-1 drop, not counted");
+}
+
+void drive_generation_glm53_length_without_close_emits_nothing() {
+  const auto pack = think_tokenizer();
+  const auto rules = glm_rules(pack);
+  const secure_frontend::TokenByteDecoder decoder(pack);
+  Running run({"T " + byte_id('A'), "T " + byte_id('B'), "DONE 2 1 0 0 length"});
+  ReasoningCollector collector;
+  const auto result = secure_frontend::drive_generation(
+      run.protocol, decoder, {.max_tokens = 16U, .starts_in_reasoning = true, .glm53_rules = rules}, collector);
+  expect(result.end == secure_frontend::RunEnd::length && collector.text.empty() && collector.reasoning.empty(),
+         "length without </think>: empty content (never an empty 200 of reasoning)");
+  expect(result.control_tokens_stripped == 0U, "never-returned reasoning ids are not counted");
+}
+
+void drive_generation_glm53_control_ids_in_content_never_fail_decode() {
+  auto pack = think_tokenizer();
+  pack.tokens_by_id.emplace_back("<|tool_call|>");
+  pack.token_types.push_back(4);
+  const auto rules = glm_rules(pack);
+  const auto tool = token_id_for(pack, "<|tool_call|>");
+  const secure_frontend::TokenByteDecoder decoder(pack);
+  Running run({id_line(rules.think_close_id), "T " + byte_id('A'), id_line(tool), id_line(154820U), "T " + byte_id('B'),
+               id_line(154829U), "DONE 6 1 0 0 stop"});
+  ReasoningCollector collector;
+  const auto result = secure_frontend::drive_generation(
+      run.protocol, decoder, {.max_tokens = 16U, .starts_in_reasoning = true, .glm53_rules = rules}, collector);
+  expect(result.end == secure_frontend::RunEnd::stop, "decoding never fails because of control ids");
+  expect(collector.text == "AB", "type-3/4 ids in the content are removed before decoding: [" + collector.text + "]");
+  expect(result.control_tokens_stripped == 2U, "tool tag + mid end-of-turn counted, the trailing one credited to rule 1");
+}
+
+void run_generation_glm53_maps_rules_and_count_to_the_result() {
+  const auto tokenizer = think_tokenizer();
+  const auto rules = glm_rules(tokenizer);
+  ReadyService f;
+  f.transport.reads = {"T " + byte_id('h'), id_line(rules.think_close_id), "T " + byte_id('A'), id_line(154829U), "DONE 4 3 1.0 1.0 stop"};
+  const auto outcome = f.service.run_generation(
+      {1U, 2U}, {.max_tokens = 8U, .starts_in_reasoning = true, .glm53_rules = rules}, {}, tokenizer);
+  const auto* result = std::get_if<secure_frontend::GenerationResult>(&outcome);
+  expect(result != nullptr, "a glm53 generation with control ids is a result, not decode_failed");
+  if (result == nullptr) return;
+  expect(result->text == "A" && result->reasoning.empty() && result->finish == secure_frontend::FinishReason::stop &&
+             result->completion_tokens == 4U && result->control_tokens_stripped == 0U,
+         "reasoning stripped, content 'A', trailing end-of-turn dropped: [" + result->text + "]");
+}
+
+// §4.10 at the M1 batch decode site (the spec's cited chat_execution.cpp line):
+// the whole non-streaming path over a synthetic maya-dialect transcript.
+void glm53_chat_strips_reasoning_over_maya_dialect() {
+  const std::string prompt = "[gMASK]<sop><|user|>Hi<|assistant|><think>";
+  auto tokenizer = glm_tokenizer_for(prompt + "OK");
+  add_glm_close(tokenizer);
+  const auto close = glm_rules(tokenizer).think_close_id;
+  FakeTransport transport;
+  transport.reads = {line("READY 512 stop pause"), line("NOTE sessions: 1"), line("T " + std::to_string(token_id_for(tokenizer, "O"))),
+                     line("T " + std::to_string(close)), line("T " + std::to_string(token_id_for(tokenizer, "K"))),
+                     line("T 154827"), line("DONE 4 1 1.0 2.0 stop")};
+  secure_frontend::EngineProtocolClient protocol(transport, {}, secure_frontend::EngineProtocolFlavor::maya_118);
+  secure_frontend::ChatExecutionService service(protocol, {}, secure_frontend::NativeChatProfile::glm53);
+  const auto result = service.execute({"glm-local", {{"user", "Hi"}}, 8U}, tokenizer);
+  const auto* completion = std::get_if<secure_frontend::ChatExecutionResult>(&result);
+  expect(completion != nullptr && completion->text == "K" && completion->generated_tokens == 4U,
+         "reasoning stripped, one trailing end-of-turn dropped: " +
+             std::string(completion != nullptr ? completion->text : std::string{"<error>"}));
+}
+
+void glm53_chat_stop_without_close_returns_whole_output() {
+  const std::string prompt = "[gMASK]<sop><|user|>Hi<|assistant|><think>";
+  auto tokenizer = glm_tokenizer_for(prompt + "OK");
+  add_glm_close(tokenizer);
+  FakeTransport transport;
+  transport.reads = {line("READY 512 stop pause"), line("T " + std::to_string(token_id_for(tokenizer, "O"))),
+                     line("T " + std::to_string(token_id_for(tokenizer, "K"))), line("T 154829"), line("DONE 3 1 1.0 2.0 stop")};
+  secure_frontend::EngineProtocolClient protocol(transport, {}, secure_frontend::EngineProtocolFlavor::maya_118);
+  secure_frontend::ChatExecutionService service(protocol, {}, secure_frontend::NativeChatProfile::glm53);
+  const auto result = service.execute({"glm-local", {{"user", "Hi"}}, 8U}, tokenizer);
+  const auto* completion = std::get_if<secure_frontend::ChatExecutionResult>(&result);
+  expect(completion != nullptr && completion->text == "OK",
+         "stop without </think>: the whole decoded output is the content, never an empty 200");
+}
+
+void glm53_chat_invalid_pack_fails_before_generation() {
+  const std::string prompt = "[gMASK]<sop><|user|>Hi<|assistant|><think>";
+  auto tokenizer = glm_tokenizer_for(prompt + "OK");
+  // A second, CONTROL-typed </think> entry contradicts §4.10 rule 2: ambiguous,
+  // and not the USER_DEFINED type MAYA marks. (glm_tokenizer_for itself carries
+  // no </think>; the close the other cases need is added per test.)
+  tokenizer.tokens_by_id.emplace_back("</think>");
+  tokenizer.token_types.push_back(3);
+  FakeTransport transport;
+  transport.reads = {line("READY 512 stop pause")};
+  secure_frontend::EngineProtocolClient protocol(transport, {}, secure_frontend::EngineProtocolFlavor::maya_118);
+  secure_frontend::ChatExecutionService service(protocol, {}, secure_frontend::NativeChatProfile::glm53);
+  const auto result = service.execute({"glm-local", {{"user", "Hi"}}, 2U}, tokenizer);
+  const auto* failure = std::get_if<secure_frontend::ChatExecutionError>(&result);
+  expect(failure != nullptr, "a pack that contradicts the close rule fails the plan");
+  expect(transport.writes.empty(), "nothing is written to the engine: the refusal happens before GEN");
+}
+
 // Session log step 16 (listener.monitor): the meter hears every counted token and the
 // engine's DONE figures, on both paths, and never any text; without one nothing changes.
 struct CountingMeter final : secure_frontend::GenerationMeter {
@@ -1042,6 +1188,14 @@ int main(int argc, char** argv) {
       {"run_generation_returns_reasoning_beside_the_answer", run_generation_returns_reasoning_beside_the_answer},
       {"drive_generation_end_of_turn_ends_the_reply_as_stop", drive_generation_end_of_turn_ends_the_reply_as_stop},
       {"drive_generation_feeds_the_monitor_meter", drive_generation_feeds_the_monitor_meter},
+      {"drive_generation_glm53_strips_reasoning_and_emits_after_close", drive_generation_glm53_strips_reasoning_and_emits_after_close},
+      {"drive_generation_glm53_stop_without_close_flushes_buffered_text", drive_generation_glm53_stop_without_close_flushes_buffered_text},
+      {"drive_generation_glm53_length_without_close_emits_nothing", drive_generation_glm53_length_without_close_emits_nothing},
+      {"drive_generation_glm53_control_ids_in_content_never_fail_decode", drive_generation_glm53_control_ids_in_content_never_fail_decode},
+      {"run_generation_glm53_maps_rules_and_count_to_the_result", run_generation_glm53_maps_rules_and_count_to_the_result},
+      {"glm53_chat_strips_reasoning_over_maya_dialect", glm53_chat_strips_reasoning_over_maya_dialect},
+      {"glm53_chat_stop_without_close_returns_whole_output", glm53_chat_stop_without_close_returns_whole_output},
+      {"glm53_chat_invalid_pack_fails_before_generation", glm53_chat_invalid_pack_fails_before_generation},
       {"run_generation_ends_at_the_end_of_turn", run_generation_ends_at_the_end_of_turn},
       {"run_generation_maps_engine_errors", run_generation_maps_engine_errors},
   }, failures);

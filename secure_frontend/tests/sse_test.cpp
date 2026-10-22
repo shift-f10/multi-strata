@@ -523,6 +523,50 @@ void stream_sends_reasoning_deltas_before_the_answer() {
   expect(first_reasoning < first_content, "reasoning deltas go out before the answer's");
 }
 
+// SP6 Plan 1 Task 2 (§4.10) at the SSE layer: the GLM rules are a separate branch;
+// GLM reasoning never reaches the client, not even as reasoning_content.
+void stream_glm53_emits_content_only_after_the_close() {
+  auto pack = test_support::byte_tokenizer();
+  pack.tokens_by_id.emplace_back("</think>");
+  pack.token_types.push_back(4);
+  const std::size_t close = pack.tokens_by_id.size() - 1U;
+  StreamRun stream({tok('h'), "T " + std::to_string(close), tok('O'), "T 154827", "DONE 4 3 1.0 1.0 stop"});
+  stream.pack = pack;
+  secure_frontend::ChatStreamSettings settings;
+  settings.run.glm53_rules = secure_frontend::Glm53OutputRules{close};
+  settings.run.starts_in_reasoning = true;
+  const auto outcome = stream.run(settings);
+  std::string reasoning;
+  for (const auto& event : stream.sink.events) {
+    expect(event.find("think>") == std::string::npos, "no event carries a think tag");
+    const auto marker = event.find(R"("delta":{"reasoning_content":")");
+    if (marker != std::string::npos) reasoning += event.substr(marker + 30U, event.find('"', marker + 30U) - (marker + 30U));
+  }
+  expect(outcome.end == secure_frontend::RunEnd::stop && outcome.terminal_chunk_sent, "the stream ends as stop");
+  expect(reasoning.empty(), "glm53 reasoning is never emitted as reasoning_content");
+  expect(stream.text() == "O", "content starts after </think>; the end-of-turn id never reaches the client: [" + stream.text() + "]");
+}
+
+void stream_glm53_stop_without_close_flushes_buffer_once_with_log_literal() {
+  auto pack = test_support::byte_tokenizer();
+  pack.tokens_by_id.emplace_back("</think>");
+  pack.token_types.push_back(4);
+  const std::size_t close = pack.tokens_by_id.size() - 1U;
+  StreamRun stream({tok('O'), tok('K'), "T 154827", "DONE 3 3 1.0 1.0 stop"});
+  stream.pack = pack;
+  secure_frontend::ChatStreamSettings settings;
+  settings.run.glm53_rules = secure_frontend::Glm53OutputRules{close};
+  settings.run.starts_in_reasoning = true;
+  const auto outcome = stream.run(settings);
+  std::size_t content_chunks = 0U;
+  for (const auto& event : stream.sink.events) {
+    if (event.find(R"("delta":{"content")") != std::string::npos) ++content_chunks;
+  }
+  expect(stream.text() == "OK" && content_chunks == 1U, "the whole buffered text goes out as ONE content chunk: [" + stream.text() + "]");
+  expect(outcome.log_code == "engine emitted control token", "the fixed §4.10 log literal: [" + std::string{outcome.log_code} + "]");
+  expect(outcome.end == secure_frontend::RunEnd::stop && outcome.terminal_chunk_sent, "a normal stop end");
+}
+
 // Issue 26: the end-of-turn token ends the stream with a stop chunk, never an error.
 void stream_ends_at_the_end_of_turn_token() {
   StreamRun probe({});
@@ -549,6 +593,9 @@ int main(int argc, char* argv[]) {
                                              {"utf8_split_across_tokens_is_held_then_released", utf8_split_across_tokens_is_held_then_released},
                                              {"sse_reasoning_event_shape", sse_reasoning_event_shape},
                                              {"stream_sends_reasoning_deltas_before_the_answer", stream_sends_reasoning_deltas_before_the_answer},
+                                             {"stream_glm53_emits_content_only_after_the_close", stream_glm53_emits_content_only_after_the_close},
+                                             {"stream_glm53_stop_without_close_flushes_buffer_once_with_log_literal",
+                                              stream_glm53_stop_without_close_flushes_buffer_once_with_log_literal},
                                              {"stream_ends_at_the_end_of_turn_token", stream_ends_at_the_end_of_turn_token},
                                              {"utf8_invalid_sequence_becomes_replacement_character", utf8_invalid_sequence_becomes_replacement_character},
                                              {"utf8_incomplete_tail_dropped_on_length_and_cancel", utf8_incomplete_tail_dropped_on_length_and_cancel},

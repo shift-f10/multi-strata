@@ -2,6 +2,7 @@
 
 #include "secure_frontend/chat_schema.hpp"
 #include "secure_frontend/config_defaults.hpp"
+#include "secure_frontend/glm_output.hpp"
 #include "secure_frontend/qwen_prompt_renderer.hpp"
 #include "secure_frontend/sampling_params.hpp"
 #include "secure_frontend/tokenizer_pack.hpp"
@@ -32,6 +33,10 @@ struct ChatGenerationPlan final {
   bool starts_in_reasoning{false};
   // Issue 26: the end-of-turn ids that end the reply as stop (find_qwen_end_of_turn_tokens).
   std::vector<std::size_t> stop_tokens{};
+  // SP6 §4.10: the glm53 plan resolves the pack's </think> id once, at plan time
+  // (find_glm53_think_close_id); a pack that contradicts the rule is refused here.
+  // The Qwen plans never set it.
+  std::optional<Glm53OutputRules> glm53_rules{};
 };
 
 enum class ChatGenerationPlanErrorCode {
@@ -39,6 +44,9 @@ enum class ChatGenerationPlanErrorCode {
   prompt_render_failed,
   tokenization_failed,
   prompt_too_large,
+  // SP6 §4.10: the glm53 pack fails the </think> lookup rule (server-side fault,
+  // not a request fault); the §5.2 layout check (SP6 Plan 2) refuses such packs at load.
+  invalid_tokenizer_pack,
 };
 
 struct ChatGenerationPlanError final {

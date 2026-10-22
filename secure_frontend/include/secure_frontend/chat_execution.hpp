@@ -104,6 +104,8 @@ struct GenerationSettings final {
   // handed to drive_generation through drive_limits.
   std::optional<ThinkTokens> think_tokens{};
   bool starts_in_reasoning{false};
+  // SP6 §4.10: the glm53 plan's output rules (plan.glm53_rules), handed to the pump.
+  std::optional<Glm53OutputRules> glm53_rules{};
   std::vector<std::size_t> stop_tokens{};  // ChatGenerationPlan::stop_tokens (issue 26)
   GenerationMeter* meter{nullptr};         // the Monitor (listener.monitor); null: none
 };
@@ -121,6 +123,8 @@ struct GenerationResult final {
   FinishReason finish;
   bool timed_out{false};  // B4: a timeout is a result with FinishReason::length, flagged for the log
   std::string reasoning{};  // the think block's text (message.reasoning_content); empty: none
+  // SP6 §4.10 rule 3: glm53 content-region control ids stripped (0: none / not glm53).
+  std::size_t control_tokens_stripped{0};
 };
 
 enum class GenerationFailure { cancelled, engine_error, engine_unavailable, decode_failed, shutting_down };

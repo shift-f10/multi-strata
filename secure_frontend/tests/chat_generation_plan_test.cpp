@@ -69,6 +69,25 @@ std::size_t token_id_for(const secure_frontend::TokenizerPack& pack,
   return pack.tokens_by_id.size();
 }
 
+// SP6 §4.10: a glm53 pack for plan tests; with_close adds the single type-4
+// </think> entry the rule requires (tests wanting the refusal variant pass false
+// or append their own entry).
+std::string prompt_with_think() { return "[gMASK]<sop><|user|>Hi<|assistant|><think>"; }
+
+secure_frontend::TokenizerPack glm_pack_for(const std::string& prompt, const bool with_close) {
+  auto pack = tokenizer_for(prompt);
+  for (const std::string_view marker :
+       {"[gMASK]", "<sop>", "<|system|>", "<|user|>", "<|assistant|>", "<think>"}) {
+    pack.tokens_by_id.emplace_back(marker);
+    pack.token_types.push_back(3);
+  }
+  if (with_close) {
+    pack.tokens_by_id.emplace_back("</think>");
+    pack.token_types.push_back(4);
+  }
+  return pack;
+}
+
 // SP5 M1 Task 12 (Ruling T12-f): image parts render the Qwen template's per-image run
 // — <|vision_start|> + N x <|image_pad|> + <|vision_end|> — with N the image-token count
 // the encoder answered (the pin expands the pad run one id per image token,
@@ -128,6 +147,15 @@ void vision_marker_runs_join_the_prompt_ids() {
   const auto glm = secure_frontend::make_glm53_chat_generation_plan(request, pack, 4096U, 12U,
                                                                     secure_frontend::SamplingDefaults{}, counts);
   expect(std::holds_alternative<secure_frontend::ChatGenerationPlanError>(glm), "no image plans on the GLM profile");
+
+  // SP6 §4.10: even the shape-valid refusal runs before the pack rule, and the
+  // rule itself refuses a contradicted pack (below, in its own case).
+  const auto image_pack_refused = secure_frontend::make_glm53_chat_generation_plan(request, glm_pack_for(prompt_with_think(), false), 4096U, 12U,
+                                                                                   secure_frontend::SamplingDefaults{}, counts);
+  expect(std::holds_alternative<secure_frontend::ChatGenerationPlanError>(image_pack_refused) &&
+             std::get<secure_frontend::ChatGenerationPlanError>(image_pack_refused).code !=
+                 secure_frontend::ChatGenerationPlanErrorCode::invalid_tokenizer_pack,
+         "the image refusal precedes the pack rule");
   // A text request with an EMPTY counts vector renders exactly today's prompt (T12-e: no
   // behaviour change for text).
   secure_frontend::ChatCompletionRequest text_only;
@@ -392,6 +420,36 @@ void sampling_defaults_merge_under_request_overrides() {
          "without config defaults the request alone drives GEN");
 }
 
+// SP6 Plan 1 Task 2 (§4.10): the glm53 plan resolves the close id once, at plan
+// time, and refuses a pack that contradicts the rule — before any engine write.
+void glm53_plan_resolves_the_think_close_and_starts_in_reasoning() {
+  const auto request = secure_frontend::parse_chat_completion_request(
+      R"({"model":"glm-local","messages":[{"role":"user","content":"Hi"}],"max_tokens":12})");
+  expect(request.has_value(), "test request must pass the strict chat schema");
+  if (!request) return;
+  const auto pack = glm_pack_for(prompt_with_think(), true);
+  const auto result = secure_frontend::make_glm53_chat_generation_plan(*request, pack, 4096U, 12U);
+  const auto* plan = std::get_if<secure_frontend::ChatGenerationPlan>(&result);
+  expect(plan != nullptr, "a valid glm53 pack must produce a plan");
+  if (plan == nullptr) return;
+  expect(plan->glm53_rules.has_value() && plan->glm53_rules->think_close_id == token_id_for(pack, "</think>"),
+         "the plan carries the pack's single type-4 </think> id");
+  expect(plan->starts_in_reasoning, "the fixed GLM renderer leaves the think block open");
+  expect(!plan->think_tokens.has_value() && plan->stop_tokens.empty(), "the Qwen fields stay empty on a GLM plan");
+
+  for (const bool with_close : {false, true}) {
+    auto broken = glm_pack_for(prompt_with_think(), with_close);
+    if (with_close) {  // ambiguous AND CONTROL-typed: two entries, neither rule satisfied alone
+      broken.tokens_by_id.emplace_back("</think>");
+      broken.token_types.push_back(3);
+    }
+    const auto refused = secure_frontend::make_glm53_chat_generation_plan(*request, broken, 4096U, 12U);
+    const auto* plan_error = std::get_if<secure_frontend::ChatGenerationPlanError>(&refused);
+    expect(plan_error != nullptr && plan_error->code == secure_frontend::ChatGenerationPlanErrorCode::invalid_tokenizer_pack,
+           with_close ? "an ambiguous or CONTROL-typed </think>: invalid_tokenizer_pack" : "no </think>: invalid_tokenizer_pack");
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -405,5 +463,6 @@ int main(int argc, char** argv) {
       {"qwen_plan_writes_the_template_think_block", qwen_plan_writes_the_template_think_block},
       {"qwen_plan_writes_the_effort_sentence", qwen_plan_writes_the_effort_sentence},
       {"qwen_plan_carries_the_end_of_turn_tokens", qwen_plan_carries_the_end_of_turn_tokens},
+      {"glm53_plan_resolves_the_think_close_and_starts_in_reasoning", glm53_plan_resolves_the_think_close_and_starts_in_reasoning},
   }, failures);
 }

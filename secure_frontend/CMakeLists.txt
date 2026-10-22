@@ -399,7 +399,7 @@ target_include_directories(secure_frontend_chat_generation_plan
         $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(secure_frontend_chat_generation_plan
-    PUBLIC secure_frontend_chat_schema secure_frontend_qwen_prompt_renderer secure_frontend_glm_prompt_renderer secure_frontend_tokenizer_pack)
+    PUBLIC secure_frontend_chat_schema secure_frontend_qwen_prompt_renderer secure_frontend_glm_prompt_renderer secure_frontend_tokenizer_pack secure_frontend_glm_output)
 target_compile_features(secure_frontend_chat_execution PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_chat_execution
     PUBLIC
@@ -412,6 +412,11 @@ target_link_libraries(secure_frontend_chat_execution
 secure_frontend_add_library(secure_frontend_generation_run SOURCES src/generation_run.cpp
     LINKS secure_frontend_engine_protocol_client secure_frontend_tokenizer_pack secure_frontend_utf8_stream secure_frontend_api_core)
 target_link_libraries(secure_frontend_chat_execution PUBLIC secure_frontend_generation_run)
+# SP6 Plan 1 Task 2 (§4.10): the glm53 output post-processing — the plan resolves it,
+# the pump and the M1 decode site apply it, and the Task-4 probe reuses it.
+secure_frontend_add_library(secure_frontend_glm_output SOURCES src/glm_output.cpp
+    LINKS secure_frontend_tokenizer_pack)
+target_link_libraries(secure_frontend_generation_run PUBLIC secure_frontend_glm_output)
 # Session log step 16 (listener.monitor): the Monitor's meter and JSON, and this machine's
 # readings (CPU/RAM from the OS; the GPU from nvidia-smi as a separate child).
 secure_frontend_add_library(secure_frontend_serve_monitor SOURCES src/serve_monitor.cpp src/host_readings.cpp
@@ -733,6 +738,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         stream_with_no_tokens_has_role_final_done stream_slow_reader_coalesces_deltas stream_tail_deadline_cuts_without_terminal_chunk
         stream_client_gone_sends_stop keepalive_never_splits_a_pending_event stream_error_events_follow_text_and_end_with_done
         sse_reasoning_event_shape stream_sends_reasoning_deltas_before_the_answer stream_ends_at_the_end_of_turn_token
+        # SP6 Plan 1 Task 2 (§4.10): the GLM rules at the SSE layer.
+        stream_glm53_emits_content_only_after_the_close
+        stream_glm53_stop_without_close_flushes_buffer_once_with_log_literal
         stream_shutdown_sends_error_event_and_done)
     secure_frontend_add_cases(secure_frontend_sse_tests ${SECURE_FRONTEND_SSE_CASES} TIMEOUT 120)
 
@@ -1430,6 +1438,16 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_tokenizer_pack_tests glm5_pretokenizer_matches_committed_fixtures
         ARGS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
 
+    # SP6 Plan 1 Task 2 (§4.10): the glm53 output post-processing rules.
+    secure_frontend_add_test_executable(secure_frontend_glm_output_tests tests/glm_output_test.cpp
+        secure_frontend_glm_output)
+    secure_frontend_add_cases(secure_frontend_glm_output_tests
+        glm53_think_close_lookup_is_fail_closed glm53_split_drops_one_trailing_end_of_turn_at_stop
+        glm53_split_strips_content_control_ids_and_counts
+        glm53_split_stop_without_close_returns_the_whole_output
+        glm53_stream_state_mirrors_the_split_rules table_is_the_fixed_glm_end_of_turn_set
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
+
     secure_frontend_add_test_executable(secure_frontend_qwen_prompt_renderer_tests tests/qwen_prompt_renderer_test.cpp
         secure_frontend_qwen_prompt_renderer)
     secure_frontend_add_cases(secure_frontend_qwen_prompt_renderer_tests
@@ -1451,6 +1469,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         sampling_defaults_merge_under_request_overrides qwen_plan_writes_the_template_think_block
         qwen_plan_writes_the_effort_sentence
         qwen_plan_carries_the_end_of_turn_tokens)
+    # SP6 Plan 1 Task 2 (§4.10): the plan-time close-id rule.
+    secure_frontend_add_cases(secure_frontend_chat_generation_plan_tests
+        glm53_plan_resolves_the_think_close_and_starts_in_reasoning TIMEOUT 120)
 
     secure_frontend_add_test_executable(secure_frontend_chat_execution_tests tests/chat_execution_test.cpp
         secure_frontend_chat_execution)
@@ -1476,6 +1497,16 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         drive_generation_keeps_other_special_tokens_fail_closed run_generation_returns_reasoning_beside_the_answer
         drive_generation_end_of_turn_ends_the_reply_as_stop run_generation_ends_at_the_end_of_turn
         drive_generation_feeds_the_monitor_meter)
+    # SP6 Plan 1 Task 2 (§4.10): the glm53 output post-processing, pump and batch path.
+    secure_frontend_add_cases(secure_frontend_chat_execution_tests
+        drive_generation_glm53_strips_reasoning_and_emits_after_close
+        drive_generation_glm53_stop_without_close_flushes_buffered_text
+        drive_generation_glm53_length_without_close_emits_nothing
+        drive_generation_glm53_control_ids_in_content_never_fail_decode
+        run_generation_glm53_maps_rules_and_count_to_the_result
+        glm53_chat_strips_reasoning_over_maya_dialect glm53_chat_stop_without_close_returns_whole_output
+        glm53_chat_invalid_pack_fails_before_generation
+        TIMEOUT 120)
 
     secure_frontend_add_test_executable(secure_frontend_subsystem_limits_tests tests/subsystem_limits_test.cpp
         secure_frontend_subsystem_limits)

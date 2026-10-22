@@ -91,6 +91,10 @@ class TokenByteDecoder final {
  public:
   explicit TokenByteDecoder(const TokenizerPack& pack);
   [[nodiscard]] TokenizerDecodeResult bytes_for(std::size_t id) const;
+  // SP6 §4.10 rule 3 classification: CONTROL (3) or USER_DEFINED (4) — stripped
+  // by the glm53 rules rather than decoded (a type entry the pack lacks counts as
+  // non-control: the out-of-range id fails closed as any other corrupt output).
+  [[nodiscard]] bool is_control(std::size_t id) const noexcept;
 
  private:
   const TokenizerPack& pack_;
