@@ -106,6 +106,7 @@ struct GenerationSettings final {
   std::optional<ThinkTokens> think_tokens{};
   bool starts_in_reasoning{false};
   std::vector<std::size_t> stop_tokens{};  // ChatGenerationPlan::stop_tokens (issue 26)
+  std::optional<std::string> channel_name{};  // ChatGenerationPlan::channel_name (Gemma 4 plan 1 Task 9)
   GenerationMeter* meter{nullptr};         // the Monitor (listener.monitor); null: none
 };
 

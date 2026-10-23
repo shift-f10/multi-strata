@@ -260,7 +260,8 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
     outcome = lease->chat().run_generation(
         prompt_ids,
         {.max_tokens = *budget, .sampling = plan->sampling, .embeddings = embeddings, .think_tokens = plan->think_tokens,
-         .starts_in_reasoning = plan->starts_in_reasoning, .stop_tokens = plan->stop_tokens, .meter = config_.monitor},
+         .starts_in_reasoning = plan->starts_in_reasoning, .stop_tokens = plan->stop_tokens,
+         .channel_name = plan->channel_name, .meter = config_.monitor},
         {.cancelled = context.client_gone, .shutting_down = context.shutting_down,
          .shutdown_requested = [] { return shutdown_signalled(); }},
         tokenizer_);
@@ -332,6 +333,7 @@ RouteResult ChatRoute::stream_response(std::optional<Lease>& lease, const std::v
   settings.run.think_tokens = plan.think_tokens;
   settings.run.starts_in_reasoning = plan.starts_in_reasoning;
   settings.run.stop_tokens = plan.stop_tokens;
+  settings.run.channel_name = plan.channel_name;  // Gemma 4 plan 1 Task 9
   settings.run.meter = config_.monitor;
   settings.write_stall = config_.write_stall;
   settings.tail_deadline = config_.response_write_deadline;

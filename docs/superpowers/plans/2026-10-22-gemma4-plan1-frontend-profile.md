@@ -347,7 +347,7 @@ library `secure_frontend_gemma4_prompt_renderer`; tests new `gemma4_profile_test
   `RunEnd::undecodable` with STOP+drain. Stop ids: `<turn|>` and `<eos>`, each exactly once as
   CONTROL, never output; `<|tool_call>`/`<|tool_response>`/image markers in output fail closed.
 
-- [ ] **Step 1: RED**
+- [x] **Step 1: RED**
   ```cpp
   void gemma4_thought_channel_goes_to_reasoning();          // <|channel> "thought\n" r <channel|> a → reasoning "r", text "a"
   void gemma4_wrong_channel_name_fails_closed();
@@ -355,8 +355,8 @@ library `secure_frontend_gemma4_prompt_renderer`; tests new `gemma4_profile_test
   void gemma4_tool_markers_in_output_fail_closed();
   ```
   FAIL.
-- [ ] **Step 2:** implement in the shared loop (qwen/glm untouched: `channel_name` empty).
-- [ ] **Step 3:** GREEN + gates; commit `generation: Gemma 4 thought channel and end-of-turn ids`.
+- [x] **Step 2:** implement in the shared loop (qwen/glm untouched: `channel_name` empty).
+- [x] **Step 3:** GREEN + gates; commit `generation: Gemma 4 thought channel and end-of-turn ids`.
 
 ---
 

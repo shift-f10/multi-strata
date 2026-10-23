@@ -1510,7 +1510,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         drive_generation_caps_reasoning_and_answer_together drive_generation_ends_a_split_character_at_the_tag
         drive_generation_keeps_other_special_tokens_fail_closed run_generation_returns_reasoning_beside_the_answer
         drive_generation_end_of_turn_ends_the_reply_as_stop run_generation_ends_at_the_end_of_turn
-        drive_generation_feeds_the_monitor_meter)
+        drive_generation_feeds_the_monitor_meter
+        gemma4_thought_channel_goes_to_reasoning gemma4_wrong_channel_name_fails_closed
+        gemma4_turn_close_ends_the_reply_as_stop gemma4_tool_markers_in_output_fail_closed)
 
     secure_frontend_add_test_executable(secure_frontend_subsystem_limits_tests tests/subsystem_limits_test.cpp
         secure_frontend_subsystem_limits)

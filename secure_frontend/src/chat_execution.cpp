@@ -238,6 +238,7 @@ GenerationOutcome ChatExecutionService::run_generation(const std::vector<std::ui
   limits.think_tokens = settings.think_tokens;
   limits.starts_in_reasoning = settings.starts_in_reasoning;
   limits.stop_tokens = settings.stop_tokens;
+  limits.channel_name = settings.channel_name;  // Gemma 4 plan 1 Task 9
   limits.meter = settings.meter;
   const GenerationRunResult run = drive_generation(protocol_, decoder, limits, observer);
   const bool shutting = (control.shutting_down != nullptr && control.shutting_down->load()) ||

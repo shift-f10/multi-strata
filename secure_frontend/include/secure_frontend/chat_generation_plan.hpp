@@ -32,6 +32,9 @@ struct ChatGenerationPlan final {
   bool starts_in_reasoning{false};
   // Issue 26: the end-of-turn ids that end the reply as stop (find_qwen_end_of_turn_tokens).
   std::vector<std::size_t> stop_tokens{};
+  // Gemma 4 plan 1 Task 9: the reasoning channel's name line (GenerationRunLimits::channel_name),
+  // "thought" for gemma4; nullopt for qwen and glm53.
+  std::optional<std::string> channel_name{};
 };
 
 enum class ChatGenerationPlanErrorCode {

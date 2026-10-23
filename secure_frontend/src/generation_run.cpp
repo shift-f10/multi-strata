@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <variant>
 
 namespace secure_frontend {
@@ -48,6 +50,10 @@ GenerationRunResult drive_generation(EngineProtocolClient& protocol, const Token
   bool after_close = false;
   // Issue 26: an end-of-turn token was seen; the reply is over, the rest until DONE is dropped.
   bool turn_ended = false;
+  // Gemma 4 plan 1 Task 9 (limits.channel_name): an open tag was seen and its channel-name line
+  // is still being read; the line is held here, never output.
+  bool naming = false;
+  std::string name_line;
 
   // false: STOP could not be written (the protocol is abandoned).
   const auto send_stop = [&](const StopCause why) {
@@ -99,6 +105,22 @@ GenerationRunResult drive_generation(EngineProtocolClient& protocol, const Token
     emit(text, as_reasoning);
     return true;
   };
+  // Gemma 4 plan 1 Task 9 (limits.channel_name, spec §6.4): decoded text after an open tag goes
+  // to the channel-name line first. The line must be exactly the name and a newline within
+  // kChannelNameLineBytes; it is dropped and what follows it is reasoning. Any other line, or none
+  // in the bound, ends the reply as undecodable (STOP and drain). Never output, never capped.
+  const auto read_name = [&](const std::string& text) {
+    name_line += text;  // bounded: at most one token's bytes past kChannelNameLineBytes
+    const std::size_t newline = name_line.find('\n');
+    if (newline == std::string::npos) return name_line.size() < kChannelNameLineBytes ? true : send_stop(StopCause::undecodable);
+    if (newline >= kChannelNameLineBytes || std::string_view{name_line}.substr(0U, newline) != *limits.channel_name) {
+      return send_stop(StopCause::undecodable);
+    }
+    naming = false;
+    std::string rest = name_line.substr(newline + 1U);
+    name_line.clear();
+    return release(std::move(rest), reasoning);
+  };
 
   for (;;) {
     if (cause == StopCause::none && Clock::now() >= generation_deadline) {
@@ -138,7 +160,12 @@ GenerationRunResult drive_generation(EngineProtocolClient& protocol, const Token
         return result;
       }
       const bool end_of_turn = std::find(limits.stop_tokens.begin(), limits.stop_tokens.end(), token->id) != limits.stop_tokens.end();
-      if (cause == StopCause::none && !turn_ended && end_of_turn) {
+      if (cause == StopCause::none && !turn_ended && end_of_turn && naming) {
+        // Gemma 4 plan 1 Task 9: the turn ended inside the channel-name line. Fail closed; the
+        // STOP may reach an engine that already ended its turn, which is harmless (the strata
+        // and Gemma serve loops clear a stale STOP at the next GEN), and the drain reads DONE.
+        if (!send_stop(StopCause::undecodable)) return result;  // engine_unavailable
+      } else if (cause == StopCause::none && !turn_ended && end_of_turn) {
         // Never output; a held partial character ends as one U+FFFD, as at a stop end.
         if (!release(utf8.finish(false), reasoning)) return result;  // engine_unavailable
         turn_ended = true;
@@ -151,16 +178,23 @@ GenerationRunResult drive_generation(EngineProtocolClient& protocol, const Token
         const bool think_open = limits.think_tokens.has_value() && token->id == limits.think_tokens->open;
         const bool think_close = limits.think_tokens.has_value() && token->id == limits.think_tokens->close;
         bool ok = true;
-        if (think_open || think_close) {
+        if ((think_open || think_close) && naming) {
+          ok = send_stop(StopCause::undecodable);  // Gemma 4 plan 1 Task 9: a tag inside the name line
+        } else if (think_open || think_close) {
           // A tag is never output. It ends its channel: a held partial character becomes
           // one U+FFFD there (as at a stop end) and never crosses into the other channel.
           ok = release(utf8.finish(false), reasoning);
           reasoning = think_open;
           after_close = think_close;
+          if (think_open && limits.channel_name.has_value()) {
+            naming = true;  // Gemma 4 plan 1 Task 9: the channel-name line comes first
+            name_line.clear();
+          }
         } else {
           const auto bytes = decoder.bytes_for(token->id);
-          ok = std::holds_alternative<std::string>(bytes) ? release(utf8.push(std::get<std::string>(bytes)), reasoning)
-                                                          : send_stop(StopCause::undecodable);
+          if (!std::holds_alternative<std::string>(bytes)) ok = send_stop(StopCause::undecodable);
+          else if (naming) ok = read_name(utf8.push(std::get<std::string>(bytes)));
+          else ok = release(utf8.push(std::get<std::string>(bytes)), reasoning);
         }
         if (!ok) return result;  // engine_unavailable
         // SP5 M1 Task 8 (repeat_stop_tokens, serve/server.py:4908, :5088): the pin's own
@@ -177,7 +211,10 @@ GenerationRunResult drive_generation(EngineProtocolClient& protocol, const Token
     } else {
       const auto& done = std::get<DoneEvent>(event);
       if (limits.meter != nullptr) limits.meter->on_done(done.figures);
-      if (cause == StopCause::none && !turn_ended) (void)release(utf8.finish(done.finish != "stop"), reasoning);
+      if (cause == StopCause::none && !turn_ended && !naming) (void)release(utf8.finish(done.finish != "stop"), reasoning);
+      // Gemma 4 plan 1 Task 9: the engine's own stop inside the channel-name line fails closed
+      // (no STOP: the engine is already idle); a length or cancel end there outputs none of it.
+      if (cause == StopCause::none && !turn_ended && naming && done.finish == "stop") cause = StopCause::undecodable;
       if (done.finish == "nonfinite") {
         result.end = RunEnd::engine_error;
         return result;

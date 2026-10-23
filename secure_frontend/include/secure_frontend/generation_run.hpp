@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <map>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -38,6 +39,10 @@ class GenerationMeter {
   virtual ~GenerationMeter() = default;
 };
 
+// The most bytes the channel-name line may take, its newline included
+// (GenerationRunLimits::channel_name).
+inline constexpr std::size_t kChannelNameLineBytes = 64U;
+
 struct GenerationRunLimits final {
   std::chrono::milliseconds generation_timeout{std::chrono::seconds(120)};
   std::chrono::milliseconds stop_drain_timeout{std::chrono::seconds(5)};
@@ -62,6 +67,13 @@ struct GenerationRunLimits final {
   // is never output, and anything the engine sends after it before DONE is dropped
   // (upstream breaks out of its token loop there, serve/server.py:5086-5091).
   std::vector<std::size_t> stop_tokens{};
+  // Gemma 4 plan 1 Task 9 (spec §6.4): the thought channel's name line ("thought" for gemma4).
+  // Set, the decoded text right after each open tag up to its first newline must equal it, and that
+  // line is dropped; any other line, none within kChannelNameLineBytes, a tag or an end-of-turn
+  // id inside it, or the engine's own stop inside it ends the reply as undecodable (STOP and a
+  // drain while the engine still generates). Unset (qwen, glm53): the open tag starts the
+  // reasoning at once, as before.
+  std::optional<std::string> channel_name{};
   // The Monitor's meter; null (the default): nothing is measured.
   GenerationMeter* meter{nullptr};
 };

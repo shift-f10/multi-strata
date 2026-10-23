@@ -829,6 +829,15 @@ std::optional<Gemma4Markers> find_gemma4_markers(const TokenizerPack& pack) {
   return Gemma4Markers{*bos, *eos, *turn_open, *turn_close, *think, *channel_open, *channel_close};
 }
 
+std::vector<std::size_t> find_gemma4_end_of_turn_tokens(const TokenizerPack& pack) {
+  std::vector<std::size_t> found;
+  if (pack.mode != TokenizerMode::spm_bpe) return found;
+  for (const std::string_view literal : {"<turn|>", "<eos>"}) {
+    if (const auto id = unique_token_of_type(pack, literal, kTokenTypeControl)) found.push_back(*id);
+  }
+  return found;
+}
+
 TokenizerEncodeResult encode_gemma4_prompt(const TokenizerPack& pack, const std::string_view prompt) {
   constexpr std::string_view kBos = "<bos>";
   constexpr std::string_view kTurnOpen = "<|turn>";

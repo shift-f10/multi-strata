@@ -172,4 +172,10 @@ struct Gemma4Markers final {
 // CONTROL or USER_DEFINED literal anywhere else is refused (unsupported_special_token).
 [[nodiscard]] TokenizerEncodeResult encode_gemma4_prompt(const TokenizerPack& pack, std::string_view prompt);
 
+// Gemma 4 plan 1 Task 9 (spec §6.5): the end-of-turn ids <turn|> and <eos>, in that order, each
+// listed only when it occurs exactly once as a CONTROL (3) token of an spm_bpe pack (empty: none).
+// The engine prints the one it stopped on as a T record before DONE ... stop; it ends the reply
+// and is never output.
+[[nodiscard]] std::vector<std::size_t> find_gemma4_end_of_turn_tokens(const TokenizerPack& pack);
+
 }  // namespace secure_frontend

@@ -96,7 +96,7 @@ ChatGenerationPlanResult make_qwen_chat_generation_plan(
 
   return ChatGenerationPlan{request.model, *token_ids, request.max_tokens.value_or(default_max_tokens),
                             merge_sampling(request.sampling, defaults), think_tokens, tail == QwenThinking::on,
-                            find_qwen_end_of_turn_tokens(tokenizer)};
+                            find_qwen_end_of_turn_tokens(tokenizer), std::nullopt};
 }
 
 ChatGenerationPlanResult make_glm53_chat_generation_plan(
@@ -128,7 +128,7 @@ ChatGenerationPlanResult make_glm53_chat_generation_plan(
   }
   return ChatGenerationPlan{request.model, *token_ids, request.max_tokens.value_or(default_max_tokens),
                             merge_sampling(request.sampling, defaults), std::nullopt, false,
-                            std::vector<std::size_t>{}};
+                            std::vector<std::size_t>{}, std::nullopt};
 }
 
 ChatGenerationPlanResult make_gemma4_chat_generation_plan(const ChatCompletionRequest& request, const TokenizerPack& tokenizer,
@@ -167,10 +167,17 @@ ChatGenerationPlanResult make_gemma4_chat_generation_plan(const ChatCompletionRe
                  "encoded chat prompt exceeds native serving limits");
   }
   // The reasoning split is the thought channel in both modes. The reply never starts inside it:
-  // thinking off closed it in the prompt, and thinking on leaves the model to open it.
+  // thinking off closed it in the prompt, and thinking on leaves the model to open it. Task 9: the
+  // channel's name line must be "thought", and <turn|> and <eos> end the reply (both are CONTROL
+  // tokens the markers check already found exactly once).
+  auto stop_tokens = find_gemma4_end_of_turn_tokens(tokenizer);
+  if (stop_tokens.size() != 2U) {
+    return error(ChatGenerationPlanErrorCode::tokenization_failed,
+                 "the local tokenizer pack does not carry the Gemma 4 markers");
+  }
   return ChatGenerationPlan{request.model, *token_ids, request.max_tokens.value_or(default_max_tokens),
                             merge_sampling(request.sampling, defaults), ThinkTokens{markers->channel_open, markers->channel_close},
-                            false, std::vector<std::size_t>{}};
+                            false, std::move(stop_tokens), std::string{"thought"}};
 }
 
 }  // namespace secure_frontend

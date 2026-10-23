@@ -460,6 +460,14 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
       in reasoning). Not done: the one-time cross-check against llama-server's
       `/apply-template` (needs a running server on the box). Gates: MSVC build clean; 90/90
       targeted; full suite with Task 9.
+    - Task 9 done (parallel worker, integrated by the lane): `GenerationRunLimits::channel_name`
+      ("thought" for gemma4, unset for qwen/glm53): after `<|channel>` the decoded line must be
+      exactly `thought\n` (within 64 bytes) and is dropped, the rest is `reasoning_content`;
+      any other line, a tag or end-of-turn inside it, or no newline in the bound ends the reply
+      `undecodable` (STOP + drain). Stop ids `<turn|>` then `<eos>` (each one CONTROL token,
+      never output); tool and media markers in output still fail closed. Wired through both
+      route paths. Gates: MSVC build clean; 94/94 targeted; **batch full suite after Tasks 7-9:
+      946 passed, 1 skipped (cfg03), 947 cases, real-pack case included.**
 - The `windows-runtime`-labelled cases run under the MSVC preset on the owner's box; the
   supported Windows toolchains (MSYS2 clang, llvm-mingw) are still not installed (issue 3).
 
