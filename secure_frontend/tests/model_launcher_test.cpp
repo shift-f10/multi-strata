@@ -199,6 +199,8 @@ void switch_waits_for_the_generation_then_swaps() {
   expect(switched && switched->status == 202, "a switch is accepted while Alpha generates: " + shown(switched));
   const auto during = call(*server, "POST", "/v1/chat/completions", chat_body("Alpha"));
   expect(has_code(during, 503, "model_switching"), "a new chat during the switch: " + shown(during));
+  const auto for_beta = call(*server, "POST", "/v1/chat/completions", chat_body("Beta"));
+  expect(has_code(for_beta, 503, "model_switching"), "a chat naming the card being started: " + shown(for_beta));
   expect(has_code(call(*server, "POST", "/v1/strata/models/start", R"({"name":"Alpha"})"), 409, "switch_in_progress"),
          "one switch at a time");
   expect(has_code(call(*server, "POST", "/v1/strata/models/stop", "{}"), 409, "switch_in_progress"), "no stop during a switch");

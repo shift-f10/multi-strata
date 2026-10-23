@@ -64,6 +64,10 @@ class ServeMonitor final : public GenerationMeter {
   // so it can never reach the JSON. Last value seen per key wins.
   void on_engine_stats(const std::map<std::string, std::string>& readings) override;
 
+  // Model launcher (plan 2026-10-23): another engine is starting; the readings of the one
+  // before it (expert tier, READY context) no longer apply. The history and host readings stay.
+  void engine_changed();
+
   // The sampler, once a second.
   void add_host_sample(const HostSample& sample);
 

@@ -419,6 +419,10 @@ void web_ui_has_the_models_tab_hidden_until_the_server_offers_it() {
 // it names), and a 2 s poll while a card is starting.
 void web_ui_models_tab_starts_stops_and_polls() {
   const std::string js{secure_frontend::find_web_asset("/ui/app.js")->body};
+  // top_p's lower bound is the smallest double above 0 (an open bound): the page says
+  // "above 0", never "5e-324" (box run 2026-10-23).
+  expect(js.find("n > 0 && n < 1e-6") != std::string::npos && js.find("\"above 0\"") != std::string::npos,
+         "a tiny positive bound reads as above 0");
   expect(js.find("fetch(") != std::string::npos && js.find("fetch(") == js.rfind("fetch("),
          "one fetch in the script: every call goes through the keyed API helper");
   expect(js.find("api(\"/v1/strata/models/start\", {") != std::string::npos &&

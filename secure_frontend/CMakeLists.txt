@@ -1223,7 +1223,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_serve_monitor_tests
         parses_nvidia_smi_lines nvidia_smi_command_is_fixed nvidia_smi_environment_is_program_files_only
         monitor_records_generations monitor_reports_live_states engine_readings_reach_the_engine_block
-        monitor_keeps_a_bounded_history)
+        monitor_keeps_a_bounded_history engine_change_drops_the_old_engines_readings)
     secure_frontend_add_cases(secure_frontend_serve_monitor_tests host_readings_are_plausible gpu_sampler_reads_a_fake_tool
         gpu_sampler_reads_the_real_tool_when_present
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)

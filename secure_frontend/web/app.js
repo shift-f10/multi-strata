@@ -697,7 +697,8 @@
     var badge = CARD_STATES[name] || ["", name || "-"];
     return el("span", "st-badge " + badge[0], badge[1]);
   }
-  function num(n) { return Math.floor(n) === n ? fmt(n) : String(n); }
+  // A bound just above zero (top_p's open lower bound is the smallest double) reads "above 0".
+  function num(n) { if (n > 0 && n < 1e-6) { return "above 0"; } return Math.floor(n) === n ? fmt(n) : String(n); }
   function valueText(v) { return typeof v === "boolean" ? (v ? "on" : "off") : typeof v === "number" ? num(v) : String(v); }
   function boundsText(option) {
     var parts = [];

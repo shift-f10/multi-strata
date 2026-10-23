@@ -132,6 +132,12 @@ void ServeMonitor::on_engine_stats(const std::map<std::string, std::string>& rea
   }
 }
 
+void ServeMonitor::engine_changed() {
+  std::lock_guard lock(mutex_);
+  experts_.clear();
+  context_tokens_ = 0;
+}
+
 void ServeMonitor::end_locked(const std::string_view finish) {
   const Live live = *live_;
   live_.reset();

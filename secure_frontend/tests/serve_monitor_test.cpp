@@ -367,12 +367,33 @@ void engine_readings_reach_the_engine_block() {
   expect(json.find("model_path") == std::string::npos && experts_block.find("tok_s") == std::string::npos,
          "non-whitelisted keys never reach the experts block");
 }
+
+// Model launcher (plan 2026-10-23): a switch to another engine drops the readings of the one
+// before it (its expert tier and its READY context), so the Monitor never shows Qwen's expert
+// cache under a Gemma engine. The request history and the host readings stay.
+void engine_change_drops_the_old_engines_readings() {
+  secure_frontend::ServeMonitor monitor;
+  monitor.on_engine_stats({{"expert_slots", "4232"}, {"expert_cache_mib", "8269"}});
+  monitor.generation_started(10, 20, 131072);
+  monitor.generation_ended("stop");
+  monitor.engine_changed();
+  const std::string json = monitor.render_json({.model = "Gemma", .engine = "starting", .queued = 0});
+  expect(json.find("8269") == std::string::npos && json.find("\"expert_slots\":4232") == std::string::npos,
+         "the old engine's expert readings are gone: " + json);
+  expect(json.find("131072") == std::string::npos, "the old engine's context is gone: " + json);
+  expect(json.find("\"prompt_tokens\":10") != std::string::npos, "the request history stays: " + json);
+  monitor.on_engine_stats({{"expert_slots", "3840"}, {"expert_slots_primary", "870"}});
+  const std::string after = monitor.render_json({.model = "Gemma", .engine = "ready", .queued = 0});
+  expect(after.find("\"expert_slots\":3840") != std::string::npos && after.find("\"expert_slots_primary\":870") != std::string::npos,
+         "the new engine's readings show: " + after);
+}
 }  // namespace
 
 int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
       {"parses_nvidia_smi_lines", parses_nvidia_smi_lines},
       {"engine_readings_reach_the_engine_block", engine_readings_reach_the_engine_block},
+      {"engine_change_drops_the_old_engines_readings", engine_change_drops_the_old_engines_readings},
       {"nvidia_smi_command_is_fixed", nvidia_smi_command_is_fixed},
       {"nvidia_smi_environment_is_program_files_only", nvidia_smi_environment_is_program_files_only},
       {"monitor_records_generations", monitor_records_generations},

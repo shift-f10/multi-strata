@@ -139,6 +139,7 @@ std::optional<ModelLauncher::Refusal> ModelLauncher::start(const std::string_vie
   {
     std::lock_guard lock(mutex_);
     status_[*card] = CardStatus{CardState::starting, {}};
+    starting_card_ = *card;
     pending_ = Job{Job::Kind::start, *card, std::move(std::get<ModelOptionValues>(values)), std::move(config)};
   }
   changed_.notify_all();
@@ -179,6 +180,7 @@ void ModelLauncher::run_jobs() {
     std::lock_guard lock(mutex_);
     busy_ = false;
     switching_ = false;
+    starting_card_.reset();
     changed_.notify_all();
   }
 }
@@ -251,6 +253,8 @@ void ModelLauncher::run_start(const Job& job) {
     return;
   }
   EngineLaunchPlan plan = std::move(model.plan);
+  // The Monitor's engine readings belong to the engine that ran before.
+  if (settings_.monitor != nullptr) settings_.monitor->engine_changed();
   auto runtime = std::make_shared<ModelRuntime>(std::move(model), settings_.factory(std::move(plan)), settings_.gate, settings_.monitor);
   if (!runtime->supervisor().start()) {
     fail(kSupervisorFailed);
@@ -414,7 +418,12 @@ RouteResult ModelLauncher::chat(const std::string_view body, const RequestContex
     if (const auto* root = std::get_if<JsonValue>(&parsed); root != nullptr && root->if_object() != nullptr) {
       for (const auto& member : *root->if_object()) {
         if (member.key != "model" || member.value.if_string() == nullptr) continue;
-        if (find_card(*member.value.if_string()).has_value()) return make_error_response(ApiError::model_not_running);
+        const auto named = find_card(*member.value.if_string());
+        if (!named.has_value()) continue;
+        // The card an accepted start is bringing up is on its way, not stopped.
+        std::lock_guard lock(mutex_);
+        if (starting_card_ == named) return make_error_response(ApiError::model_switching);
+        return make_error_response(ApiError::model_not_running);
       }
     }
   }

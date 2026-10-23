@@ -127,6 +127,7 @@ class ModelLauncher final {
   std::vector<CardStatus> status_;
   std::shared_ptr<ModelRuntime> running_;     // the started (or starting) model's runtime
   std::optional<std::size_t> running_card_;   // which card it is
+  std::optional<std::size_t> starting_card_;  // the card an accepted start is bringing up
   bool busy_{false};                          // a start or stop is accepted and not finished
   bool switching_{false};                     // chat is refused: the old model is being retired or the new one loads
   bool shutting_down_{false};
