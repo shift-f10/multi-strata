@@ -653,6 +653,19 @@ secure_frontend_add_library(secure_frontend_model_options SOURCES src/model_opti
 secure_frontend_add_library(secure_frontend_model_cards SOURCES src/model_cards.cpp
     LINKS secure_frontend_model_options secure_frontend_typed_config secure_frontend_model_inventory)
 
+# Model launcher (plan 2026-10-23 Task 3): the per-model half of the boot (compose_model) and
+# one running model's serving objects (ModelRuntime), shared by the boot and the launcher.
+secure_frontend_add_library(secure_frontend_model_runtime
+    SOURCES src/model_runtime.cpp
+    LINKS secure_frontend_launch secure_frontend_tokenizer_pack secure_frontend_chat_route secure_frontend_engine_supervisor
+          secure_frontend_generation_gate secure_frontend_subsystem_limits secure_frontend_chat_schema
+          secure_frontend_engine_arguments secure_frontend_typed_config)
+# Model launcher (plan 2026-10-23 Task 3): the cards, the running model, starts, switches and stops.
+secure_frontend_add_library(secure_frontend_model_launcher
+    SOURCES src/model_launcher.cpp
+    LINKS secure_frontend_model_runtime secure_frontend_model_cards secure_frontend_model_options secure_frontend_api_router
+          secure_frontend_engine_stdio_process secure_frontend_token_store secure_frontend_typed_config secure_frontend_launch)
+
 # SP5 M1 Task 13 (Ruling T13-b): the supervised serve path as a library — the one
 # boot `strata-secure-server` and `strata serve` share (server_bootstrap.hpp).
 secure_frontend_add_library(secure_frontend_server_bootstrap
@@ -664,7 +677,8 @@ secure_frontend_add_library(secure_frontend_server_bootstrap
           secure_frontend_chat_generation_plan secure_frontend_chat_execution secure_frontend_engine_arguments
           secure_frontend_typed_config secure_frontend_subsystem_limits secure_frontend_engine_supervisor
           secure_frontend_socket_io secure_frontend_api_core secure_frontend_connection_pool
-          secure_frontend_chat_route secure_frontend_request_log secure_frontend_launch)
+          secure_frontend_chat_route secure_frontend_request_log secure_frontend_launch secure_frontend_model_runtime
+          secure_frontend_model_launcher)
 target_link_libraries(strata-secure-server PRIVATE secure_frontend_server_bootstrap)
 
 # SP4 Task 23 (spec §1.5): the strata CLI's verbs.
@@ -1137,7 +1151,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_test_executable(secure_frontend_http_parser_tests tests/http_parser_test.cpp
         secure_frontend_api_core secure_frontend_http_request_handler)
     secure_frontend_add_cases(secure_frontend_http_parser_tests
-        err_every_code_renders_fixed_body err_param_is_key_only
+        err_every_code_renders_fixed_body err_launcher_rows_carry_their_headers_and_option err_param_is_key_only
         imf_fixdate_is_bounded_for_out_of_range_clocks
         wire_response_has_security_headers_and_date wire_response_carries_a_page_policy_once
         dos01_request_line_over_limit_is_414 dos01_header_block_over_limit_is_431 dos01_too_many_headers_is_431
@@ -1215,6 +1229,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
     secure_frontend_add_test_executable(secure_frontend_api_router_tests tests/api_router_test.cpp secure_frontend_api_router)
     secure_frontend_add_cases(secure_frontend_api_router_tests
+        model_control_routes_need_the_switch_and_the_key served_models_follow_the_running_card
         health_samples_status_before_state_once_each health_includes_engine_state_when_provided
         health_is_503_with_engine_state_when_unavailable dispatches_exact_health_route
         dispatches_models_with_json_escaping rejects_non_exact_routes
@@ -1223,7 +1238,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         web_ui_off_by_default_serves_nothing_public web_ui_serves_the_bundled_page_without_a_key
         web_ui_leaves_every_api_route_authenticated web_ui_still_checks_host_and_origin
         web_ui_assets_are_bundled_and_inert keyless_router_answers_without_a_key
-        metrics_route_needs_the_key_and_the_switch web_ui_has_the_monitor_and_four_thinking_levels)
+        metrics_route_needs_the_key_and_the_switch web_ui_has_the_monitor_and_four_thinking_levels
+        web_ui_has_the_models_tab_hidden_until_the_server_offers_it web_ui_models_tab_starts_stops_and_polls
+        web_ui_chat_follows_the_running_model)
     target_link_libraries(secure_frontend_api_router_tests PRIVATE
         secure_frontend_secrets secure_frontend_api_router secure_frontend_http_policy)
 
@@ -1486,6 +1503,17 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_glm_profile_tests
         renders_exact_fixed_profile rejects_boundary_injection_and_invalid_order creates_plan_only_with_control_tokens
         renders_long_conversations_past_the_old_caps)
+
+    # Model launcher (plan 2026-10-23 Tasks 3-4): the real server booted with model cards over the
+    # supervision fake engine: start, switch, failed start, refusals, remembered options.
+    secure_frontend_add_test_executable(secure_frontend_model_launcher_tests tests/model_launcher_test.cpp
+        secure_frontend_test_support secure_frontend_api_core secure_frontend_json)
+    secure_frontend_test_paths(secure_frontend_model_launcher_tests)
+    secure_frontend_add_cases(secure_frontend_model_launcher_tests
+        launcher_boots_idle_and_starts_a_card switch_waits_for_the_generation_then_swaps failed_start_keeps_the_server_usable
+        start_refusals_name_the_problem options_are_remembered models_start_and_control_off
+        bad_card_refused_at_boot_and_main_rows_refused
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 180)
 
     # Model launcher plan Task 2 (spec §4): the engine options a card lets the page set.
     secure_frontend_add_test_executable(secure_frontend_model_options_tests tests/model_options_test.cpp

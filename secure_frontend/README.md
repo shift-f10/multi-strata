@@ -1490,6 +1490,78 @@ check, a page on another origin fails the Origin check, and a plain form post
 fails the Content-Type check. Any program or user on the same machine can
 use it.
 
+### Model launcher: choose and start models from the page (models.cards)
+
+Owner request 2026-10-23; spec `docs/superpowers/specs/2026-10-23-model-launcher-design.md`
+(decisions D1-D10 accepted), plan `docs/superpowers/plans/2026-10-23-model-launcher.md`. With
+`models.cards` set, the server binds no fixed model. Each **model card** is one owner-only JSON
+file naming a model, its engine profile, the card-owned config rows and the options the page may
+change; the page's **Models** tab lists the cards, sets a card's options and starts or stops it.
+One model runs at a time.
+
+```json
+{
+  "schema_version": 1,
+  "name": "Gemma-4-26B-A4B-it",
+  "profile": "gemma4",
+  "config": {
+    "engine": {"executable": "C:\\...\\strata-gemma4-engine.exe", "model_id": "gemma-4-26B-A4B-it-UD-Q8_K_XL",
+               "gpu": "0", "lib_dirs": ["C:\\...\\CUDA\\v13.0\\bin\\x64"]},
+    "roots": {"models": "C:\\Strata-data\\models\\gemma4_q8", "tokenizer_pack": "C:\\...\\gemma4-pack\\tokenizer"},
+    "limits": {"chat": {"max_prompt_tokens": 262144, "max_completion_tokens": 262144}}
+  },
+  "options": {
+    "max_context": {"default": 262144, "min": 4096, "max": 262144},
+    "expert_vram": {"default": "auto"},
+    "thinking": {"default": "off"},
+    "temperature": {"default": 1.0}, "top_p": {"default": 0.95}, "top_k": {"default": 64}, "min_p": {"default": 0.05}
+  }
+}
+```
+
+- **The card:** `name` is the served name (the alias grammar); `profile` is `qwen` or `gemma4`
+  (GLM-5.3 cards follow the page's GLM chat fix, D10); `config` holds only card-owned rows of the
+  table above, read by the config file's own reader: `engine.*` (not `engine.profile`, which the
+  profile sets, nor `engine.lazy_load`/`engine.idle_unload_s`), `model.aliases`, `roots.models`,
+  `roots.tokenizer_pack`, `defaults.sampling.*`, `reasoning.*`, and
+  `limits.chat.max_prompt_tokens`, `max_completion_tokens`, `default_max_tokens`. Cards always
+  launch the expert way (an inventory model and its tokenizer pack). The main config then holds
+  the server (listener, token, roots.state/cache, the other limits, `models.*`) and may not set a
+  card-owned row (refused by name). A bad card is refused at boot by its place and name and the
+  others load (D9); `--check` lists each card's verdict.
+- **Options:** each option maps to one engine flag or config row, with the engine's own bounds,
+  narrowed by the card's `min`/`max`/`choices`; an option the card does not list is not shown.
+  The `qwen` engine (upstream Strata): `max_context` (`--max-context`), `kv` (`--kv`
+  fp16|int8|q4_0|k8v4), `kv_resident` (**KV streaming**, `--kv-resident`; 0 = off, else at least
+  20,480 and at most the context), `kv_grow` (`--kv-grow`), `mtp` (off = `engine.mtp` false: the
+  draft layer's flags are dropped; `--spec` stays for prompt lookup), `spec` (2-8),
+  `spec_min_p`, `expert_cache` (`auto` or a count), `prefill` (`auto` or a chunk), `thinking`
+  (none|low|medium|high) and the sampling defaults. The `gemma4` engine: `max_context` (up to
+  262,144), `chunk`, `expert_vram` (GiB or `auto`), `thinking` (off|on) and the sampling defaults
+  (it has no KV streaming yet, D8). A card's fixed `engine.args` may not hold a flag one of its
+  listed options sets. The page's last options per card are remembered in
+  `<roots.state>/model-options.json` (owner-only) and offered at the next start (D7).
+- **Control:** `models.control = true` serves `GET /v1/strata/models` (the cards, their state
+  and options), `POST /v1/strata/models/start` (`{"name": "...", "options": {...}}`, 202) and
+  `POST /v1/strata/models/stop` (202), keyed like every route, for loopback clients; remote
+  clients get 403 `control_not_allowed` unless `models.control_remote = true` (D2). Each start
+  and stop is logged on stderr (card, option values, loopback or remote; never the key).
+  `models.start` names the card started at boot; unset, the server boots with no engine (D5).
+- **A start:** the card, the option values and the card's config are validated at once (a
+  refusal names the option: 400 `invalid_option`); the model is then composed and its tokenizer
+  loaded before the running model is touched, so a bad start never takes it down. Then new chat
+  requests get 503 `model_switching` (Retry-After 5), queued ones are refused, the generation in
+  flight may finish for up to 60 s and is then cut like a shutdown (D3), the old engine stops,
+  and the new one starts. An engine that ends before READY leaves its card `failed` with a fixed
+  reason; nothing restarts the old model (D4). One start or stop at a time (409
+  `switch_in_progress`).
+- **Chat and the OpenAI surface:** chat uses the running card; a request naming another card gets
+  409 `model_not_running` (D6), and with none running 503 `no_model_running`. `/v1/models` lists
+  the running card and its aliases and adds `strata_models` (every card's id and state);
+  `/health` answers `{"status":"ok","engine":"none"}` with nothing running.
+- **Not with cards:** `vision.*`, `engine.lazy_load`, `engine.idle_unload_s` (refused by name);
+  the `strata` CLI's verbs read a single-model config only.
+
 ### Long contexts and model names (owner requests, session log step 13)
 
 The defaults keep a request small (48 KiB body, 32K-token prompt). For long contexts, raise

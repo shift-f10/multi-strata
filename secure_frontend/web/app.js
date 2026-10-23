@@ -1,7 +1,8 @@
 // Strata's built-in chat page (listener.web_ui), modelled on upstream Strata's serve/web UI (pin
 // v0.2.2, MIT License, Copyright (c) 2026 Niko1221 and the Strata contributors; see
 // LICENSE.strata-ui.txt) and written for this server's routes: /health, /v1/models,
-// /v1/chat/completions and (listener.monitor) /metrics, nothing else.
+// /v1/chat/completions, (listener.monitor) /metrics and (models.control) /v1/strata/models with
+// its start and stop routes, nothing else.
 //
 // The API key is the login: kept in sessionStorage (this tab only) and sent only as
 // "Authorization: Bearer" to this origin, with cookies off. On a keyless loopback server
@@ -129,18 +130,21 @@
 
   // ---------------------------------------------------------------- views
   function showView(name) {
-    ["login", "chat", "monitor", "about"].forEach(function (view) { $("view-" + view).hidden = view !== name; });
+    ["login", "chat", "models", "monitor", "about"].forEach(function (view) { $("view-" + view).hidden = view !== name; });
     var signedIn = name !== "login";
     $("tabs").hidden = !signedIn;
     $("new-btn").hidden = name !== "chat";
-    ["chat", "monitor", "about"].forEach(function (tab) { $("tab-btn-" + tab).setAttribute("aria-selected", tab === name ? "true" : "false"); });
+    $("header-model").hidden = !signedIn || !launcher.enabled;
+    ["chat", "models", "monitor", "about"].forEach(function (tab) { $("tab-btn-" + tab).setAttribute("aria-selected", tab === name ? "true" : "false"); });
     if (name === "monitor") { startMonitor(); } else { stopMonitor(); }
+    if (name === "models") { renderModels(false); refreshLauncher(); }
     if (name === "about") { renderAbout(); }
     if (name === "chat") { $("input").focus(); }
   }
   function showLogin(message) {
     stopPolling();
     stopMonitor();
+    stopLauncherPoll();
     setPill("idle", "Signed out");
     $("login-error").textContent = message || "";
     $("login-error").hidden = !message;
@@ -155,6 +159,7 @@
     renderChat();
     showView("chat");
     startPolling();
+    refreshLauncher();  // a server with model control off answers 404 and the page stays as it was
   }
 
   async function signIn(key) {
@@ -188,10 +193,15 @@
       var parsed = JSON.parse(await response.text());
       state.health = parsed;
       var engine = parsed && parsed.engine;
+      // The engine changed under the page (a start or stop from elsewhere): the Models tab and
+      // the chat's model follow it. The 2 s poll covers a start this page made.
+      if (launcher.enabled && !launcher.timer && engine !== launcher.engine) { refreshLauncher(); }
+      launcher.engine = engine;
       if (response.status === 401) { setPill("idle", "Key needed"); }
       else if (engine === "ready") { setPill("idle", "Ready"); }
       else if (engine === "generating") { setPill("generating", "Busy"); }
       else if (engine === "starting") { setPill("queued", "Starting"); }
+      else if (engine === "none") { setPill("idle", "No model"); }  // launcher mode, nothing running
       else { setPill("queued", engine === "failed" ? "Engine error" : "Unavailable"); }
     } catch (e) { setPill("idle", "Offline"); }
   }
@@ -438,7 +448,10 @@
       if (data === "[DONE]") { return true; }
       var event;
       try { event = JSON.parse(data); } catch (e) { continue; }
-      if (event.error) { run.error = (event.error.message || "error") + " (" + (event.error.code || "") + ")"; continue; }
+      if (event.error) {
+        run.error = CHAT_ERRORS[event.error.code] || (event.error.message || "error") + " (" + (event.error.code || "") + ")";
+        continue;
+      }
       if (event.usage) { run.usage = event.usage; }
       var choice = event.choices && event.choices[0];
       if (!choice) { continue; }
@@ -501,7 +514,7 @@
         return;
       }
       if (!response.ok) {
-        run.error = errorText(response.status, await response.text());
+        run.error = chatError(response.status, await response.text());
       } else {
         var reader = response.body.getReader();
         var decoder = new TextDecoder();
@@ -558,7 +571,7 @@
   function submit() {
     var input = $("input");
     var text = input.value.trim();
-    if ((!text && !state.attachments.length) || state.controller) { return; }
+    if ((!text && !state.attachments.length) || state.controller || !modelReady()) { return; }
     input.value = "";
     autosize();
     send(text);
@@ -640,6 +653,442 @@
     fact(apiFacts, "Model", state.model || "-", true);
     fact(apiFacts, "API key", state.keyless ? "not needed (loopback server)" : "the key you signed in with", false);
     $("dark-toggle").setAttribute("aria-checked", window.StrataTheme && window.StrataTheme.get() === "dark" ? "true" : "false");
+  }
+
+  // ---------------------------------------------------------------- Models (the model launcher)
+  // The server's model cards (GET /v1/strata/models, models.control): one row per card, the
+  // running one first; the selected card's options are rendered from the server's description
+  // (a new option is a server change only); Start and Stop post to the control routes. A server
+  // with model control off answers 404: the tab stays hidden and the chat is exactly as before.
+  var PROFILES = { qwen: "Qwen engine (upstream Strata)", gemma4: "Gemma 4 engine (strata-gemma4-engine)" };
+  var CARD_STATES = { stopped: ["", "Stopped"], starting: ["st-badge--queued", "Starting"],
+                      running: ["st-badge--generating", "Running"], failed: ["st-badge--error", "Failed"] };
+  var NO_MODEL = "No model is running \u2014 open the Models tab";
+  // The launcher's chat refusals (spec section 5.4), as sentences; the server's own text otherwise.
+  var CHAT_ERRORS = {
+    model_switching: "The server is switching models. Send again in a few seconds.",
+    no_model_running: "No model is running. Start one in the Models tab.",
+    model_not_running: "That model is not running any more. The chat now uses the running model: send again."
+  };
+  var launcher = { enabled: false, data: null, selected: "", formFor: "", controls: [], timer: null,
+                   startedAt: 0, acting: false, vram: "", metricsOff: false, engine: undefined, chatFor: undefined };
+
+  function launcherStarting(d) {
+    if (!d) { return false; }
+    if (d.state === "starting") { return true; }
+    return (Array.isArray(d.data) ? d.data : []).some(function (card) { return card && card.state === "starting"; });
+  }
+  // Chat is possible: always with model control off (today's page); else only with a card running.
+  function modelReady() {
+    return !launcher.enabled || !!(launcher.data && launcher.data.state === "running" && launcher.data.running);
+  }
+  function cardsOf(d) { return d && Array.isArray(d.data) ? d.data.filter(function (card) { return card && typeof card.name === "string"; }) : []; }
+  function findCard(name) {
+    var cards = cardsOf(launcher.data);
+    for (var i = 0; i < cards.length; i += 1) { if (cards[i].name === name) { return cards[i]; } }
+    return null;
+  }
+  function startingName(d) {
+    var cards = cardsOf(d).filter(function (card) { return card.state === "starting"; });
+    return cards.length ? cards[0].name : d && d.running ? d.running : "";
+  }
+  function profileText(profile) { return PROFILES[profile] || (profile ? "Engine profile " + profile : ""); }
+  function stateBadge(name) {
+    var badge = CARD_STATES[name] || ["", name || "-"];
+    return el("span", "st-badge " + badge[0], badge[1]);
+  }
+  function num(n) { return Math.floor(n) === n ? fmt(n) : String(n); }
+  function valueText(v) { return typeof v === "boolean" ? (v ? "on" : "off") : typeof v === "number" ? num(v) : String(v); }
+  function boundsText(option) {
+    var parts = [];
+    if (typeof option.min === "number" && typeof option.max === "number") { parts.push(num(option.min) + " to " + num(option.max)); }
+    if (option.default !== undefined && option.default !== null) { parts.push("default " + valueText(option.default)); }
+    return parts.join(DOT);
+  }
+
+  // One control per option kind; each returns { node, read, set }: read() gives { value } or
+  // { error } (a sentence naming the option) or { skip } (sent by nobody: the server keeps it).
+  function switchControl(option, value) {
+    var toggle = el("button", "st-toggle");
+    toggle.type = "button";
+    toggle.id = "opt-" + option.name;
+    toggle.setAttribute("role", "switch");
+    toggle.setAttribute("aria-label", option.label || option.name);
+    var set = function (v) { toggle.setAttribute("aria-checked", v === true ? "true" : "false"); };
+    toggle.addEventListener("click", function () { set(toggle.getAttribute("aria-checked") !== "true"); });
+    set(value);
+    return { node: toggle, read: function () { return { value: toggle.getAttribute("aria-checked") === "true" }; }, set: set };
+  }
+  function numberControl(option, value, integral, withAuto) {
+    var name = option.label || option.name;
+    var hasMin = typeof option.min === "number";
+    var hasMax = typeof option.max === "number";
+    var wrap = el("div", "option-number");
+    var input = el("input", "st-input");
+    input.type = "number";
+    input.id = "opt-" + option.name;
+    input.step = integral ? "1" : "any";
+    if (hasMin) { input.min = String(option.min); }
+    if (hasMax) { input.max = String(option.max); }
+    input.placeholder = hasMin && hasMax ? num(option.min) + " to " + num(option.max) : "a number";
+    var auto = null;
+    if (withAuto) {
+      var autoLabel = el("label", "option-auto");
+      auto = el("input");
+      auto.type = "checkbox";
+      auto.setAttribute("aria-label", name + ": auto");
+      auto.addEventListener("change", function () { input.disabled = auto.checked; if (!auto.checked) { input.focus(); } });
+      autoLabel.appendChild(auto);
+      autoLabel.appendChild(document.createTextNode("auto"));
+      wrap.appendChild(autoLabel);
+    }
+    wrap.appendChild(input);
+    var set = function (v) {
+      var isAuto = withAuto && v === "auto";
+      if (auto) { auto.checked = isAuto; }
+      input.disabled = isAuto;
+      input.value = typeof v === "number" && isFinite(v) ? String(v) : "";
+    };
+    var read = function () {
+      if (auto && auto.checked) { return { value: "auto" }; }
+      var text = input.value.trim();
+      var n = Number(text);
+      if (!text || !isFinite(n)) { return { error: name + ": enter a number" + (withAuto ? " or tick auto" : "") }; }
+      if (integral && Math.floor(n) !== n) { return { error: name + ": enter a whole number" }; }
+      if ((hasMin && n < option.min) || (hasMax && n > option.max)) {
+        return { error: name + ": " + (hasMin && hasMax ? "from " + num(option.min) + " to " + num(option.max) : hasMin ? "at least " + num(option.min) : "at most " + num(option.max)) };
+      }
+      return { value: n };
+    };
+    set(value);
+    return { node: wrap, read: read, set: set };
+  }
+  function choiceControl(option, value) {
+    var choices = Array.isArray(option.choices) ? option.choices : [];
+    var select = el("select", "st-input");
+    select.id = "opt-" + option.name;
+    choices.forEach(function (choice) {
+      var item = el("option", null, valueText(choice));
+      item.value = String(choice);
+      select.appendChild(item);
+    });
+    var set = function (v) { select.value = v === undefined || v === null ? "" : String(v); };
+    var read = function () {
+      var picked = choices.filter(function (choice) { return String(choice) === select.value; });
+      return picked.length ? { value: picked[0] } : { error: (option.label || option.name) + ": pick one of the choices" };
+    };
+    set(value);
+    return { node: select, read: read, set: set };
+  }
+  function optionControl(option, value) {
+    switch (option.kind) {
+      case "boolean": return switchControl(option, value);
+      case "integer": return numberControl(option, value, true, false);
+      case "decimal": return numberControl(option, value, false, false);
+      case "choice": return choiceControl(option, value);
+      case "integer_or_auto": return numberControl(option, value, true, true);
+      case "decimal_or_auto": return numberControl(option, value, false, true);
+      default:  // a kind this page does not know: shown, never sent (the server keeps its value)
+        return { node: el("code", "option-fixed", JSON.stringify(value)), read: function () { return { skip: true }; }, set: function () {} };
+    }
+  }
+  function buildOptions(card) {
+    var box = $("model-options");
+    clear(box);
+    launcher.formFor = card.name;
+    launcher.controls = [];
+    var options = Array.isArray(card.options) ? card.options.filter(function (o) { return o && typeof o.name === "string"; }) : [];
+    if (!options.length) { box.appendChild(el("p", "muted small", "This card has no options to set.")); }
+    options.forEach(function (option) {
+      var control = optionControl(option, option.value === undefined || option.value === null ? option.default : option.value);
+      var field = el("div", "st-field model-option");
+      var label = el("label", "st-label");
+      label.htmlFor = "opt-" + option.name;
+      label.appendChild(document.createTextNode(option.label || option.name));
+      var bounds = boundsText(option);
+      if (bounds) { label.appendChild(el("output", null, bounds)); }
+      field.appendChild(label);
+      field.appendChild(control.node);
+      if (option.help) { field.appendChild(el("span", "muted small", option.help)); }
+      box.appendChild(field);
+      launcher.controls.push({ option: option, read: control.read, set: control.set, field: field });
+    });
+  }
+  function findControl(name) {
+    for (var i = 0; i < launcher.controls.length; i += 1) { if (launcher.controls[i].option.name === name) { return launcher.controls[i]; } }
+    return null;
+  }
+  function collectOptions() {
+    var values = {};
+    var errors = [];
+    launcher.controls.forEach(function (c) {
+      c.field.classList.remove("invalid");
+      var result = c.read();
+      if (result.error) { errors.push(result.error); c.field.classList.add("invalid"); return; }
+      if (!result.skip) { values[c.option.name] = result.value; }
+    });
+    return { values: values, error: errors.join("; ") };
+  }
+  function resetOptions() {
+    launcher.controls.forEach(function (c) { c.field.classList.remove("invalid"); c.set(c.option.default); });
+    showStartError("");
+  }
+
+  function progressText(d) {
+    if (launcherStarting(d)) {
+      var seconds = launcher.startedAt ? Math.max(0, Math.round((Date.now() - launcher.startedAt) / 1000)) : 0;
+      return "Loading " + (startingName(d) || "the model") + DOT + seconds + " s" + (launcher.vram ? DOT + launcher.vram : "");
+    }
+    if (d.state === "running" && d.running) { return d.running + " is running"; }
+    if (d.state === "failed") { return "The last start failed"; }
+    return "No model is running";
+  }
+  function renderDetail(card, rebuild) {
+    var d = launcher.data;
+    $("model-detail").hidden = !card || !d;
+    if (!card || !d) { return; }
+    $("model-detail-name").textContent = card.name;
+    var badgeBox = $("model-detail-state");
+    clear(badgeBox);
+    badgeBox.appendChild(stateBadge(card.state));
+    $("model-detail-profile").textContent = profileText(card.profile);
+    var error = card.state === "failed" ? card.error || d.error || "The engine stopped before it was ready." : "";
+    $("model-detail-error").textContent = error ? "Did not start: " + error : "";
+    $("model-detail-error").hidden = !error;
+    if (rebuild) { buildOptions(card); }
+    var starting = launcherStarting(d);
+    var thisRuns = d.state === "running" && d.running === card.name;
+    $("model-start").textContent = thisRuns ? "Restart" : "Start";
+    $("model-start").disabled = starting || launcher.acting;
+    $("model-stop").disabled = !d.running || launcher.acting;
+    $("model-defaults").disabled = !launcher.controls.length;
+    $("model-loading").hidden = !starting;
+    $("model-progress").textContent = progressText(d);
+  }
+  function renderModels(rebuild) {
+    var d = launcher.data;
+    if (!d) { return; }
+    var cards = cardsOf(d);
+    var running = cards.filter(function (card) { return card.name === d.running; });
+    var rest = cards.filter(function (card) { return card.name !== d.running; });
+    var list = $("model-list");
+    clear(list);
+    $("models-empty").hidden = cards.length > 0;
+    running.concat(rest).forEach(function (card) {
+      var row = el("button", "model-row");
+      row.type = "button";
+      row.setAttribute("aria-pressed", card.name === launcher.selected ? "true" : "false");
+      var text = el("span", "model-row__text");
+      text.appendChild(el("span", "model-row__name", card.name));
+      text.appendChild(el("span", "muted small", profileText(card.profile)));
+      row.appendChild(text);
+      row.appendChild(stateBadge(card.state));
+      row.addEventListener("click", function () {
+        var changed = launcher.selected !== card.name;
+        if (changed) { showStartError(""); }
+        launcher.selected = card.name;
+        renderModels(changed);
+      });
+      list.appendChild(row);
+    });
+    renderDetail(findCard(launcher.selected), rebuild || launcher.formFor !== launcher.selected);
+  }
+
+  function setComposerAvailable(on, text) {
+    $("input").disabled = !on;
+    $("send-btn").disabled = !on;
+    $("attach-btn").disabled = !on;
+    $("no-model").hidden = on;
+    if (!on) { $("no-model-text").textContent = text || NO_MODEL; }
+  }
+  function setLauncherEnabled(on) {
+    launcher.enabled = on;
+    $("tab-btn-models").hidden = !on;
+    $("header-model").hidden = !on || !$("view-login").hidden;
+    if (on) { return; }
+    launcher.data = null;
+    stopLauncherPoll();
+    setComposerAvailable(true);
+    if (!$("view-models").hidden) { showView("chat"); }
+  }
+  // The chat follows the launcher: the header names the running model, the composer is off
+  // with a pointer to the Models tab while none runs, and /v1/models is asked again when the
+  // running card changes, so state.model is the running card's name.
+  function syncChat() {
+    var d = launcher.data;
+    if (!launcher.enabled || !d) { return; }
+    var ready = modelReady();
+    var starting = launcherStarting(d);
+    $("header-model").textContent = ready ? d.running : starting ? "Starting " + (startingName(d) || "a model") : "No model running";
+    $("header-model").setAttribute("data-state", ready ? "running" : starting ? "starting" : "none");
+    setComposerAvailable(ready, starting ? "Starting " + (startingName(d) || "a model") + DOT + "the chat opens when it is ready"
+                                : d.state === "failed" ? "The model did not start \u2014 open the Models tab" : NO_MODEL);
+    // Asked once per change of the running card (not on every 2 s poll while one loads).
+    var want = ready ? d.running : "";
+    if (want !== launcher.chatFor) {
+      launcher.chatFor = want;
+      if (want !== state.model || (want && state.models.indexOf(want) < 0)) { refreshChatModel(want); }
+    }
+  }
+  async function refreshChatModel(want) {
+    var models;
+    try { models = await listModels(); } catch (e) { return; }
+    if (models === null) { return; }
+    state.models = models;
+    state.model = want && models.indexOf(want) >= 0 ? want : models.length ? models[0] : "";
+    if (!$("view-about").hidden) { renderAbout(); }
+  }
+  function chatError(status, body) {
+    var code = "";
+    try {
+      var parsed = JSON.parse(body);
+      code = parsed && parsed.error && typeof parsed.error.code === "string" ? parsed.error.code : "";
+    } catch (e) { code = ""; }
+    if (!CHAT_ERRORS[code]) { return errorText(status, body); }
+    // The page's picture of the running model was stale: read it again (and /v1/models with it).
+    launcher.chatFor = undefined;
+    if (launcher.enabled) { refreshLauncher(); } else { refreshChatModel(""); }
+    return CHAT_ERRORS[code];
+  }
+
+  function applyLauncher(parsed) {
+    var wasStarting = launcherStarting(launcher.data) || launcher.startedAt > 0;
+    launcher.data = parsed;
+    setLauncherEnabled(true);
+    var starting = launcherStarting(parsed);
+    if (starting && !launcher.startedAt) { launcher.startedAt = Date.now(); }
+    if (!findCard(launcher.selected)) {
+      var cards = cardsOf(parsed);
+      launcher.selected = parsed.running && findCard(parsed.running) ? parsed.running : cards.length ? cards[0].name : "";
+    }
+    renderModels(false);
+    syncChat();
+    if (starting) {
+      if (!launcher.timer) { launcher.timer = window.setTimeout(pollLauncher, 2000); }
+      return;
+    }
+    if (!wasStarting) { return; }
+    launcher.startedAt = 0;
+    launcher.vram = "";
+    var failed = cardsOf(parsed).filter(function (card) { return card.state === "failed"; });
+    if (parsed.state === "running" && parsed.running) { toast("success", parsed.running + " is running"); }
+    else if (parsed.state === "failed" || failed.length) {
+      toast("error", "The model did not start", (failed.length && failed[0].error) || parsed.error || "");
+    }
+  }
+  async function refreshLauncher() {
+    var response, text;
+    try { response = await api("/v1/strata/models"); text = await response.text(); } catch (e) { return; }
+    if (response.status === 404) { setLauncherEnabled(false); return; }
+    // 403: this client may not control models (models.control_remote off); chat stays as it is.
+    if (response.status === 403) { setLauncherEnabled(false); return; }
+    if (!response.ok) { return; }
+    var parsed;
+    try { parsed = JSON.parse(text); } catch (e) { return; }
+    if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.data)) { return; }
+    applyLauncher(parsed);
+  }
+  // While a card loads: the launcher's state every 2 s, and the Monitor's VRAM figure (when
+  // the Monitor is on) for the progress line.
+  async function sampleVram() {
+    if (launcher.metricsOff) { return; }
+    try {
+      var response = await api("/metrics");
+      var text = await response.text();
+      if (response.status === 404) { launcher.metricsOff = true; return; }
+      if (!response.ok) { return; }
+      var hw = (JSON.parse(text) || {}).hardware || {};
+      launcher.vram = hw.gpu_mem_total ? "GPU memory " + gb(hw.gpu_mem_used) + " / " + gb(hw.gpu_mem_total, 0) + " GB" : "";
+    } catch (e) { /* the progress line goes without the figure */ }
+  }
+  async function pollLauncher() {
+    launcher.timer = null;
+    if (launcherStarting(launcher.data)) { await sampleVram(); }
+    await refreshLauncher();
+    // A poll that failed (the server busy or briefly away) asks again while the card loads.
+    if (launcher.enabled && launcherStarting(launcher.data) && !launcher.timer) { launcher.timer = window.setTimeout(pollLauncher, 2000); }
+  }
+  function stopLauncherPoll() { if (launcher.timer) { window.clearTimeout(launcher.timer); launcher.timer = null; } }
+
+  function showStartError(text) {
+    $("model-start-error").textContent = text;
+    $("model-start-error").hidden = !text;
+  }
+  // The server's refusal (its usual error body): the fixed message, the option it names (by
+  // its label) and the code.
+  function refusal(status, body) {
+    var parsed = null;
+    try { parsed = JSON.parse(body); } catch (e) { parsed = null; }
+    if (!parsed || !parsed.error) { return { text: "HTTP " + status, param: "" }; }
+    var param = typeof parsed.error.param === "string" ? parsed.error.param : "";
+    var control = param ? findControl(param) : null;
+    var text = parsed.error.message || "HTTP " + status;
+    if (param) { text += " (option: " + (control ? control.option.label || param : param) + ")"; }
+    if (parsed.error.code) { text += " [" + parsed.error.code + "]"; }
+    return { text: text, param: param };
+  }
+  async function startModel() {
+    var d = launcher.data;
+    var card = findCard(launcher.selected);
+    if (!d || !card || launcher.acting || launcherStarting(d)) { return; }
+    showStartError("");
+    var collected = collectOptions();
+    if (collected.error) { showStartError(collected.error); return; }
+    var running = d.running && d.state === "running" ? d.running : "";
+    var question = running === card.name
+      ? "Restart " + card.name + " with these options? The chat is unavailable while it loads."
+      : "Stop " + running + " and start " + card.name + "? The chat is unavailable while it loads.";
+    if (running && !window.confirm(question)) { return; }
+    launcher.acting = true;
+    renderDetail(card, false);
+    var response, text;
+    try {
+      response = await api("/v1/strata/models/start", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: card.name, options: collected.values })
+      });
+      text = await response.text();
+    } catch (e) {
+      launcher.acting = false;
+      renderDetail(card, false);
+      showStartError("Cannot reach the server: " + (e && e.message ? e.message : e));
+      return;
+    }
+    launcher.acting = false;
+    if (response.status === 401 && !state.keyless) { signOut("The server no longer accepts this API key."); return; }
+    if (!response.ok) {
+      var refused = refusal(response.status, text);
+      var bad = refused.param ? findControl(refused.param) : null;
+      if (bad) { bad.field.classList.add("invalid"); }
+      showStartError(refused.text);
+      await refreshLauncher();
+      return;
+    }
+    launcher.startedAt = Date.now();
+    launcher.vram = "";
+    stopLauncherPoll();
+    await pollLauncher();
+  }
+  async function stopModel() {
+    var d = launcher.data;
+    if (!d || !d.running || launcher.acting) { return; }
+    showStartError("");
+    launcher.acting = true;
+    renderModels(false);
+    var response, text;
+    try {
+      response = await api("/v1/strata/models/stop", { method: "POST" });
+      text = await response.text();
+    } catch (e) {
+      launcher.acting = false;
+      renderModels(false);
+      showStartError("Cannot reach the server: " + (e && e.message ? e.message : e));
+      return;
+    }
+    launcher.acting = false;
+    if (response.status === 401 && !state.keyless) { signOut("The server no longer accepts this API key."); return; }
+    if (!response.ok) { showStartError(refusal(response.status, text).text); } else { toast("info", "Model stopped"); }
+    await refreshLauncher();
   }
 
   // ---------------------------------------------------------------- Monitor (GET /metrics)
@@ -954,6 +1403,12 @@
     $("s-reset").addEventListener("click", function () { state.settings = Object.assign({}, DEFAULTS); showSettings(); });
     $("s-apply").addEventListener("click", applySettings);
     $("tab-btn-chat").addEventListener("click", function () { showView("chat"); });
+    $("tab-btn-models").addEventListener("click", function () { showView("models"); });
+    $("no-model-open").addEventListener("click", function () { showView("models"); });
+    $("models-refresh").addEventListener("click", function () { refreshLauncher(); });
+    $("model-start").addEventListener("click", startModel);
+    $("model-stop").addEventListener("click", stopModel);
+    $("model-defaults").addEventListener("click", resetOptions);
     $("tab-btn-monitor").addEventListener("click", function () { showView("monitor"); });
     $("tab-btn-about").addEventListener("click", function () { showView("about"); });
     $("req-all").addEventListener("click", function () {

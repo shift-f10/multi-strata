@@ -27,8 +27,10 @@ bool valid_field(std::string_view value) {
 }
 
 // SP2's fixed /health literals (health_for); recovery only with a failed, unhealthy engine.
+// Model launcher: "none" (no model card runs) is a healthy server and nothing else.
 bool valid_health(const HealthView& view) {
   const std::string_view e = view.engine;
+  if (e == "none") return view.healthy && view.recovery.empty();
   if (e != "starting" && e != "ready" && e != "generating" && e != "failed") return false;
   if (view.recovery.empty()) return true;
   return !view.healthy && e == "failed" && (view.recovery == "restarting" || view.recovery == "exhausted");
@@ -112,10 +114,19 @@ RouteDecision ApiRouter::authorize(const RequestHead& head) {
     if (!authorized) return early(make_error_response(ApiError::invalid_api_key));
   }
 
-  // Step 6: kRouteTable, byte-exact; a prefix route needs a non-empty rest.
+  // Step 6: kRouteTable, byte-exact; a prefix route needs a non-empty rest. The model
+  // launcher's control routes join it only while their handlers are set (models.control).
   const RouteEntry* matched = nullptr;
   std::string_view allow;
   const std::string_view target = head.target;
+  const bool control = config_.control.list && config_.control.start && config_.control.stop;
+  if (control) {
+    for (const auto& entry : kModelControlRoutes) {
+      if (target != entry.path) continue;
+      allow = entry.method;
+      if (head.method == entry.method) matched = &entry;
+    }
+  }
   for (const auto& entry : kRouteTable) {
     // listener.monitor off: /metrics is no route at all, for any method (EXT-01: upstream's
     // /metrics stays 404 after authentication, never 405).
@@ -137,6 +148,14 @@ RouteDecision ApiRouter::authorize(const RequestHead& head) {
     const auto types = head.values("content-type");
     if (types.size() != 1U || !is_json_content_type(types.front())) return early(make_error_response(ApiError::unsupported_media_type));
     if (head.content_length.value_or(0U) > config_.chat_body_limit) return early(make_error_response(ApiError::request_too_large));
+  }
+  // The control routes' bodies: JSON (a start names its card and options; a stop's is ignored), small.
+  if (decision.route == RouteId::strata_start || decision.route == RouteId::strata_stop) {
+    const auto types = head.values("content-type");
+    if (head.content_length.value_or(0U) > 0U && (types.size() != 1U || !is_json_content_type(types.front()))) {
+      return early(make_error_response(ApiError::unsupported_media_type));
+    }
+    if (head.content_length.value_or(0U) > kModelControlBodyLimit) return early(make_error_response(ApiError::request_too_large));
   }
   decision.expect_continue = head.expect_continue;
   decision.body_limit = head.content_length.value_or(0U);
@@ -169,6 +188,23 @@ RouteResult ApiRouter::handle(const RequestHead& head, const std::string_view bo
         break;
       }
       case RouteId::models:
+        if (config_.served) {
+          // Model launcher: the running card (none: an empty list) and every card's state.
+          const ServedModels served = config_.served();
+          if (!valid_field(config_.owned_by)) break;
+          std::string data;
+          if (served.id.has_value()) {
+            if (!valid_field(*served.id) ||
+                !std::all_of(served.aliases.begin(), served.aliases.end(), [](const std::string& alias) { return valid_field(alias); }))
+              break;
+            data = model_object(*served.id, config_.owned_by);
+            for (const auto& alias : served.aliases) data += "," + model_object(alias, config_.owned_by);
+          }
+          std::string text = "{\"object\":\"list\",\"data\":[" + std::move(data) + "]";
+          if (!served.extension.empty()) text += ",\"strata_models\":" + served.extension;
+          response = json_response(200, std::move(text) + "}\n");
+          break;
+        }
         if (!valid_field(config_.model_id) || !valid_field(config_.owned_by)) break;   // internal_error
         if (!std::all_of(config_.aliases.begin(), config_.aliases.end(), [](const std::string& alias) { return valid_field(alias); }))
           break;  // internal_error: an alias is schema-checked; a router fed a bad one is a bug
@@ -181,6 +217,17 @@ RouteResult ApiRouter::handle(const RequestHead& head, const std::string_view bo
       case RouteId::model: {
         constexpr std::string_view kPrefix = "/v1/models/";
         const std::string_view target = head.target;
+        if (config_.served) {
+          const ServedModels served = config_.served();
+          if (!valid_field(config_.owned_by) || target.size() <= kPrefix.size()) break;
+          const std::string_view wanted = target.substr(kPrefix.size());
+          const bool named = served.id.has_value() && valid_field(*served.id) &&
+                             (wanted == *served.id ||
+                              std::find(served.aliases.begin(), served.aliases.end(), std::string{wanted}) != served.aliases.end());
+          response = named ? json_response(200, model_object(*served.id, config_.owned_by) + "\n")
+                           : make_error_response(ApiError::model_not_found);
+          break;
+        }
         if (!valid_field(config_.model_id) || !valid_field(config_.owned_by) || target.size() <= kPrefix.size()) break;
         const std::string_view wanted = target.substr(kPrefix.size());
         // SP5 M1 Task 8: an alias names the same model.
@@ -211,6 +258,19 @@ RouteResult ApiRouter::handle(const RequestHead& head, const std::string_view bo
         // listener.monitor (session log step 16): keyed above like every route; off, not served.
         response = config_.metrics ? json_response(200, config_.metrics()) : make_error_response(ApiError::not_found);
         break;
+      // Model launcher (plan 2026-10-23 Task 4): keyed above; the handlers answer their own refusals.
+      case RouteId::strata_models:
+      case RouteId::strata_start:
+      case RouteId::strata_stop: {
+        RouteResult result = decision.route == RouteId::strata_models ? config_.control.list(context)
+                             : decision.route == RouteId::strata_start ? config_.control.start(body, context)
+                                                                        : config_.control.stop(context);
+        if (auto* complete = std::get_if<HttpResponse>(&result)) {
+          response = std::move(*complete);
+          break;
+        }
+        return result;
+      }
       case RouteId::other:
         response = make_error_response(ApiError::not_found);
         break;

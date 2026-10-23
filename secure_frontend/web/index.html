@@ -8,7 +8,8 @@
 <!-- Strata built-in chat page (listener.web_ui). Adapted from upstream Strata serve/web/index.html
      (pin v0.2.2, MIT License, Copyright (c) 2026 Niko1221 and the Strata contributors; see
      LICENSE.strata-ui.txt): the header, chat, composer, monitor, about and sampling drawer kept; the
-     API-key sign-in and the labelled New chat button added; the images view, the conversation-cache
+     API-key sign-in, the labelled New chat button and the Models tab (the model launcher, shown only
+     when the server answers GET /v1/strata/models) added; the images view, the conversation-cache
      and MCP cards and the server-side settings dropped (this server has none of those); no inline
      script or style. -->
 <link rel="icon" href="/ui/favicon.svg" type="image/svg+xml">
@@ -24,12 +25,15 @@
   <nav class="st-tabs" role="tablist" aria-label="Views" id="tabs" hidden>
     <button class="st-tab" role="tab" id="tab-btn-chat" aria-controls="view-chat" aria-selected="true" data-tab="chat">
       <svg class="st-icon st-icon--sm"><use href="/ui/sprite.svg#i-chat"/></svg>Chat</button>
+    <button class="st-tab" role="tab" id="tab-btn-models" aria-controls="view-models" aria-selected="false" data-tab="models" hidden>
+      <svg class="st-icon st-icon--sm"><use href="/ui/sprite.svg#i-layers"/></svg>Models</button>
     <button class="st-tab" role="tab" id="tab-btn-monitor" aria-controls="view-monitor" aria-selected="false" data-tab="monitor">
       <svg class="st-icon st-icon--sm"><use href="/ui/sprite.svg#i-activity"/></svg>Monitor</button>
     <button class="st-tab" role="tab" id="tab-btn-about" aria-controls="view-about" aria-selected="false" data-tab="about">
       <svg class="st-icon st-icon--sm"><use href="/ui/sprite.svg#i-info"/></svg>About</button>
   </nav>
   <span class="st-header__spacer"></span>
+  <span class="header-model" id="header-model" data-state="none" title="The model the chat uses" hidden></span>
   <button type="button" class="st-btn st-btn--secondary st-btn--sm" id="new-btn" title="New chat" hidden>
     <svg class="st-icon st-icon--sm"><use href="/ui/sprite.svg#i-new-chat"/></svg><span class="new-label">New chat</span></button>
   <span class="st-pill" id="pill" data-state="idle" role="status" aria-live="polite">
@@ -67,6 +71,10 @@
       </div>
     </div>
     <div class="composer-wrap">
+      <div class="no-model" id="no-model" role="status" hidden>
+        <span id="no-model-text">No model is running &mdash; open the Models tab</span>
+        <button type="button" class="st-btn st-btn--secondary st-btn--sm" id="no-model-open">Open Models</button>
+      </div>
       <form class="st-composer" id="composer" novalidate>
         <div class="attachments" id="attachments" hidden></div>
         <textarea id="input" rows="2" placeholder="Ask anything&hellip;" aria-label="Message"></textarea>
@@ -86,6 +94,34 @@
             <svg class="st-icon"><use href="/ui/sprite.svg#i-send"/></svg></button>
         </div>
       </form>
+    </div>
+  </section>
+
+  <!-- ============================ Models (models.control, GET /v1/strata/models) ============================ -->
+  <section class="view view--models" id="view-models" role="tabpanel" aria-labelledby="tab-btn-models" hidden>
+    <div class="models">
+      <div class="st-card models-card">
+        <div class="models-head"><span class="card-title">Models</span>
+          <button type="button" class="st-btn st-btn--icon" id="models-refresh" title="Refresh" aria-label="Refresh the model list">
+            <svg class="st-icon"><use href="/ui/sprite.svg#i-refresh"/></svg></button></div>
+        <p class="muted small">The models this server is set up to run. Pick one, set its options and start it.</p>
+        <div class="model-list" id="model-list"></div>
+        <p class="muted" id="models-empty" hidden>No model cards are configured on this server.</p>
+      </div>
+      <div class="st-card model-detail" id="model-detail" hidden>
+        <div class="model-detail__head"><span class="card-title" id="model-detail-name"></span><span id="model-detail-state"></span></div>
+        <p class="muted small" id="model-detail-profile"></p>
+        <p class="msg-error" id="model-detail-error" role="alert" hidden></p>
+        <div class="model-options" id="model-options"></div>
+        <div class="st-progress model-loading" id="model-loading" hidden><div class="st-progress__bar"></div></div>
+        <div class="model-actions">
+          <button type="button" class="st-btn st-btn--primary" id="model-start">Start</button>
+          <button type="button" class="st-btn st-btn--secondary" id="model-stop">Stop</button>
+          <button type="button" class="st-btn st-btn--secondary" id="model-defaults" title="Put every option back to the card's default">Defaults</button>
+          <span class="model-progress" id="model-progress" role="status" aria-live="polite"></span>
+        </div>
+        <p class="msg-error" id="model-start-error" role="alert" hidden></p>
+      </div>
     </div>
   </section>
 

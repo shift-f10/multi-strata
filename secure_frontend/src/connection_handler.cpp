@@ -164,7 +164,8 @@ ConnectionResult serve_connection(const NativeSocket socket, RequestRouter& rout
 
   // P4-P6: route; P7-P8: deliver.
   const RequestContext context{.client_gone = [socket] { return probe_peer(socket) == PeerState::gone; },
-                               .shutting_down = signals.shutting_down};
+                               .shutting_down = signals.shutting_down,
+                               .loopback_peer = signals.loopback_peer};
   RouteResult routed{make_error_response(ApiError::internal_error)};
   try {
     routed = router.handle(head, body, decision, context);

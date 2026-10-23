@@ -91,7 +91,19 @@ int main(int argc, char* argv[]) {
     return EXIT_SUCCESS;
   }
   std::vector<std::string> overridden;
-  const auto loaded = secure_frontend::load_server_config(invocation, &overridden);
+  // Model launcher (plan 2026-10-23 Task 3): with models.cards the cards hold the models, and
+  // the main config is validated together with each of them.
+  const auto draft = secure_frontend::load_server_draft(invocation, &overridden);
+  if (const auto* issues = std::get_if<secure_frontend::ConfigErrors>(&draft)) {
+    for (const auto& issue : *issues) std::cerr << "Configuration error: " << secure_frontend::format_issue(issue) << '\n';
+    return EXIT_FAILURE;
+  }
+  if (std::get<secure_frontend::FrontendConfigDraft>(draft).entries.contains("models.cards")) {
+    const auto& main_draft = std::get<secure_frontend::FrontendConfigDraft>(draft);
+    if (invocation.command == secure_frontend::ServerCommand::check) return secure_frontend::launcher_check(main_draft, overridden);
+    return secure_frontend::launcher_run(main_draft);
+  }
+  const auto loaded = secure_frontend::validate(std::get<secure_frontend::FrontendConfigDraft>(draft));
   if (const auto* issues = std::get_if<secure_frontend::ConfigErrors>(&loaded)) {
     for (const auto& issue : *issues) std::cerr << "Configuration error: " << secure_frontend::format_issue(issue) << '\n';
     return EXIT_FAILURE;

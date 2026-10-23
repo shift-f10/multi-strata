@@ -16,6 +16,8 @@ enum class ApiError {
   invalid_api_key, forbidden, not_found, model_not_found, method_not_allowed, request_timeout, length_required,
   request_too_large, request_line_too_long, unsupported_media_type, expectation_failed, header_too_large,
   internal_error, server_busy, engine_unavailable, engine_error, server_shutting_down, http_version_not_supported,
+  // Model launcher (plan 2026-10-23 Tasks 3-4; spec §5.3-§5.4, D2/D6).
+  invalid_option, control_not_allowed, model_not_running, switch_in_progress, model_switching, no_model_running,
 };
 
 struct ApiErrorRow final {
@@ -32,7 +34,7 @@ struct ApiErrorRow final {
 [[nodiscard]] bool is_fixed_param_key(std::string_view key) noexcept;
 
 struct ErrorOptions final {
-  std::string_view param{};             // used only for unsupported_parameter / extension_disabled, and only a fixed key
+  std::string_view param{};             // unsupported_parameter / extension_disabled: a fixed key; invalid_option: an option name
   std::optional<int> retry_after{};     // engine_unavailable: 5 or none (spec §3.8)
   std::string_view allow{};             // method_not_allowed
 };

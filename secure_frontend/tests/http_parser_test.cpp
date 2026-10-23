@@ -55,10 +55,33 @@ constexpr ExpectedRow kExpected[] = {
     {ApiError::engine_error, 503, "server_error", "engine_error", "The local engine could not complete the request."},
     {ApiError::server_shutting_down, 503, "server_error", "server_shutting_down", "The server is shutting down."},
     {ApiError::http_version_not_supported, 505, "invalid_request_error", "http_version_not_supported", "Only HTTP/1.1 is supported."},
+    // Model launcher (plan 2026-10-23 Tasks 3-4).
+    {ApiError::invalid_option, 400, "invalid_request_error", "invalid_option", "An option value is not valid for this model."},
+    {ApiError::control_not_allowed, 403, "permission_error", "control_not_allowed", "Model control is not allowed for this client."},
+    {ApiError::model_not_running, 409, "invalid_request_error", "model_not_running", "The requested model is configured but not running; start it first."},
+    {ApiError::switch_in_progress, 409, "invalid_request_error", "switch_in_progress", "A model start or stop is already in progress."},
+    {ApiError::model_switching, 503, "server_error", "model_switching", "The server is switching models; retry shortly."},
+    {ApiError::no_model_running, 503, "server_error", "no_model_running", "No model is running; start one first."},
 };
 
+// Model launcher (plan 2026-10-23): a switch answers like a restarting engine (Retry-After 5),
+// and an option refusal names the option (an option name is a fixed literal of the option
+// table; anything else stays null).
+void err_launcher_rows_carry_their_headers_and_option() {
+  const auto switching = secure_frontend::make_error_response(ApiError::model_switching);
+  expect(switching.header_value("Retry-After") == std::optional<std::string_view>{"5"}, "model_switching carries Retry-After: 5");
+  const auto none = secure_frontend::make_error_response(ApiError::no_model_running);
+  expect(!none.header_value("Retry-After").has_value(), "no_model_running does not invite a retry");
+  expect(secure_frontend::render_error_body(ApiError::invalid_option, "kv_resident").find("\"param\":\"kv_resident\"") != std::string::npos,
+         "invalid_option names the option");
+  expect(secure_frontend::render_error_body(ApiError::invalid_option, "not an option").find("\"param\":null") != std::string::npos,
+         "a name that is no option's is never echoed");
+  expect(secure_frontend::render_error_body(ApiError::invalid_request, "kv_resident").find("\"param\":null") != std::string::npos,
+         "only invalid_option carries an option name");
+}
+
 void err_every_code_renders_fixed_body() {
-  expect(secure_frontend::api_error_table().size() == std::size(kExpected), "the table has exactly the 23 rows of spec §7.2");
+  expect(secure_frontend::api_error_table().size() == std::size(kExpected), "the table has exactly the 23 rows of spec §7.2 and the launcher's 6");
   for (const auto& row : kExpected) {
     const std::string body = std::string{"{\"error\":{\"message\":\""} + row.message + "\",\"type\":\"" + row.type +
                              "\",\"param\":null,\"code\":\"" + row.code + "\"}}\n";
@@ -576,6 +599,7 @@ void sampling_integer_forms_accepted() {
 int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
       {"err_every_code_renders_fixed_body", err_every_code_renders_fixed_body},
+      {"err_launcher_rows_carry_their_headers_and_option", err_launcher_rows_carry_their_headers_and_option},
       {"err_param_is_key_only", err_param_is_key_only},
       {"wire_response_has_security_headers_and_date", wire_response_has_security_headers_and_date},
       {"wire_response_carries_a_page_policy_once", wire_response_carries_a_page_policy_once},

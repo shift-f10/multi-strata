@@ -22,6 +22,9 @@
 #include "secure_frontend/http_socket_server.hpp"
 #include "secure_frontend/image_payload.hpp"
 #include "secure_frontend/launch_composition.hpp"
+#include "secure_frontend/model_cards.hpp"
+#include "secure_frontend/model_launcher.hpp"
+#include "secure_frontend/model_runtime.hpp"
 #include "secure_frontend/privilege_check.hpp"
 #include "secure_frontend/process_defaults.hpp"
 #include "secure_frontend/request_log.hpp"
@@ -112,25 +115,37 @@ bool state_dir_is_usable(const FrontendConfig& config) {
   return true;
 }
 
-// Creates <state>/engine, the temp root and the CUDA cache owner-only and
-// clears the temp root: no engine runs yet, so temp directories a previous
-// frontend left behind are stale. Where the CUDA cache lives is
-// engine_environment_for()'s decision: <roots.cache>/cuda (that root was
-// already created 0700 by create_runtime_roots() and is left as it is) or
-// <state>/cache/cuda, whose parent below the state dir is created owner-only too.
-bool prepare_state_dir(const std::filesystem::path& state_dir, const secure_frontend::EngineEnvironment& environment) {
-  std::vector<std::filesystem::path> directories{state_dir / "engine", environment.temp_dir};
-  const auto below_state = [&state_dir](const std::filesystem::path& path) {
-    const auto relative = path.lexically_relative(state_dir);
-    return !relative.empty() && relative != "." && *relative.begin() != "..";
-  };
-  if (below_state(environment.cuda_cache_dir.parent_path())) directories.push_back(environment.cuda_cache_dir.parent_path());
-  directories.push_back(environment.cuda_cache_dir);
-  for (const auto& directory : directories) {
-    if (!secure_frontend::create_owner_only_directory(directory)) return false;
+// listener.monitor (session log step 16): this machine's readings once a second; the GPU's
+// through the system's nvidia-smi, its own child (no shell, ProgramFiles alone, the Job),
+// started after bind like every child and stopped (before the supervisor) on every way out.
+struct HostSampler final {
+  secure_frontend::ServeMonitor* monitor{nullptr};
+  secure_frontend::GpuSampler gpu;
+  std::atomic<bool> stopping{false};
+  std::thread thread;
+  void start(secure_frontend::ServeMonitor& target) {
+    monitor = &target;
+    gpu.start({.executable = secure_frontend::nvidia_smi_path(), .arguments = secure_frontend::nvidia_smi_arguments(),
+               .environment = secure_frontend::nvidia_smi_environment(), .no_new_privileges = true, .insert_serve = false});
+    thread = std::thread([this] {
+      secure_frontend::CpuMeter cpu;
+      while (!stopping.load()) {
+        secure_frontend::HostSample sample;
+        sample.cpu_percent = cpu.sample();
+        sample.memory = secure_frontend::read_memory();
+        sample.gpu = gpu.latest();
+        if (!sample.gpu.has_value()) sample.gpu_note = gpu.note();
+        monitor->add_host_sample(sample);
+        for (int slice = 0; slice < 10 && !stopping.load(); ++slice) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+    });
   }
-  return secure_frontend::clear_directory_contents(environment.temp_dir);
-}
+  ~HostSampler() {
+    stopping = true;
+    if (thread.joinable()) thread.join();
+    gpu.stop();
+  }
+};
 
 int server_run_impl(const FrontendConfig& config, const bool expert) {
   // Ruling T13-c: server-grade process defaults, also when serve arrives
@@ -160,128 +175,28 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
   }
 
   const secure_frontend::Config listener = secure_frontend::listener_config(config);
-  // Derived once, before bind/spawn; each subsystem keeps its own const copy.
-  // (SP5 M1 Task 12: vision_capable is filled after compose — see below — so this
-  // stays mutable until the ChatRoute copies it.)
-  auto schema_limits = secure_frontend::chat_schema_limits(config);
-  // SP4 §2.3/§4.9 (Task 24b): managed models launch from the installed manifest;
-  // --expert keeps SP1's operator path (inventory, roots.tokenizer_pack).
-  auto composed = secure_frontend::compose_engine_launch(config, expert);
-  if (const auto* failure = std::get_if<secure_frontend::LaunchFailure>(&composed)) {
+  // Model launcher plan 2026-10-23 Task 3: the per-model half of the boot (compose, the
+  // tokenizer pack, the served name and aliases, the effort tail, the supervisor config, the
+  // closed environment and the launch plan, the chat route's settings) is compose_model() in
+  // model_runtime.cpp, which the launcher shares. Its comments moved with it.
+  auto composed_result = secure_frontend::compose_model(config, expert);
+  if (auto* failure = std::get_if<secure_frontend::ComposeFailure>(&composed_result)) {
     for (const auto& message : failure->messages) std::cerr << message << '\n';
-    return failure->exit == secure_frontend::ExitCode::usage ? EXIT_FAILURE : secure_frontend::exit_code_value(failure->exit);
+    return failure->exit_code;
   }
-  auto& launch = std::get<secure_frontend::ComposedLaunch>(composed);
-  // SP5 M1 Task 6 (parity row mtp; pin serve/server.py:2922-2925): an explicit "mtp":
-  // false is applied at every start and the dropped flags are reported once, fixed text.
-  if (!launch.mtp_removed.empty()) {
-    std::string flags;
-    for (const auto& flag : launch.mtp_removed) {
-      if (!flags.empty()) flags += ' ';
-      flags += flag;
-    }
-    std::cerr << "[strata] \"mtp\": false - starting without the draft layer (" << flags << " left out)\n";
-  }
-  // SP5 M1 Task 12 (C-9, Ruling T12-b): the content-array gate is a MODEL capability —
-  // it opens only when vision.enabled AND the installed manifest declares launch.mmproj
-  // (compose refuses that pairing for glm53, so the gate implies the qwen renderer).
-  // The request itself can never open it.
-  // Gemma 4 plan 1 Task 10: only the qwen profile reads images (gemma4 is text only, D2).
-  if (config.vision.enabled && launch.vision_mmproj.has_value() && launch.profile == EngineProfile::qwen) {
-    schema_limits.vision_capable = true;
-  }
-  // Session log step 14: per-request reasoning_effort reaches the qwen renderer; Gemma 4
-  // plan 1 Task 3 (spec §6.6): and the gemma4 one (none = thinking off, else on). glm53 refuses it.
-  schema_limits.per_request_reasoning_effort = secure_frontend::per_request_reasoning_effort_for(launch.profile);
-  // Gemma 4 plan 1 Task 4 (spec §6.2): the pack's mode is the launch profile's, never the files'.
-  const auto tokenizer_result =
-      secure_frontend::load_local_tokenizer_pack(*launch.tokenizer_root, secure_frontend::tokenizer_mode_for(launch.profile));
-  const auto* tokenizer = std::get_if<secure_frontend::TokenizerPack>(&tokenizer_result);
-  if (tokenizer == nullptr) {
-    std::cerr << "Unable to load local tokenizer pack (" << (launch.managed ? "the model's tokenizer" : "roots.tokenizer_pack")
-              << "): " << std::get<secure_frontend::TokenizerPackError>(tokenizer_result).message << '\n';
-    return EXIT_FAILURE;
-  }
-  // model.name (session log step 13; the pin's model_name): the name the API serves; the
-  // launch's own id (the inventory file, or name:tag) when it is unset.
-  const std::string model_id = config.engine.served_name.value_or(launch.model_id);
-  // SP5 M1 Task 8 (model.aliases; set_aliases :3774-3777): drop an alias equal to the
-  // served name, keep order, dedup — the route and /v1/models share one effective list.
-  std::vector<std::string> model_aliases;
-  for (const auto& alias : config.engine.aliases) {
-    if (alias != model_id &&
-        std::find(model_aliases.begin(), model_aliases.end(), alias) == model_aliases.end())
-      model_aliases.push_back(alias);
-  }
-  const bool glm = secure_frontend::engine_family_for(launch.profile) == secure_frontend::EngineFamily::glm;
-  auto* engine_arguments = &launch.engine_args;
-  // SP5 M1 Task 5 (parity row effort_position, serve/server.py:2836-2856): reasoning.effort_position
-  // "end" composes the engine's --tail-role-token checkpoint flag (probe rules in the composer).
-  // Session log step 16: the prompt puts a non-default level's sentence right before the
-  // answer only when the engine took the flag; otherwise it stays at the top (the notice says so).
-  // Gemma 4 plan 1 Task 3: the tail is the qwen engine's only (the config refuses
-  // reasoning.effort_position on an explicit gemma4 profile; glm53's runner has no such flag).
-  bool effort_at_end = false;
-  if (launch.profile == EngineProfile::qwen && config.reasoning.effort_position == secure_frontend::EffortPosition::end) {
-    const auto tail = secure_frontend::compose_effort_end_arguments(config.engine.executable.path(), *tokenizer);
-    std::cerr << "[strata] " << tail.notice << '\n';
-    engine_arguments->insert(engine_arguments->end(), tail.arguments.begin(), tail.arguments.end());
-    effort_at_end = !tail.arguments.empty();
-  }
-  secure_frontend::QwenEffort qwen_effort = secure_frontend::QwenEffort::high;  // unset: the template's default
-  if (config.reasoning.effort == secure_frontend::ReasoningEffort::low) qwen_effort = secure_frontend::QwenEffort::low;
-  if (config.reasoning.effort == secure_frontend::ReasoningEffort::medium) qwen_effort = secure_frontend::QwenEffort::medium;
-
-  // Profile, protocol flavor, chat limits and the READY deadline all come from
-  // the validated config (limits.engine.ready_timeout_s drives the policy).
-  secure_frontend::SupervisorConfig supervisor_config = secure_frontend::supervisor_config(config);
-  // SP4 §4.9 c: the profile is the composed launch's (a managed model's
-  // manifest sets it; engine.profile is --expert only), not the config key.
-  supervisor_config.profile = secure_frontend::native_chat_profile_for(launch.profile);
-  // SP5 M2 Task 7 (R-T5-b): maya_118 is the glm53 dialect (Task 5), same selection as
-  // supervisor_config in subsystem_limits.cpp (the same function, pinned by its test).
-  supervisor_config.flavor = secure_frontend::protocol_flavor_for(launch.profile);
+  auto& model = std::get<secure_frontend::ComposedModel>(composed_result);
+  const auto& launch = model.launch;
+  const std::string& model_id = model.model_id;
+  const secure_frontend::SupervisorConfig& supervisor_config = model.supervisor;
   const std::filesystem::path& state_dir = *config.roots.state;
-  std::vector<std::filesystem::path> lib_dirs = config.engine.lib_dirs;
-  if (lib_dirs.empty()) lib_dirs.push_back(config.engine.executable.path().parent_path());
-  secure_frontend::EngineLaunchPlan plan{.command = {.executable = config.engine.executable.path(),
-                                                     .arguments = std::move(*engine_arguments), .environment = {}}};
-  // Spec §3.9: the engine's whole environment, rendered per generation; nothing
-  // is inherited from this server's environment.
-  auto environment = secure_frontend::engine_environment_for(state_dir, config.roots.cache, std::move(lib_dirs));
-  // SP5 M2 Tasks 4/8 (D-7, D-8): a composed glm53 launch is a GLM-family child —
-  // the closed typed environment (the §4.9 safety defaults, the projected typed
-  // rows, the CUDA selectors) replaces the strata rendering, and the vision-turn
-  // gate decides whether the VLEND-family row may reach the child at all.
-  if (glm) {
-    environment.family = secure_frontend::EngineFamily::glm;
-    environment.glm_gpus = config.glm.gpus;
-    environment.glm_knobs = secure_frontend::glm_environment_knobs(config);
-    environment.glm_vision_turn = config.vision.enabled && !config.vision.resident;
-  }
-  if (!prepare_state_dir(state_dir, environment)) {
+  if (!secure_frontend::prepare_state_dir(state_dir, *model.plan.environment)) {
     std::cerr << "Unable to prepare the state or cache directory.\n";
     return EXIT_FAILURE;
   }
-  plan.environment = std::move(environment);
-  // Spec §3.12: the engine's cwd-relative files (`pack/full`, stall dumps)
-  // land in <state_dir>/engine, created by prepare_state_dir() above.
-  plan.command.working_directory = state_dir / "engine";
-  // Spec §3.7(d): detected, never configured; off unless this process runs in
-  // a writable delegated cgroup v2.
-  plan.use_delegated_cgroup = true;
-  // Spec §3.12 (G2): PR_SET_NO_NEW_PRIVS on the engine unless
-  // engine.allow_new_privileges (--allow-new-privileges); when it is set, an
-  // engine that dies before READY gets the one-time /dev/nvidia-uvm hint.
-  plan.command.no_new_privileges =
-      secure_frontend::config_defaults::kNoNewPrivilegesDefault && !config.engine.allow_new_privileges;
-#if defined(__linux__)
-  supervisor_config.no_new_privileges_hint = plan.command.no_new_privileges;
-#endif
   // The supervisor thread spawns, watches and restarts the engine (spec §3.1).
   // Declared before the listener and the router, so it outlives both; a Lease
   // lives only inside one ChatRoute::handle call.
-  secure_frontend::EngineSupervisor supervisor(supervisor_config, secure_frontend::make_stdio_process_factory(std::move(plan)));
+  secure_frontend::EngineSupervisor supervisor(supervisor_config, secure_frontend::make_stdio_process_factory(std::move(model.plan)));
 
   const std::string authority = host_header(listener);  // the startup line only
   // SP3 Task 16 (spec §2.2, §2.5): SupervisorPort serializes the frontend's
@@ -372,27 +287,10 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
   // each generation, the host sampler below adds a reading a second, GET /metrics renders it.
   std::optional<secure_frontend::ServeMonitor> monitor;
   if (config.listener.monitor) monitor.emplace();
-  secure_frontend::ChatRoute chat_route(
-      secure_frontend::ChatRouteConfig{.schema = schema_limits, .model_id = model_id, .profile = supervisor_config.profile,
-                                       .max_prompt_tokens = config.limits.chat.max_prompt_tokens,
-                                       .max_completion_tokens = config.limits.chat.max_completion_tokens,
-                                       .default_max_tokens = config.limits.chat.default_max_tokens,
-                                       .sampling_default = config.sampling,
-                                       .fit_max_tokens = config.engine.fit_max_tokens,
-                                       .qwen_thinking = config.reasoning.effort != secure_frontend::ReasoningEffort::none,
-                                       .qwen_effort = qwen_effort,
-                                       .effort_at_end = effort_at_end,
-                                       .gemma4_thinking_default = secure_frontend::gemma4_thinking_default(config),
-                                       .minimum_output_tokens = config.engine.min_tokens.value_or(0U),
-                                       .maximum_output_tokens = config.engine.max_tokens.value_or(0U),
-                                       .model_aliases = model_aliases,
-                                       .queue_timeout = config.limits.concurrency.queue_timeout,
-                                       .write_stall = config.limits.http.write_stall,
-                                       .response_write_deadline = config.limits.http.response_write_deadline,
-                                       .stream_keepalive = config.limits.http.stream_keepalive,
-                                       .vision = vision_service.has_value() ? &*vision_service : nullptr,
-                                       .monitor = monitor.has_value() ? &*monitor : nullptr},
-      port, gate, *tokenizer);
+  secure_frontend::ChatRouteConfig chat_config = model.chat;
+  chat_config.vision = vision_service.has_value() ? &*vision_service : nullptr;
+  chat_config.monitor = monitor.has_value() ? &*monitor : nullptr;
+  secure_frontend::ChatRoute chat_route(std::move(chat_config), port, gate, model.tokenizer);
   // Spec §4.1: every request goes through the header-first router (Host,
   // Origin, preflight, bearer token, route table, Content-Type, body limit)
   // before a body byte is read. Spec §3.6 (E9, re-anchor 4 / P26): /v1/models
@@ -403,7 +301,7 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
       .validator = validator,
       .model_id = model_id,
       .owned_by = "local",
-      .aliases = model_aliases,
+      .aliases = model.aliases,
       .chat_body_limit = config.limits.chat.max_body_bytes,
       .health = [&port] {
         const auto s = port.snapshot();
@@ -441,37 +339,7 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
     secure_frontend::EngineSupervisor& supervisor;
     ~StopSupervisor() { supervisor.shutdown(secure_frontend::config_defaults::kShutdownBound); }
   } stop_supervisor{supervisor};
-  // listener.monitor (session log step 16): this machine's readings once a second; the GPU's
-  // through the system's nvidia-smi, its own child (no shell, ProgramFiles alone, the Job),
-  // started after bind like every child and stopped (before the supervisor) on every way out.
-  struct HostSampler final {
-    secure_frontend::ServeMonitor* monitor{nullptr};
-    secure_frontend::GpuSampler gpu;
-    std::atomic<bool> stopping{false};
-    std::thread thread;
-    void start(secure_frontend::ServeMonitor& target) {
-      monitor = &target;
-      gpu.start({.executable = secure_frontend::nvidia_smi_path(), .arguments = secure_frontend::nvidia_smi_arguments(),
-                 .environment = secure_frontend::nvidia_smi_environment(), .no_new_privileges = true, .insert_serve = false});
-      thread = std::thread([this] {
-        secure_frontend::CpuMeter cpu;
-        while (!stopping.load()) {
-          secure_frontend::HostSample sample;
-          sample.cpu_percent = cpu.sample();
-          sample.memory = secure_frontend::read_memory();
-          sample.gpu = gpu.latest();
-          if (!sample.gpu.has_value()) sample.gpu_note = gpu.note();
-          monitor->add_host_sample(sample);
-          for (int slice = 0; slice < 10 && !stopping.load(); ++slice) std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-      });
-    }
-    ~HostSampler() {
-      stopping = true;
-      if (thread.joinable()) thread.join();
-      gpu.stop();
-    }
-  } host_sampler;
+  HostSampler host_sampler;
   if (monitor.has_value()) host_sampler.start(*monitor);
   // SP5 M1 Task 11 (Ruling T11-z): resident (the pin's eager default, serve/server.py:
   // 2511) starts the encoder now — no READY within the policy, and boot fails, because
@@ -527,6 +395,246 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
   return supervisor.engine_left_unreaped() ? EXIT_FAILURE : EXIT_SUCCESS;
 }
 
+// Model launcher (plan 2026-10-23 Task 3): the cards that load and validate together with the
+// main config at their own defaults (D9: a bad card is refused by name, the others load). The
+// server's own settings are the main config's, read through the first usable card.
+struct UsableCards final {
+  std::vector<secure_frontend::ModelCard> cards;
+  std::shared_ptr<const FrontendConfig> server;
+};
+
+std::optional<UsableCards> usable_cards(const secure_frontend::FrontendConfigDraft& main) {
+  if (const auto issues = secure_frontend::main_config_card_issues(main); !issues.empty()) {
+    for (const auto& issue : issues) std::cerr << "Configuration error: " << secure_frontend::format_issue(issue) << '\n';
+    return std::nullopt;
+  }
+  const auto entry = main.entries.find("models.cards");
+  const auto* listed = entry == main.entries.end() ? nullptr : std::get_if<std::vector<std::string>>(&entry->second.value);
+  if (listed == nullptr) {
+    std::cerr << "Configuration error: models.cards: must be an array of strings\n";
+    return std::nullopt;
+  }
+  std::vector<std::filesystem::path> files;
+  for (const auto& text : *listed) files.push_back(secure_frontend::path_from_utf8(text));
+  auto loaded = secure_frontend::load_model_cards(files);
+  for (const auto& refusal : loaded.refused) {
+    for (const auto& issue : refusal.issues) {
+      std::cerr << "model card " << refusal.position << (refusal.name.empty() ? std::string{} : " (" + refusal.name + ")")
+                << " refused: " << secure_frontend::format_issue(issue) << '\n';
+    }
+  }
+  UsableCards usable;
+  for (auto& card : loaded.cards) {
+    auto validated = secure_frontend::card_config(main, card, secure_frontend::default_option_values(card));
+    if (const auto* issues = std::get_if<secure_frontend::ConfigErrors>(&validated)) {
+      for (const auto& issue : *issues) std::cerr << "model card " << card.name << " refused: " << secure_frontend::format_issue(issue) << '\n';
+      continue;
+    }
+    auto config = std::get<secure_frontend::ValidatedConfig>(validated).shared();
+    if (const auto issues = secure_frontend::launch_config_issues(*config, true); !issues.empty()) {
+      for (const auto& issue : issues) std::cerr << "model card " << card.name << " refused: " << issue << '\n';
+      continue;
+    }
+    if (usable.server == nullptr) usable.server = config;
+    usable.cards.push_back(std::move(card));
+  }
+  if (usable.cards.empty()) {
+    std::cerr << "models.cards: no model card is usable; refusing to serve.\n";
+    return std::nullopt;
+  }
+  return usable;
+}
+
+int launcher_check_impl(const secure_frontend::FrontendConfigDraft& main, const std::vector<std::string>& overridden) {
+  const auto usable = usable_cards(main);
+  if (!usable) return EXIT_FAILURE;
+  const FrontendConfig& config = *usable->server;
+  std::cout << secure_frontend::describe(config);
+  for (const auto& key : overridden) std::cout << key << ": the command line overrides the config file\n";
+  for (const auto& card : usable->cards) {
+    std::cout << "model card " << card.name << ": usable (" << secure_frontend::profile_name(card.profile) << ", "
+              << card.options.size() << " page options)\n";
+  }
+  std::cout.flush();
+  if (config.listener.loopback_without_key) {
+    std::cout << "token: not used (listener.loopback_without_key: loopback only)\nConfiguration is valid.\n";
+    return EXIT_SUCCESS;
+  }
+  const auto token = read_configured_token(config);
+  if (const auto* error = std::get_if<secure_frontend::TokenReadError>(&token)) {
+    std::cerr << "token: unavailable: " << error->message << '\n'
+              << "Configuration is not usable: the API token cannot be read.\n";
+    return EXIT_FAILURE;
+  }
+  std::cout << "token: available (value not shown)\nConfiguration is valid.\n";
+  return EXIT_SUCCESS;
+}
+
+secure_frontend::HttpResponse json_answer(const int status, std::string body) {
+  return {.status = status, .headers = {{"Content-Type", "application/json; charset=utf-8"}}, .body = std::move(body)};
+}
+
+secure_frontend::HttpResponse refusal_answer(const secure_frontend::ModelLauncher::Refusal& refusal) {
+  return secure_frontend::make_error_response(refusal.error, {.param = refusal.param});
+}
+
+// POST /v1/strata/models/start: {"name": "<card>", "options": {...}} (options optional).
+secure_frontend::HttpResponse start_answer(secure_frontend::ModelLauncher& launcher, const std::string_view body, const bool remote) {
+  constexpr secure_frontend::JsonLimits kStartLimits{.max_bytes = secure_frontend::kModelControlBodyLimit, .max_depth = 3U,
+                                                     .max_container_entries = 64U, .max_string_bytes = 256U, .allow_fractions = true};
+  const auto parsed = secure_frontend::parse_json(body, kStartLimits);
+  const auto* root = std::get_if<secure_frontend::JsonValue>(&parsed);
+  if (root == nullptr) return secure_frontend::make_error_response(secure_frontend::ApiError::invalid_json);
+  const auto* members = root->if_object();
+  if (members == nullptr) return secure_frontend::make_error_response(secure_frontend::ApiError::invalid_request);
+  const std::string* name = nullptr;
+  const secure_frontend::JsonValue* options = nullptr;
+  for (const auto& member : *members) {
+    if (member.key == "name" && member.value.if_string() != nullptr) name = member.value.if_string();
+    else if (member.key == "options" && member.value.if_object() != nullptr) options = &member.value;
+    else return secure_frontend::make_error_response(secure_frontend::ApiError::invalid_request);
+  }
+  if (name == nullptr) return secure_frontend::make_error_response(secure_frontend::ApiError::invalid_request);
+  if (const auto refused = launcher.start(*name, options, remote)) return refusal_answer(*refused);
+  std::string text = "{\"state\":\"starting\",\"name\":";
+  secure_frontend::append_json_string(&text, *name);
+  return json_answer(202, text + "}\n");
+}
+
+int launcher_run_impl(const secure_frontend::FrontendConfigDraft& main) {
+  // Ruling T13-c: server-grade process defaults (idempotent).
+  secure_frontend::install_process_defaults();
+  auto usable = usable_cards(main);
+  if (!usable) return EXIT_FAILURE;
+  const std::shared_ptr<const FrontendConfig> server_config = usable->server;
+  const FrontendConfig& config = *server_config;
+  if (!state_dir_is_usable(config)) return EXIT_FAILURE;
+  if (const auto issues = secure_frontend::create_runtime_roots(config); !issues.empty()) {
+    for (const auto& issue : issues) std::cerr << "Configuration error: " << secure_frontend::format_issue(issue) << '\n';
+    return EXIT_FAILURE;
+  }
+  const bool keyless = config.listener.loopback_without_key;
+  secure_frontend::BearerTokenValidator validator;
+  if (!keyless) {
+    auto token_result = read_configured_token(config);
+    auto* token = std::get_if<secure_frontend::SecretBytes>(&token_result);
+    if (token == nullptr) {
+      std::cerr << "Unable to read API token: " << std::get<secure_frontend::TokenReadError>(token_result).message << '\n';
+      return EXIT_FAILURE;
+    }
+    validator = secure_frontend::make_bearer_validator(std::make_shared<const secure_frontend::TokenVerifier>(std::move(*token)));
+  }
+  const secure_frontend::Config listener = secure_frontend::listener_config(config);
+  const std::string authority = host_header(listener);  // the startup line only
+  std::optional<secure_frontend::ServeMonitor> monitor;
+  if (config.listener.monitor) monitor.emplace();
+  const std::size_t card_count = usable->cards.size();
+  // D7: the page's last options per card, owner-only beside the engine's state.
+  secure_frontend::ModelLauncher launcher(secure_frontend::LauncherSettings{
+      .main = main,
+      .cards = std::move(usable->cards),
+      .memory_file = *config.roots.state / "model-options.json",
+      .gate = {.max_queued = config.limits.concurrency.max_queued_generations, .queue_timeout = config.limits.concurrency.queue_timeout},
+      .monitor = monitor.has_value() ? &*monitor : nullptr});
+  // D2: model control for key holders on loopback; remote clients only with models.control_remote.
+  secure_frontend::ModelControl control;
+  if (config.models.control) {
+    const bool remote_allowed = config.models.control_remote;
+    const auto allowed = [remote_allowed](const secure_frontend::RequestContext& context) {
+      return context.loopback_peer || remote_allowed;
+    };
+    control.list = [&launcher, allowed](const secure_frontend::RequestContext& context) -> secure_frontend::RouteResult {
+      if (!allowed(context)) return secure_frontend::make_error_response(secure_frontend::ApiError::control_not_allowed);
+      return json_answer(200, launcher.list_json());
+    };
+    control.start = [&launcher, allowed](const std::string_view body,
+                                         const secure_frontend::RequestContext& context) -> secure_frontend::RouteResult {
+      if (!allowed(context)) return secure_frontend::make_error_response(secure_frontend::ApiError::control_not_allowed);
+      return start_answer(launcher, body, !context.loopback_peer);
+    };
+    control.stop = [&launcher, allowed](const secure_frontend::RequestContext& context) -> secure_frontend::RouteResult {
+      if (!allowed(context)) return secure_frontend::make_error_response(secure_frontend::ApiError::control_not_allowed);
+      if (const auto refused = launcher.stop(!context.loopback_peer)) return refusal_answer(*refused);
+      return json_answer(202, "{\"state\":\"stopped\"}\n");
+    };
+  }
+  secure_frontend::ApiRouter router(secure_frontend::ApiRouterConfig{
+      .policy = secure_frontend::make_http_policy(config.listener.host, config.listener.port, config.listener.host_aliases,
+                                                  config.listener.cors_origins),
+      .validator = validator,
+      .model_id = {},
+      .owned_by = "local",
+      .aliases = {},
+      .chat_body_limit = config.limits.chat.max_body_bytes,
+      .health = [&launcher] { return launcher.health(); },
+      .chat = [&launcher](const std::string_view body, const secure_frontend::RequestContext& context) -> secure_frontend::RouteResult {
+        return launcher.chat(body, context);
+      },
+      .web_ui = config.listener.web_ui,
+      .require_key = !keyless,
+      .metrics = monitor.has_value() ? secure_frontend::MetricsProvider{[&launcher] { return launcher.metrics_json(); }}
+                                     : secure_frontend::MetricsProvider{},
+      .served = [&launcher] { return launcher.served(); },
+      .control = std::move(control)});
+  const secure_frontend::ConnectionLimits connection_bounds = secure_frontend::connection_limits(config);
+  std::string bind_error;
+  auto server = secure_frontend::HttpSocketServer::bind(listener, static_cast<int>(config.listener.backlog), &bind_error);
+  if (!server) { std::cerr << "Unable to bind secure listener.\n"; return EXIT_FAILURE; }
+  // Spec §3.7: a signal sets the process-wide flag the accept loop below polls; the wake only
+  // has to exist (no supervisor runs before a card starts). Released before it is destroyed.
+  secure_frontend::SupervisorWake signal_wake;
+  secure_frontend::install_shutdown_signals(signal_wake);
+  struct ReleaseSignals final {
+    secure_frontend::SupervisorWake& wake;
+    ~ReleaseSignals() { secure_frontend::release_shutdown_signals(wake); }
+  } release_signals{signal_wake};
+  std::cerr << "strata: listening " << authority << ", workers " << config.limits.concurrency.max_concurrent_requests
+            << ", queued generations " << config.limits.concurrency.max_queued_generations << ", model cards " << card_count
+            << (config.models.control ? (config.models.control_remote ? " (control: loopback and remote)" : " (control: loopback)")
+                                      : " (control off)")
+            << '\n' << std::flush;
+  HostSampler host_sampler;
+  if (monitor.has_value()) host_sampler.start(*monitor);
+  if (keyless) {
+    std::cerr << "strata: warning: listener.loopback_without_key is true: the API and the page answer without a key on "
+              << authority << " (loopback only; Host and Origin are still checked)\n";
+  }
+  // D5: models.start names the card started at boot (after bind, like every spawn).
+  if (config.models.start.has_value()) {
+    if (const auto refused = launcher.start(*config.models.start, nullptr, false)) {
+      std::cerr << "[strata] models: models.start names no usable card (or it was refused); waiting for the page\n";
+      (void)refused;
+    }
+  } else {
+    std::cerr << "[strata] models: no model started (models.start is unset); waiting for the page\n";
+  }
+  std::cout << "Secure server listening on http://" << authority
+            << (keyless ? " (no API key: loopback only; Ctrl-C to stop)\n" : " (authenticated; Ctrl-C to stop)\n");
+  std::cout.flush();
+  secure_frontend::RequestLogger request_log(config.logging.requests, secure_frontend::stderr_sink());
+  secure_frontend::PoolExit pool_exit = secure_frontend::PoolExit::stopped;
+  {
+    secure_frontend::ConnectionPool pool(
+        *server,
+        secure_frontend::PoolLimits{.workers = config.limits.concurrency.max_concurrent_requests,
+                                    .per_remote_cap = config.limits.concurrency.max_connections_per_remote_address,
+                                    .connection = connection_bounds},
+        router,
+        [&request_log](const secure_frontend::FinishedConnection& finished) { request_log.record(secure_frontend::log_record_for(finished)); });
+    // The pool's shutdown hook ends the running model's generation like a shutdown (the
+    // runtime's stop flag) and refuses its queue, before the workers are joined.
+    pool_exit = pool.run_until([] { return secure_frontend::shutdown_signalled(); }, [&launcher] { launcher.begin_shutdown(); });
+  }
+  launcher.shutdown();
+  secure_frontend::notify_shutdown_complete();
+  if (pool_exit == secure_frontend::PoolExit::listener_failed) {
+    std::cerr << "listener stopped\n";
+    return EXIT_FAILURE;
+  }
+  // Spec C4: exit 0 means no engine is left; an unreaped one was logged.
+  return launcher.engine_left_unreaped() ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+
 }  // namespace
 
 namespace secure_frontend {
@@ -536,6 +644,10 @@ namespace secure_frontend {
 int server_run(const FrontendConfig& config, const bool expert) { return server_run_impl(config, expert); }
 int server_check(const FrontendConfig& config, const std::vector<std::string>& overridden, bool expert) {
   return server_check_impl(config, overridden, expert);
+}
+int launcher_run(const FrontendConfigDraft& main) { return launcher_run_impl(main); }
+int launcher_check(const FrontendConfigDraft& main, const std::vector<std::string>& overridden) {
+  return launcher_check_impl(main, overridden);
 }
 
 }  // namespace secure_frontend

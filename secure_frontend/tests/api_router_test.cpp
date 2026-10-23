@@ -384,6 +384,89 @@ void web_ui_has_the_monitor_and_four_thinking_levels() {
          "the Thinking control notes that Gemma has no levels");
 }
 
+// Model launcher plan Task 5 (spec §6): the Models tab. It is in the page from the start but
+// hidden, and shown only when GET /v1/strata/models answers; a server with model control off
+// answers 404 and the tab stays hidden, so the page is exactly today's.
+void web_ui_has_the_models_tab_hidden_until_the_server_offers_it() {
+  const std::string html{secure_frontend::find_web_asset("/")->body};
+  const std::string js{secure_frontend::find_web_asset("/ui/app.js")->body};
+  expect(html.find("<button class=\"st-tab\" role=\"tab\" id=\"tab-btn-models\" aria-controls=\"view-models\" "
+                   "aria-selected=\"false\" data-tab=\"models\" hidden>") != std::string::npos,
+         "a Models tab beside Chat and Monitor, hidden until the server offers it");
+  expect(html.find("id=\"tab-btn-models\"") > html.find("id=\"tab-btn-chat\"") &&
+             html.find("id=\"tab-btn-models\"") < html.find("id=\"tab-btn-monitor\""),
+         "the Models tab sits between Chat and Monitor");
+  expect(html.find("<section class=\"view view--models\" id=\"view-models\" role=\"tabpanel\" aria-labelledby=\"tab-btn-models\" hidden>") !=
+             std::string::npos,
+         "the Models view, hidden like every other view");
+  for (const char* id : {"id=\"model-list\"", "id=\"model-detail\"", "id=\"model-options\"", "id=\"model-start\"",
+                         "id=\"model-stop\"", "id=\"model-progress\"", "id=\"model-start-error\"", "id=\"model-detail-error\""}) {
+    expect(html.find(id) != std::string::npos, std::string{"the Models view has "} + id);
+  }
+  expect(js.find("api(\"/v1/strata/models\")") != std::string::npos,
+         "the card list is asked through the keyed API helper");
+  expect(js.find("if (response.status === 404) { setLauncherEnabled(false); return; }") != std::string::npos &&
+             js.find("$(\"tab-btn-models\").hidden = !on;") != std::string::npos,
+         "a 404 (model control off) hides the Models tab");
+  expect(js.find("[\"login\", \"chat\", \"models\", \"monitor\", \"about\"]") != std::string::npos &&
+             js.find("$(\"tab-btn-models\").addEventListener(\"click\", function () { showView(\"models\"); });") != std::string::npos,
+         "the Models tab switches views like the others");
+}
+
+// The Models view drives the control API: every call through the keyed helper (one fetch in
+// the whole script), every option kind rendered from the server's description, a confirmation
+// before a running model is replaced, the server's refusal shown beside Start (with the option
+// it names), and a 2 s poll while a card is starting.
+void web_ui_models_tab_starts_stops_and_polls() {
+  const std::string js{secure_frontend::find_web_asset("/ui/app.js")->body};
+  expect(js.find("fetch(") != std::string::npos && js.find("fetch(") == js.rfind("fetch("),
+         "one fetch in the script: every call goes through the keyed API helper");
+  expect(js.find("api(\"/v1/strata/models/start\", {") != std::string::npos &&
+             js.find("JSON.stringify({ name: card.name, options: collected.values })") != std::string::npos,
+         "Start posts the card's name and its typed option values");
+  expect(js.find("api(\"/v1/strata/models/stop\", { method: \"POST\" })") != std::string::npos, "Stop posts to the stop route");
+  for (const char* kind : {"case \"boolean\":", "case \"integer\":", "case \"decimal\":", "case \"choice\":",
+                           "case \"integer_or_auto\":"}) {
+    expect(js.find(kind) != std::string::npos, std::string{"the options renderer handles "} + kind);
+  }
+  expect(js.find("toggle.setAttribute(\"role\", \"switch\")") != std::string::npos && js.find("el(\"select\", \"st-input\")") != std::string::npos &&
+             js.find("auto.type = \"checkbox\"") != std::string::npos && js.find("input.step = integral ? \"1\" : \"any\"") != std::string::npos,
+         "a switch, a choice list, an auto box and number inputs with integer or decimal steps");
+  expect(js.find("input.min = String(option.min)") != std::string::npos && js.find("input.max = String(option.max)") != std::string::npos,
+         "number inputs carry the card's bounds");
+  expect(js.find("window.confirm(") != std::string::npos && js.find("if (running && !window.confirm(") != std::string::npos,
+         "Start asks before a running model is stopped");
+  expect(js.find("parsed.error.param") != std::string::npos && js.find("$(\"model-start-error\").textContent") != std::string::npos,
+         "a refusal is shown beside Start, naming the option");
+  expect(js.find("launcher.timer = window.setTimeout(pollLauncher, 2000);") != std::string::npos &&
+             js.find("function launcherStarting(") != std::string::npos,
+         "the page asks again every 2 s while a card is starting");
+  expect(js.find("$(\"model-progress\").textContent") != std::string::npos, "a progress line while a card loads");
+}
+
+// The chat follows the running model: the header names it, the composer is off with a link to
+// the Models tab when none runs, /v1/models is asked again when the running card changes, and
+// the launcher's chat refusals read as plain sentences.
+void web_ui_chat_follows_the_running_model() {
+  const std::string html{secure_frontend::find_web_asset("/")->body};
+  const std::string js{secure_frontend::find_web_asset("/ui/app.js")->body};
+  expect(html.find("id=\"header-model\"") != std::string::npos, "the header has a place for the running model's name");
+  expect(html.find("No model is running &mdash; open the Models tab") != std::string::npos &&
+             html.find("id=\"no-model-open\"") != std::string::npos,
+         "the composer's notice and its button to the Models tab");
+  expect(js.find("$(\"no-model-open\").addEventListener(\"click\", function () { showView(\"models\"); });") != std::string::npos,
+         "the notice's button opens the Models tab");
+  expect(js.find("$(\"input\").disabled = !on;") != std::string::npos && js.find("$(\"send-btn\").disabled = !on;") != std::string::npos,
+         "with no model running the composer is disabled");
+  expect(js.find("$(\"header-model\").textContent") != std::string::npos, "the header shows the running model's name");
+  expect(js.find("refreshChatModel(") != std::string::npos && js.find("listModels()") != std::string::npos,
+         "the chat's model is read again from /v1/models when the running card changes");
+  for (const char* code : {"model_switching:", "no_model_running:", "model_not_running:"}) {
+    expect(js.find(code) != std::string::npos, std::string{"a friendly chat error for "} + code);
+  }
+  expect(js.find("CHAT_ERRORS[code]") != std::string::npos, "the chat's error path uses the friendly errors");
+}
+
 void keyless_router_answers_without_a_key() {
   auto keyless = page_router(true, false);
   const auto models = bare(keyless, "GET", "/v1/models");
@@ -440,9 +523,118 @@ void metrics_route_needs_the_key_and_the_switch() {
 }
 }  // namespace
 
+// --- The model launcher's routes (plan 2026-10-23 Task 4) ---------------------------------
+
+// A launcher-mode router: the served model comes from a provider and the control routes are
+// handled by `control` (each call recorded in `calls`).
+secure_frontend::ApiRouter launcher_router(std::vector<std::string>* calls, std::optional<std::string> running = "Gemma-4",
+                                           secure_frontend::HealthView health = {true, "ready", ""}, bool control = true) {
+  secure_frontend::SecretBytes secret;
+  (void)secret.assign(kRouterToken);
+  secure_frontend::ModelControl handlers;
+  if (control) {
+    handlers.list = [calls](const secure_frontend::RequestContext& context) -> secure_frontend::RouteResult {
+      calls->push_back(std::string{"list "} + (context.loopback_peer ? "loopback" : "remote"));
+      return secure_frontend::HttpResponse{.status = 200, .headers = {}, .body = "{\"object\":\"list\"}\n"};
+    };
+    handlers.start = [calls](std::string_view body, const secure_frontend::RequestContext&) -> secure_frontend::RouteResult {
+      calls->push_back("start " + std::string{body});
+      return secure_frontend::HttpResponse{.status = 202, .headers = {}, .body = "{\"state\":\"starting\"}\n"};
+    };
+    handlers.stop = [calls](const secure_frontend::RequestContext&) -> secure_frontend::RouteResult {
+      calls->push_back("stop");
+      return secure_frontend::HttpResponse{.status = 202, .headers = {}, .body = "{\"state\":\"stopped\"}\n"};
+    };
+  }
+  return secure_frontend::ApiRouter({
+      .policy = secure_frontend::make_http_policy(*secure_frontend::parse_listener_address("127.0.0.1"), 8080, {}, {}),
+      .validator = secure_frontend::make_bearer_validator(std::make_shared<const secure_frontend::TokenVerifier>(std::move(secret))),
+      .model_id = "", .owned_by = "local", .chat_body_limit = 49152,
+      .health = [health] { return health; },
+      .chat = {},
+      .served = [running] {
+        secure_frontend::ServedModels served;
+        served.id = running;
+        if (running) served.aliases = {"gemma"};
+        served.extension = "[{\"id\":\"Gemma-4\",\"state\":\"running\"},{\"id\":\"Qwen\",\"state\":\"stopped\"}]";
+        return served;
+      },
+      .control = std::move(handlers)});
+}
+
+secure_frontend::HttpResponse request(secure_frontend::ApiRouter& router, const std::string& method, const std::string& target,
+                                      const std::string& body = "", bool keyed = true, bool loopback = true,
+                                      const std::string& content_type = "application/json") {
+  auto head = head_of(method, target);
+  if (!keyed) head.fields = {{"Host", "127.0.0.1:8080"}};
+  if (!body.empty() || method == "POST") {
+    head.fields.emplace_back("Content-Type", content_type);
+    head.content_length = body.size();
+  }
+  const auto decision = router.authorize(head);
+  if (decision.early) return *decision.early;
+  secure_frontend::RequestContext context;
+  context.loopback_peer = loopback;
+  return complete(router.handle(head, body, decision, context));
+}
+
+void model_control_routes_need_the_switch_and_the_key() {
+  std::vector<std::string> calls;
+  auto router = launcher_router(&calls);
+  for (const auto& [method, target] : std::vector<std::pair<std::string, std::string>>{
+           {"GET", "/v1/strata/models"}, {"POST", "/v1/strata/models/start"}, {"POST", "/v1/strata/models/stop"}}) {
+    expect(request(router, method, target, method == "POST" ? "{}" : "", false).status == 401, method + " " + target + " needs the key");
+  }
+  expect(calls.empty(), "no handler runs before the key");
+  expect(request(router, "GET", "/v1/strata/models").status == 200 && calls == std::vector<std::string>{"list loopback"},
+         "the list answers with the key");
+  expect(request(router, "GET", "/v1/strata/models", "", true, false).status == 200 && calls.back() == "list remote",
+         "the handler learns the client's class");
+  expect(request(router, "POST", "/v1/strata/models/start", "{\"name\":\"Qwen\"}").status == 202 &&
+             calls.back() == "start {\"name\":\"Qwen\"}",
+         "a start reaches its handler with the body");
+  expect(request(router, "POST", "/v1/strata/models/stop", "{}").status == 202 && calls.back() == "stop", "a stop reaches its handler");
+  expect(request(router, "POST", "/v1/strata/models").status == 405, "the list is GET only");
+  expect(request(router, "GET", "/v1/strata/models/start").status == 405, "a start is POST only");
+  expect(request(router, "POST", "/v1/strata/models/start", "{}", true, true, "text/plain").status == 415, "a start body is JSON");
+  expect(request(router, "POST", "/v1/strata/models/start", std::string(5000, ' ')).status == 413, "a start body is small");
+  expect(request(router, "GET", "/v1/strata/models/other").status == 404, "no other control route");
+  std::vector<std::string> none;
+  auto off = launcher_router(&none, "Gemma-4", {true, "ready", ""}, false);
+  for (const auto& [method, target] : std::vector<std::pair<std::string, std::string>>{
+           {"GET", "/v1/strata/models"}, {"POST", "/v1/strata/models/start"}, {"POST", "/v1/strata/models/stop"}}) {
+    expect(request(off, method, target, method == "POST" ? "{}" : "").status == 404, method + " " + target + " is no route with control off");
+  }
+  auto single = router_with({});
+  expect(get(single, "/v1/strata/models").status == 404, "a single-model server has no control routes");
+}
+
+void served_models_follow_the_running_card() {
+  std::vector<std::string> calls;
+  auto router = launcher_router(&calls);
+  const auto models = request(router, "GET", "/v1/models");
+  expect(models.status == 200 && models.body.find("\"id\":\"Gemma-4\"") != std::string::npos &&
+             models.body.find("\"id\":\"gemma\"") != std::string::npos &&
+             models.body.find("\"strata_models\":[{\"id\":\"Gemma-4\",\"state\":\"running\"},{\"id\":\"Qwen\",\"state\":\"stopped\"}]") !=
+                 std::string::npos,
+         "/v1/models lists the running card, its aliases and the cards' states: " + models.body);
+  expect(request(router, "GET", "/v1/models/gemma").status == 200, "an alias of the running card is found");
+  expect(request(router, "GET", "/v1/models/Qwen").status == 404, "a stopped card is not a served model");
+  auto idle = launcher_router(&calls, std::nullopt, {true, "none", ""});
+  const auto empty = request(idle, "GET", "/v1/models");
+  expect(empty.status == 200 && empty.body.find("\"data\":[]") != std::string::npos && empty.body.find("strata_models") != std::string::npos,
+         "nothing running: an empty list and the cards: " + empty.body);
+  const auto health = request(idle, "GET", "/health");
+  expect(health.status == 200 && health.body == "{\"status\":\"ok\",\"engine\":\"none\"}\n", "nothing running is a healthy server: " + health.body);
+  auto unhealthy_none = router_with([] { return secure_frontend::HealthView{false, "none", ""}; });
+  expect(get(unhealthy_none, "/health").status == 503, "\"none\" is only ever healthy (fails closed otherwise)");
+}
+
 int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
       {"health_samples_status_before_state_once_each", health_samples_status_before_state_once_each},
+      {"model_control_routes_need_the_switch_and_the_key", model_control_routes_need_the_switch_and_the_key},
+      {"served_models_follow_the_running_card", served_models_follow_the_running_card},
       {"health_carries_recovery_only_with_failed", health_carries_recovery_only_with_failed},
       {"health_includes_engine_state_when_provided", health_includes_engine_state_when_provided},
       {"health_is_503_with_engine_state_when_unavailable", health_is_503_with_engine_state_when_unavailable},
@@ -458,6 +650,9 @@ int main(int argc, char** argv) {
       {"web_ui_still_checks_host_and_origin", web_ui_still_checks_host_and_origin},
       {"web_ui_assets_are_bundled_and_inert", web_ui_assets_are_bundled_and_inert},
       {"web_ui_has_the_monitor_and_four_thinking_levels", web_ui_has_the_monitor_and_four_thinking_levels},
+      {"web_ui_has_the_models_tab_hidden_until_the_server_offers_it", web_ui_has_the_models_tab_hidden_until_the_server_offers_it},
+      {"web_ui_models_tab_starts_stops_and_polls", web_ui_models_tab_starts_stops_and_polls},
+      {"web_ui_chat_follows_the_running_model", web_ui_chat_follows_the_running_model},
       {"keyless_router_answers_without_a_key", keyless_router_answers_without_a_key},
       {"metrics_route_needs_the_key_and_the_switch", metrics_route_needs_the_key_and_the_switch},
   }, failures);

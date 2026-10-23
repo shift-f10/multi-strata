@@ -19,7 +19,9 @@ namespace secure_frontend {
 
 // web: one of the built-in page's bundled files (listener.web_ui; web_ui.hpp), public and
 // outside kRouteTable, which stays the authenticated API.
-enum class RouteId { health, models, model, chat, other, web, metrics };
+// strata_models / strata_start / strata_stop: the model launcher's control routes
+// (kModelControlRoutes; plan 2026-10-23 Task 4).
+enum class RouteId { health, models, model, chat, other, web, metrics, strata_models, strata_start, strata_stop };
 
 struct RouteEntry final {
   std::string_view method;
@@ -39,6 +41,17 @@ inline constexpr std::array<RouteEntry, 5> kRouteTable{{
     {"GET", "/metrics", false, RouteId::metrics},
 }};
 
+// Model launcher (plan 2026-10-23 Task 4; spec §5.3): served only when the server runs model
+// cards with models.control on, keyed like kRouteTable, and outside it (kRouteTable stays the API
+// every server serves).
+inline constexpr std::array<RouteEntry, 3> kModelControlRoutes{{
+    {"GET", "/v1/strata/models", false, RouteId::strata_models},
+    {"POST", "/v1/strata/models/start", false, RouteId::strata_start},
+    {"POST", "/v1/strata/models/stop", false, RouteId::strata_stop},
+}};
+// The largest start or stop body the control routes read.
+inline constexpr std::size_t kModelControlBodyLimit = 4096;
+
 struct RouteDecision final {
   std::optional<HttpResponse> early;      // set: answer now, the body is never read
   bool expect_continue{false};
@@ -50,6 +63,9 @@ struct RouteDecision final {
 struct RequestContext final {
   std::function<bool()> client_gone;                // chat only; empty = never gone
   const std::atomic<bool>* shutting_down{nullptr};  // null = never
+  // Model launcher (D2): the peer is a loopback address. false (the default, and the in-memory
+  // seam's) is treated as a remote client.
+  bool loopback_peer{false};
 };
 
 // A router returns this status when the client is gone and nothing may be written (spec §2.6).

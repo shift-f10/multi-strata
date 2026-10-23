@@ -207,6 +207,18 @@ std::string server_usage() {
   return text;
 }
 
+std::variant<FrontendConfigDraft, ConfigErrors> load_server_draft(const ServerInvocation& invocation,
+                                                                 std::vector<std::string>* overridden) {
+  FrontendConfigDraft draft = invocation.flags;
+  if (invocation.config_file.has_value()) {
+    auto file = read_config_file(*invocation.config_file);
+    if (auto* errors = std::get_if<ConfigErrors>(&file)) return *errors;
+    draft = merge_drafts(std::move(std::get<FrontendConfigDraft>(file)), invocation.flags);
+  }
+  if (overridden != nullptr) *overridden = draft.overridden_by_command_line;
+  return draft;
+}
+
 ConfigValidationResult load_server_config(const ServerInvocation& invocation, std::vector<std::string>* overridden) {
   FrontendConfigDraft draft = invocation.flags;
   if (invocation.config_file.has_value()) {

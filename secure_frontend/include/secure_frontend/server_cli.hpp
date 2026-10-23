@@ -40,5 +40,9 @@ struct CliError final {
 // keys set in both the file and on the command line.
 [[nodiscard]] ConfigValidationResult load_server_config(const ServerInvocation& invocation,
                                                         std::vector<std::string>* overridden);
+// defaults < config file < flags, not yet validated: with models.cards the model launcher
+// validates the main config together with each card (server_bootstrap.hpp).
+[[nodiscard]] std::variant<FrontendConfigDraft, ConfigErrors> load_server_draft(const ServerInvocation& invocation,
+                                                                               std::vector<std::string>* overridden);
 
 }  // namespace secure_frontend

@@ -9,7 +9,7 @@
 namespace secure_frontend {
 namespace {
 
-constexpr std::array<ApiErrorRow, 23> kTable{{
+constexpr std::array<ApiErrorRow, 29> kTable{{
     {ApiError::invalid_request, 400, "invalid_request_error", "invalid_request", "The request is malformed or not supported."},
     {ApiError::invalid_json, 400, "invalid_request_error", "invalid_json", "The request body is not valid JSON within the allowed limits."},
     {ApiError::unsupported_parameter, 400, "invalid_request_error", "unsupported_parameter", "This parameter is not supported by this server."},
@@ -33,6 +33,13 @@ constexpr std::array<ApiErrorRow, 23> kTable{{
     {ApiError::engine_error, 503, "server_error", "engine_error", "The local engine could not complete the request."},
     {ApiError::server_shutting_down, 503, "server_error", "server_shutting_down", "The server is shutting down."},
     {ApiError::http_version_not_supported, 505, "invalid_request_error", "http_version_not_supported", "Only HTTP/1.1 is supported."},
+    // Model launcher (plan 2026-10-23): the control routes' refusals and chat while models change.
+    {ApiError::invalid_option, 400, "invalid_request_error", "invalid_option", "An option value is not valid for this model."},
+    {ApiError::control_not_allowed, 403, "permission_error", "control_not_allowed", "Model control is not allowed for this client."},
+    {ApiError::model_not_running, 409, "invalid_request_error", "model_not_running", "The requested model is configured but not running; start it first."},
+    {ApiError::switch_in_progress, 409, "invalid_request_error", "switch_in_progress", "A model start or stop is already in progress."},
+    {ApiError::model_switching, 503, "server_error", "model_switching", "The server is switching models; retry shortly."},
+    {ApiError::no_model_running, 503, "server_error", "no_model_running", "No model is running; start one first."},
 }};
 
 constexpr std::array<std::string_view, 21> kFixedParamKeys{
@@ -59,8 +66,13 @@ bool is_fixed_param_key(const std::string_view key) noexcept {
 
 std::string render_error_body(const ApiError error, const std::string_view param) {
   const ApiErrorRow& row = api_error_row(error);
-  const bool named = (error == ApiError::unsupported_parameter || error == ApiError::extension_disabled) &&
-                     is_fixed_param_key(param);
+  // Model launcher: an option refusal names the option, a [a-z_] word of at most 32 bytes (the
+  // launcher passes only names from its option table, model_options.hpp).
+  const bool option_name = error == ApiError::invalid_option && !param.empty() && param.size() <= 32U &&
+                           std::all_of(param.begin(), param.end(), [](const char c) { return (c >= 'a' && c <= 'z') || c == '_'; });
+  const bool named = ((error == ApiError::unsupported_parameter || error == ApiError::extension_disabled) &&
+                      is_fixed_param_key(param)) ||
+                     option_name;
   std::string body{"{\"error\":{\"message\":"};
   append_json_string(&body, row.message);
   body.append(",\"type\":");
@@ -82,6 +94,8 @@ HttpResponse make_error_response(const ApiError error, const ErrorOptions& optio
   if (error == ApiError::invalid_api_key) response.headers.emplace_back("WWW-Authenticate", "Bearer");
   if (error == ApiError::server_busy) response.headers.emplace_back("Retry-After", std::to_string(api_constants::kRetryAfterBusyS));
   if (error == ApiError::engine_error) response.headers.emplace_back("x-should-retry", "false");
+  // Model launcher: a switch passes like an engine restart (spec §3.8's 5 s).
+  if (error == ApiError::model_switching) response.headers.emplace_back("Retry-After", std::to_string(api_constants::kRetryAfterEngineS));
   if (error == ApiError::engine_unavailable && options.retry_after.has_value()) {
     response.headers.emplace_back("Retry-After", std::to_string(*options.retry_after));
   }

@@ -56,6 +56,17 @@ class IdleConnection final {
   std::uintptr_t socket_;
 };
 
+// Model launcher (plan 2026-10-23): one model card the harness writes to <root>/cards/<n>.json
+// (owner-only) over its own fixture: the engine copy, roots.models with fake-model.gguf, and the
+// byte tokenizer pack (qwen) or the spm pack (gemma4).
+struct CardOptions final {
+  std::string name;
+  std::string profile{"qwen"};
+  std::vector<std::string> engine_args{};                 // the card's fixed engine.args
+  std::string options_json{"{}"};                         // the card's "options" object
+  std::map<std::string, std::string> config_literals{};   // more card config rows (key path -> JSON literal)
+};
+
 // Every member has a default initializer, so designated initializers that name
 // only some of them keep compiling when later tasks add members (Task 18: state_dir).
 struct ServerOptions final {
@@ -86,6 +97,10 @@ struct ServerOptions final {
   // engine.args, so the fake's own flags (--token-ids=..., --record-file=...) travel here.
   // Empty: no file.
   std::vector<std::string> fake_engine_options{};
+  // Model launcher: non-empty boots launcher mode. The cards are written as above, the config
+  // file gets models.cards, and the model flags (--expert, --profile, --models-root,
+  // --tokenizer-pack, --engine, --model-id, --engine-arg) are left out: the cards hold them.
+  std::vector<CardOptions> model_cards{};
 };
 
 // strata-secure-server as a test child: fixture models (fake-model.gguf, 0600)

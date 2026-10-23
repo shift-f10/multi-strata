@@ -32,6 +32,7 @@ struct WorkerSignals final {
   const std::atomic<bool>* abort{nullptr};          // eviction in P1 (spec §2.3)
   const std::atomic<bool>* shutting_down{nullptr};  // orderly shutdown (spec §2.8)
   std::function<bool()> on_header_complete;         // returns false when the connection was evicted meanwhile
+  bool loopback_peer{false};                        // the accepted peer is a loopback address (RequestContext)
 };
 
 enum class ConnectionOutcome { responded, evicted, timed_out, client_gone, transport_error, shutdown };

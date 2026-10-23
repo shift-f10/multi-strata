@@ -300,6 +300,11 @@ std::unique_ptr<ServerProcess> ServerProcess::start(const ServerOptions& options
     }
   } else {
     secure_frontend_test::write_file(models / "fake-model.gguf", "GGUF", 0600);
+    // Model launcher: a gemma4 card loads its pack in spm_bpe mode from its own directory.
+    if (std::any_of(options.model_cards.begin(), options.model_cards.end(), [](const CardOptions& card) { return card.profile == "gemma4"; })) {
+      secure_frontend_test::make_private_directory(server->root_ / "tokenizer-spm");
+      write_spm_tokenizer_pack(server->root_ / "tokenizer-spm");
+    }
     // Gemma 4 plan 1 Task 11: the gemma4 profile loads its pack in spm_bpe mode (merges.json).
     if (options.profile == std::optional<std::string>{"gemma4"}) {
       write_spm_tokenizer_pack(tokenizer);  // 0600 files
@@ -372,22 +377,55 @@ std::unique_ptr<ServerProcess> ServerProcess::start(const ServerOptions& options
   const std::filesystem::path state_dir = options.state_dir.value_or(server->root_ / "state");
   if (!options.state_dir) secure_frontend_test::make_owner_private_directory(state_dir);  // 0700; Windows owner = the user
   std::vector<std::string> arguments{utf8_path(server_path())};
-  if (!options.managed_vision) arguments.emplace_back("--expert");  // the managed path launches from the manifest
+  const bool launcher = !options.model_cards.empty();
+  std::map<std::string, std::string> config_literals = options.config_literals;
+  if (launcher) {
+    const auto cards = server->root_ / "cards";
+    secure_frontend_test::make_private_directory(cards);  // 0700
+    std::string listed = "[";
+    for (std::size_t i = 0; i < options.model_cards.size(); ++i) {
+      const CardOptions& card = options.model_cards[i];
+      std::map<std::string, std::string> rows{
+          {"roots.models", secure_frontend_test::json_literal(utf8_path(models))},
+          {"roots.tokenizer_pack",
+           secure_frontend_test::json_literal(utf8_path(card.profile == "gemma4" ? server->root_ / "tokenizer-spm" : tokenizer))},
+          {"engine.executable", secure_frontend_test::json_literal(utf8_path(server->engine_path_))},
+          {"engine.model_id", secure_frontend_test::json_literal("fake-model")}};
+      if (!card.engine_args.empty()) {
+        std::string args = "[";
+        for (std::size_t a = 0; a < card.engine_args.size(); ++a) args += (a ? "," : "") + secure_frontend_test::json_literal(card.engine_args[a]);
+        rows["engine.args"] = args + "]";
+      }
+      for (const auto& [key, literal] : card.config_literals) rows[key] = literal;
+      const std::string text = "{\"schema_version\": 1, \"name\": " + secure_frontend_test::json_literal(card.name) +
+                               ", \"profile\": " + secure_frontend_test::json_literal(card.profile) +
+                               ", \"config\": " + secure_frontend::render_config_literals(rows) + ", \"options\": " + card.options_json + "}";
+      const auto file = cards / (std::to_string(i + 1U) + ".json");
+      secure_frontend_test::write_file(file, text, 0600);
+      listed += (i ? "," : "") + secure_frontend_test::json_literal(utf8_path(file));
+    }
+    config_literals["models.cards"] = listed + "]";
+  }
+  if (!options.managed_vision && !launcher) arguments.emplace_back("--expert");  // the managed path launches from the manifest
   // Gemma 4 plan 1 Task 11: engine.profile (an --expert key; the managed path refuses it).
-  if (options.profile) {
+  if (options.profile && !launcher) {
     arguments.emplace_back("--profile");
     arguments.push_back(*options.profile);
   }
-  arguments.push_back("--models-root");
-  arguments.push_back(utf8_path(models));
-  if (!options.managed_vision) {
+  if (!launcher) {
+    arguments.push_back("--models-root");
+    arguments.push_back(utf8_path(models));
+  }
+  if (!options.managed_vision && !launcher) {
     arguments.push_back("--tokenizer-pack");
     arguments.push_back(utf8_path(tokenizer));
   }
-  arguments.push_back("--engine");
-  arguments.push_back(utf8_path(server->engine_path_));
-  arguments.push_back("--model-id");
-  arguments.push_back(options.managed_vision ? "m:t" : "fake-model");
+  if (!launcher) {
+    arguments.push_back("--engine");
+    arguments.push_back(utf8_path(server->engine_path_));
+    arguments.push_back("--model-id");
+    arguments.push_back(options.managed_vision ? "m:t" : "fake-model");
+  }
   if (!options.no_token) {
     arguments.push_back("--token-env");
     arguments.push_back(std::string(kHarnessTokenEnv));
@@ -400,8 +438,8 @@ std::unique_ptr<ServerProcess> ServerProcess::start(const ServerOptions& options
     arguments.emplace_back("--engine-arg");
     arguments.push_back(argument);
   }
-  if (!options.config_literals.empty()) {
-    std::map<std::string, std::string> literals = options.config_literals;
+  if (!config_literals.empty()) {
+    std::map<std::string, std::string> literals = config_literals;
     literals.emplace("schema_version", "1");
     const auto config_file = server->root_ / "config.json";
     secure_frontend_test::write_file(config_file, secure_frontend_test::render_config_json(literals), 0600);

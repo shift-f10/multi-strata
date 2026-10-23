@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -27,6 +28,22 @@ using MetricsProvider = std::function<std::string()>;
 // A chat handler returns a complete response or (M2) a StreamHandler.
 using ChatHandler = std::function<RouteResult(std::string_view body, const RequestContext& context)>;
 
+// Model launcher (plan 2026-10-23 Task 4; spec §5.4): with model cards, the served model is the
+// running card's. `id` empty: none runs (/v1/models lists nothing); `extension` is the
+// strata_models array (each card's id and state), added to /v1/models as is.
+struct ServedModels final {
+  std::optional<std::string> id{};
+  std::vector<std::string> aliases{};
+  std::string extension{};
+};
+using ServedModelsProvider = std::function<ServedModels()>;
+// The control routes' handlers (kModelControlRoutes); all empty: the routes are not served (404).
+struct ModelControl final {
+  std::function<RouteResult(const RequestContext& context)> list{};
+  std::function<RouteResult(std::string_view body, const RequestContext& context)> start{};
+  std::function<RouteResult(const RequestContext& context)> stop{};
+};
+
 struct ApiRouterConfig final {
   HttpPolicy policy;
   BearerTokenValidator validator;
@@ -46,6 +63,9 @@ struct ApiRouterConfig final {
   bool require_key{true};
   // listener.monitor: GET /metrics answers this provider's JSON; empty (the switch off), 404.
   MetricsProvider metrics{};
+  // Model launcher: set, /v1/models and /v1/models/<id> answer from it instead of model_id/aliases.
+  ServedModelsProvider served{};
+  ModelControl control{};
 };
 
 // application/json, optionally followed by `; charset=utf-8`; ASCII

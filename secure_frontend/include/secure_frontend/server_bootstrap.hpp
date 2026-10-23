@@ -21,5 +21,12 @@ namespace secure_frontend {
 
 // strata-secure-server --check: describe, launch-config issues, then the token read.
 [[nodiscard]] int server_check(const FrontendConfig& config, const std::vector<std::string>& overridden, bool expert);
+// Model launcher (plan 2026-10-23 Task 3): the boot of a main config with models.cards. The
+// cards are loaded (a bad one refused by name, D9), each validated with the main config; the
+// server-wide settings come from the main config; the card models.start names starts after
+// bind (none: the server waits for the page, D5). The same SP3 I1 shutdown.
+[[nodiscard]] int launcher_run(const FrontendConfigDraft& main);
+// --check for a launcher config: the server's settings, each card's verdict, the token read.
+[[nodiscard]] int launcher_check(const FrontendConfigDraft& main, const std::vector<std::string>& overridden);
 
 }  // namespace secure_frontend

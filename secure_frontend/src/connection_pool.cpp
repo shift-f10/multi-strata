@@ -47,10 +47,12 @@ void ConnectionPool::worker_loop(const std::size_t index) {
     self.abort = false;
     const std::uint64_t connection = self.connection;
     lock.unlock();
-    const WorkerSignals signals{&self.abort, &shutting_down_, [this, index, connection] {
+    const WorkerSignals signals{&self.abort, &shutting_down_,
+                                [this, index, connection] {
                                   std::lock_guard guard(mutex_);
                                   return admission_.header_complete(index, connection);
-                                }};
+                                },
+                                accepted.peer_scope == AddressScope::loopback};
     const ConnectionResult result = serve_connection(accepted.socket.get(), router_, limits_.connection, signals, accepted.accepted_at);
     accepted.socket.reset();   // the pool owns the close: responded, evicted (closed unanswered) or gone
     if (observer_) {
