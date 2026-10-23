@@ -104,7 +104,11 @@ class DownloadManager final {
     std::optional<Refusal> refusal;
     std::string reason;
   };
-  [[nodiscard]] LinkAnswer check_link(std::string_view url);
+  // url is the pasted link; profile matches it to a family this server runs (empty: unmatched, a
+  // download-only custom card as before); extra_urls are the other shards of a multipart GGUF (at
+  // most five), all pulled to the one location.
+  [[nodiscard]] LinkAnswer check_link(std::string_view url, std::string_view profile = {},
+                                      const std::vector<std::string>& extra_urls = {});
   // Starts the download a check_link confirmed (the same link, within ten minutes).
   [[nodiscard]] std::optional<Refusal> start_link(std::string_view url);
   // Stops a running, queued or paused download and discards its partial files (409 when none is).

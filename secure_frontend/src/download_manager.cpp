@@ -14,10 +14,12 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <utility>
 
@@ -69,6 +71,39 @@ std::vector<std::string_view> words(const std::string_view line) {
     start = end + 1U;
   }
   return out;
+}
+
+// Owner 2026-10-23: "for custom download from huggingface, the downloads must be matched to a
+// current settings we have available like qwen 3.8 flash next, swift, gemma4, qwen3.6 etc." A
+// pasted GGUF is matched to one of these families. The qwen ones all run on the qwen engine by its
+// own GGUF-direct path (--native, the tokenizer built from the GGUF): for a pasted single GGUF
+// there is no iq_pack to download, so they share one recipe and differ only in the context they
+// open with. Gemma 4 is a separate engine whose tokenizer the download tools cannot build from a
+// bare GGUF (strata_tokenizer.py wants a qwen35 byte-level BPE vocabulary), so it is offered but
+// stays download-only until a Gemma tokenizer step exists.
+struct CustomProfile final {
+  std::string_view key;      // the matched card's family and the page's value
+  std::string_view display;  // the page's label
+  std::string_view engine;   // "qwen" | "gemma4"
+  bool prepares;             // a runnable card is written after the download
+  std::uint64_t context_default;
+  std::uint64_t context_min;
+  std::uint64_t context_max;
+};
+constexpr std::array<CustomProfile, 7> kCustomProfiles{{
+    {"qwen", "Qwen3.8-Flash-Next", "qwen", true, 131072U, 4096U, 1048576U},
+    {"unsloth", "Qwen3.8-Flash-Next (Unsloth)", "qwen", true, 131072U, 4096U, 1048576U},
+    {"coder", "Qwen3.8-Flash-Next-Coder", "qwen", true, 131072U, 4096U, 1048576U},
+    {"gyro", "Qwen3.8-Flash-Next-Gyro", "qwen", true, 131072U, 4096U, 1048576U},
+    {"swift", "Swift-1.5", "qwen", true, 131072U, 4096U, 1048576U},
+    {"qwen36", "Qwen3.6-35B-A3B", "qwen", true, 32768U, 4096U, 262144U},
+    {"gemma4", "Gemma 4", "gemma4", false, 262144U, 4096U, 262144U},
+}};
+const CustomProfile* custom_profile(const std::string_view key) {
+  for (const auto& profile : kCustomProfiles) {
+    if (profile.key == key) return &profile;
+  }
+  return nullptr;
 }
 
 // A served name for a card: the display name with every character outside [A-Za-z0-9._-] as '-'.
@@ -163,7 +198,8 @@ HttpResponse download_route_answer(DownloadManager& manager, const RouteId route
       route != RouteId::strata_download_link) {
     return make_error_response(ApiError::internal_error);
   }
-  // {"id": "<card>"} | {"url": "<link>"} | {"url": "<link>", "confirm": true}; nothing else.
+  // {"id": "<card>"} | {"url": "<link>"} | {"url": "<link>", "confirm": true}; the link check also
+  // takes {"profile": "<family>"} and {"extra_urls": ["<part>", ...]} (the multipart shards).
   const auto parsed = parse_json(body, kRouteBodyLimits);
   const auto* root = std::get_if<JsonValue>(&parsed);
   if (root == nullptr) return make_error_response(ApiError::invalid_json);
@@ -171,16 +207,32 @@ HttpResponse download_route_answer(DownloadManager& manager, const RouteId route
   if (members == nullptr) return make_error_response(ApiError::invalid_request);
   const std::string* id = nullptr;
   const std::string* url = nullptr;
+  const std::string* profile = nullptr;
+  std::vector<std::string> extra_urls;
+  bool have_extra = false;
   bool confirm = false;
   for (const auto& item : *members) {
     if (item.key == "id" && item.value.if_string() != nullptr) id = item.value.if_string();
     else if (item.key == "url" && item.value.if_string() != nullptr) url = item.value.if_string();
     else if (item.key == "confirm" && item.value.if_boolean() != nullptr) confirm = *item.value.if_boolean();
-    else return make_error_response(ApiError::invalid_request);
+    else if (item.key == "profile" && item.value.if_string() != nullptr) profile = item.value.if_string();
+    else if (item.key == "extra_urls" && item.value.if_array() != nullptr) {
+      have_extra = true;
+      for (const auto& part : *item.value.if_array()) {
+        if (part.if_string() == nullptr) return make_error_response(ApiError::invalid_request);
+        extra_urls.push_back(*part.if_string());
+      }
+    } else {
+      return make_error_response(ApiError::invalid_request);
+    }
+  }
+  // profile and extra_urls belong to the link check only.
+  if (route != RouteId::strata_download_link && (profile != nullptr || have_extra)) {
+    return make_error_response(ApiError::invalid_request);
   }
   if (route == RouteId::strata_download_link) {
-    if (url == nullptr || id != nullptr) return make_error_response(ApiError::invalid_request);
-    const auto checked = manager.check_link(*url);
+    if (url == nullptr || id != nullptr || confirm) return make_error_response(ApiError::invalid_request);
+    const auto checked = manager.check_link(*url, profile != nullptr ? std::string_view{*profile} : std::string_view{}, extra_urls);
     if (checked.confirm_json) return json_answer(200, *checked.confirm_json);
     const auto refusal = checked.refusal.value_or(DownloadManager::Refusal{500, "internal_error"});
     // The fixed reason (O4's rule that refused the link, or what went wrong asking Hugging Face).
@@ -198,7 +250,8 @@ HttpResponse download_route_answer(DownloadManager& manager, const RouteId route
     const auto* file = std::get_if<HfFileLink>(&link);
     if (file == nullptr) return make_error_response(ApiError::invalid_request);
     if (const auto refused = manager.start_link(*url)) return refusal_answer(*refused);
-    return accepted("queued", custom_id(file->repo, file->path));
+    // The card's id is its first shard's (a multipart paste's shards share one card).
+    return accepted("queued", custom_id(file->repo, gguf_shard_set(file->path).front()));
   }
   if (id == nullptr || url != nullptr || confirm) return make_error_response(ApiError::invalid_request);
   if (route == RouteId::strata_download_start) {
@@ -363,8 +416,8 @@ void DownloadManager::save_custom() {
     const auto& e = card.entry;
     text += first ? "" : ",";
     first = false;
-    text += "{\"id\":" + json_text(e.id) + ",\"name\":" + json_text(e.name) + ",\"source\":\"custom\",\"family\":\"custom\",\"engine\":" +
-            json_text(e.engine) + ",\"about\":" + json_text(e.about) + ",\"repo\":" + json_text(e.repo) + ",\"revision\":" + json_text(e.revision) +
+    text += "{\"id\":" + json_text(e.id) + ",\"name\":" + json_text(e.name) + ",\"source\":\"custom\",\"family\":" + json_text(e.family) +
+            ",\"engine\":" + json_text(e.engine) + ",\"about\":" + json_text(e.about) + ",\"repo\":" + json_text(e.repo) + ",\"revision\":" + json_text(e.revision) +
             ",\"prepare\":" + json_text(e.prepare) + ",\"files\":[";
     for (std::size_t i = 0; i < e.files.size(); ++i) {
       text += (i ? "," : "") + std::string{"{\"path\":"} + json_text(e.files[i].path) + ",\"size\":" +
@@ -407,14 +460,19 @@ std::string DownloadManager::list_json() {
     const std::uint64_t remaining = card.total > card.bytes ? card.total - card.bytes : 0U;
     const std::uint64_t needed = remaining + settings_.margin_bytes;
     const bool fits = !space || space->free_bytes >= needed || card.state == State::ready || card.state == State::installed;
-    // Qwen3.6-35B-A3B (OWN_PATH): the engine reads the GGUF itself, so no iq_pack - only its tokenizer
-    // is prepared, then a card is written (its prepare field is "none" but it still runs here).
-    const bool gguf_direct = e.engine == "qwen" && e.family == "qwen36";
+    // Qwen3.6-35B-A3B (OWN_PATH) and a profile-matched custom paste both read the GGUF itself, so no
+    // iq_pack - only the tokenizer is prepared, then a card is written (prepare is "none" but it runs).
+    // A matched custom paste carries its profile as its family; an unmatched one stays "custom".
+    const bool matched_custom = e.source == "custom" && e.family != "custom";
+    const bool gguf_direct = e.engine == "qwen" && (e.family == "qwen36" || matched_custom);
     const bool qwen_ready = e.engine == "qwen" && (e.prepare == "iq_pack" || gguf_direct) && settings_.prepare_python &&
                             settings_.prepare_tools && settings_.prepare_script && settings_.card_template;
     std::string note;
     if (e.engine == "glm53") note = "download only: the GLM-5.3 engine is not built here yet";
-    else if (e.source == "custom") note = "download only: files are kept in the model store; a card for it is written by hand";
+    else if (matched_custom && e.engine != "qwen")
+      note = "download only: the Gemma engine needs a tokenizer pack that is not built from a pasted GGUF yet";
+    else if (e.source == "custom" && e.family == "custom")
+      note = "download only: pick the model family it matches (its Download button) so a card can be made";
     else if (!qwen_ready) note = "download only: the prepare step is not configured (models.prepare_python, models.prepare_tools)";
     else if (gguf_direct) note = "after the download its tokenizer is prepared (a few seconds) and a card appears in Models";
     else note = "after the download the pack is built (a few minutes) and a card appears in Models";
@@ -426,6 +484,14 @@ std::string DownloadManager::list_json() {
            (card.error.empty() ? std::string{"null"} : json_text(card.error)) + ",\"needed_bytes\":" + std::to_string(needed) +
            ",\"fits\":" + (fits ? "true" : "false") + ",\"runnable\":" + (qwen_ready ? "true" : "false") + ",\"note\":" + json_text(note) +
            "}";
+  }
+  // The families a pasted GGUF can be matched to (the page's profile picker). "runnable" is whether
+  // a card is written after the download; Gemma 4 is listed but stays download-only (no tokenizer).
+  out += "],\"profiles\":[";
+  for (std::size_t i = 0; i < kCustomProfiles.size(); ++i) {
+    const auto& p = kCustomProfiles[i];
+    out += (i != 0U ? "," : "") + std::string{"{\"key\":"} + json_text(p.key) + ",\"display\":" + json_text(p.display) +
+           ",\"engine\":" + json_text(p.engine) + ",\"runnable\":" + (p.prepares ? "true" : "false") + "}";
   }
   out += "]}\n";
   return out;
@@ -482,54 +548,140 @@ std::optional<DownloadManager::Refusal> DownloadManager::cancel(const std::strin
   return std::nullopt;
 }
 
-DownloadManager::LinkAnswer DownloadManager::check_link(const std::string_view url) {
-  const auto parsed = parse_hf_link(url);
-  if (const auto* reason = std::get_if<std::string_view>(&parsed)) {
-    return LinkAnswer{std::nullopt, Refusal{400, "invalid_request"}, std::string{*reason}};
+DownloadManager::LinkAnswer DownloadManager::check_link(const std::string_view url, const std::string_view profile,
+                                                        const std::vector<std::string>& extra_urls) {
+  // Owner 2026-10-23: a pasted GGUF is matched to a family (profile) so a runnable card can be made,
+  // and a multipart GGUF's other shards are pasted too (at most five more), all to the one location.
+  const CustomProfile* matched = profile.empty() ? nullptr : custom_profile(profile);
+  if (!profile.empty() && matched == nullptr) {
+    return LinkAnswer{std::nullopt, Refusal{400, "invalid_request"}, "That model family is not one this server runs."};
   }
-  std::string error;
-  const auto answer = hf_info(url, error);
-  if (!answer) return LinkAnswer{std::nullopt, Refusal{502, "upstream_unavailable"}, error};
-  const auto json = parse_json(*answer, kChildJsonLimits);
-  const auto* root = std::get_if<JsonValue>(&json);
-  const auto* commit = root ? member(*root, "commit") : nullptr;
-  const auto* repo = root ? member(*root, "repo") : nullptr;
-  const auto* files = root ? member(*root, "files") : nullptr;
-  if (commit == nullptr || commit->if_string() == nullptr || !is_hf_commit(*commit->if_string()) || repo == nullptr ||
-      repo->if_string() == nullptr || files == nullptr || files->if_array() == nullptr || files->if_array()->empty()) {
-    return LinkAnswer{std::nullopt, Refusal{502, "upstream_unavailable"}, "Hugging Face answered in an unexpected shape."};
+  if (extra_urls.size() > 5U) {
+    return LinkAnswer{std::nullopt, Refusal{400, "invalid_request"}, "At most five more part links can be added."};
   }
-  const auto& link = std::get<HfFileLink>(parsed);
+  // The primary link names the shard set (a single GGUF is a set of one).
+  const auto parsed_primary = parse_hf_link(url);
+  if (const auto* why = std::get_if<std::string_view>(&parsed_primary)) {
+    return LinkAnswer{std::nullopt, Refusal{400, "invalid_request"}, std::string{*why}};
+  }
+  const auto& primary_link = std::get<HfFileLink>(parsed_primary);
+  const auto shard_names = gguf_shard_set(primary_link.path);
+
+  // Resolve one pasted link through `strata hf-info`: its repo, commit and .gguf file(s).
+  struct Resolved final {
+    std::string repo;
+    std::string commit;
+    std::vector<CatalogFile> files;
+  };
+  std::string reason;
+  int fail_status = 400;
+  const auto resolve = [this, &reason, &fail_status](const std::string_view link_url) -> std::optional<Resolved> {
+    const auto parsed = parse_hf_link(link_url);
+    if (const auto* why = std::get_if<std::string_view>(&parsed)) {
+      reason = std::string{*why};
+      fail_status = 400;
+      return std::nullopt;
+    }
+    std::string error;
+    const auto answer = hf_info(link_url, error);
+    if (!answer) {
+      reason = error;
+      fail_status = 502;
+      return std::nullopt;
+    }
+    const auto json = parse_json(*answer, kChildJsonLimits);
+    const auto* root = std::get_if<JsonValue>(&json);
+    const auto* commit = root ? member(*root, "commit") : nullptr;
+    const auto* repo = root ? member(*root, "repo") : nullptr;
+    const auto* files = root ? member(*root, "files") : nullptr;
+    if (commit == nullptr || commit->if_string() == nullptr || !is_hf_commit(*commit->if_string()) || repo == nullptr ||
+        repo->if_string() == nullptr || files == nullptr || files->if_array() == nullptr || files->if_array()->empty()) {
+      reason = "Hugging Face answered in an unexpected shape.";
+      fail_status = 502;
+      return std::nullopt;
+    }
+    Resolved out;
+    out.repo = *repo->if_string();
+    out.commit = *commit->if_string();
+    for (const auto& item : *files->if_array()) {
+      const auto* path = member(item, "path");
+      const auto* size = member(item, "size");
+      const auto* sha = member(item, "sha256");
+      if (path == nullptr || path->if_string() == nullptr || !is_hf_gguf_path(*path->if_string()) || size == nullptr ||
+          size->if_integer() == nullptr || *size->if_integer() <= 0 || sha == nullptr || sha->if_string() == nullptr) {
+        reason = "Hugging Face answered in an unexpected shape.";
+        fail_status = 502;
+        return std::nullopt;
+      }
+      out.files.push_back(CatalogFile{*path->if_string(), static_cast<std::uint64_t>(*size->if_integer()), *sha->if_string()});
+    }
+    return out;
+  };
+  const auto refuse = [&reason, &fail_status]() {
+    return LinkAnswer{std::nullopt, Refusal{fail_status, fail_status == 400 ? "invalid_request" : "upstream_unavailable"}, reason};
+  };
+
+  const auto primary = resolve(url);
+  if (!primary) return refuse();
+  // Every provided file is placed at its position in the shard set; parts share repo and revision.
+  std::map<std::size_t, CatalogFile> parts;
+  const auto place = [&](const Resolved& r) -> std::optional<std::string> {
+    if (r.repo != primary->repo || r.commit != primary->commit) {
+      return std::string{"Every part must be from the same repository and revision."};
+    }
+    for (const auto& file : r.files) {
+      const auto at = std::find(shard_names.begin(), shard_names.end(), file.path);
+      if (at == shard_names.end()) return "That link is not a shard of this model (" + file.path + ").";
+      const auto index = static_cast<std::size_t>(at - shard_names.begin());
+      if (parts.count(index) != 0U) return "The same part was pasted twice (" + file.path + ").";
+      parts.emplace(index, file);
+    }
+    return std::nullopt;
+  };
+  if (const auto err = place(*primary)) return LinkAnswer{std::nullopt, Refusal{400, "invalid_request"}, *err};
+  for (const auto& extra : extra_urls) {
+    const auto resolved = resolve(extra);
+    if (!resolved) return refuse();
+    if (const auto err = place(*resolved)) return LinkAnswer{std::nullopt, Refusal{400, "invalid_request"}, *err};
+  }
+
+  const std::string& first_shard = shard_names.front();
   DownloadEntry entry;
-  entry.id = custom_id(link.repo, link.path);
-  entry.name = std::string{link.repo.substr(link.repo.find('/') + 1U)} + " " +
-               std::string{link.path.substr(link.path.rfind('/') == std::string::npos ? 0 : link.path.rfind('/') + 1U)};
+  entry.id = custom_id(primary->repo, first_shard);
+  const auto slash = first_shard.rfind('/');
+  entry.name = std::string{primary->repo.substr(primary->repo.find('/') + 1U)} + " " +
+               first_shard.substr(slash == std::string::npos ? 0 : slash + 1U);
   if (entry.name.size() > 128U) entry.name.resize(128U);
   entry.source = "custom";
-  entry.family = "custom";
-  entry.engine = "qwen";
+  entry.family = matched ? std::string{matched->key} : std::string{"custom"};
+  entry.engine = matched ? std::string{matched->engine} : std::string{"qwen"};
   entry.prepare = "none";
-  entry.about = "Pasted link: " + link.repo;
-  entry.repo = *repo->if_string();
-  entry.revision = *commit->if_string();
-  for (const auto& item : *files->if_array()) {
-    const auto* path = member(item, "path");
-    const auto* size = member(item, "size");
-    const auto* sha = member(item, "sha256");
-    if (path == nullptr || path->if_string() == nullptr || !is_hf_gguf_path(*path->if_string()) || size == nullptr ||
-        size->if_integer() == nullptr || *size->if_integer() <= 0 || sha == nullptr || sha->if_string() == nullptr) {
-      return LinkAnswer{std::nullopt, Refusal{502, "upstream_unavailable"}, "Hugging Face answered in an unexpected shape."};
-    }
-    entry.files.push_back(CatalogFile{*path->if_string(), static_cast<std::uint64_t>(*size->if_integer()), *sha->if_string()});
-  }
+  entry.about = "Pasted link: " + primary->repo + (matched ? " (matched to " + std::string{matched->display} + ")" : std::string{});
+  entry.repo = primary->repo;
+  entry.revision = primary->commit;
+  for (const auto& [index, file] : parts) entry.files.push_back(file);  // shard order (map is sorted)
+
+  const std::size_t parts_total = shard_names.size();
+  const std::size_t parts_have = parts.size();
+  const bool complete = parts_have == parts_total;
   const std::uint64_t total = total_of(entry);
   const auto space = disk();
   const std::uint64_t needed = total + settings_.margin_bytes;
   std::string confirm = "{\"confirm\":{\"id\":" + json_text(entry.id) + ",\"name\":" + json_text(entry.name) + ",\"repo\":" +
-                        json_text(entry.repo) + ",\"commit\":" + json_text(entry.revision) + ",\"files\":[";
+                        json_text(entry.repo) + ",\"commit\":" + json_text(entry.revision) + ",\"family\":" + json_text(entry.family) +
+                        ",\"engine\":" + json_text(entry.engine) + ",\"runnable\":" + ((matched && matched->prepares) ? "true" : "false") +
+                        ",\"multipart\":{\"parts\":" + std::to_string(parts_total) + ",\"have\":" + std::to_string(parts_have) +
+                        ",\"complete\":" + (complete ? "true" : "false") + ",\"missing\":[";
+  bool first_missing = true;
+  for (std::size_t k = 0; k < shard_names.size(); ++k) {
+    if (parts.count(k) != 0U) continue;
+    confirm += (first_missing ? "" : ",") + json_text(shard_names[k]);
+    first_missing = false;
+  }
+  confirm += "]},\"files\":[";
   for (std::size_t i = 0; i < entry.files.size(); ++i) {
     confirm += (i ? "," : "") + std::string{"{\"path\":"} + json_text(entry.files[i].path) + ",\"size\":" +
-               std::to_string(*entry.files[i].size) + ",\"sha256\":" + json_text(entry.files[i].sha256) + "}";
+               std::to_string(entry.files[i].size.value_or(0)) + ",\"sha256\":" + json_text(entry.files[i].sha256) + "}";
   }
   confirm += "],\"size_bytes\":" + std::to_string(total) + ",\"needed_bytes\":" + std::to_string(needed) +
              ",\"fits\":" + (!space || space->free_bytes >= needed ? "true" : "false") + "}}\n";
@@ -549,6 +701,11 @@ std::optional<DownloadManager::Refusal> DownloadManager::start_link(const std::s
       return Refusal{400, "invalid_request"};  // check the link first (its confirmation expired or never happened)
     }
     DownloadEntry entry = found->second.entry;
+    // A multipart paste starts only once every shard has been pasted (the set derived from any one
+    // shard names them all); otherwise the download could never complete.
+    if (!entry.files.empty() && gguf_shard_set(entry.files.front().path).size() != entry.files.size()) {
+      return Refusal{400, "invalid_request"};
+    }
     links_.erase(found);
     id = entry.id;
     if (const auto existing = find(id)) {
@@ -781,9 +938,12 @@ void DownloadManager::run_card(const std::size_t index) {
     return;
   }
   log("[strata] downloads: " + card.entry.id + " installed");
-  const bool can_prepare = card.entry.engine == "qwen" && (card.entry.prepare == "iq_pack" || card.entry.family == "qwen36") &&
-                           settings_.prepare_python &&
-                           settings_.prepare_tools && settings_.prepare_script && settings_.card_template;
+  // A qwen card prepares when it has a pack to build (iq_pack), is Qwen3.6, or is a profile-matched
+  // custom paste (all GGUF-direct); a custom paste never has an iq_pack.
+  const bool can_prepare = card.entry.engine == "qwen" &&
+                           (card.entry.prepare == "iq_pack" || card.entry.family == "qwen36" ||
+                            (card.entry.source == "custom" && card.entry.family != "custom")) &&
+                           settings_.prepare_python && settings_.prepare_tools && settings_.prepare_script && settings_.card_template;
   if (!can_prepare) {
     set_state(index, State::installed);
     return;
@@ -916,7 +1076,9 @@ bool DownloadManager::prepare(const std::size_t index, const HfDownload& downloa
   const std::string first = gguf_shard_set(entry.files.front().path).front();
   const std::filesystem::path shard = version / path_from_utf8(first);
   const std::filesystem::path pack = settings_.downloads_root / "packs" / entry.id;
-  const bool gguf_direct = entry.family == "qwen36";  // Qwen3.6: tokenizer only, the engine reads the GGUF (--native)
+  // Qwen3.6 and a profile-matched custom paste are GGUF-direct: tokenizer only, the engine reads the
+  // GGUF itself (--native). A custom paste never has an iq_pack, so any custom qwen card is direct.
+  const bool gguf_direct = entry.engine == "qwen" && (entry.family == "qwen36" || entry.source == "custom");
   std::vector<std::string> args{"-I", path_to_utf8(*settings_.prepare_script), "--gguf", path_to_utf8(shard), "--out", path_to_utf8(pack),
                                 "--tools", path_to_utf8(*settings_.prepare_tools)};
   if (gguf_direct) args.emplace_back("--tokenizer-only");
@@ -973,6 +1135,14 @@ bool DownloadManager::prepare(const std::size_t index, const HfDownload& downloa
   std::string lib_dirs = "[";
   for (std::size_t i = 0; i < tmpl.engine_lib_dirs.size(); ++i) lib_dirs += (i ? "," : "") + json_text(tmpl.engine_lib_dirs[i]);
   lib_dirs += "]";
+  // The GGUF-direct options follow the matched family's context; MTP drafting is on for a catalog
+  // Qwen3.6 (its GGUFs carry the MTP block) and off for a custom paste (most finetune GGUFs have no
+  // MTP layer), with the card's toggle to turn it on.
+  const CustomProfile* prof = custom_profile(entry.family);
+  const std::uint64_t ctx_default = prof ? prof->context_default : 32768U;
+  const std::uint64_t ctx_min = prof ? prof->context_min : 4096U;
+  const std::uint64_t ctx_max = prof ? prof->context_max : 262144U;
+  const bool mtp_default = entry.source != "custom";
   const std::string card_name = card_name_for(entry);
   const std::string card = "{\"schema_version\":1,\"name\":" + json_text(card_name) + ",\"profile\":\"qwen\",\"config\":{\"engine\":{" +
                            "\"executable\":" + json_text(tmpl.engine_executable) + ",\"model_id\":" + json_text(model_id) +
@@ -981,8 +1151,9 @@ bool DownloadManager::prepare(const std::size_t index, const HfDownload& downloa
                            ",\"tokenizer_pack\":" + json_text(path_to_utf8(pack / "tokenizer")) +
                            "},\"limits\":{\"chat\":{\"max_prompt_tokens\":1048576,\"max_completion_tokens\":1048576}}}," +
                            (gguf_direct
-                                ? std::string{"\"options\":{\"max_context\":{\"default\":32768,\"min\":4096,\"max\":262144},"} +
-                                      "\"mtp\":{\"default\":true},\"prefill\":{\"default\":\"auto\"},\"thinking\":{\"default\":\"high\"}}}\n"
+                                ? std::string{"\"options\":{\"max_context\":{\"default\":"} + std::to_string(ctx_default) +
+                                      ",\"min\":" + std::to_string(ctx_min) + ",\"max\":" + std::to_string(ctx_max) + "},\"mtp\":{\"default\":" +
+                                      (mtp_default ? "true" : "false") + "},\"prefill\":{\"default\":\"auto\"},\"thinking\":{\"default\":\"high\"}}}\n"
                                 : std::string{"\"options\":{\"max_context\":{\"default\":131072,\"min\":4096,\"max\":1048576},\"kv\":{\"default\":\"int8\"},"} +
                                       "\"kv_resident\":{\"default\":32768,\"max\":262144},\"spec\":{\"default\":4},\"expert_cache\":{\"default\":\"auto\"}," +
                                       "\"prefill\":{\"default\":\"auto\"},\"thinking\":{\"default\":\"high\"}}}\n");

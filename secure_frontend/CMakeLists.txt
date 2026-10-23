@@ -1264,6 +1264,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         metrics_route_needs_the_key_and_the_switch web_ui_has_the_monitor_and_four_thinking_levels
         web_ui_has_the_models_tab_hidden_until_the_server_offers_it web_ui_models_tab_starts_stops_and_polls
         web_ui_chat_follows_the_running_model web_ui_models_tab_has_a_downloads_section
+        web_ui_downloads_profile_picker_and_multipart
         web_ui_downloads_start_cancel_poll_and_check_links web_ui_downloads_pause_and_resume web_ui_header_fits_a_phone
         web_ui_models_tab_subtabs_and_family_groups)
     target_link_libraries(secure_frontend_api_router_tests PRIVATE
@@ -1549,7 +1550,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         catalog_cards_and_the_disk_check pull_runs_strata_and_tracks_progress failures_and_cancel maya_main_is_resolved_and_checked
         pasted_links pause_resume_and_cancel_discards download_routes_answer_the_contract
         maya_sizes_meet_the_free_space_and_resume_keeps_the_commit a_resume_counts_its_rate_from_the_kept_bytes
-        qwen36_is_runnable_with_a_tokenizer_note LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+        qwen36_is_runnable_with_a_tokenizer_note a_pasted_gguf_is_matched_to_a_profile
+        a_multipart_paste_assembles_its_shards LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     # Model downloads (plan 2026-10-23-model-downloads Task 1): the link rules and the manifests (O4).
     secure_frontend_add_test_executable(secure_frontend_hf_source_tests tests/hf_source_test.cpp

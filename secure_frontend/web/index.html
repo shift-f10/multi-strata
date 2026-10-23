@@ -152,9 +152,13 @@
               <input class="st-input" id="downloads-url" type="text" inputmode="url" spellcheck="false" autocapitalize="off"
                      placeholder="The address of the file's page on huggingface.co">
               <button type="submit" class="st-btn st-btn--secondary" id="downloads-check">Check</button></div>
-            <p class="muted small">One file (a split model's first part brings the others). Its size, commit and SHA-256 are
-              shown before anything is downloaded.</p>
+            <label class="st-label" for="downloads-profile">Run it as</label>
+            <select class="st-input" id="downloads-profile" aria-describedby="downloads-profile-help"></select>
+            <p class="muted small" id="downloads-profile-help">Match the model to a family this server runs so a card is made for
+              it. A split (multipart) GGUF asks for its other parts after you check it. Its size, commit and SHA-256 are shown
+              before anything is downloaded.</p>
             <p class="msg-error" id="downloads-link-error" role="alert" hidden></p>
+            <div class="downloads-parts" id="downloads-parts" hidden></div>
             <div class="downloads-confirm" id="downloads-confirm" hidden></div>
           </form>
         </div>

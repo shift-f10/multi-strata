@@ -1375,6 +1375,7 @@
     downloads.states = after;
     downloads.data = parsed;
     setDownloadsShown(true);
+    populateProfiles();
     renderDownloads();
     // A card turned ready: the launcher has its new model card, so the list above is read again.
     if (readyNow.length) { refreshLauncher(); toast("success", readyNow[0].name + " is ready", "Its card is in the model list."); }
@@ -1471,21 +1472,82 @@
     clear($("downloads-confirm"));
     $("downloads-confirm").hidden = true;
   }
-  async function checkLink() {
+  // The families a pasted GGUF can be matched to (from the list's "profiles"): picking one has the
+  // server write a runnable card after the download. The empty choice downloads without a card.
+  function populateProfiles() {
+    var sel = $("downloads-profile");
+    if (!sel) { return; }
+    var list = downloads.data && Array.isArray(downloads.data.profiles) ? downloads.data.profiles : [];
+    var current = sel.value;
+    clear(sel);
+    var none = el("option", null, "Download only (no card made)");
+    none.value = "";
+    sel.appendChild(none);
+    list.forEach(function (p) {
+      if (!p || typeof p.key !== "string") { return; }
+      var opt = el("option", null, String(p.display || p.key) + (p.runnable === false ? " (download only)" : ""));
+      opt.value = p.key;
+      sel.appendChild(opt);
+    });
+    sel.value = current;
+    if (sel.selectedIndex < 0) { sel.selectedIndex = 0; }
+  }
+  // The links typed into the multipart part inputs (the shards still to paste), trimmed, non-empty.
+  function gatherParts() {
+    var box = $("downloads-parts");
+    if (!box || box.hidden) { return []; }
+    var inputs = box.querySelectorAll("input");
+    var out = [];
+    for (var i = 0; i < inputs.length; i++) { var v = inputs[i].value.trim(); if (v) { out.push(v); } }
+    return out;
+  }
+  async function doCheck(extra) {
     var url = $("downloads-url").value.trim();
-    hideConfirm();
     var problem = linkProblem(url);
-    if (problem) { showLinkError(problem); return; }
+    if (problem) { hideConfirm(); showLinkError(problem); return; }
     showLinkError("");
+    var profile = $("downloads-profile") ? $("downloads-profile").value : "";
     $("downloads-check").disabled = true;
-    var answer = await downloadsAnswer(api("/v1/strata/downloads/link", jsonPost({ url: url })));
+    var body = { url: url };
+    if (profile) { body.profile = profile; }
+    if (extra && extra.length) { body.extra_urls = extra; }
+    var answer = await downloadsAnswer(api("/v1/strata/downloads/link", jsonPost(body)));
     $("downloads-check").disabled = false;
     if (answer.signedOut) { return; }
     if (answer.error) { showLinkError(answer.error); return; }
     var offer = answer.body && answer.body.confirm;
     if (!offer || typeof offer !== "object") { showLinkError("The server's answer did not describe the file."); return; }
-    downloads.confirm = { url: url, data: offer };
+    downloads.confirm = { url: url, profile: profile, data: offer };
     renderConfirm();
+  }
+  // A fresh Check clears any part inputs; "re-check" keeps and submits what has been pasted.
+  function checkLink() { clear($("downloads-parts")); $("downloads-parts").hidden = true; hideConfirm(); doCheck([]); }
+  function recheckLink() { var extra = gatherParts(); hideConfirm(); doCheck(extra); }
+  // A split (multipart) GGUF: one input per shard still to paste (at most five more parts), then a
+  // re-check that sends them all. The server pulls every shard to the one location.
+  function renderParts(mp) {
+    var box = $("downloads-parts");
+    clear(box);
+    var missing = Array.isArray(mp.missing) ? mp.missing.slice(0, 5) : [];
+    box.appendChild(el("p", "st-label", "Paste the link to each remaining part (same model, same revision):"));
+    missing.forEach(function (name) {
+      var row = el("div", "downloads-link__row");
+      var inp = el("input", "st-input");
+      inp.type = "text";
+      inp.spellcheck = false;
+      inp.placeholder = String(name);
+      inp.setAttribute("aria-label", "Link for " + String(name));
+      row.appendChild(inp);
+      box.appendChild(row);
+    });
+    if (Array.isArray(mp.missing) && mp.missing.length > 5) {
+      box.appendChild(el("p", "msg-warn", "This model has more than six parts, which is more than can be added here."));
+    }
+    var recheck = el("button", "st-btn st-btn--secondary st-btn--sm", "Add parts and re-check");
+    recheck.type = "button";
+    recheck.addEventListener("click", recheckLink);
+    box.appendChild(recheck);
+    box.hidden = false;
   }
   // What the link brings, before anything is fetched: the repository, the commit, each file with
   // its size, the total and whether it fits; Download starts it.
@@ -1517,10 +1579,25 @@
     var free = freeBytes();
     box.appendChild(fits ? el("p", "muted small", "Fits: " + dgb(offer.needed_bytes) + " GB needed" + (free === null ? "" : ", " + dgb(free) + " GB free"))
                          : el("p", "msg-warn", noRoomText(offer.needed_bytes)));
+    // A split (multipart) GGUF: say how many parts are pasted, and gather the rest when incomplete.
+    var mp = offer.multipart && typeof offer.multipart === "object" ? offer.multipart : null;
+    var complete = !mp || mp.complete !== false;
+    if (mp && Number(mp.parts) > 1) {
+      box.appendChild(el("p", "muted small", "Split model: " + (Number(mp.have) || 0) + " of " + Number(mp.parts) + " parts pasted."));
+    }
+    if (mp && Number(mp.parts) > 1 && !complete) { renderParts(mp); } else { $("downloads-parts").hidden = true; clear($("downloads-parts")); }
+    // The matched family (its card is made after the download), or a plain download when none chosen.
+    if (offer.family && offer.family !== "custom") {
+      box.appendChild(el("p", "muted small", offer.runnable === false
+        ? "Runs as " + String(offer.family) + " - download only for now (its engine has no tokenizer for a pasted GGUF)."
+        : "Runs as " + String(offer.family) + " - a card is made in Models after the download."));
+    } else {
+      box.appendChild(el("p", "muted small", "No family chosen: the files download but no card is made. Pick one above to make it runnable."));
+    }
     var actions = el("div", "dl-card__actions");
     var go = el("button", "st-btn st-btn--primary st-btn--sm", "Download");
     go.type = "button";
-    go.disabled = !fits || downloads.acting;
+    go.disabled = !fits || !complete || downloads.acting;
     go.addEventListener("click", startLink);
     actions.appendChild(go);
     var later = el("button", "st-btn st-btn--secondary st-btn--sm", "Not now");

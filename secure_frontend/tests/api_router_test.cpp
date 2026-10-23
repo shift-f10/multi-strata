@@ -526,6 +526,28 @@ void web_ui_models_tab_subtabs_and_family_groups() {
   expect(block.find(".models-subtab") != std::string::npos, "the sub-tabs have a phone-width rule");
 }
 
+// Owner 2026-10-23: "the downloads must be matched to a current settings we have available ... the
+// user selects [a profile]"; "check if the model is a multipart gguf ... paste the other links".
+// The paste box gains a profile picker (filled from the list's "profiles") and a multipart parts
+// area; the link check sends the chosen profile and the extra part links.
+void web_ui_downloads_profile_picker_and_multipart() {
+  const std::string html{secure_frontend::find_web_asset("/")->body};
+  const std::string js{secure_frontend::find_web_asset("/ui/app.js")->body};
+  for (const char* id : {"id=\"downloads-profile\"", "id=\"downloads-parts\""}) {
+    expect(html.find(id) != std::string::npos, std::string{"the paste box has "} + id);
+  }
+  expect(html.find("<label class=\"st-label\" for=\"downloads-profile\">Run it as</label>") != std::string::npos,
+         "the profile picker has a label");
+  expect(js.find("function populateProfiles(") != std::string::npos && js.find("downloads.data.profiles") != std::string::npos,
+         "the profile picker is filled from the list's profiles");
+  expect(js.find("body.profile = profile;") != std::string::npos && js.find("body.extra_urls = extra;") != std::string::npos,
+         "the link check sends the chosen profile and the extra part links");
+  expect(js.find("function renderParts(") != std::string::npos && js.find("function gatherParts(") != std::string::npos,
+         "the multipart parts are gathered and rendered");
+  expect(js.find("!fits || !complete || downloads.acting") != std::string::npos,
+         "Download waits until every shard of a split model is pasted");
+}
+
 void web_ui_models_tab_has_a_downloads_section() {
   const std::string html{secure_frontend::find_web_asset("/")->body};
   const std::string js{secure_frontend::find_web_asset("/ui/app.js")->body};
@@ -636,8 +658,9 @@ void web_ui_downloads_start_cancel_poll_and_check_links() {
          "Download posts the card's id to the start route");
   expect(js.find("api(\"/v1/strata/downloads/cancel\", jsonPost({ id: card.id }))") != std::string::npos,
          "Cancel posts the card's id to the cancel route");
-  expect(js.find("api(\"/v1/strata/downloads/link\", jsonPost({ url: url }))") != std::string::npos,
-         "Check posts the pasted link to the link route");
+  expect(js.find("var body = { url: url };") != std::string::npos &&
+             js.find("api(\"/v1/strata/downloads/link\", jsonPost(body))") != std::string::npos,
+         "Check posts the pasted link (with the chosen profile and any extra parts) to the link route");
   expect(js.find("api(\"/v1/strata/downloads/start\", jsonPost({ url: offer.url, confirm: true }))") != std::string::npos,
          "a confirmed link starts with confirm: true");
   expect(js.find("var noRoom = startable && card.fits === false;") != std::string::npos &&
@@ -670,11 +693,11 @@ void web_ui_downloads_start_cancel_poll_and_check_links() {
          "a pasted link must be https on huggingface.co and name a .gguf file (before any query)");
   const auto precheck = js.find("var problem = linkProblem(url);");
   expect(precheck != std::string::npos &&
-             js.find("if (problem) { showLinkError(problem); return; }", precheck) < js.find("api(\"/v1/strata/downloads/link\"", precheck),
+             js.find("if (problem) { hideConfirm(); showLinkError(problem); return; }", precheck) < js.find("api(\"/v1/strata/downloads/link\"", precheck),
          "a link that fails the pre-check is refused without asking the server");
   expect(js.find("row(\"Repository\", ") != std::string::npos && js.find("row(\"Commit\", commit ? commit.slice(0, 7) : \"-\", commit);") != std::string::npos &&
-             js.find("go.disabled = !fits || downloads.acting;") != std::string::npos,
-         "the confirm block shows the repository and the short commit, and cannot start what does not fit");
+             js.find("go.disabled = !fits || !complete || downloads.acting;") != std::string::npos,
+         "the confirm block shows the repository and the short commit, and cannot start what does not fit or is missing a shard");
 }
 
 // The chat follows the running model: the header names it, the composer is off with a link to
@@ -947,6 +970,7 @@ int main(int argc, char** argv) {
       {"web_ui_models_tab_starts_stops_and_polls", web_ui_models_tab_starts_stops_and_polls},
       {"web_ui_chat_follows_the_running_model", web_ui_chat_follows_the_running_model},
       {"web_ui_models_tab_has_a_downloads_section", web_ui_models_tab_has_a_downloads_section},
+      {"web_ui_downloads_profile_picker_and_multipart", web_ui_downloads_profile_picker_and_multipart},
       {"web_ui_models_tab_subtabs_and_family_groups", web_ui_models_tab_subtabs_and_family_groups},
       {"web_ui_downloads_start_cancel_poll_and_check_links", web_ui_downloads_start_cancel_poll_and_check_links},
       {"web_ui_downloads_pause_and_resume", web_ui_downloads_pause_and_resume},

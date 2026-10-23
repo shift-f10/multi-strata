@@ -272,17 +272,35 @@ worktrees and integrated as patches.
   the expert launcher path takes no `mmproj`, so the family's vision encoder is not wired (the same
   limit as every other launcher card). Four new error rows: `download_in_progress`, `upstream_unavailable`,
   `insufficient_storage`, `download_not_active`.
+- **Custom downloads matched to a family (owner 2026-10-23):** a pasted Hugging Face GGUF is matched
+  to a family (`check_link(url, profile, extra_urls)`): the picker's families come from the list's
+  new `profiles` array (`kCustomProfiles`). The six qwen families (Flash-Next, its Unsloth / Coder /
+  Gyro variants, Swift, Qwen3.6) share the GGUF-direct recipe — the matched card carries the profile
+  as its `family`, so `list_json`, `run_card` and `prepare` treat any custom qwen paste as GGUF-direct
+  (tokenizer-only, `--native`), differing only in the context the card opens with. MTP defaults **off**
+  for a custom paste (most finetune GGUFs carry no MTP block) with the card's toggle to turn it on;
+  catalog Qwen3.6 keeps it on. Gemma 4 is offered but stays download-only: `strata_tokenizer.py` wants
+  a qwen35 `gpt2` byte-level BPE vocabulary, so a Gemma SentencePiece GGUF has no tokenizer step here.
+  A **multipart** GGUF's other shards are pasted too (`extra_urls`, at most five more): every part is
+  resolved, checked to share the repository, revision and shard set (`gguf_shard_set` names the set),
+  and assembled into one card; an incomplete set names its missing shards and does not start.
 - **Page:** the Models tab's Downloads section: the drive's free/total space, a card per catalog
   model (Strata, Project Maya) and per pasted link, Download / Pause / Resume / Cancel, a
   progress bar with GB, %, rate and ETA, the insufficient-space text, the paste box with a
-  confirmation (commit, files, sizes, fits), polling while active.
+  confirmation (commit, files, sizes, fits), polling while active. The paste box has a profile
+  picker (the "Run it as" family, filled from the list's `profiles`) and, for a split GGUF, inputs
+  to paste the remaining parts; the confirm shows the matched family, the split progress (N of M
+  parts) and gates Download until every shard is pasted.
 - **Proof:** TDD with RED evidence per step: `hf_source` 3 cases, the `strata` CLI 2
   (`pull_progress_lines_are_machine_readable`, `hf_info_resolves_a_link`), the store config 1,
-  typed config 1, the error rows, the manager 10 (catalog and disk, pull and progress, failure
+  typed config 1, the error rows, the manager 12 (catalog and disk, pull and progress, failure
   and cancel, Maya `main` resolved and checked, Maya sizes against the free space and a resume
   keeping the commit, a resume's rate, pasted links, pause/resume/cancel, a Qwen3.6 gguf-direct
-  card runnable with its tokenizer note, the routes' JSON), the
-  router 1, the page 3, the launcher end to end 2 (the catalog served, the folders made, a
+  card runnable with its tokenizer note, a pasted GGUF matched to a profile with the families
+  advertised and the five-part cap, a multipart paste assembling its shards and refusing an
+  incomplete start, the routes' JSON), the
+  router 1, the page 4 (the Downloads section, the profile picker and multipart inputs, the
+  sub-tabs and family groups, the start/cancel/poll/check flow), the launcher end to end 2 (the catalog served, the folders made, a
   download's card loaded at boot; cards added while serving) plus the downloads-off 404s. The
   manager runs against a scripted `strata` child and a fake disk; no test reaches the network.
   Python: 29 pytest cases for the catalog generator and the prepare script (the prepare script's
@@ -304,9 +322,9 @@ worktrees and integrated as patches.
   640 px; every view fits 320 px (session log item 60).
 - **Open:** a paused card shows as `available` after a server restart (a Download then continues
   from the kept partial files); the image encoders (`mmproj`) are not downloaded (so Qwen3.6 and
-  the other vision families run text-only); pasted-link cards are not made automatically yet (a
-  profile-matched custom-download flow — the user picks the engine family a pasted GGUF maps to,
-  with multipart-GGUF support — is the next task); GLM-5.3 files are download-only (no GLM engine
+  the other vision families run text-only); a pasted GGUF matched to a Gemma 4 profile stays
+  download-only (no Gemma tokenizer step; a Gemma tokenizer tool would make it runnable), and a
+  split GGUF of more than six parts is beyond the five-extra-link cap; GLM-5.3 files are download-only (no GLM engine
   here); `--compat-bf16` packs need `STRATA_GGUF_PY` in the server's environment; Windows CI
   (`windows-msys2-clang`) has not run.
 

@@ -374,6 +374,92 @@ void qwen36_is_runnable_with_a_tokenizer_note() {
   expect(has(listed.substr(glm, listed.find('}', glm) - glm), "\"runnable\":false"), "the GLM card is still download only");
 }
 
+// Owner 2026-10-23: "for custom download from huggingface, the downloads must be matched to a
+// current settings we have available like qwen 3.8 flash next, swift, gemma4, qwen3.6 etc." A
+// pasted GGUF is matched to a family so a runnable card is made; an unknown family and more than
+// five extra part links are refused, and the picker's families are advertised in the list.
+void a_pasted_gguf_is_matched_to_a_profile() {
+  Fixture f;
+  f.spawner.hf.push_back(Script{{"{\"repo\":\"someone/Qwen36-Finetune-GGUF\",\"commit\":\"" + std::string{kCommit} +
+                                 "\",\"files\":[{\"path\":\"ft-Q4.gguf\",\"size\":5000,\"sha256\":\"" + kShaA + "\"}]}"}});
+  f.start(1U << 30U);
+  const std::string link = "https://huggingface.co/someone/Qwen36-Finetune-GGUF/resolve/main/ft-Q4.gguf";
+  const auto matched = f.manager->check_link(link, "qwen36", {});
+  expect(matched.confirm_json && has(*matched.confirm_json, "\"family\":\"qwen36\"") &&
+             has(*matched.confirm_json, "\"runnable\":true") && has(*matched.confirm_json, "\"complete\":true") &&
+             has(*matched.confirm_json, "\"parts\":1"),
+         "a single GGUF matched to qwen36 confirms runnable and complete: " + matched.confirm_json.value_or("<none>"));
+  const auto unknown = f.manager->check_link(link, "not-a-family", {});
+  expect(unknown.refusal && unknown.refusal->status == 400, "an unknown family is refused");
+  const auto too_many = f.manager->check_link(link, "qwen", {"a", "b", "c", "d", "e", "f"});
+  expect(too_many.refusal && too_many.refusal->status == 400 && has(too_many.reason, "five"),
+         "more than five extra part links are refused");
+  const std::string listed = f.manager->list_json();
+  expect(has(listed, "\"profiles\":[") && has(listed, "\"key\":\"qwen\"") && has(listed, "\"key\":\"swift\"") &&
+             has(listed, "\"key\":\"qwen36\""),
+         "the matchable families are advertised: " + listed);
+  expect(has(listed, "\"key\":\"gemma4\",\"display\":\"Gemma 4\",\"engine\":\"gemma4\",\"runnable\":false"),
+         "Gemma 4 is listed but not runnable (no tokenizer from a bare GGUF)");
+}
+
+// Owner 2026-10-23: "check if the model is a multipart gguf ... paste the other links so that they
+// are all downloaded at the same location, max 5 additional links." The shards assemble into one
+// card; an incomplete set names the missing shards and does not start. A matched custom card loaded
+// from custom.json is runnable in the list.
+void a_multipart_paste_assembles_its_shards() {
+  Fixture f;
+  const std::string base = "https://huggingface.co/someone/Big-GGUF/resolve/main/";
+  const auto hf = [](const std::string& path, const std::string& sha, const int size) {
+    return Script{{"{\"repo\":\"someone/Big-GGUF\",\"commit\":\"" + std::string{kCommit} + "\",\"files\":[{\"path\":\"" + path +
+                   "\",\"size\":" + std::to_string(size) + ",\"sha256\":\"" + sha + "\"}]}"}};
+  };
+  f.spawner.hf.push_back(hf("ms-00001-of-00003.gguf", kShaA, 1000));
+  f.spawner.hf.push_back(hf("ms-00002-of-00003.gguf", kShaB, 2000));
+  f.spawner.hf.push_back(hf("ms-00003-of-00003.gguf", kShaA, 3000));
+  f.start(1U << 30U);
+  const auto whole = f.manager->check_link(base + "ms-00001-of-00003.gguf", "qwen",
+                                           {base + "ms-00002-of-00003.gguf", base + "ms-00003-of-00003.gguf"});
+  expect(whole.confirm_json && has(*whole.confirm_json, "\"parts\":3") && has(*whole.confirm_json, "\"have\":3") &&
+             has(*whole.confirm_json, "\"complete\":true") && has(*whole.confirm_json, "\"size_bytes\":6000"),
+         "three shards assemble into one card: " + whole.confirm_json.value_or("<none>"));
+  f.spawner.hf.push_back(hf("ms-00001-of-00003.gguf", kShaA, 1000));
+  const auto partial = f.manager->check_link(base + "ms-00001-of-00003.gguf", "qwen", {});
+  expect(partial.confirm_json && has(*partial.confirm_json, "\"have\":1") && has(*partial.confirm_json, "\"complete\":false") &&
+             has(*partial.confirm_json, "ms-00002-of-00003.gguf") && has(*partial.confirm_json, "ms-00003-of-00003.gguf"),
+         "an incomplete paste names the missing shards: " + partial.confirm_json.value_or("<none>"));
+  expect(f.manager->start_link(base + "ms-00001-of-00003.gguf").has_value(), "an incomplete multipart paste does not start");
+
+  // A matched custom card loaded from custom.json is runnable (the prepare step is configured).
+  const auto work2 = f.dir / "work2";
+  secure_frontend_test::make_private_directory(work2);
+  {
+    std::ofstream seed(work2 / "custom.json", std::ios::binary);
+    seed << "{\"schema_version\":1,\"models\":[{\"id\":\"hf-seed\",\"name\":\"Seed\",\"source\":\"custom\",\"family\":\"qwen\","
+            "\"engine\":\"qwen\",\"about\":\"x\",\"repo\":\"a/b\",\"revision\":\""
+         << kCommit << "\",\"prepare\":\"none\",\"files\":[{\"path\":\"s.gguf\",\"size\":10,\"sha256\":\"" << kShaA << "\"}]}]}";
+  }
+  secure_frontend::DownloadSettings seeded;
+  seeded.catalog = secure_frontend::parse_download_catalog(catalog_text());
+  seeded.strata_executable = f.dir / "strata.exe";
+  seeded.config_file = f.dir / "config.json";
+  seeded.downloads_root = f.dir / "downloads";
+  seeded.work_dir = work2;
+  seeded.cards_dir = f.dir / "cards";
+  seeded.prepare_python = f.dir / "python.exe";
+  seeded.prepare_tools = f.dir / "tools";
+  seeded.prepare_script = f.dir / "prepare.py";
+  secure_frontend::DownloadCardTemplate tmpl;
+  tmpl.engine_executable = secure_frontend::path_to_utf8(f.dir / "engine.exe");
+  seeded.card_template = tmpl;
+  seeded.log = [](std::string_view) {};
+  seeded.seams = f.spawner.seams(1U << 30U);
+  DownloadManager seeded_mgr(std::move(seeded));
+  const std::string slist = seeded_mgr.list_json();
+  const auto at = slist.find("\"id\":\"hf-seed\"");
+  expect(at != std::string::npos && has(slist.substr(at, slist.find('}', at) - at), "\"runnable\":true"),
+         "a profile-matched custom card loads runnable: " + slist);
+}
+
 void pause_resume_and_cancel_discards() {
   Fixture f;
   f.spawner.pulls.push_back(Script{{"MANIFEST qwen-small:download x", "FILE Q/m-00001-of-00002.gguf 1000",
@@ -480,6 +566,8 @@ int main(int argc, char** argv) {
       {"maya_sizes_meet_the_free_space_and_resume_keeps_the_commit", maya_sizes_meet_the_free_space_and_resume_keeps_the_commit},
       {"pause_resume_and_cancel_discards", pause_resume_and_cancel_discards},
       {"qwen36_is_runnable_with_a_tokenizer_note", qwen36_is_runnable_with_a_tokenizer_note},
+      {"a_pasted_gguf_is_matched_to_a_profile", a_pasted_gguf_is_matched_to_a_profile},
+      {"a_multipart_paste_assembles_its_shards", a_multipart_paste_assembles_its_shards},
       {"download_routes_answer_the_contract", download_routes_answer_the_contract},
   }, failures);
 }

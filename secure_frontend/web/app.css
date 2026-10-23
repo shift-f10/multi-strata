@@ -192,6 +192,8 @@ main { flex: 1; min-height: 0; display: flex; }
 .downloads-link__row { display: flex; gap: var(--st-s-2); }
 .downloads-link__row .st-input { flex: 1; min-width: 0; }
 .downloads-link__row .st-btn { flex: none; }
+.downloads-parts { display: flex; flex-direction: column; gap: var(--st-s-2); padding: 10px 12px; border: 1px dashed var(--st-line);
+                   border-radius: var(--st-r-md); background: var(--st-surface-2); min-width: 0; }
 .downloads-confirm { display: flex; flex-direction: column; gap: var(--st-s-2); padding: 12px 14px; border: 1.5px solid var(--st-line);
                      border-radius: var(--st-r-md); background: var(--st-surface-2); min-width: 0; }
 .dl-confirm__files { margin: 0; padding-left: var(--st-s-5); font: 400 13px var(--st-font-mono); color: var(--st-ink-soft);
