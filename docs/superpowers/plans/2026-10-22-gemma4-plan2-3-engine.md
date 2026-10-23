@@ -113,3 +113,6 @@ design, §5 kernels, §8 security, §9 testing, D1-D12).
   runs every 8 tokens with up to 32 swaps (`kDecodeRebalanceEvery`/`kDecodeRebalanceSwaps`),
   reading all layers' routing counts in one copy: a sampled story went from 29-32 to 54-85
   tok/s. Gates: 25/25 (13 host, 10 GPU kernel, 2 real-model).
+- 2026-10-23: an unseeded GEN gets a seed from the clock (`g4::request_seed`, upstream
+  generate.cpp:13784) instead of the q36 engine's fixed 0, so a retry is a new draw (session log
+  item 55). Gates: 26/26.

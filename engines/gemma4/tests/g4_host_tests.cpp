@@ -639,6 +639,27 @@ void sorted_candidates_sample_like_the_full_sampler() {
   expect(g4::candidate_count(big, 5000) == 5000, "the count never exceeds the vocabulary");
 }
 
+// A GEN line without a seed must not draw the same sample every time (a retry of a bad
+// answer would repeat it); an explicit seed still reproduces exactly.
+void unseeded_requests_draw_fresh_seeds() {
+  expect(g4::request_seed(42, 1000) == 42 && g4::request_seed(42, 2000) == 42, "an explicit seed is kept");
+  const auto a = g4::request_seed(0, 123456789ull), b = g4::request_seed(0, 123456790ull);
+  expect(a != 0 && b != 0, "an unseeded request never gets seed 0");
+  expect(a != b, "two unseeded requests at different clock ticks get different seeds");
+  std::mt19937_64 ra(a), rb(b);
+  g4::Sampling s;
+  s.temperature = 1.0f;
+  s.top_k = 64;
+  std::vector<float> lg(1000);
+  for (std::size_t i = 0; i < lg.size(); ++i) lg[i] = static_cast<float>(i % 17) * 0.1f;
+  int differ = 0;
+  for (int i = 0; i < 20; ++i) {
+    auto x = lg, y = lg;
+    differ += g4::sample(x, s, {}, ra) != g4::sample(y, s, {}, rb) ? 1 : 0;
+  }
+  expect(differ > 0, "different seeds give different draws");
+}
+
 void reuse_keeps_exact_prefixes_within_the_ring() {
   const std::vector<std::int32_t> held{1, 2, 3, 4, 5, 6};
   expect(g4::reuse_length(held, {1, 2, 3, 4, 5, 6, 7, 8}, 1024) == 6, "a strict prefix is reused whole");
@@ -666,5 +687,6 @@ int main(int argc, char** argv) {
       {"sampler_matches_the_q36_rules", sampler_matches_the_q36_rules},
       {"reuse_keeps_exact_prefixes_within_the_ring", reuse_keeps_exact_prefixes_within_the_ring},
       {"sorted_candidates_sample_like_the_full_sampler", sorted_candidates_sample_like_the_full_sampler},
+      {"unseeded_requests_draw_fresh_seeds", unseeded_requests_draw_fresh_seeds},
   });
 }

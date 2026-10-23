@@ -33,7 +33,7 @@ set(G4_HOST_CASES
     model_guard_accepts_the_26b_a4b_shape model_guard_refuses_other_shapes
     cli_accepts_the_serve_flags cli_refuses_bad_and_test_only_flags_with_serve gen_lines_follow_the_q36_grammar
     sampler_matches_the_q36_rules reuse_keeps_exact_prefixes_within_the_ring
-    sorted_candidates_sample_like_the_full_sampler)
+    sorted_candidates_sample_like_the_full_sampler unseeded_requests_draw_fresh_seeds)
 foreach(case IN LISTS G4_HOST_CASES)
     add_test(NAME g4_host_tests.${case} COMMAND g4_host_tests --case ${case})
 endforeach()

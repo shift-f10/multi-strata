@@ -107,7 +107,8 @@ struct Serve {
       std::fflush(stdout);
       return true;
     }
-    std::mt19937_64 rng(req.sampling.seed);
+    std::mt19937_64 rng(g4::request_seed(
+        req.sampling.seed, static_cast<unsigned long long>(Clock::now().time_since_epoch().count())));
     std::vector<std::int32_t> hist = ids;
     const auto d0 = Clock::now();
     long long produced = 0;

@@ -532,7 +532,12 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
       spm_bpe encode tables once at pack load (`TokenizerPack::spm_index`; about 0.2 s a request
       saved; full suite 955 passed, 1 skipped); the engine ranks the sampler's candidates on the
       GPU and rebalances its VRAM expert slots every 8 decoded tokens (up to 32 swaps): a sampled
-      story went from 29-32 to 54 (cold) and 77-85 tok/s (settled); engine ctest 25/25. Open:
+      story went from 29-32 to 54 (cold) and 77-85 tok/s (settled); engine ctest 25/25. Item
+      55: a repetition loop the owner hit is the model's own (llama.cpp gives the same
+      distributions along it; about 1 sampled answer in 30 at the model card's values, none of 32
+      with `min_p` 0.05, now in the serve config), and retries repeated it because an unseeded
+      GEN used seed 0; unseeded requests now get a clock seed as upstream's generate.cpp does
+      (engine ctest 26/26). Open:
       the `/apply-template` cross-check; the CPU pool ruling; plan 4.
 - The `windows-runtime`-labelled cases run under the MSVC preset on the owner's box; the
   supported Windows toolchains (MSYS2 clang, llvm-mingw) are still not installed (issue 3).

@@ -178,6 +178,16 @@ std::variant<GenRequest, std::string> parse_gen(std::string_view line, int vocab
   return r;
 }
 
+unsigned long long request_seed(const unsigned long long requested, const unsigned long long clock_ticks) {
+  if (requested > 0) return requested;
+  // splitmix64 of the clock: neighbouring ticks give unrelated seeds.
+  unsigned long long z = clock_ticks + 0x9E3779B97F4A7C15ull;
+  z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+  z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+  z ^= z >> 31;
+  return z == 0 ? 1 : z;
+}
+
 bool penalties_on(const Sampling& s) { return s.last_n != 0 && (s.repeat != 1.0f || s.freq != 0.0f || s.present != 0.0f); }
 
 int candidate_count(const Sampling& s, const int vocab) { return std::max(1, std::min(s.top_k > 0 ? s.top_k : 64, vocab)); }

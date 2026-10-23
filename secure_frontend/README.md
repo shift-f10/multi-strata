@@ -1721,8 +1721,10 @@ default profile, with the strata family's closed child environment.
   takes `reasoning.effort` (`none` or unset: off; any level: on). The thought channel comes
   back as `reasoning_content`, the answer as `content`; `<turn|>` and `<eos>` end the reply.
 - **Sampling:** set `defaults.sampling` to the model card's values (temperature 1.0, top_p 0.95,
-  top_k 64; the GGUF's `general.sampling`). A request without a temperature is otherwise decoded
-  greedily, and the model's thinking then tends to run on for thousands of tokens.
+  top_k 64; the GGUF's `general.sampling`) plus `min_p` 0.05. A request without a temperature is
+  otherwise decoded greedily, and the model's thinking then tends to run on for thousands of
+  tokens. Sampled at the model card's values the owner's (abliterated) file fell into a repetition
+  loop in about 1 answer in 30 on the box, and in none of 32 with `min_p` 0.05 (session log item 55).
 - **Not yet:** managed Gemma models (a `gemma4` manifest installs, but `run`/`serve` refuse it
   with "the Gemma 4 engine is not installed" until plan 4 opens the gate) and the
   per-family `engine.executables.gemma4` key (plan 4).

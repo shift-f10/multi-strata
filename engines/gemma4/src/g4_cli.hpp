@@ -67,6 +67,11 @@ struct GenRequest final {
 // loop calls it on the GPU's top-k when no penalty is set (g4k::topk).
 [[nodiscard]] int sample_sorted(const float* vals, const int* ids, int kk, const Sampling& s, std::mt19937_64& rng);
 
+// The sampler's seed for a request: the GEN line's seed when it set one (> 0), else one
+// derived from `clock_ticks` (the caller passes the steady clock), as upstream's generate.cpp
+// does (:13784) - so an unseeded request is not the same draw every time. Never 0.
+[[nodiscard]] unsigned long long request_seed(unsigned long long requested, unsigned long long clock_ticks);
+
 // True when sample() would apply a penalty (they change logits before the ranking).
 [[nodiscard]] bool penalties_on(const Sampling& s);
 

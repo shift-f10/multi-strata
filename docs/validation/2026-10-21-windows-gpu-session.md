@@ -1097,6 +1097,23 @@ written beside it: `engines/gemma4/` (`strata-gemma4-engine`), plan
       only about 1.9 ms a token: the 36 tok/s seen on the page came from slow expert
       rebalancing, not the sampler. Rebalancing every 8 tokens with up to 32 swaps took a
       sampled 225-token story from 29-32 tok/s to 54 (cold) and 77-85 tok/s (settled).
+55. **A repetition loop on the page, and every retry repeating it** (owner report 2026-10-23:
+    "what MITRE attack code is process injection" with thinking on looped "sometimes even
+    sometimes even ...", twice, the same text both times):
+    - Not the engine: the looping text teacher-forced through llama.cpp `3cf03257` gives the same
+      distributions (mean KL 0.006 over 300 steps, the same top choice at 290), and the loop
+      reproduces identically with the GPU and the host sampler and with decode rebalancing on or
+      off (expert placement changes no token). It is this abliterated model sampled at
+      temperature 1.0: over 32 runs each (two thinking prompts, 600 tokens), the model card's
+      values looped once, llama-server's defaults (T 0.8, top_k 40, min_p 0.05) once, the model
+      card's values with `min_p` 0.05 never (a repeat penalty of 1.1: 0 of 8).
+    - Why the retry repeated it: a GEN without a seed used seed 0 in our engine (the q36 engine's
+      rule), so the same prompt drew the same sample every time. Fixed as upstream's
+      generate.cpp does (:13784): an unseeded request gets a seed from the clock
+      (`g4::request_seed`, case `unseeded_requests_draw_fresh_seeds`, RED then GREEN); an explicit
+      seed still reproduces. The same question asked twice now gives two different, correct
+      answers (T1055 and its sub-techniques).
+    - The serve config adds `min_p` 0.05 to the model card's defaults; the README recommends it.
 
 ### Not done in this session
 
