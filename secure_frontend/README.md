@@ -1544,7 +1544,8 @@ One model runs at a time.
 - **Control:** `models.control = true` serves `GET /v1/strata/models` (the cards, their state
   and options), `POST /v1/strata/models/start` (`{"name": "...", "options": {...}}`, 202) and
   `POST /v1/strata/models/stop` (202), keyed like every route, for loopback clients; remote
-  clients get 403 `control_not_allowed` unless `models.control_remote = true` (D2). Each start
+  clients get 403 `control_not_allowed` unless `models.control_remote = true` (D2; the page
+  then shows the Models tab with that reason instead of the cards). Each start
   and stop is logged on stderr (card, option values, loopback or remote; never the key).
   `models.start` names the card started at boot; unset, the server boots with no engine (D5).
 - **A start:** the card, the option values and the card's config are validated at once (a

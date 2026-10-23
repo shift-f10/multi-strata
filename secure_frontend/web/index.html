@@ -107,6 +107,9 @@
         <p class="muted small">The models this server is set up to run. Pick one, set its options and start it.</p>
         <div class="model-list" id="model-list"></div>
         <p class="muted" id="models-empty" hidden>No model cards are configured on this server.</p>
+        <p class="muted" id="models-denied" hidden>This server lets only its own machine start and stop models. To allow
+          other machines, add <code>"control_remote": true</code> to the <code>models</code> block of the server's
+          config file and restart the server, or open this page on the server itself.</p>
       </div>
       <div class="st-card model-detail" id="model-detail" hidden>
         <div class="model-detail__head"><span class="card-title" id="model-detail-name"></span><span id="model-detail-state"></span></div>

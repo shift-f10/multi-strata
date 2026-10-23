@@ -247,6 +247,9 @@ moved to `out/retired-worktrees/` and pruned).
   rows 1, router 2, page 3, launcher end to end 7 — the launcher's RED is the server refusing a
   cards config with the dispatch disabled). Full MSVC suite: at `0589af28`: 985 cases, 984 passed, 1 skipped (cfg03, the long-standing skip), 0 failed, with the real Gemma pack set (`out/ctest-launcher-full-3.log`). `3ad44536` alone (an isolated worktree) builds clean and its 98 config, card, option and CLI cases pass. Box run: see session log
   item 57.
+- **Remote clients:** the owner's browser is on another machine, so the tab first stayed hidden
+  (403 `control_not_allowed`, D2's default). The page now explains a 403 in the tab, and the
+  owner's local LAN config sets `models.control_remote` (session log item 57).
 - **Open:** Gemma KV streaming (D8, its own engine plan); GLM cards (D10); vision with cards
   (refused for now); the `strata` CLI verbs (`serve`, `key`, ...) still read single-model
   configs only; the page's Sampling drawer does not yet take its defaults from the running card

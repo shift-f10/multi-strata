@@ -904,6 +904,7 @@
   }
   function setLauncherEnabled(on) {
     launcher.enabled = on;
+    $("models-denied").hidden = true;
     $("tab-btn-models").hidden = !on;
     $("header-model").hidden = !on || !$("view-login").hidden;
     if (on) { return; }
@@ -911,6 +912,20 @@
     stopLauncherPoll();
     setComposerAvailable(true);
     if (!$("view-models").hidden) { showView("chat"); }
+  }
+  // A client the server does not let control models (a remote one without models.control_remote):
+  // the tab stays, showing the reason and the switch instead of the cards; chat is unchanged.
+  function setLauncherDenied() {
+    launcher.enabled = false;
+    launcher.data = null;
+    stopLauncherPoll();
+    setComposerAvailable(true);
+    $("tab-btn-models").hidden = false;
+    $("header-model").hidden = true;
+    clear($("model-list"));
+    $("models-empty").hidden = true;
+    $("model-detail").hidden = true;
+    $("models-denied").hidden = false;
   }
   // The chat follows the launcher: the header names the running model, the composer is off
   // with a pointer to the Models tab while none runs, and /v1/models is asked again when the
@@ -981,8 +996,9 @@
     var response, text;
     try { response = await api("/v1/strata/models"); text = await response.text(); } catch (e) { return; }
     if (response.status === 404) { setLauncherEnabled(false); return; }
-    // 403: this client may not control models (models.control_remote off); chat stays as it is.
-    if (response.status === 403) { setLauncherEnabled(false); return; }
+    // 403: this client may not control models (models.control_remote off): the tab says why and
+    // how to allow it; chat stays as it is.
+    if (response.status === 403) { setLauncherDenied(); return; }
     if (!response.ok) { return; }
     var parsed;
     try { parsed = JSON.parse(text); } catch (e) { return; }

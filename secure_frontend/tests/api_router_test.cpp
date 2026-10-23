@@ -408,6 +408,14 @@ void web_ui_has_the_models_tab_hidden_until_the_server_offers_it() {
   expect(js.find("if (response.status === 404) { setLauncherEnabled(false); return; }") != std::string::npos &&
              js.find("$(\"tab-btn-models\").hidden = !on;") != std::string::npos,
          "a 404 (model control off) hides the Models tab");
+  // Owner report 2026-10-23 ("I do not see the new tab", from another machine): a 403
+  // (models.control_remote off for a remote client) shows the tab with the reason and the fix,
+  // instead of hiding it with no word.
+  expect(js.find("if (response.status === 403) { setLauncherDenied(); return; }") != std::string::npos &&
+             js.find("$(\"models-denied\").hidden = false;") != std::string::npos,
+         "a 403 shows the Models tab with the reason");
+  expect(html.find("id=\"models-denied\"") != std::string::npos && html.find("control_remote") != std::string::npos,
+         "the reason names the switch that allows other machines");
   expect(js.find("[\"login\", \"chat\", \"models\", \"monitor\", \"about\"]") != std::string::npos &&
              js.find("$(\"tab-btn-models\").addEventListener(\"click\", function () { showView(\"models\"); });") != std::string::npos,
          "the Models tab switches views like the others");

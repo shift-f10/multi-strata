@@ -1172,6 +1172,14 @@ written beside it: `engines/gemma4/` (`strata-gemma4-engine`), plan
       button puts the card's own back (128K, KV streaming 32,768, thinking high). The Models tab
       answers loopback clients (`http://127.0.0.1:8080` on the box); from another machine it
       stays hidden until `"control_remote": true` is added to the config's `models` block (D2).
+    - **Owner report the same morning: "I do not see the new tab".** The owner's browser is on
+      another machine: the request log showed `strata_models 403 control_not_allowed ... remote`,
+      and the page hid the tab on a 403 without a word. Two changes: the page now shows the tab
+      on a 403 with the reason and the switch that allows other machines (api_router page case,
+      RED then GREEN); and, with the owner's report as the ask, `"control_remote": true` is set in
+      the local `out/serve/config-launcher-lan.json` (the key is still required for every call).
+      Restarted with the Gemma card (262K, the remembered value); from the LAN address
+      `GET /v1/strata/models` answers 200 as a remote client.
 
 ### Not done in this session
 
