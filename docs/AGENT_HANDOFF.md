@@ -360,6 +360,27 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
     the template's effort sentence (`QwenEffortPlacement`; high is the default, low has
     its own sentence, medium none, `effort_position` "end" as upstream #458). Before, every
     thinking prompt lacked the template's xhigh sentence. The page offers the four levels.
+  - **Gemma 4 (owner request 2026-10-22): design only, nothing built.** Upstream cannot
+    load `gemma4` (only `qwen4exp`/`qwen35moe`; the Qwen3.6 driver takes head 256 only).
+    Owner chose a Strata-style port and accepted decisions D1-D11 (2026-10-22): spec
+    `docs/superpowers/specs/2026-10-22-gemma4-engine-design.md` (our `engines/gemma4/`
+    tree building upstream unmodified, `strata-gemma4-engine` on the `strata_0143`
+    protocol, frontend `gemma4` profile with an `spm_bpe` tokenizer mode, the reference
+    being llama.cpp `3cf03257`'s `gemma4.cpp`). The owner's UD-Q8_K_XL download
+    (`C:\Strata-data\models\gemma4_q8`) confirmed the model facts header-only (§2.6); it
+    is the v1 target by the owner's choice ("no use the q8", D8). That reverses D4: experts
+    split VRAM/RAM with Q36's hybrid placement and a GELU/BF16 CPU pool, plus BF16 kernels
+    for its 11 BF16 matrices (2.15 GB). No plan written, nothing built. Meanwhile, by the
+    owner's decision, a TEST-ONLY llama.cpp `llama-server` (pinned `3cf03257`, offline
+    build, not reviewed under the supply-chain contract, not our server) serves that file
+    on `0.0.0.0:8081` (session log step 17, issue 44); nothing of it is committed. Owner
+    principle: one UI (8080), engines behind it. Owner decision D12: no interim
+    llama.cpp-backed engine; Gemma joins the 8080 UI when the Strata-style port is done.
+    Plan 1 (the `gemma4` frontend profile, 12 tasks, TDD, fake engine only) is written:
+    `docs/superpowers/plans/2026-10-22-gemma4-plan1-frontend-profile.md`; not started. Its
+    survey found ~10 two-way profile ternaries a third profile would silently fall through,
+    no `engine.executables.*` key (expert mode for now; the per-family key moves to plan 4),
+    and an existing bug: the page always sends `reasoning_effort`, which glm53 refuses (400).
 - The `windows-runtime`-labelled cases run under the MSVC preset on the owner's box; the
   supported Windows toolchains (MSYS2 clang, llvm-mingw) are still not installed (issue 3).
 

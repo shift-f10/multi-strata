@@ -940,6 +940,57 @@ thinking off, low, medium and high".
   - The table and totals show the four requests; the context reads "117 / 128K"; no CSP
     violation or script error.
 
+### 17. Gemma 4 on llama.cpp's own server, test-only (owner decision)
+
+Gemma 4 cannot run on our server: upstream's engine accepts only `qwen4exp`/`qwen35moe`, and
+our own Gemma 4 engine exists only as a spec
+(`docs/superpowers/specs/2026-10-22-gemma4-engine-design.md`). The owner asked to test the
+model anyway. On my question, "Yes: build llama.cpp's llama-server from the pinned 3cf03257
+checkout (test-only, outside our secure server), run the Q8 Gemma file on 0.0.0.0:8081 with
+that API key".
+
+44. **Built and ran code that the supply-chain contract has not reviewed**, by the owner's
+    explicit decision. llama.cpp's `libllama`, `common` and server (about 100,000 lines) were
+    never in our compiled surface. C3/C4 were not run; C1 was (checkout at `3cf03257`, clean
+    before and after). It is a test tool, not part of the product: nothing of it is committed,
+    shipped or started by our server.
+    - **Build** (`out/build-llama-server.bat` → `out/llama-server-3cf03257/bin/llama-server.exe`,
+      60.9 MB, static):
+      - CUDA 13.0, `sm_89`, Ninja + MSVC v143, built out of tree.
+      - Every build-time fetch was off: the web UI (no npm build, no Hugging Face bundle, so
+        the server has no page), OpenSSL (no HTTPS model downloads), CCCL, the OpenMP
+        installer, llguidance. Tests and examples were off too.
+      - The log shows no download; the UI step reports "embedded 0 assets".
+    - **Run** (`out/serve/serve-gemma4-llamacpp.ps1`, log `out/serve-gemma4-llamacpp.log`,
+      terminal tab "gemma4 llama-server 8081"):
+      - Listens on `0.0.0.0:8081`, context 32768, one slot, flash attention.
+      - Experts: layers 0-18 in RAM (memory-mapped), layers 19-29 and every non-expert
+        tensor on the GPU (`-ngl 99 --n-cpu-moe 19`).
+      - The key is our dev token, passed as `LLAMA_API_KEY` (not on the command line).
+      - Off: `--no-agent` (no tools, no MCP/CORS proxy), `--no-slots`, `--no-webui`. Any
+        `LLAMA_ARG_*` variable is cleared first.
+      - It is **not** behind our frontend: no Host/Origin checks, no request limits, and
+        `/health` answers without a key (llama.cpp's design).
+    - **Firewall:** an inbound Allow rule for `llama-server` (Public profile; this network
+      is Public) exists from Windows' first-run prompt. I neither created nor changed it.
+    - **Checked:**
+      - Loaded in 8 s; VRAM 14.97 of 16.4 GB.
+      - Without the key: 401. `/v1/models`: `gemma-4-26b-a4b-it`.
+      - Thinking off (`chat_template_kwargs: {"enable_thinking": false}`): a correct
+        one-sentence answer, 59 tokens, 30.6 tok/s decode.
+      - Thinking on: reasoning returned apart in `reasoning_content`, 24.2 tok/s.
+      - A request that names neither thinks (it is llama.cpp's `--reasoning auto`).
+      - `http://192.168.1.96:8081/health` answers.
+    - **llama.cpp's own warnings:** "detected an outdated gemma4 chat template, applying
+      compatibility workarounds"; `<|tool_response>` and `</s>` retyped as control tokens.
+      Neither is our concern for this test.
+    - **To stop it:** Ctrl+C in its tab.
+    - **What comes after it:** `/` on 8081 is a 404 (no UI was built). The owner wants one UI: the
+      8080 server and its page, with engines behind it, not a page served by llama-server. Asked
+      whether a thin llama.cpp-backed engine should carry Gemma behind 8080 in the meantime,
+      the owner ruled it out ("Keep to the Strata-style port in the spec; Gemma joins the
+      8080 UI when that engine is done"; spec D12). This llama-server remains a test tool only.
+
 ### Not done in this session
 
 - Resume doc §8 item 3 (`qwen35moe` family behaviour): not applicable to these packs (no
