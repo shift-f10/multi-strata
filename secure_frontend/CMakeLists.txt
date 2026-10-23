@@ -1423,7 +1423,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     set(_tokenizer_cases loads_validates_and_decodes_offline_pack rejects_ambiguous_or_incompatible_pack_assets
         rejects_malformed_json_and_special_literals_for_decode encoding_fails_closed_for_special_invalid_and_missing_tokens
         token_byte_decoder_returns_raw_token_bytes finds_qwen_think_tokens_only_when_unambiguous
-        qwen_encoder_takes_think_markers_only_as_generation_tail finds_qwen_end_of_turn_tokens)
+        qwen_encoder_takes_think_markers_only_as_generation_tail finds_qwen_end_of_turn_tokens
+        spm_pack_loads_merges_json_with_newline_and_tab_tokens mode_comes_from_the_profile_never_the_files
+        merges_json_is_bounded_and_validated)
     if(WIN32)
         list(APPEND _tokenizer_cases cfg03_tokenizer_file_swapped_to_junction_rejected)
     else()
@@ -1485,6 +1487,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_subsystem_limits_tests
         ready_timeout_defaults_to_900_seconds subsystem_limits_follow_config supervisor_policy_follows_config
         supervisor_flavor_is_the_maya_dialect_for_glm53 supervisor_profile_and_flavor_for_gemma4
+        tokenizer_mode_follows_the_profile
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     add_executable(secure_frontend_fake_engine tests/fake_engine_main.cpp)
@@ -1703,6 +1706,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_acquire_tests dl04_publish_uses_noreplace_and_never_overwrites
         publish_falls_back_when_noreplace_unsupported dl04_orphan_adopted_after_rehash_by_digest
         replace_loaded_model_retires_old_version layout_check_requires_pack_files_and_valid_tokenizer
+        gemma4_layout_check_requires_an_spm_tokenizer_pack
         staged_tree_must_be_exactly_the_manifest publish_requires_staging_key_of_manifest
         overlong_staging_tree_is_publish_failed retire_removes_read_only_published_version
         downgrade_adopts_retired_version_keeping_one_live rm_refuses_held_version_and_removes_read_only_tree

@@ -179,6 +179,65 @@ std::optional<std::map<std::string, std::size_t>> vocabulary_from(const JsonPars
   return result;
 }
 
+// Gemma 4 plan 1 Task 4: merges.json is one array of [left, right] pairs (depth 2), each
+// string bounded like a vocabulary token, at most the vocabulary cap of entries (+1 so an
+// oversized list reaches its own invalid_merge check).
+constexpr JsonLimits kMergesJsonLimits{.max_bytes = kMaximumFileBytes, .max_depth = 2U,
+                                       .max_container_entries = kMaximumVocabularyEntries + 1U,
+                                       .max_string_bytes = kMaximumTokenBytes};
+
+// Present means anything but "not found": a link or a directory named like the other mode's
+// merges file also makes the pack ambiguous, so it fails closed too.
+bool pack_file_present(const CanonicalRoot& root, const std::string_view name) {
+  const auto relative = std::get<RelativePath>(parse_relative_path(name));
+  const auto opened = open_beneath(root, relative, OpenOptions{.kind = OpenKind::regular_file});
+  const auto* failure = std::get_if<PathError>(&opened);
+  return failure == nullptr || failure->code != PathErrorCode::not_found;
+}
+
+// merges.txt (byte_bpe): one "left right" pair per line, a trailing \r stripped, blank lines skipped.
+std::optional<TokenizerPackError> merges_from_text(const std::string_view remaining, const std::set<std::string>& known,
+                                                   TokenizerPack& pack) {
+  std::set<std::pair<std::string, std::string>> seen;
+  std::size_t start = 0U;
+  while (start <= remaining.size()) {
+    const auto end = remaining.find('\n', start); std::string_view line = remaining.substr(start, end == std::string_view::npos ? remaining.size() - start : end - start);
+    if (!line.empty() && line.back() == '\r') line.remove_suffix(1U);
+    if (!line.empty()) {
+      const auto split = line.find(' ');
+      if (split == std::string_view::npos || split == 0U || split + 1U >= line.size() || line.find(' ', split + 1U) != std::string_view::npos) return error(TokenizerPackErrorCode::invalid_merge, "each merge must be exactly two tokens separated by one space");
+      std::pair<std::string, std::string> merge{line.substr(0U, split), line.substr(split + 1U)};
+      if (!known.contains(merge.first) || !known.contains(merge.second) || !seen.insert(merge).second || pack.merges_by_rank.size() >= kMaximumVocabularyEntries) return error(TokenizerPackErrorCode::invalid_merge, "merges must be unique bounded pairs of vocabulary tokens");
+      pack.merges_by_rank.push_back(std::move(merge));
+    }
+    if (end == std::string_view::npos) break;
+    start = end + 1U;
+  }
+  return std::nullopt;
+}
+
+// merges.json (spm_bpe): [["left","right"], ...] in rank order; each side a vocabulary token.
+std::optional<TokenizerPackError> merges_from_json(const std::string_view text, const std::set<std::string>& known,
+                                                   TokenizerPack& pack) {
+  const auto parsed = parse_json(text, kMergesJsonLimits);
+  const auto* root = std::get_if<JsonValue>(&parsed);
+  const auto* items = root != nullptr ? root->if_array() : nullptr;
+  if (items == nullptr) return error(TokenizerPackErrorCode::invalid_json, "merges.json must be a JSON array of two-string arrays");
+  if (items->size() > kMaximumVocabularyEntries) return error(TokenizerPackErrorCode::invalid_merge, "merges must be unique bounded pairs of vocabulary tokens");
+  std::set<std::pair<std::string, std::string>> seen;
+  pack.merges_by_rank.reserve(items->size());
+  for (const auto& item : *items) {
+    const auto* pair = item.if_array();
+    const auto* left = pair != nullptr && pair->size() == 2U ? (*pair)[0].if_string() : nullptr;
+    const auto* right = pair != nullptr && pair->size() == 2U ? (*pair)[1].if_string() : nullptr;
+    if (left == nullptr || right == nullptr) return error(TokenizerPackErrorCode::invalid_json, "merges.json must be a JSON array of two-string arrays");
+    std::pair<std::string, std::string> merge{*left, *right};
+    if (!known.contains(merge.first) || !known.contains(merge.second) || !seen.insert(merge).second) return error(TokenizerPackErrorCode::invalid_merge, "merges must be unique bounded pairs of vocabulary tokens");
+    pack.merges_by_rank.push_back(std::move(merge));
+  }
+  return std::nullopt;
+}
+
 std::optional<std::vector<int>> token_types_from(const JsonParseResult& parsed) {
   const auto* root = std::get_if<JsonValue>(&parsed);
   const auto* items = root != nullptr ? root->if_array() : nullptr;
@@ -197,18 +256,25 @@ std::optional<std::vector<int>> token_types_from(const JsonParseResult& parsed) 
 
 }  // namespace
 
-TokenizerPackLoadResult load_local_tokenizer_pack(const std::filesystem::path& pack_root) {
+TokenizerPackLoadResult load_local_tokenizer_pack(const std::filesystem::path& pack_root, const TokenizerMode mode) {
   auto root = open_root(pack_root);
   if (const auto* failure = std::get_if<PathError>(&root)) {
     return error(failure->code == PathErrorCode::not_directory ? TokenizerPackErrorCode::pack_root_not_directory
                                                                : TokenizerPackErrorCode::pack_root_unavailable,
                  "tokenizer pack root must be an existing private directory");
   }
-  return load_local_tokenizer_pack(std::get<CanonicalRoot>(root));
+  return load_local_tokenizer_pack(std::get<CanonicalRoot>(root), mode);
 }
 
-TokenizerPackLoadResult load_local_tokenizer_pack(const CanonicalRoot& root) {
-  const auto vocab_text = read_required(root, "vocab.json"); const auto merges_text = read_required(root, "merges.txt"); const auto types_text = read_required(root, "token_type.json");
+TokenizerPackLoadResult load_local_tokenizer_pack(const CanonicalRoot& root, const TokenizerMode mode) {
+  // Gemma 4 plan 1 Task 4 (Review Focus 2): the mode is the profile's; a pack that also holds
+  // the other mode's merges file is ambiguous and refused before anything is read.
+  const bool spm = mode == TokenizerMode::spm_bpe;
+  if (pack_file_present(root, spm ? "merges.txt" : "merges.json")) {
+    return error(TokenizerPackErrorCode::invalid_merge, spm ? "an spm_bpe tokenizer pack keeps its merges in merges.json, never merges.txt"
+                                                            : "a byte_bpe tokenizer pack keeps its merges in merges.txt, never merges.json");
+  }
+  const auto vocab_text = read_required(root, "vocab.json"); const auto merges_text = read_required(root, spm ? "merges.json" : "merges.txt"); const auto types_text = read_required(root, "token_type.json");
   if (const auto* e = std::get_if<TokenizerPackError>(&vocab_text)) return *e;
   if (const auto* e = std::get_if<TokenizerPackError>(&merges_text)) return *e;
   if (const auto* e = std::get_if<TokenizerPackError>(&types_text)) return *e;
@@ -218,27 +284,16 @@ TokenizerPackLoadResult load_local_tokenizer_pack(const CanonicalRoot& root) {
   if (!types) return error(TokenizerPackErrorCode::invalid_json, "token_type.json must be a JSON array of integers");
   if (vocabulary->empty() || vocabulary->size() > kMaximumVocabularyEntries) return error(TokenizerPackErrorCode::invalid_vocabulary, "vocabulary size is outside fixed bounds");
   if (types->size() != vocabulary->size()) return error(TokenizerPackErrorCode::invalid_token_types, "token types must have exactly one value per vocabulary ID");
-  TokenizerPack pack; pack.tokens_by_id.resize(vocabulary->size()); pack.token_types = *types;
+  TokenizerPack pack; pack.tokens_by_id.resize(vocabulary->size()); pack.token_types = *types; pack.mode = mode;
   for (const auto& [token, id] : *vocabulary) {
     if (token.empty() || token.size() > kMaximumTokenBytes || id >= pack.tokens_by_id.size() || !pack.tokens_by_id[id].empty()) return error(TokenizerPackErrorCode::invalid_vocabulary, "vocabulary IDs must be contiguous, unique, and token strings bounded");
     pack.tokens_by_id[id] = token;
   }
   if (std::any_of(pack.tokens_by_id.begin(), pack.tokens_by_id.end(), [](const std::string& token) { return token.empty(); })) return error(TokenizerPackErrorCode::invalid_vocabulary, "vocabulary IDs must start at zero and be contiguous");
-  std::set<std::string> known(pack.tokens_by_id.begin(), pack.tokens_by_id.end()); std::set<std::pair<std::string, std::string>> seen;
-  std::string_view remaining = std::get<std::string>(merges_text); std::size_t start = 0U;
-  while (start <= remaining.size()) {
-    const auto end = remaining.find('\n', start); std::string_view line = remaining.substr(start, end == std::string_view::npos ? remaining.size() - start : end - start);
-    if (!line.empty() && line.back() == '\r') line.remove_suffix(1U);
-    if (!line.empty()) {
-      const auto split = line.find(' ');
-      if (split == std::string_view::npos || split == 0U || split + 1U >= line.size() || line.find(' ', split + 1U) != std::string_view::npos) return error(TokenizerPackErrorCode::invalid_merge, "each merge must be exactly two tokens separated by one space");
-      std::pair<std::string, std::string> merge{line.substr(0U, split), line.substr(split + 1U)};
-      if (!known.contains(merge.first) || !known.contains(merge.second) || !seen.insert(merge).second || pack.merges_by_rank.size() >= kMaximumVocabularyEntries) return error(TokenizerPackErrorCode::invalid_merge, "merges must be unique bounded pairs of vocabulary tokens");
-      pack.merges_by_rank.push_back(std::move(merge));
-    }
-    if (end == std::string_view::npos) break;
-    start = end + 1U;
-  }
+  const std::set<std::string> known(pack.tokens_by_id.begin(), pack.tokens_by_id.end());
+  const auto merge_error = spm ? merges_from_json(std::get<std::string>(merges_text), known, pack)
+                               : merges_from_text(std::get<std::string>(merges_text), known, pack);
+  if (merge_error) return *merge_error;
   return pack;
 }
 

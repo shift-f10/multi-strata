@@ -200,15 +200,15 @@ tests `typed_config_test.cpp`, `engine_arguments_test.cpp`, `server_cli_test.cpp
   (`tokenizer_pack.cpp:21-22`: 1,048,576 vocabulary entries and merges, 64 MiB a file; the
   Q8 GGUF has 262,144 tokens and 514,906 merges).
 
-- [ ] **Step 1: RED**
+- [x] **Step 1: RED**
   ```cpp
   void spm_pack_loads_merges_json_with_newline_and_tab_tokens();  // "\n\n \n", "\t \t", "▁▁ ▁" merges round-trip
   void mode_comes_from_the_profile_never_the_files();              // spm with merges.txt → error; byte with merges.json → error
   void merges_json_is_bounded_and_validated();                     // depth 3, non-string, unknown token, duplicate, oversize → typed errors
   ```
   FAIL.
-- [ ] **Step 2:** implement; error codes reuse `invalid_merge` / `invalid_json` with fixed messages.
-- [ ] **Step 3:** GREEN + gates; commit `tokenizer: spm_bpe mode and merges.json, chosen by the profile`.
+- [x] **Step 2:** implement; error codes reuse `invalid_merge` / `invalid_json` with fixed messages.
+- [x] **Step 3:** GREEN + gates; commit `tokenizer: spm_bpe mode and merges.json, chosen by the profile`.
 
 ---
 

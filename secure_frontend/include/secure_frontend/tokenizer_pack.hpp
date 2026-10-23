@@ -14,14 +14,21 @@
 
 namespace secure_frontend {
 
+// Gemma 4 plan 1 Task 4 (spec §6.2): how a pack's merges are stored and applied. The mode
+// is chosen by the engine profile (gemma4 -> spm_bpe, every other -> byte_bpe), never
+// inferred from the pack's files: byte_bpe is GPT-2's byte alphabet with merges.txt;
+// spm_bpe is SentencePiece-style BPE over raw UTF-8 characters with merges.json.
+enum class TokenizerMode { byte_bpe, spm_bpe };
+
 // The offline tokenizer assets extracted by upstream/tools/strata_tokenizer.py
-// (through our wrapper tools/secure/secure_tokenizer.py for GLM packs).  This
+// (through our wrapper tools/secure/secure_tokenizer.py for GLM and Gemma 4 packs).  This
 // type intentionally owns all input: loading a pack never keeps a file handle,
 // invokes a subprocess, or contacts a network service.
 struct TokenizerPack final {
   std::vector<std::string> tokens_by_id;
   std::vector<std::pair<std::string, std::string>> merges_by_rank;
   std::vector<int> token_types;
+  TokenizerMode mode{TokenizerMode::byte_bpe};  // the mode it was loaded in (the profile's)
 };
 
 enum class TokenizerPackErrorCode {
@@ -54,14 +61,17 @@ using TokenizerPackLoadResult = std::variant<TokenizerPack, TokenizerPackError>;
 using TokenizerDecodeResult = std::variant<std::string, TokenizerPackError>;
 using TokenizerEncodeResult = std::variant<std::vector<std::size_t>, TokenizerPackError>;
 
-// Loads only the fixed local files vocab.json, merges.txt, and token_type.json
-// beneath pack_root, each opened by handle with open_beneath (no link is
-// followed). All files must be regular, non-symlink files. Vocabulary
-// IDs must be unique, contiguous, and zero-based; merges must name vocabulary
-// tokens and be unique; token types must have exactly one value per ID.
-[[nodiscard]] TokenizerPackLoadResult load_local_tokenizer_pack(const CanonicalRoot& pack_root);
+// Loads only the fixed local files vocab.json, token_type.json and the mode's merges file
+// beneath pack_root, each opened by handle with open_beneath (no link is followed). All
+// files must be regular, non-symlink files. Vocabulary IDs must be unique, contiguous, and
+// zero-based; merges must name vocabulary tokens and be unique; token types must have
+// exactly one value per ID. byte_bpe reads merges.txt (one "left right" per line) and
+// refuses a pack that also has merges.json; spm_bpe reads merges.json (a JSON array of
+// two-string arrays in rank order, so merges holding newlines, tabs or spaces round-trip) and
+// refuses a pack that also has merges.txt (invalid_merge either way).
+[[nodiscard]] TokenizerPackLoadResult load_local_tokenizer_pack(const CanonicalRoot& pack_root, TokenizerMode mode);
 // Opens the root first (open_root: canonical, private, existing).
-[[nodiscard]] TokenizerPackLoadResult load_local_tokenizer_pack(const std::filesystem::path& pack_root);
+[[nodiscard]] TokenizerPackLoadResult load_local_tokenizer_pack(const std::filesystem::path& pack_root, TokenizerMode mode);
 
 // Decodes byte-level-BPE token IDs using GPT-2's reversible byte alphabet.
 // CONTROL (3) and USER_DEFINED (4)

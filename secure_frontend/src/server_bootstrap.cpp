@@ -190,7 +190,9 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
   // Session log step 14: per-request reasoning_effort reaches the qwen renderer; Gemma 4
   // plan 1 Task 3 (spec §6.6): and the gemma4 one (none = thinking off, else on). glm53 refuses it.
   schema_limits.per_request_reasoning_effort = secure_frontend::per_request_reasoning_effort_for(launch.profile);
-  const auto tokenizer_result = secure_frontend::load_local_tokenizer_pack(*launch.tokenizer_root);
+  // Gemma 4 plan 1 Task 4 (spec §6.2): the pack's mode is the launch profile's, never the files'.
+  const auto tokenizer_result =
+      secure_frontend::load_local_tokenizer_pack(*launch.tokenizer_root, secure_frontend::tokenizer_mode_for(launch.profile));
   const auto* tokenizer = std::get_if<secure_frontend::TokenizerPack>(&tokenizer_result);
   if (tokenizer == nullptr) {
     std::cerr << "Unable to load local tokenizer pack (" << (launch.managed ? "the model's tokenizer" : "roots.tokenizer_pack")

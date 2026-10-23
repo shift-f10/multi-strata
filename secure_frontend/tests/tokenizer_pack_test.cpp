@@ -8,11 +8,15 @@
 #include <iostream>
 #include <string>
 #include <system_error>
+#include <tuple>
 #include <variant>
 #include <vector>
 
 namespace {
 int failures = 0;
+// Gemma 4 plan 1 Task 4: the mode is the caller's (the profile's), never the files'.
+constexpr auto kByte = secure_frontend::TokenizerMode::byte_bpe;
+constexpr auto kSpm = secure_frontend::TokenizerMode::spm_bpe;
 void expect(const bool condition, const std::string& message) {
   if (!condition) { ++failures; std::cerr << "FAILED: " << message << '\n'; }
 }
@@ -35,7 +39,7 @@ void loads_validates_and_decodes_offline_pack() {
   write(root / "vocab.json", R"({"a":0,"b":1,"ab":2,"Ġ":3,"Ã":4,"©":5,"Ã©":6})");
   write(root / "merges.txt", "a b\nÃ ©\n");
   write(root / "token_type.json", "[0,0,0,0,0,0,0]");
-  const auto loaded = secure_frontend::load_local_tokenizer_pack(root);
+  const auto loaded = secure_frontend::load_local_tokenizer_pack(root, kByte);
   const auto* pack = std::get_if<secure_frontend::TokenizerPack>(&loaded);
   expect(pack != nullptr, "valid extracted local pack must load");
   if (pack != nullptr) {
@@ -64,7 +68,7 @@ void encoding_fails_closed_for_special_invalid_and_missing_tokens() {
   write(root / "vocab.json", R"({"a":0,"<|stop|>":1})");
   write(root / "merges.txt", "");
   write(root / "token_type.json", "[0,3]");
-  const auto loaded = secure_frontend::load_local_tokenizer_pack(root);
+  const auto loaded = secure_frontend::load_local_tokenizer_pack(root, kByte);
   const auto* pack = std::get_if<secure_frontend::TokenizerPack>(&loaded);
   expect(pack != nullptr, "special-token pack must load for fail-closed encoder tests");
   if (pack != nullptr) {
@@ -87,21 +91,21 @@ void rejects_ambiguous_or_incompatible_pack_assets() {
   write(root / "vocab.json", R"({"a":0,"b":2})");
   write(root / "merges.txt", "a b\n");
   write(root / "token_type.json", "[0,0]");
-  expect(has_error(secure_frontend::load_local_tokenizer_pack(root),
+  expect(has_error(secure_frontend::load_local_tokenizer_pack(root, kByte),
                    secure_frontend::TokenizerPackErrorCode::invalid_vocabulary),
          "vocabulary IDs must be contiguous and zero based");
   write(root / "vocab.json", R"({"a":0,"b":1})");
   write(root / "merges.txt", "a c\n");
-  expect(has_error(secure_frontend::load_local_tokenizer_pack(root),
+  expect(has_error(secure_frontend::load_local_tokenizer_pack(root, kByte),
                    secure_frontend::TokenizerPackErrorCode::invalid_merge),
          "merge tokens outside vocabulary must fail closed");
   write(root / "merges.txt", "a b\na b\n");
-  expect(has_error(secure_frontend::load_local_tokenizer_pack(root),
+  expect(has_error(secure_frontend::load_local_tokenizer_pack(root, kByte),
                    secure_frontend::TokenizerPackErrorCode::invalid_merge),
          "duplicate merge ranks must fail closed");
   write(root / "merges.txt", "");
   write(root / "token_type.json", "[0]");
-  expect(has_error(secure_frontend::load_local_tokenizer_pack(root),
+  expect(has_error(secure_frontend::load_local_tokenizer_pack(root, kByte),
                    secure_frontend::TokenizerPackErrorCode::invalid_token_types),
          "token type count must equal vocabulary size");
   std::filesystem::remove_all(root);
@@ -112,12 +116,12 @@ void rejects_malformed_json_and_special_literals_for_decode() {
   write(root / "vocab.json", R"({"a":0,"a":1})");
   write(root / "merges.txt", "");
   write(root / "token_type.json", "[0]");
-  expect(has_error(secure_frontend::load_local_tokenizer_pack(root),
+  expect(has_error(secure_frontend::load_local_tokenizer_pack(root, kByte),
                    secure_frontend::TokenizerPackErrorCode::invalid_json),
          "duplicate JSON keys must fail closed");
   write(root / "vocab.json", R"({"<|control|>":0})");
   write(root / "token_type.json", "[3]");
-  const auto loaded = secure_frontend::load_local_tokenizer_pack(root);
+  const auto loaded = secure_frontend::load_local_tokenizer_pack(root, kByte);
   const auto* pack = std::get_if<secure_frontend::TokenizerPack>(&loaded);
   expect(pack != nullptr, "control literals are valid pack vocabulary entries");
   if (pack != nullptr) {
@@ -136,7 +140,7 @@ void rejects_symlinked_assets() {
   std::filesystem::create_symlink(root / "actual.json", root / "vocab.json");
   write(root / "merges.txt", "");
   write(root / "token_type.json", "[0]");
-  expect(has_error(secure_frontend::load_local_tokenizer_pack(root),
+  expect(has_error(secure_frontend::load_local_tokenizer_pack(root, kByte),
                    secure_frontend::TokenizerPackErrorCode::symbolic_link_not_allowed),
          "loader must reject symlinked tokenizer files");
   std::filesystem::remove_all(root);
@@ -149,11 +153,11 @@ void cfg03_tokenizer_file_swapped_to_symlink_rejected() {
   write(root / "merges.txt", "");
   write(root / "token_type.json", "[0]");
   write(root / "vocab.json", R"({"a":0})");
-  expect(std::holds_alternative<secure_frontend::TokenizerPack>(secure_frontend::load_local_tokenizer_pack(root)),
+  expect(std::holds_alternative<secure_frontend::TokenizerPack>(secure_frontend::load_local_tokenizer_pack(root, kByte)),
          "the regular pack loads");
   std::filesystem::remove(root / "vocab.json");
   std::filesystem::create_symlink(outside / "vocab.json", root / "vocab.json");
-  expect(has_error(secure_frontend::load_local_tokenizer_pack(root), secure_frontend::TokenizerPackErrorCode::symbolic_link_not_allowed),
+  expect(has_error(secure_frontend::load_local_tokenizer_pack(root, kByte), secure_frontend::TokenizerPackErrorCode::symbolic_link_not_allowed),
          "after the swap the file is opened by handle with O_NOFOLLOW and rejected");
   std::filesystem::remove_all(root);  // removes the link, not its target
   std::filesystem::remove_all(outside);
@@ -168,11 +172,11 @@ void cfg03_tokenizer_file_swapped_to_junction_rejected() {
   write(root / "merges.txt", "");
   write(root / "token_type.json", "[0]");
   write(root / "vocab.json", R"({"a":0})");
-  expect(std::holds_alternative<secure_frontend::TokenizerPack>(secure_frontend::load_local_tokenizer_pack(root)),
+  expect(std::holds_alternative<secure_frontend::TokenizerPack>(secure_frontend::load_local_tokenizer_pack(root, kByte)),
          "the regular pack loads");
   std::filesystem::remove(root / "vocab.json");
   expect(secure_frontend_test::create_junction(root / "vocab.json", outside), "junction created without privilege");
-  expect(has_error(secure_frontend::load_local_tokenizer_pack(root), secure_frontend::TokenizerPackErrorCode::symbolic_link_not_allowed),
+  expect(has_error(secure_frontend::load_local_tokenizer_pack(root, kByte), secure_frontend::TokenizerPackErrorCode::symbolic_link_not_allowed),
          "a junction swapped in for vocab.json is opened with FILE_FLAG_OPEN_REPARSE_POINT and rejected");
   std::error_code ignored;
   std::filesystem::remove(root / "vocab.json", ignored);  // the junction itself first, never its target's contents
@@ -305,6 +309,104 @@ void finds_qwen_end_of_turn_tokens() {
   expect(secure_frontend::find_qwen_end_of_turn_tokens(duplicated) == std::vector<std::size_t>{endoftext},
          "a duplicated literal is ambiguous and is left out");
 }
+
+// ---- Gemma 4 plan 1 Task 4 (spec §6.2): the spm_bpe mode reads merges.json ----
+
+secure_frontend::TokenizerPackErrorCode error_code(const secure_frontend::TokenizerPackLoadResult& result) {
+  const auto* failure = std::get_if<secure_frontend::TokenizerPackError>(&result);
+  return failure != nullptr ? failure->code : secure_frontend::TokenizerPackErrorCode::pack_root_unavailable;
+}
+
+// Gemma's merges hold "\n", "\t" and runs of U+2581 (spec §2.6); a line-based merges.txt cannot.
+void write_spm_pack(const std::filesystem::path& root, const std::string_view merges_json) {
+  write(root / "vocab.json",
+        "{\"\\n\":0,\"\\n\\n\":1,\"\\n\\n\\n\":2,\"\\t\":3,\"\\t\\t\":4,\"\xE2\x96\x81\":5,\"\xE2\x96\x81\xE2\x96\x81\":6,"
+        "\"\xE2\x96\x81\xE2\x96\x81\xE2\x96\x81\":7,\"a b\":8,\"c\":9,\"a bc\":10}");
+  write(root / "merges.json", merges_json);
+  write(root / "token_type.json", "[1,1,1,1,1,1,1,1,1,1,1]");
+}
+
+constexpr std::string_view kSpmMerges =
+    "[[\"\\n\\n\",\"\\n\"],[\"\\t\",\"\\t\"],[\"\xE2\x96\x81\xE2\x96\x81\",\"\xE2\x96\x81\"],[\"\\n\",\"\\n\"],"
+    "[\"\xE2\x96\x81\",\"\xE2\x96\x81\"],[\"a b\",\"c\"]]";
+
+void spm_pack_loads_merges_json_with_newline_and_tab_tokens() {
+  const auto root = temporary_pack();
+  write_spm_pack(root, kSpmMerges);
+  const auto loaded = secure_frontend::load_local_tokenizer_pack(root, kSpm);
+  const auto* pack = std::get_if<secure_frontend::TokenizerPack>(&loaded);
+  expect(pack != nullptr, "an spm_bpe pack with merges.json loads");
+  if (pack != nullptr) {
+    const std::vector<std::pair<std::string, std::string>> expected{
+        {"\n\n", "\n"}, {"\t", "\t"}, {"\xE2\x96\x81\xE2\x96\x81", "\xE2\x96\x81"}, {"\n", "\n"},
+        {"\xE2\x96\x81", "\xE2\x96\x81"}, {"a b", "c"}};
+    expect(pack->merges_by_rank == expected, "merges keep \\n, \\t, U+2581 runs and inner spaces, in rank order");
+    expect(pack->mode == secure_frontend::TokenizerMode::spm_bpe, "the pack records the mode it was loaded in");
+    expect(pack->tokens_by_id.size() == 11U && pack->tokens_by_id[2] == "\n\n\n", "the vocabulary decodes JSON escapes");
+  }
+  write(root / "merges.json", "[]");
+  const auto empty = secure_frontend::load_local_tokenizer_pack(root, kSpm);
+  expect(std::holds_alternative<secure_frontend::TokenizerPack>(empty) &&
+             std::get<secure_frontend::TokenizerPack>(empty).merges_by_rank.empty(),
+         "an empty merges array is a pack without merges");
+  std::filesystem::remove_all(root);
+}
+
+// Review Focus 2: the profile picks the mode; a pack holding the other mode's merges file fails at load.
+void mode_comes_from_the_profile_never_the_files() {
+  const auto spm = temporary_pack();
+  write_spm_pack(spm, kSpmMerges);
+  write(spm / "merges.txt", "a b\n");
+  expect(error_code(secure_frontend::load_local_tokenizer_pack(spm, kSpm)) == secure_frontend::TokenizerPackErrorCode::invalid_merge,
+         "spm_bpe refuses a pack that also has merges.txt");
+  std::filesystem::remove(spm / "merges.json");
+  expect(error_code(secure_frontend::load_local_tokenizer_pack(spm, kSpm)) == secure_frontend::TokenizerPackErrorCode::invalid_merge,
+         "spm_bpe never falls back to merges.txt");
+  std::filesystem::remove_all(spm);
+
+  const auto byte = temporary_pack();
+  write(byte / "vocab.json", R"({"a":0,"b":1,"ab":2})");
+  write(byte / "merges.txt", "a b\n");
+  write(byte / "token_type.json", "[1,1,1]");
+  const auto plain = secure_frontend::load_local_tokenizer_pack(byte, kByte);
+  expect(std::holds_alternative<secure_frontend::TokenizerPack>(plain) &&
+             std::get<secure_frontend::TokenizerPack>(plain).mode == secure_frontend::TokenizerMode::byte_bpe,
+         "byte_bpe loads merges.txt and records its mode");
+  expect(error_code(secure_frontend::load_local_tokenizer_pack(byte, kSpm)) == secure_frontend::TokenizerPackErrorCode::invalid_merge,
+         "a byte-level pack is refused in spm_bpe mode (merges.txt present)");
+  write(byte / "merges.json", R"([["a","b"]])");
+  expect(error_code(secure_frontend::load_local_tokenizer_pack(byte, kByte)) == secure_frontend::TokenizerPackErrorCode::invalid_merge,
+         "byte_bpe refuses a pack that also has merges.json");
+  std::filesystem::remove(byte / "merges.txt");
+  expect(error_code(secure_frontend::load_local_tokenizer_pack(byte, kByte)) == secure_frontend::TokenizerPackErrorCode::invalid_merge,
+         "byte_bpe never falls back to merges.json");
+  std::filesystem::remove_all(byte);
+}
+
+void merges_json_is_bounded_and_validated() {
+  const auto root = temporary_pack();
+  using Code = secure_frontend::TokenizerPackErrorCode;
+  const std::vector<std::tuple<std::string, Code, std::string>> cases{
+      {R"([[["\n","\n"]]])", Code::invalid_json, "depth 3"},
+      {R"([["\n",1]])", Code::invalid_json, "a non-string side"},
+      {R"([["\n"]])", Code::invalid_json, "one string"},
+      {R"([["\n","\n","\n"]])", Code::invalid_json, "three strings"},
+      {R"({"\n":"\n"})", Code::invalid_json, "an object, not an array"},
+      {R"(["\n \n"])", Code::invalid_json, "a merges.txt line as a string"},
+      {R"([["\n","\n"],)", Code::invalid_json, "truncated JSON"},
+      {R"([["\n","x"]])", Code::invalid_merge, "an unknown token"},
+      {R"([["\n","\n"],["\n","\n"]])", Code::invalid_merge, "a duplicate merge"},
+      {R"([["","\n"]])", Code::invalid_merge, "an empty side"},
+  };
+  for (const auto& [text, code, why] : cases) {
+    write_spm_pack(root, text);
+    expect(error_code(secure_frontend::load_local_tokenizer_pack(root, kSpm)) == code, "merges.json refused: " + why);
+  }
+  write_spm_pack(root, std::string(64U * 1024U * 1024U + 1U, ' '));
+  expect(error_code(secure_frontend::load_local_tokenizer_pack(root, kSpm)) == Code::file_too_large,
+         "merges.json above the 64 MiB file cap is refused before parsing");
+  std::filesystem::remove_all(root);
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -317,6 +419,9 @@ int main(int argc, char** argv) {
       {"rejects_malformed_json_and_special_literals_for_decode", rejects_malformed_json_and_special_literals_for_decode},
       {"encoding_fails_closed_for_special_invalid_and_missing_tokens", encoding_fails_closed_for_special_invalid_and_missing_tokens},
       {"token_byte_decoder_returns_raw_token_bytes", token_byte_decoder_returns_raw_token_bytes},
+      {"spm_pack_loads_merges_json_with_newline_and_tab_tokens", spm_pack_loads_merges_json_with_newline_and_tab_tokens},
+      {"mode_comes_from_the_profile_never_the_files", mode_comes_from_the_profile_never_the_files},
+      {"merges_json_is_bounded_and_validated", merges_json_is_bounded_and_validated},
 #ifndef _WIN32
       {"rejects_symlinked_assets", rejects_symlinked_assets},
       {"cfg03_tokenizer_file_swapped_to_symlink_rejected", cfg03_tokenizer_file_swapped_to_symlink_rejected},

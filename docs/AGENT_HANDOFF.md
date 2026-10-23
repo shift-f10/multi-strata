@@ -411,6 +411,15 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
       chat plan is chosen by switch in `chat_execution` and `chat_route`; the gemma4 plan is a
       stub refusing every request until Task 8. Gates: MSVC build clean; full suite 926
       passed, 1 skipped.
+    - Task 4 done: `TokenizerMode { byte_bpe, spm_bpe }`, a required argument of
+      `load_local_tokenizer_pack` and recorded in the pack; `tokenizer_mode_for` (gemma4 →
+      `spm_bpe`, else `byte_bpe`) picks it at boot — never inferred from the files. `spm_bpe`
+      reads `merges.json` (array of two-string arrays in rank order, own JSON limits: depth 2,
+      ≤ 1,048,576 entries, 64 MiB) and refuses a pack that also has `merges.txt`; `byte_bpe`
+      is unchanged and refuses `merges.json`. Publishing a gemma4 manifest requires
+      `vocab.json`, `merges.json`, `token_type.json`, `tokenizer.json` under
+      `launch.tokenizer_pack`, loading in `spm_bpe`. Gates: MSVC build clean; full suite 931
+      passed, 1 skipped.
 - The `windows-runtime`-labelled cases run under the MSVC preset on the owner's box; the
   supported Windows toolchains (MSYS2 clang, llvm-mingw) are still not installed (issue 3).
 

@@ -268,6 +268,7 @@ int main(int argc, char** argv) {
       {"dl04_orphan_adopted_after_rehash_by_digest", acquire_cases::dl04_orphan_adopted_after_rehash_by_digest},
       {"replace_loaded_model_retires_old_version", acquire_cases::replace_loaded_model_retires_old_version},
       {"layout_check_requires_pack_files_and_valid_tokenizer", acquire_cases::layout_check_requires_pack_files_and_valid_tokenizer},
+      {"gemma4_layout_check_requires_an_spm_tokenizer_pack", acquire_cases::gemma4_layout_check_requires_an_spm_tokenizer_pack},
       {"staged_tree_must_be_exactly_the_manifest", acquire_cases::staged_tree_must_be_exactly_the_manifest},
       {"install_decisions_follow_sequence_rules", acquire_cases::install_decisions_follow_sequence_rules},
       {"publish_requires_staging_key_of_manifest", acquire_cases::publish_requires_staging_key_of_manifest},

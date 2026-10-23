@@ -6,6 +6,7 @@
 #include "secure_frontend/frontend_config.hpp"
 #include "secure_frontend/connection_handler.hpp"
 #include "secure_frontend/engine_environment.hpp"
+#include "secure_frontend/tokenizer_pack.hpp"
 
 namespace secure_frontend {
 
@@ -28,5 +29,8 @@ namespace secure_frontend {
 [[nodiscard]] EngineFamily engine_family_for(EngineProfile profile);
 // Whether the schema admits reasoning_effort per request (qwen and gemma4; glm53 refuses it).
 [[nodiscard]] bool per_request_reasoning_effort_for(EngineProfile profile);
+// Gemma 4 plan 1 Task 4 (spec §6.2): the tokenizer mode the pack is loaded in (gemma4:
+// spm_bpe, every other profile byte_bpe); never inferred from the pack's files.
+[[nodiscard]] TokenizerMode tokenizer_mode_for(EngineProfile profile);
 
 }  // namespace secure_frontend

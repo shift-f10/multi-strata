@@ -20,6 +20,7 @@ void dl04_crash_between_publish_and_index_is_not_loaded();
 void dl04_orphan_adopted_after_rehash_by_digest();
 void replace_loaded_model_retires_old_version();
 void layout_check_requires_pack_files_and_valid_tokenizer();
+void gemma4_layout_check_requires_an_spm_tokenizer_pack();  // Gemma 4 plan 1 Task 4
 void staged_tree_must_be_exactly_the_manifest();
 void install_decisions_follow_sequence_rules();
 void publish_requires_staging_key_of_manifest();

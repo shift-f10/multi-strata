@@ -111,6 +111,14 @@ void supervisor_profile_and_flavor_for_gemma4() {
              secure_frontend::per_request_reasoning_effort_for(EngineProfile::gemma4),
          "reasoning_effort per request: qwen and gemma4, never glm53 (spec §6.6)");
 }
+// Gemma 4 plan 1 Task 4 (Review Focus 2): the bootstrap loads the pack in the profile's mode.
+void tokenizer_mode_follows_the_profile() {
+  using secure_frontend::EngineProfile;
+  using secure_frontend::TokenizerMode;
+  expect(secure_frontend::tokenizer_mode_for(EngineProfile::qwen) == TokenizerMode::byte_bpe, "qwen packs are byte_bpe");
+  expect(secure_frontend::tokenizer_mode_for(EngineProfile::glm53) == TokenizerMode::byte_bpe, "glm53 packs are byte_bpe");
+  expect(secure_frontend::tokenizer_mode_for(EngineProfile::gemma4) == TokenizerMode::spm_bpe, "gemma4 packs are spm_bpe");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -120,5 +128,6 @@ int main(int argc, char** argv) {
       {"supervisor_policy_follows_config", supervisor_policy_follows_config},
       {"supervisor_flavor_is_the_maya_dialect_for_glm53", supervisor_flavor_is_the_maya_dialect_for_glm53},
       {"supervisor_profile_and_flavor_for_gemma4", supervisor_profile_and_flavor_for_gemma4},
+      {"tokenizer_mode_follows_the_profile", tokenizer_mode_follows_the_profile},
   }, failures);
 }

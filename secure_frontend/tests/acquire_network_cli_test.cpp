@@ -162,24 +162,27 @@ void engine_gate_refuses_gemma4_until_the_engine_exists() {
 
   CliHarness h;
   NetworkSeams seams(h, fx::qwen_payload());
-  const std::string gemma =
+  // Since Task 4 the publish layout check needs a loadable spm_bpe tokenizer pack.
+  const std::vector<fx::PayloadFile> files{{"w.gguf", secure_frontend::FileRole::weights, "a"},
+                                           {"tokenizer/vocab.json", secure_frontend::FileRole::tokenizer, "{\"a\":0,\"b\":1,\"ab\":2}"},
+                                           {"tokenizer/merges.json", secure_frontend::FileRole::tokenizer, "[[\"a\",\"b\"]]"},
+                                           {"tokenizer/token_type.json", secure_frontend::FileRole::tokenizer, "[1,1,1]"},
+                                           {"tokenizer/tokenizer.json", secure_frontend::FileRole::tokenizer, "{}\n"}};
+  std::string gemma =
       "{\"format\":\"strata-model-manifest\",\"schema_version\":1,\"name\":\"g\",\"tag\":\"t\",\"version\":\"2026.10.22.1\","
       "\"sequence\":1,\"profile\":\"gemma4\",\"engine\":{\"family\":\"gemma4\",\"min_version\":\"0.0.1\"},"
       "\"license\":{\"id\":\"Apache-2.0\",\"url\":\"https://fixture.example/l\",\"bundle_allowed\":true},\"hosts\":[\"fixture.example\"],"
-      "\"files\":[{\"path\":\"w.gguf\",\"role\":\"weights\",\"size\":1,"
-      "\"sha256\":\"ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb\",\"sources\":[]},"
-      "{\"path\":\"tokenizer/vocab.json\",\"role\":\"tokenizer\",\"size\":1,"
-      "\"sha256\":\"3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d\",\"sources\":[]}],"
-      "\"launch\":{\"native\":\"w.gguf\",\"tokenizer_pack\":\"tokenizer\"}}";
+      "\"files\":[";
+  for (std::size_t i = 0; i < files.size(); ++i) {
+    gemma += (i ? "," : "") + std::string{"{\"path\":\""} + files[i].path + "\",\"role\":\"" +
+             std::string{secure_frontend::role_name(files[i].role)} + "\",\"size\":" + std::to_string(files[i].bytes.size()) +
+             ",\"sha256\":\"" + secure_frontend::to_hex(secure_frontend::sha256(files[i].bytes)) + "\",\"sources\":[]}";
+  }
+  gemma += "],\"launch\":{\"native\":\"w.gguf\",\"tokenizer_pack\":\"tokenizer\"}}";
   const auto root = h.models();
   const auto manifest = fx::trusted(gemma, secure_frontend::ModelOrigin::third_party);
   const auto key = secure_frontend::staging_key(manifest.parsed.sha256);
-  (void)secure_frontend::ensure_directory(root, secure_frontend::staging_dir_path(key));
-  (void)secure_frontend::write_new_file(root, secure_frontend::join_rel(secure_frontend::staging_dir_path(key), "MANIFEST"), gemma);
-  (void)secure_frontend::write_new_file(root, secure_frontend::join_rel(secure_frontend::staging_dir_path(key), "w.gguf"), "a");
-  (void)secure_frontend::ensure_directory(root, secure_frontend::join_rel(secure_frontend::staging_dir_path(key), "tokenizer"));
-  (void)secure_frontend::write_new_file(root, secure_frontend::join_rel(secure_frontend::staging_dir_path(key), "tokenizer/vocab.json"),
-                                        "b");
+  fx::stage(root, manifest, files);
   fx::FakeLoaded nobody;
   const secure_frontend::StoreEnvironment env;
   expect(std::holds_alternative<secure_frontend::PublishResult>(secure_frontend::publish_staged(root, key, manifest, nobody, env, true)),

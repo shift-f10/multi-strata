@@ -102,4 +102,13 @@ bool per_request_reasoning_effort_for(const EngineProfile profile) {
   return false;  // unreachable
 }
 
+TokenizerMode tokenizer_mode_for(const EngineProfile profile) {
+  switch (profile) {
+    case EngineProfile::qwen: return TokenizerMode::byte_bpe;
+    case EngineProfile::glm53: return TokenizerMode::byte_bpe;
+    case EngineProfile::gemma4: return TokenizerMode::spm_bpe;
+  }
+  return TokenizerMode::byte_bpe;  // unreachable
+}
+
 }  // namespace secure_frontend
