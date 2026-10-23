@@ -32,14 +32,6 @@ bool valid_card_name(const std::string_view name) {
   return !name.empty() && name.size() <= 64U && std::holds_alternative<std::string>(validate_model_id(name));
 }
 
-// "--max-context" for max_context: every option that sets a flag is spelled this way, and
-// option_controlled_flags() says which of them do.
-std::string flag_of(const std::string_view option) {
-  std::string flag{"--"};
-  for (const char c : option) flag.push_back(c == '_' ? '-' : c);
-  return flag;
-}
-
 bool argument_is_flag(const std::string_view argument, const std::string_view flag) noexcept {
   return argument == flag || (starts_with(argument, flag) && argument.size() > flag.size() && argument[flag.size()] == '=');
 }
@@ -145,13 +137,12 @@ std::variant<ModelCard, ConfigErrors> parse_model_card(const std::string_view te
   // The page's value is the only source of a flag a listed option sets.
   if (const auto args = card.config.entries.find("engine.args"); args != card.config.entries.end()) {
     if (const auto* arguments = std::get_if<std::vector<std::string>>(&args->second.value)) {
-      const auto controlled = option_controlled_flags(card.profile);
       for (const auto& limit : card.options) {
-        const std::string flag = flag_of(limit.spec->name);
-        if (std::find(controlled.begin(), controlled.end(), flag) == controlled.end()) continue;
-        if (std::any_of(arguments->begin(), arguments->end(), [&flag](const std::string& a) { return argument_is_flag(a, flag); })) {
-          add(errors, "engine.args", ConfigIssueCode::conflicting_values,
-              "holds " + flag + ", which the card's " + std::string{limit.spec->name} + " option sets");
+        for (const auto flag : option_flags(card.profile, limit.spec->name)) {
+          if (std::any_of(arguments->begin(), arguments->end(), [flag](const std::string& a) { return argument_is_flag(a, flag); })) {
+            add(errors, "engine.args", ConfigIssueCode::conflicting_values,
+                "holds " + std::string{flag} + ", which the card's " + std::string{limit.spec->name} + " option sets");
+          }
         }
       }
     }

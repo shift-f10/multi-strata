@@ -62,6 +62,27 @@ constexpr std::array<std::string_view, 4> kQwenThinking{"none", "low", "medium",
 // The Gemma spec's D10: thinking off or on (reasoning.effort none or high).
 constexpr std::array<std::string_view, 2> kGemmaThinking{"off", "on"};
 
+// The page's dropdowns (owner request 2026-10-23: "make the context length a drop down menu that
+// tops out to 1M, and make the kv streaming into a dropdown selection also"). Qwen's contexts run
+// to the 1M upstream measured end to end (docs/DETAILS.md "Context extension past 262K"), with
+// upstream's setup steps 384K and 768K (docs/INSTALL.md); Gemma's stop at its trained 256K (the
+// strata_gemma4 allowlist). KV streaming: off, then resident cells from the engine's floor.
+constexpr std::array<std::int64_t, 11> kQwenContexts{4096, 8192, 16384, 32768, 65536, 131072,
+                                                     262144, 393216, 524288, 786432, 1048576};
+constexpr std::array<std::int64_t, 7> kGemmaContexts{4096, 8192, 16384, 32768, 65536, 131072, 262144};
+constexpr std::array<std::int64_t, 7> kKvResidentCells{0, 20480, 32768, 65536, 131072, 262144, 524288};
+// Qwen's trained positions: past them a start adds YaRN with factor context / 262,144, upstream's
+// own setup rule (docs/INSTALL.md "How much context?"; generate.cpp's --yarn-orig-ctx default).
+constexpr std::int64_t kQwenTrainedContext = 262144;
+
+constexpr ModelOptionSpec listed(ModelOptionSpec spec, const std::span<const std::int64_t> values,
+                                 const std::string_view zero_label = {}, const std::string_view at_most = {}) {
+  spec.values = values;
+  spec.zero_label = zero_label;
+  spec.at_most = at_most;
+  return spec;
+}
+
 // KV streaming's floor: upstream/src/core/layer.cpp:771 qsa_kv_resident_min() (a smaller
 // --kv-resident is raised to it, :752; usage generate.cpp:820 "min 20480").
 constexpr std::int64_t kKvResidentMinimum = 20480;
@@ -88,11 +109,18 @@ constexpr ModelOptionSpec kMinP =
 // in VRAM, >= -1 :3304; at most the 48 x 512 experts there are, core/geometry.hpp:25/:53);
 // --prefill :2558-2565 (auto or a chunk of N prompt tokens; auto's largest is 32,768, :2564).
 constexpr std::array<ModelOptionSpec, 14> kQwenOptions{{
-    integer_option("max_context", "Context length", "Tokens of context the engine allocates", 1, 1048576),
+    listed(integer_option("max_context", "Context length",
+                          "Tokens of context the engine allocates; past the trained 256K the engine stretches the model with "
+                          "YaRN rope scaling (experimental, upstream's own rule)",
+                          1, 1048576),
+           kQwenContexts),
     choice_option("kv", "KV cache precision",
                   "How the engine stores the attention cache: fp16, int8, 4-bit q4_0, or k8v4 (int8 keys, 4-bit values)", kQwenKv),
-    integer_option("kv_resident", "KV streaming",
-                   "Attention-cache cells kept in VRAM, the rest streamed from RAM (0 = off, else at least 20,480)", 0, 1048576),
+    listed(integer_option("kv_resident", "KV streaming",
+                          "Attention-cache tokens kept in VRAM, the rest streamed from RAM (Off: all of it in VRAM); at most "
+                          "the context",
+                          0, 1048576),
+           kKvResidentCells, "Off", "max_context"),
     boolean_option("kv_grow", "Grow the KV cache", "Take VRAM for the attention cache as the context fills instead of all at start"),
     boolean_option("mtp", "MTP draft layer", "Guess tokens ahead with the model's draft layer"),
     integer_option("spec", "Draft window", "Tokens the engine proposes per verify step (2-8)", 2, 8),
@@ -111,7 +139,9 @@ constexpr std::array<ModelOptionSpec, 14> kQwenOptions{{
 
 // Our strata-gemma4-engine (strata_gemma4): the bounds are kGemma4Flags (engine_arguments.cpp).
 constexpr std::array<ModelOptionSpec, 8> kGemmaOptions{{
-    integer_option("max_context", "Context length", "Tokens of context the engine allocates", 1, 262144),
+    listed(integer_option("max_context", "Context length", "Tokens of context the engine allocates (up to the model's trained 256K)",
+                          1, 262144),
+           kGemmaContexts),
     integer_option("chunk", "Prompt chunk", "Prompt tokens processed per batch", 1, 8192),
     integer_option("expert_vram", "Expert VRAM", "GiB of VRAM for the experts, or auto to let the engine decide", 0, 1024,
                    Kind::integer_or_auto),
@@ -122,8 +152,9 @@ constexpr std::array<ModelOptionSpec, 8> kGemmaOptions{{
     kMinP,
 }};
 
-constexpr std::array<std::string_view, 8> kQwenFlags{"--max-context", "--kv",          "--kv-resident",  "--kv-grow",
-                                                     "--spec",        "--spec-min-p",  "--expert-cache", "--prefill"};
+constexpr std::array<std::string_view, 10> kQwenFlags{"--max-context", "--rope-scaling", "--rope-scale",   "--kv",
+                                                      "--kv-resident", "--kv-grow",      "--spec",         "--spec-min-p",
+                                                      "--expert-cache", "--prefill"};
 constexpr std::array<std::string_view, 3> kGemmaFlags{"--max-context", "--chunk", "--expert-vram"};
 
 // --- Values ---------------------------------------------------------------------------------
@@ -233,12 +264,20 @@ bool within(const ModelOptionLimits& limit, const ModelOptionValue& value) {
   return true;  // a boolean has no bounds
 }
 
-// `held` as the limit's kind when it is inside the card's bounds (D7: else the default applies).
+// An integer on the option's list, when it has one (the page's dropdowns).
+bool offered(const ModelOptionLimits& limit, const ModelOptionValue& value) {
+  const auto* integer = std::get_if<std::int64_t>(&value);
+  const auto values = limit.spec->values;
+  return integer == nullptr || values.empty() || std::find(values.begin(), values.end(), *integer) != values.end();
+}
+
+// `held` as the limit's kind when it is inside the card's bounds and on the option's list (D7:
+// else the default applies).
 std::optional<ModelOptionValue> usable(const ModelOptionLimits& limit, const ModelOptionValues& values) {
   const auto it = values.find(limit.spec->name);
   if (it == values.end()) return std::nullopt;
   auto value = typed(limit.spec->kind, it->second);
-  if (!value.has_value() || !within(limit, *value)) return std::nullopt;
+  if (!value.has_value() || !within(limit, *value) || !offered(limit, *value)) return std::nullopt;
   return value;
 }
 
@@ -361,6 +400,10 @@ std::optional<ModelOptionLimits> card_option(const ModelOptionSpec& spec, const 
     add(errors, path, ConfigIssueCode::out_of_range, "default " + std::string{bounds_reason(spec.kind)});
     return std::nullopt;
   }
+  if (!offered(limit, *value)) {
+    add(errors, path, ConfigIssueCode::invalid_value, "default must be one of the option's offered values");
+    return std::nullopt;
+  }
   if (errors.size() != issues_before) return std::nullopt;
   limit.default_value = std::move(*value);
   return limit;
@@ -397,7 +440,13 @@ void write_option(const EngineProfile profile, const std::string_view name, cons
     flags.push_back(std::move(argument));
   };
   const auto integer_or_auto = [integer, text]() { return integer != nullptr ? std::to_string(*integer) : *text; };
-  if (name == "max_context" && integer != nullptr) flag_with("--max-context", std::to_string(*integer));
+  if (name == "max_context" && integer != nullptr) {
+    flag_with("--max-context", std::to_string(*integer));
+    if (profile == EngineProfile::qwen && *integer > kQwenTrainedContext) {
+      flag_with("--rope-scaling", "yarn");
+      flag_with("--rope-scale", decimal_text(static_cast<double>(*integer) / static_cast<double>(kQwenTrainedContext)));
+    }
+  }
   else if (name == "kv" && text != nullptr) flag_with("--kv", *text);
   else if (name == "kv_resident" && integer != nullptr) {
     if (*integer > 0) flag_with("--kv-resident", std::to_string(*integer));
@@ -469,6 +518,29 @@ std::optional<ModelOptionValue> remembered_value(const JsonValue& json) {
 }
 
 }  // namespace
+
+std::string option_value_label(const ModelOptionSpec& spec, const std::int64_t value) {
+  if (value == 0 && !spec.zero_label.empty()) return std::string{spec.zero_label};
+  if (value > 0 && value % 1048576 == 0) return std::to_string(value / 1048576) + "M";
+  if (value > 0 && value % 1024 == 0) return std::to_string(value / 1024) + "K";
+  return std::to_string(value);
+}
+
+std::vector<std::string_view> option_flags(const EngineProfile profile, const std::string_view name) {
+  if (find_model_option(profile, name) == nullptr) return {};
+  if (name == "max_context") {
+    if (profile == EngineProfile::qwen) return {"--max-context", "--rope-scaling", "--rope-scale"};
+    return {"--max-context"};
+  }
+  static constexpr std::array<std::pair<std::string_view, std::string_view>, 9> kFlags{{
+      {"kv", "--kv"}, {"kv_resident", "--kv-resident"}, {"kv_grow", "--kv-grow"}, {"spec", "--spec"},
+      {"spec_min_p", "--spec-min-p"}, {"expert_cache", "--expert-cache"}, {"prefill", "--prefill"}, {"chunk", "--chunk"},
+      {"expert_vram", "--expert-vram"}}};
+  for (const auto& [option, flag] : kFlags) {
+    if (option == name) return {flag};
+  }
+  return {};
+}
 
 std::span<const ModelOptionSpec> model_options_for(const EngineProfile profile) noexcept {
   switch (profile) {
@@ -565,6 +637,10 @@ std::variant<ModelOptionValues, ConfigErrors> resolve_option_values(const std::v
         add(errors, option_path(name), ConfigIssueCode::out_of_range, std::string{bounds_reason(limit.spec->kind)});
         continue;
       }
+      if (!offered(limit, *value)) {
+        add(errors, option_path(name), ConfigIssueCode::invalid_value, "must be one of the option's offered values");
+        continue;
+      }
       if (name == "kv_resident") resident_requested = true;
       values.insert_or_assign(std::string{name}, std::move(*value));
       continue;
@@ -646,6 +722,25 @@ std::string describe_options_json(const std::vector<ModelOptionLimits>& limits, 
       case Kind::integer:
       case Kind::integer_or_auto:
         out += ",\"min\":" + std::to_string(limit.minimum) + ",\"max\":" + std::to_string(limit.maximum);
+        if (!spec.values.empty()) {
+          // The page's dropdown: the offered values inside the card's bounds, with their labels.
+          std::vector<std::int64_t> shown;
+          for (const auto value : spec.values) {
+            if (value >= limit.minimum && value <= limit.maximum) shown.push_back(value);
+          }
+          out += ",\"choices\":[";
+          for (std::size_t i = 0; i < shown.size(); ++i) out += (i != 0U ? "," : "") + std::to_string(shown[i]);
+          out += "],\"choice_labels\":[";
+          for (std::size_t i = 0; i < shown.size(); ++i) {
+            if (i != 0U) out += ',';
+            append_json_string(&out, option_value_label(spec, shown[i]));
+          }
+          out += ']';
+          if (!spec.at_most.empty() && limit_named(limits, spec.at_most) != nullptr) {
+            out += ",\"at_most\":";
+            append_json_string(&out, spec.at_most);
+          }
+        }
         break;
       case Kind::decimal:
         out += ",\"min\":" + decimal_text(limit.minimum_decimal) + ",\"max\":" + decimal_text(limit.maximum_decimal);

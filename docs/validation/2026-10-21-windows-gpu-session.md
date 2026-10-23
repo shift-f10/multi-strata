@@ -1181,6 +1181,34 @@ written beside it: `engines/gemma4/` (`strata-gemma4-engine`), plan
       Restarted with the Gemma card (262K, the remembered value); from the LAN address
       `GET /v1/strata/models` answers 200 as a remote client.
 
+58. **Context and KV streaming as dropdowns; Qwen to 1M** (owner, 2026-10-23: "make the context length
+    a drop down menu that tops out to 1M, and make the kv streaming into a dropdown selection also").
+    - Both options now offer fixed values the server validates (a value off the list is 400
+      `invalid_option`): Qwen's context 4K, 8K, 16K, 32K, 64K, 128K, 256K, 384K, 512K, 768K, 1M;
+      Gemma's the same up to its trained 256K (its engine's limit); KV streaming Off, 20K, 32K, 64K,
+      128K, 256K, 512K resident tokens. The card's min/max trim the lists. The page renders them as
+      dropdowns with the server's labels and hides KV streaming values above the chosen context.
+    - Past Qwen's trained 262,144 positions a start adds `--rope-scaling yarn --rope-scale
+      <context / 262,144>` (factor 4 at 1M), upstream's own setup rule (its INSTALL and DETAILS
+      docs; experimental there). A card that offers the context may not fix those flags.
+    - Tests: model_options `context_and_kv_streaming_offer_fixed_values`,
+      `past_trained_context_adds_yarn`, model_cards (a fixed `--rope-scale` refused), the page case
+      `web_ui_listed_integers_are_dropdowns`, all RED then GREEN; two pinned expectations updated for
+      the request (the context's description now carries its list; the qwen controlled flags include
+      the rope flags) and one test value moved onto the list (KV streaming 200,000 -> 262,144). Full
+      MSVC suite 988 cases, 987 passed, 1 skipped (cfg03), 0 failed (`out/ctest-dropdowns-full.log`).
+    - **Box** (`out/qwen-1m-run.log`; the local Qwen card now offers up to 1M, prompt and
+      completion caps 1,048,576; KV int8, KV streaming 32K, MTP on):
+      | context | load | decode | RAM used (of 68.6 GB) | experts in VRAM |
+      | --- | --- | --- | --- | --- |
+      | 256K | 49 s | 96.5 tok/s | 62.1 GB | 4,116 |
+      | 512K (YaRN 2) | 53 s | 84.5 tok/s | 65.8 GB | 3,883 |
+      | 1M (YaRN 4) | 105 s | 47.5 tok/s (best of two; the first answer 7.4) | 67.4 GB | 3,412 |
+      1M runs and answers coherently, but the box has about 1 GB of RAM left there; 512K is the
+      comfortable ceiling on this machine. Long-context quality past 256K was not measured here
+      (upstream reports needle and real-document runs to 1M with yarn 4).
+    - Left serving: Gemma at 262K, as before.
+
 ### Not done in this session
 
 - Resume doc §8 item 3 (`qwen35moe` family behaviour): not applicable to these packs (no

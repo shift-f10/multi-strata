@@ -1230,6 +1230,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_test_executable(secure_frontend_api_router_tests tests/api_router_test.cpp secure_frontend_api_router)
     secure_frontend_add_cases(secure_frontend_api_router_tests
         model_control_routes_need_the_switch_and_the_key served_models_follow_the_running_card
+        web_ui_listed_integers_are_dropdowns
         health_samples_status_before_state_once_each health_includes_engine_state_when_provided
         health_is_503_with_engine_state_when_unavailable dispatches_exact_health_route
         dispatches_models_with_json_escaping rejects_non_exact_routes
@@ -1522,7 +1523,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         option_tables_per_profile card_options_parse_and_bound card_option_refusals_name_the_option
         page_values_resolve_within_bounds kv_resident_cross_rules options_apply_as_flags_and_keys
         mtp_off_drops_the_draft_options controlled_flags_listed description_json_shape
-        remembered_options_round_trip_and_tolerate_junk)
+        remembered_options_round_trip_and_tolerate_junk context_and_kv_streaming_offer_fixed_values
+        past_trained_context_adds_yarn)
 
     # Model launcher (plan 2026-10-23 Task 1): card files, their refusals, the main + card merge.
     secure_frontend_add_test_executable(secure_frontend_model_cards_tests tests/model_cards_test.cpp

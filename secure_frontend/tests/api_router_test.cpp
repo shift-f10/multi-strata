@@ -425,6 +425,22 @@ void web_ui_has_the_models_tab_hidden_until_the_server_offers_it() {
 // the whole script), every option kind rendered from the server's description, a confirmation
 // before a running model is replaced, the server's refusal shown beside Start (with the option
 // it names), and a 2 s poll while a card is starting.
+// Owner request 2026-10-23: the context and KV streaming as dropdowns. An integer option the server
+// describes with a value list renders as a select labelled with the server's labels ("128K", "1M",
+// "Off"), and an option with at_most (KV streaming) offers no value above the other option's
+// (the context), following it as it changes and after Defaults.
+void web_ui_listed_integers_are_dropdowns() {
+  const std::string js{secure_frontend::find_web_asset("/ui/app.js")->body};
+  expect(js.find("case \"integer\": return Array.isArray(option.choices) ? choiceControl(option, value) : numberControl(option, value, true, false);") !=
+             std::string::npos,
+         "a listed integer is a dropdown, any other integer a number box");
+  expect(js.find("option.choice_labels") != std::string::npos, "the dropdown shows the server's labels");
+  expect(js.find("c.option.at_most") != std::string::npos && js.find("ceiling.element.addEventListener(\"change\"") != std::string::npos,
+         "KV streaming follows the context's dropdown");
+  expect(js.find("launcher.limits.forEach(function (apply) { apply(); });") != std::string::npos,
+         "Defaults applies the ceiling again");
+}
+
 void web_ui_models_tab_starts_stops_and_polls() {
   const std::string js{secure_frontend::find_web_asset("/ui/app.js")->body};
   // top_p's lower bound is the smallest double above 0 (an open bound): the page says
@@ -646,6 +662,7 @@ int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
       {"health_samples_status_before_state_once_each", health_samples_status_before_state_once_each},
       {"model_control_routes_need_the_switch_and_the_key", model_control_routes_need_the_switch_and_the_key},
+      {"web_ui_listed_integers_are_dropdowns", web_ui_listed_integers_are_dropdowns},
       {"served_models_follow_the_running_card", served_models_follow_the_running_card},
       {"health_carries_recovery_only_with_failed", health_carries_recovery_only_with_failed},
       {"health_includes_engine_state_when_provided", health_includes_engine_state_when_provided},

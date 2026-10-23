@@ -670,7 +670,7 @@
     no_model_running: "No model is running. Start one in the Models tab.",
     model_not_running: "That model is not running any more. The chat now uses the running model: send again."
   };
-  var launcher = { enabled: false, data: null, selected: "", formFor: "", controls: [], timer: null,
+  var launcher = { enabled: false, data: null, selected: "", formFor: "", controls: [], limits: [], timer: null,
                    startedAt: 0, acting: false, vram: "", metricsOff: false, engine: undefined, chatFor: undefined };
 
   function launcherStarting(d) {
@@ -700,10 +700,19 @@
   // A bound just above zero (top_p's open lower bound is the smallest double) reads "above 0".
   function num(n) { if (n > 0 && n < 1e-6) { return "above 0"; } return Math.floor(n) === n ? fmt(n) : String(n); }
   function valueText(v) { return typeof v === "boolean" ? (v ? "on" : "off") : typeof v === "number" ? num(v) : String(v); }
+  // A listed value's label from the server ("128K", "1M", "Off"); otherwise the value itself.
+  function labelOf(option, v) {
+    if (Array.isArray(option.choices) && Array.isArray(option.choice_labels)) {
+      var at = option.choices.indexOf(v);
+      if (at >= 0 && at < option.choice_labels.length) { return String(option.choice_labels[at]); }
+    }
+    return valueText(v);
+  }
   function boundsText(option) {
     var parts = [];
-    if (typeof option.min === "number" && typeof option.max === "number") { parts.push(num(option.min) + " to " + num(option.max)); }
-    if (option.default !== undefined && option.default !== null) { parts.push("default " + valueText(option.default)); }
+    var listed = option.kind !== "choice" && Array.isArray(option.choices);  // a dropdown shows its own range
+    if (!listed && typeof option.min === "number" && typeof option.max === "number") { parts.push(num(option.min) + " to " + num(option.max)); }
+    if (option.default !== undefined && option.default !== null) { parts.push("default " + labelOf(option, option.default)); }
     return parts.join(DOT);
   }
 
@@ -766,11 +775,13 @@
   }
   function choiceControl(option, value) {
     var choices = Array.isArray(option.choices) ? option.choices : [];
+    var labels = Array.isArray(option.choice_labels) && option.choice_labels.length === choices.length ? option.choice_labels : null;
     var select = el("select", "st-input");
     select.id = "opt-" + option.name;
-    choices.forEach(function (choice) {
-      var item = el("option", null, valueText(choice));
+    choices.forEach(function (choice, i) {
+      var item = el("option", null, labels ? String(labels[i]) : valueText(choice));
       item.value = String(choice);
+      if (labels && typeof choice === "number" && String(labels[i]) !== String(choice)) { item.title = fmt(choice) + " tokens"; }
       select.appendChild(item);
     });
     var set = function (v) { select.value = v === undefined || v === null ? "" : String(v); };
@@ -778,13 +789,28 @@
       var picked = choices.filter(function (choice) { return String(choice) === select.value; });
       return picked.length ? { value: picked[0] } : { error: (option.label || option.name) + ": pick one of the choices" };
     };
+    // at_most (KV streaming under the context): values above the ceiling are not offered; a choice
+    // above it moves to the largest one left.
+    var limit = function (ceiling) {
+      var best = null;
+      choices.forEach(function (choice, i) {
+        var over = typeof choice === "number" && typeof ceiling === "number" && choice > ceiling;
+        select.options[i].disabled = over;
+        select.options[i].hidden = over;
+        if (!over) { best = choice; }
+      });
+      var current = choices.filter(function (choice) { return String(choice) === select.value; });
+      if (current.length && typeof ceiling === "number" && typeof current[0] === "number" && current[0] > ceiling && best !== null) {
+        select.value = String(best);
+      }
+    };
     set(value);
-    return { node: select, read: read, set: set };
+    return { node: select, read: read, set: set, limit: limit, element: select };
   }
   function optionControl(option, value) {
     switch (option.kind) {
       case "boolean": return switchControl(option, value);
-      case "integer": return numberControl(option, value, true, false);
+      case "integer": return Array.isArray(option.choices) ? choiceControl(option, value) : numberControl(option, value, true, false);
       case "decimal": return numberControl(option, value, false, false);
       case "choice": return choiceControl(option, value);
       case "integer_or_auto": return numberControl(option, value, true, true);
@@ -798,6 +824,7 @@
     clear(box);
     launcher.formFor = card.name;
     launcher.controls = [];
+    launcher.limits = [];
     var options = Array.isArray(card.options) ? card.options.filter(function (o) { return o && typeof o.name === "string"; }) : [];
     if (!options.length) { box.appendChild(el("p", "muted small", "This card has no options to set.")); }
     options.forEach(function (option) {
@@ -812,7 +839,18 @@
       field.appendChild(control.node);
       if (option.help) { field.appendChild(el("span", "muted small", option.help)); }
       box.appendChild(field);
-      launcher.controls.push({ option: option, read: control.read, set: control.set, field: field });
+      launcher.controls.push({ option: option, read: control.read, set: control.set, field: field, limit: control.limit,
+                               element: control.element });
+    });
+    // An option with at_most follows the other option's dropdown (KV streaming under the context).
+    launcher.controls.forEach(function (c) {
+      if (!c.option.at_most || !c.limit) { return; }
+      var ceiling = findControl(c.option.at_most);
+      if (!ceiling || !ceiling.element) { return; }
+      var apply = function () { var r = ceiling.read(); if (r.value !== undefined) { c.limit(r.value); } };
+      ceiling.element.addEventListener("change", apply);
+      launcher.limits.push(apply);
+      apply();
     });
   }
   function findControl(name) {
@@ -832,6 +870,7 @@
   }
   function resetOptions() {
     launcher.controls.forEach(function (c) { c.field.classList.remove("invalid"); c.set(c.option.default); });
+    launcher.limits.forEach(function (apply) { apply(); });
     showStartError("");
   }
 

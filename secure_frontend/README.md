@@ -1531,15 +1531,20 @@ One model runs at a time.
   others load (D9); `--check` lists each card's verdict.
 - **Options:** each option maps to one engine flag or config row, with the engine's own bounds,
   narrowed by the card's `min`/`max`/`choices`; an option the card does not list is not shown.
-  The `qwen` engine (upstream Strata): `max_context` (`--max-context`), `kv` (`--kv`
-  fp16|int8|q4_0|k8v4), `kv_resident` (**KV streaming**, `--kv-resident`; 0 = off, else at least
-  20,480 and at most the context), `kv_grow` (`--kv-grow`), `mtp` (off = `engine.mtp` false: the
-  draft layer's flags are dropped; `--spec` stays for prompt lookup), `spec` (2-8),
-  `spec_min_p`, `expert_cache` (`auto` or a count), `prefill` (`auto` or a chunk), `thinking`
-  (none|low|medium|high) and the sampling defaults. The `gemma4` engine: `max_context` (up to
-  262,144), `chunk`, `expert_vram` (GiB or `auto`), `thinking` (off|on) and the sampling defaults
-  (it has no KV streaming yet, D8). A card's fixed `engine.args` may not hold a flag one of its
-  listed options sets. The page's last options per card are remembered in
+  The `qwen` engine (upstream Strata): `max_context` (`--max-context`; a dropdown of 4K, 8K, 16K,
+  32K, 64K, 128K, 256K, 384K, 512K, 768K and 1M; past the trained 256K the start adds
+  `--rope-scaling yarn --rope-scale <context / 262,144>`, upstream's own setup rule and
+  experimental there), `kv` (`--kv` fp16|int8|q4_0|k8v4), `kv_resident` (**KV streaming**,
+  `--kv-resident`; a dropdown of Off, 20K, 32K, 64K, 128K, 256K and 512K resident tokens, never
+  more than the context), `kv_grow` (`--kv-grow`), `mtp` (off = `engine.mtp` false: the draft
+  layer's flags are dropped; `--spec` stays for prompt lookup), `spec` (2-8), `spec_min_p`,
+  `expert_cache` (`auto` or a count), `prefill` (`auto` or a chunk), `thinking`
+  (none|low|medium|high) and the sampling defaults. The `gemma4` engine: `max_context` (the same
+  dropdown up to its trained 256K), `chunk`, `expert_vram` (GiB or `auto`), `thinking` (off|on)
+  and the sampling defaults (it has no KV streaming yet, D8). A listed value off the dropdown is
+  refused (400 `invalid_option`); the card's `min`/`max` trim the dropdown. A card's fixed
+  `engine.args` may not hold a flag one of its listed options sets (the context option's
+  includes the rope flags). The page's last options per card are remembered in
   `<roots.state>/model-options.json` (owner-only) and offered at the next start (D7).
 - **Control:** `models.control = true` serves `GET /v1/strata/models` (the cards, their state
   and options), `POST /v1/strata/models/start` (`{"name": "...", "options": {...}}`, 202) and

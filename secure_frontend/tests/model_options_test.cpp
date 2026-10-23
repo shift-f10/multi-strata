@@ -544,9 +544,10 @@ void kv_resident_cross_rules() {
 
   // Without max_context on the card only the engine's minimum applies.
   const auto no_context = limits_of(EngineProfile::qwen, R"({"kv_resident": {"default": 0}})");
-  const JsonValue large = json(R"({"kv_resident": 200000})");
+  // (262,144: a listed value, since the page's dropdown, owner request 2026-10-23.)
+  const JsonValue large = json(R"({"kv_resident": 262144})");
   const auto unbounded = resolved(no_context, &large);
-  expect(unbounded.has_value() && value_is<std::int64_t>(*unbounded, "kv_resident", 200000),
+  expect(unbounded.has_value() && value_is<std::int64_t>(*unbounded, "kv_resident", 262144),
          "without max_context on the card, kv_resident is bounded by its own limits only");
   const auto low = resolve_issues(no_context, json(R"({"kv_resident": 4096})"));
   expect(has_issue(low, "options.kv_resident", ConfigIssueCode::invalid_value), "the engine minimum still applies:" + listed(low));
@@ -678,7 +679,8 @@ void controlled_flags_listed() {
     return flags;
   };
   const auto qwen = as_strings(EngineProfile::qwen);
-  expect(qwen == Strings{"--max-context", "--kv", "--kv-resident", "--kv-grow", "--spec", "--spec-min-p", "--expert-cache", "--prefill"},
+  expect(qwen == Strings{"--max-context", "--rope-scaling", "--rope-scale", "--kv", "--kv-resident", "--kv-grow", "--spec",
+                         "--spec-min-p", "--expert-cache", "--prefill"},
          "the qwen option-controlled flags: " + joined(qwen));
   expect(std::find(qwen.begin(), qwen.end(), "--mtp") == qwen.end(), "--mtp is the card's, not an option's");
   const auto gemma = as_strings(EngineProfile::gemma4);
@@ -718,8 +720,8 @@ void description_json_shape() {
   if (items == nullptr || items->size() != 5U) return;
 
   const auto& context = (*items)[0];
-  expect(member_keys(context) == Strings{"name", "kind", "label", "help", "default", "min", "max", "value"},
-         "integer fields: name kind label help default min max value: " + joined(member_keys(context)));
+  expect(member_keys(context) == Strings{"name", "kind", "label", "help", "default", "min", "max", "choices", "choice_labels", "value"},
+         "integer fields (a listed integer adds choices and their labels): " + joined(member_keys(context)));
   const auto* context_spec = secure_frontend::find_model_option(EngineProfile::qwen, "max_context");
   expect(string_member(context, "name", "max_context") && string_member(context, "kind", "integer") && context_spec != nullptr &&
              string_member(context, "label", context_spec->label) && string_member(context, "help", context_spec->help) &&
@@ -822,6 +824,97 @@ void remembered_options_round_trip_and_tolerate_junk() {
 
 }  // namespace
 
+// Owner request 2026-10-23: "make the context length a drop down menu that tops out to 1M, and make
+// the kv streaming into a dropdown selection also". Both options offer fixed values (the card's
+// min/max trim the list); a value off the list is refused; the description carries the list with
+// labels, and KV streaming says it may not exceed the context.
+void context_and_kv_streaming_offer_fixed_values() {
+  const auto values_of = [](const EngineProfile profile, const std::string_view name) {
+    std::vector<std::int64_t> out;
+    if (const auto* spec = secure_frontend::find_model_option(profile, name)) out.assign(spec->values.begin(), spec->values.end());
+    return out;
+  };
+  using Ints = std::vector<std::int64_t>;
+  expect(values_of(EngineProfile::qwen, "max_context") ==
+             Ints{4096, 8192, 16384, 32768, 65536, 131072, 262144, 393216, 524288, 786432, 1048576},
+         "Qwen's contexts: 4K to 1M");
+  expect(values_of(EngineProfile::gemma4, "max_context") == Ints{4096, 8192, 16384, 32768, 65536, 131072, 262144},
+         "Gemma's contexts stop at its trained 256K");
+  expect(values_of(EngineProfile::qwen, "kv_resident") == Ints{0, 20480, 32768, 65536, 131072, 262144, 524288},
+         "KV streaming: off, then the resident cells from the engine's 20,480 floor");
+  const auto* resident = secure_frontend::find_model_option(EngineProfile::qwen, "kv_resident");
+  expect(resident != nullptr && resident->at_most == "max_context" && resident->zero_label == "Off",
+         "KV streaming names its ceiling and its off label");
+  const auto* context = secure_frontend::find_model_option(EngineProfile::qwen, "max_context");
+  if (context == nullptr || resident == nullptr) return;
+  for (const auto& [value, label] : std::vector<std::pair<std::int64_t, std::string>>{
+           {4096, "4K"}, {131072, "128K"}, {262144, "256K"}, {393216, "384K"}, {786432, "768K"}, {1048576, "1M"}}) {
+    expect(secure_frontend::option_value_label(*context, value) == label, "label of " + std::to_string(value) + ": " + label);
+  }
+  expect(secure_frontend::option_value_label(*resident, 0) == "Off" && secure_frontend::option_value_label(*resident, 20480) == "20K",
+         "KV streaming's labels");
+
+  // A card's default and a page value must be on the list (inside the card's bounds).
+  ConfigErrors off_list = card_issues(EngineProfile::qwen, json(R"({"max_context": {"default": 100000}})"));
+  expect(has_issue(off_list, "options.max_context", ConfigIssueCode::invalid_value), "a default off the list: " + listed(off_list));
+  const auto limits = limits_of(EngineProfile::qwen, R"({"max_context": {"default": 131072, "max": 1048576},
+      "kv_resident": {"default": 32768, "max": 262144}})");
+  const JsonValue big = json(R"({"max_context": 1048576, "kv_resident": 262144})");
+  const auto accepted = resolved(limits, &big);
+  expect(accepted.has_value() && value_is<std::int64_t>(*accepted, "max_context", 1048576) &&
+             value_is<std::int64_t>(*accepted, "kv_resident", 262144),
+         "1M with 256K resident is accepted");
+  expect(has_issue(resolve_issues(limits, json(R"({"max_context": 100000})")), "options.max_context", ConfigIssueCode::invalid_value),
+         "a context off the list is refused");
+  expect(has_issue(resolve_issues(limits, json(R"({"kv_resident": 40000})")), "options.kv_resident", ConfigIssueCode::invalid_value),
+         "a resident size off the list is refused");
+  const auto stale = resolved(limits, nullptr, ModelOptionValues{{"max_context", std::int64_t{100000}}});
+  expect(stale.has_value() && value_is<std::int64_t>(*stale, "max_context", 131072), "a remembered value off the list gives way to the default");
+
+  // The description: the list inside the card's bounds, its labels, and KV streaming's ceiling.
+  const std::string text = secure_frontend::describe_options_json(limits_of(EngineProfile::qwen, R"({
+      "max_context": {"default": 131072, "min": 8192, "max": 524288},
+      "kv_resident": {"default": 32768, "max": 131072}})"), {});
+  expect(text.find(R"("choices":[8192,16384,32768,65536,131072,262144,393216,524288],"choice_labels":["8K","16K","32K","64K","128K","256K","384K","512K"])") !=
+             std::string::npos,
+         "the context list within the card's bounds, with labels: " + text);
+  expect(text.find(R"("choices":[0,20480,32768,65536,131072],"choice_labels":["Off","20K","32K","64K","128K"],"at_most":"max_context")") !=
+             std::string::npos,
+         "KV streaming's list, labels and ceiling: " + text);
+  const std::string alone = secure_frontend::describe_options_json(
+      limits_of(EngineProfile::qwen, R"({"kv_resident": {"default": 0, "max": 65536}})"), {});
+  expect(alone.find("at_most") == std::string::npos, "no ceiling named when the card does not offer the context");
+}
+
+// Past Qwen's trained 262,144 positions the start adds YaRN with factor context / 262,144, upstream's
+// own setup rule (docs/INSTALL.md "How much context?", DETAILS.md "Context extension past 262K").
+// Inside it, and for Gemma (whose engine stops at its trained length), nothing is added.
+void past_trained_context_adds_yarn() {
+  const auto args_for = [](const EngineProfile profile, const std::int64_t context) {
+    secure_frontend::FrontendConfigDraft draft;
+    secure_frontend::apply_option_values(profile, ModelOptionValues{{"max_context", context}}, draft);
+    return args_of(draft);
+  };
+  expect(args_for(EngineProfile::qwen, 1048576) == Strings{"--max-context", "1048576", "--rope-scaling", "yarn", "--rope-scale", "4"},
+         "1M: yarn, factor 4: " + joined(args_for(EngineProfile::qwen, 1048576)));
+  expect(args_for(EngineProfile::qwen, 393216) == Strings{"--max-context", "393216", "--rope-scaling", "yarn", "--rope-scale", "1.5"},
+         "384K: yarn, factor 1.5: " + joined(args_for(EngineProfile::qwen, 393216)));
+  expect(args_for(EngineProfile::qwen, 262144) == Strings{"--max-context", "262144"}, "the trained 256K: no scaling");
+  expect(args_for(EngineProfile::gemma4, 262144) == Strings{"--max-context", "262144"}, "Gemma: no scaling");
+  Strings controlled;
+  for (const auto flag : secure_frontend::option_controlled_flags(EngineProfile::qwen)) controlled.emplace_back(flag);
+  expect(std::find(controlled.begin(), controlled.end(), "--rope-scaling") != controlled.end() &&
+             std::find(controlled.begin(), controlled.end(), "--rope-scale") != controlled.end(),
+         "the rope flags are the context option's");
+  Strings context_flags;
+  for (const auto flag : secure_frontend::option_flags(EngineProfile::qwen, "max_context")) context_flags.emplace_back(flag);
+  expect(context_flags == Strings{"--max-context", "--rope-scaling", "--rope-scale"}, "the context option's flags: " + joined(context_flags));
+  Strings gemma_flags;
+  for (const auto flag : secure_frontend::option_flags(EngineProfile::gemma4, "max_context")) gemma_flags.emplace_back(flag);
+  expect(gemma_flags == Strings{"--max-context"}, "Gemma's context option sets one flag");
+  expect(secure_frontend::option_flags(EngineProfile::qwen, "thinking").empty(), "a config-row option sets no flag");
+}
+
 int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
       {"option_tables_per_profile", option_tables_per_profile},
@@ -834,5 +927,7 @@ int main(int argc, char** argv) {
       {"controlled_flags_listed", controlled_flags_listed},
       {"description_json_shape", description_json_shape},
       {"remembered_options_round_trip_and_tolerate_junk", remembered_options_round_trip_and_tolerate_junk},
+      {"context_and_kv_streaming_offer_fixed_values", context_and_kv_streaming_offer_fixed_values},
+      {"past_trained_context_adds_yarn", past_trained_context_adds_yarn},
   }, failures);
 }

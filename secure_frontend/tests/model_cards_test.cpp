@@ -242,6 +242,13 @@ void card_options_reach_the_engine_arguments() {
                 "{\"kv\": {\"default\": \"int8\"}}"),
       f.dir);
   expect(has_issue(clash, "engine.args", ConfigIssueCode::conflicting_values), "a fixed --kv beside the kv option is refused");
+  // The context option also writes the YaRN flags past Qwen's trained length: a card that offers
+  // the context may not fix them.
+  const auto rope = secure_frontend::parse_model_card(
+      card_text("Qwen-Test", "qwen", card_config_object(f, {{"engine.args", "[\"--rope-scale\", \"2\"]"}}),
+                "{\"max_context\": {\"default\": 65536}}"),
+      f.dir);
+  expect(has_issue(rope, "engine.args", ConfigIssueCode::conflicting_values), "a fixed --rope-scale beside the context option is refused");
   const auto unlisted = secure_frontend::parse_model_card(
       card_text("Qwen-Test", "qwen", card_config_object(f, {{"engine.args", "[\"--kv\", \"fp16\"]"}}), "{}"), f.dir);
   expect(std::holds_alternative<ModelCard>(unlisted), "a card that does not offer kv may fix --kv itself");

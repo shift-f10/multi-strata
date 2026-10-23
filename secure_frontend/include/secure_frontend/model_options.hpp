@@ -34,6 +34,11 @@ struct ModelOptionSpec final {
   double minimum_decimal{0.0};  // decimal (inclusive)
   double maximum_decimal{0.0};
   std::span<const std::string_view> choices{};  // choice
+  // Integer kinds (owner request 2026-10-23, the page's dropdowns): the only values offered,
+  // ascending; the card's min/max trim the list. Empty: any integer within the bounds.
+  std::span<const std::int64_t> values{};
+  std::string_view zero_label{};  // the label of 0 among `values` ("Off"); empty: "0"
+  std::string_view at_most{};     // another option this one may not exceed (KV streaming: the context)
 };
 
 // The profile's options in display order (qwen and gemma4; glm53 has none in v1, D10).
@@ -41,6 +46,12 @@ struct ModelOptionSpec final {
 [[nodiscard]] const ModelOptionSpec* find_model_option(EngineProfile profile, std::string_view name) noexcept;
 // True for an option name of any profile (the fixed names an error may carry as its param).
 [[nodiscard]] bool is_model_option_name(std::string_view name) noexcept;
+// The page's label of an offered value: zero_label for 0, else 1,024-token units ("4K", "256K",
+// "1M"); a value that is not a whole number of them is written out.
+[[nodiscard]] std::string option_value_label(const ModelOptionSpec& spec, std::int64_t value);
+// The engine flags one option writes (empty for an option that sets a config row): a card that
+// lists the option may not fix any of them in its engine.args.
+[[nodiscard]] std::vector<std::string_view> option_flags(EngineProfile profile, std::string_view name);
 
 using ModelOptionValue = std::variant<bool, std::int64_t, double, std::string>;
 using ModelOptionValues = std::map<std::string, ModelOptionValue, std::less<>>;

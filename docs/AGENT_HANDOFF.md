@@ -247,6 +247,11 @@ moved to `out/retired-worktrees/` and pruned).
   rows 1, router 2, page 3, launcher end to end 7 — the launcher's RED is the server refusing a
   cards config with the dispatch disabled). Full MSVC suite: at `0589af28`: 985 cases, 984 passed, 1 skipped (cfg03, the long-standing skip), 0 failed, with the real Gemma pack set (`out/ctest-launcher-full-3.log`). `3ad44536` alone (an isolated worktree) builds clean and its 98 config, card, option and CLI cases pass. Box run: see session log
   item 57.
+- **Dropdowns (owner, same day):** the context (Qwen 4K-1M, Gemma to 256K) and KV streaming (Off-512K)
+  are fixed value lists the server validates and the page renders as dropdowns; past Qwen's
+  trained 256K a start adds YaRN (`--rope-scaling yarn --rope-scale context/262,144`). Box: 1M
+  loads and answers (47.5 tok/s, RAM nearly full), 512K 84.5 tok/s (session log item 58). Full
+  suite 988 cases, 0 failed.
 - **Remote clients:** the owner's browser is on another machine, so the tab first stayed hidden
   (403 `control_not_allowed`, D2's default). The page now explains a 403 in the tab, and the
   owner's local LAN config sets `models.control_remote` (session log item 57).
