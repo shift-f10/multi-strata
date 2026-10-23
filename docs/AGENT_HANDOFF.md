@@ -361,8 +361,8 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
     its own sentence, medium none, `effort_position` "end" as upstream #458). Before, every
     thinking prompt lacked the template's xhigh sentence. The page offers the four levels.
   - **Gemma 4 (owner request 2026-10-22): plan 1 (the frontend `gemma4` profile) and plans
-    2-3 (our engine, `engines/gemma4/`) done on branch `gemma4-plan1-frontend` (not pushed, not
-    merged); the engine matches llama.cpp at its own CPU-vs-CUDA floor and the owner's Q8 file
+    2-3 (our engine, `engines/gemma4/`) done on branch `gemma4-plan1-frontend`, merged into
+    `main` at `0d60a2ea` and pushed (owner, 2026-10-23); the engine matches llama.cpp at its own CPU-vs-CUDA floor and the owner's Q8 file
     is served behind the 8080 page in expert mode on the owner's box (RTX 4080 SUPER, Windows 11,
     2026-10-23). Plan 4 (managed launch, the engine gate, the full §9.4 battery) not done.** Upstream cannot
     load `gemma4` (only `qwen4exp`/`qwen35moe`; the Qwen3.6 driver takes head 256 only).

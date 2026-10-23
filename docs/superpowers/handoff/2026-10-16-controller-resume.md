@@ -47,6 +47,18 @@ Local gates on `main` (dev host): linux-gcc **560/560** (+2 environment skips: `
 
 **2026-10-22 — SP5-P2 parity refresh merged; pins certified.** After SP7 M2 (`e5a5327a`) the OWNER moved the pins (`upstream` → v0.2.2 @ `011c9e60`, `engines/maya-ref` → v1.1.21 @ `451f9cb6`) and shipped the chat page + Monitor himself; the Monitor "experts loaded" fix (his report) landed at `40628b15` (INFO/STAT capture → GenerationMeter → `/metrics engine.experts` whitelist → page lines; 955/955 + 913/913). Issue 27 (tables frozen at the old pins) became plan `2026-10-22-sp5-p2-parity-refresh-new-pins.md`; lane `sp5-p2-parity-refresh` ran Tasks 1–5 (controller takeover mid-Task-5; Tasks 6–8 controller-done) and merged at **`main` = `bf308b56`**: drift tripwire (meta-tests enumerate the CURRENT vendored trees), Maya table REGENERATED at v1.1.21 (183 typed/33 mapped/50 rejected/464 out), upstream citations at v0.2.2, GLM env allowlist + `glm.*` refreshed (146 names/127 rows), maya_118 wire certified (slot-mode rejects, ten-field DONE figures), launch base + `maya-vision` certified at the pin, penalty window-0 flavor rule. Battery: linux-gcc 965/965, release full 923/923, cross 0, pytest 65+1 skip, root 923/923, TSan filtered suites 122/123 with **zero ThreadSanitizer reports** (the one failure the parked load-sensitive `dos02_slow_reader`, 3/3 in isolation). **Next: SP6 Plan 1 → SP6 Plan 2; §5 parked items and the D-3 update-distribution gap still wait on the owner.**
 
+**2026-10-23 — Gemma 4 merged and pushed (owner: "commit, merge and push to main").** Owner
+asks of 2026-10-22: port Gemma 4 26B-A4B as a Strata-style engine behind the one 8080 UI (spec
+`2026-10-22-gemma4-engine-design.md`, D1-D12) and "keep working on this until it is ready and can
+serve the model for testing". Branch `gemma4-plan1-frontend` (plan 1 Tasks 1-12 by the controller,
+a lane and two worktree workers; plans 2-3, `engines/gemma4/` `strata-gemma4-engine`, by the
+controller) merged at **`main` = `0d60a2ea`** (tree identical to the tested branch tip
+`d7557542`): frontend full suite 955 passed, 1 skipped (cfg03); engine ctest 26/26; parity with
+llama.cpp `3cf03257` at its own CPU-vs-CUDA floor; served behind the page on the owner's box in
+expert mode (session log steps 17-18, items 44-55; `docs/validation/gemma4/`). **Waiting on the
+owner:** the CPU expert pool ruling (plans 2-3 R2), plan 4 (managed manifests, the gate opening,
+the full acceptance battery), the glm53 page issue (session log item 46).
+
 ### Is it deployable? (owner asked 2026-10-14; answer still holds)
 No. The frontend side is strongly evidenced; the system is not. It has **never run against a real engine or GPU** (every test uses a fake engine). Streaming does not exist and the serving path is single-threaded until SP3 lands. The downloader exists but the catalog ships **empty** by owner decision (D5(D)), so v1 acquisition is import-from-developer-bundle. No packaging, installer, validation kit, or GLM engine. The first real answer comes from one session on the GPU box (§8).
 
