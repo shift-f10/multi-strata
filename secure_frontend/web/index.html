@@ -101,6 +101,11 @@
   <!-- ============================ Models (models.control, GET /v1/strata/models) ============================ -->
   <section class="view view--models" id="view-models" role="tabpanel" aria-labelledby="tab-btn-models" hidden>
     <div class="models">
+      <nav class="models-subtabs" role="tablist" aria-label="Models">
+        <button type="button" class="models-subtab" id="models-subtab-start" role="tab" aria-selected="true">Start a model</button>
+        <button type="button" class="models-subtab" id="models-subtab-download" role="tab" aria-selected="false" hidden>Download models</button>
+      </nav>
+      <div class="models-pane" id="models-pane-start">
       <div class="st-card models-card">
         <div class="models-head"><span class="card-title">Models</span>
           <button type="button" class="st-btn st-btn--icon" id="models-refresh" title="Refresh" aria-label="Refresh the model list">
@@ -127,6 +132,8 @@
         <p class="msg-error" id="model-start-error" role="alert" hidden></p>
       </div>
       <!-- Downloads (models.downloads, GET /v1/strata/downloads): hidden unless the server offers them -->
+      </div>
+      <div class="models-pane" id="models-pane-download" hidden>
       <div class="st-card downloads" id="downloads" hidden>
         <div class="models-head"><span class="card-title">Downloads</span>
           <button type="button" class="st-btn st-btn--icon" id="downloads-refresh" title="Refresh" aria-label="Refresh the downloads">
@@ -151,6 +158,7 @@
             <div class="downloads-confirm" id="downloads-confirm" hidden></div>
           </form>
         </div>
+      </div>
       </div>
     </div>
   </section>

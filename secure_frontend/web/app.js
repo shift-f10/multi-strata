@@ -133,6 +133,17 @@
   }
 
   // ---------------------------------------------------------------- views
+  // The Models tab has two sub-tabs (owner: "tab out the pages ... so it's not too busy"): the
+  // models you can start, and the models you can download. Default: start.
+  var modelsSubtab = "start";
+  function showModelsSubtab(name) {
+    modelsSubtab = name;
+    $("models-pane-start").hidden = name !== "start";
+    $("models-pane-download").hidden = name !== "download";
+    $("models-subtab-start").setAttribute("aria-selected", name === "start" ? "true" : "false");
+    $("models-subtab-download").setAttribute("aria-selected", name === "download" ? "true" : "false");
+  }
+
   function showView(name) {
     ["login", "chat", "models", "monitor", "about"].forEach(function (view) { $("view-" + view).hidden = view !== name; });
     var signedIn = name !== "login";
@@ -141,7 +152,7 @@
     $("header-model").hidden = !signedIn || !launcher.enabled;
     ["chat", "models", "monitor", "about"].forEach(function (tab) { $("tab-btn-" + tab).setAttribute("aria-selected", tab === name ? "true" : "false"); });
     if (name === "monitor") { startMonitor(); } else { stopMonitor(); }
-    if (name === "models") { renderModels(false); refreshLauncher(); refreshDownloads(); }
+    if (name === "models") { renderModels(false); refreshLauncher(); refreshDownloads(); showModelsSubtab(modelsSubtab); }
     if (name === "about") { renderAbout(); }
     if (name === "chat") { $("input").focus(); }
   }
@@ -1161,7 +1172,12 @@
   // Hugging Face and .gguf rules, the sizes and hashes, the space check); the page pre-checks a
   // pasted link only so that an obvious mistake is named without a round trip. A server with
   // downloads off answers 404 and the section stays hidden.
-  var DL_GROUPS = [["strata", "Strata models"], ["maya", "Project Maya models"], ["custom", "Your downloads"]];
+  // Download cards are grouped into family sections (owner: "organize them into sections ... based
+  // on similarities"); the key is each card's `family` field, mapped to a friendly heading.
+  var DL_FAMILIES = [["qwen", "Qwen3.8-Flash-Next"], ["unsloth", "Qwen3.8-Flash-Next (Unsloth)"],
+                     ["gyro", "Qwen3.8-Flash-Next (Gyro)"], ["coder", "Qwen3.8-Flash-Next Coder"],
+                     ["qwen36", "Qwen3.6-35B-A3B"], ["swift", "Swift 1.5"],
+                     ["glm53", "GLM-5.3-Flash (Project Maya)"], ["custom", "Your downloads"]];
   var DL_STATES = {
     available: ["", "Available"], queued: ["st-badge--queued", "Queued"], downloading: ["st-badge--reading", "Downloading"],
     verifying: ["st-badge--reading", "Verifying"], preparing: ["st-badge--reading", "Preparing"],
@@ -1309,9 +1325,9 @@
     var list = $("downloads-list");
     clear(list);
     var cards = dlCards(d);
-    var known = DL_GROUPS.map(function (group) { return group[0]; });
-    DL_GROUPS.concat([["", "Other models"]]).forEach(function (group) {
-      var members = cards.filter(function (card) { return group[0] ? card.source === group[0] : !oneOf(known, card.source); });
+    var known = DL_FAMILIES.map(function (group) { return group[0]; });
+    DL_FAMILIES.concat([["", "Other models"]]).forEach(function (group) {
+      var members = cards.filter(function (card) { return group[0] ? card.family === group[0] : !oneOf(known, card.family); });
       if (!members.length) { return; }
       var section = el("div", "dl-group");
       section.appendChild(el("span", "dl-group__title", group[1]));
@@ -1327,7 +1343,9 @@
     $("downloads").hidden = !on;
     $("downloads-body").hidden = !on;
     $("downloads-denied").hidden = true;
+    $("models-subtab-download").hidden = !on;  // the Download sub-tab appears only when downloads show
     if (on) { return; }
+    if (modelsSubtab === "download") { showModelsSubtab("start"); }  // downloads went away: fall back
     downloads.data = null;
     stopDownloadsPoll();
   }
@@ -1340,6 +1358,7 @@
     $("downloads").hidden = false;
     $("downloads-body").hidden = true;
     $("downloads-denied").hidden = false;
+    $("models-subtab-download").hidden = false;
   }
   function applyDownloads(parsed) {
     var before = downloads.states;
@@ -1840,6 +1859,8 @@
     $("s-apply").addEventListener("click", applySettings);
     $("tab-btn-chat").addEventListener("click", function () { showView("chat"); });
     $("tab-btn-models").addEventListener("click", function () { showView("models"); });
+    $("models-subtab-start").addEventListener("click", function () { showModelsSubtab("start"); });
+    $("models-subtab-download").addEventListener("click", function () { showModelsSubtab("download"); });
     $("no-model-open").addEventListener("click", function () { showView("models"); });
     $("models-refresh").addEventListener("click", function () { refreshLauncher(); });
     $("model-start").addEventListener("click", startModel);

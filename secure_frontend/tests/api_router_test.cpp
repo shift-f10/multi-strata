@@ -478,6 +478,54 @@ void web_ui_models_tab_starts_stops_and_polls() {
 // exactly the launcher's); a 403 (a remote client without models.control_remote) shows the
 // reason and the switch, like the Models tab's own note. A disk line heads the cards (O2), which
 // are grouped by where they come from (O1), and a paste box takes one Hugging Face link (O3).
+// Owner 2026-10-23: "tab out the pages for the models that can be selected to be started and those
+// that are available to download so it's not too busy"; "organize them into sections like based on
+// similarities". The Models tab has two sub-tabs (Start a model / Download models), and the download
+// cards are grouped into family sections.
+void web_ui_models_tab_subtabs_and_family_groups() {
+  const std::string html{secure_frontend::find_web_asset("/")->body};
+  const std::string js{secure_frontend::find_web_asset("/ui/app.js")->body};
+  const std::string css{secure_frontend::find_web_asset("/ui/app.css")->body};
+  // Two sub-tab controls, and the two panes they switch between, inside the Models view.
+  const auto view = html.find("id=\"view-models\"");
+  for (const char* id : {"id=\"models-subtab-start\"", "id=\"models-subtab-download\"", "id=\"models-pane-start\"", "id=\"models-pane-download\""}) {
+    const auto at = html.find(id);
+    expect(at != std::string::npos && at > view && at < html.find("id=\"view-monitor\""), std::string{"the Models view has "} + id);
+  }
+  expect(html.find(">Start a model<") != std::string::npos && html.find(">Download models<") != std::string::npos,
+         "the sub-tabs are labelled Start a model and Download models");
+  // The launcher cards live in the start pane, the Downloads section in the download pane.
+  expect(html.find("id=\"models-pane-start\"") < html.find("id=\"model-list\"") &&
+             html.find("id=\"model-list\"") < html.find("id=\"models-pane-download\""),
+         "the launcher card list is in the start pane");
+  expect(html.find("id=\"models-pane-download\"") < html.find("id=\"downloads\""),
+         "the Downloads section is in the download pane");
+  // Switching shows one pane and hides the other.
+  expect(js.find("function showModelsSubtab(") != std::string::npos &&
+             js.find("$(\"models-pane-start\").hidden =") != std::string::npos &&
+             js.find("$(\"models-pane-download\").hidden =") != std::string::npos,
+         "a sub-tab switcher shows one pane and hides the other");
+  expect(js.find("showModelsSubtab(\"start\")") != std::string::npos && js.find("showModelsSubtab(\"download\")") != std::string::npos,
+         "the two sub-tab buttons select their pane");
+  // The Download sub-tab button is hidden when the server offers no downloads (404).
+  expect(js.find("$(\"models-subtab-download\").hidden") != std::string::npos,
+         "the Download sub-tab is hidden when downloads are off");
+  // The download cards are grouped into family sections (friendly headings), stable order.
+  expect(js.find("var DL_FAMILIES = [") != std::string::npos, "a family group table");
+  for (const char* fam : {"[\"qwen\", \"Qwen3.8-Flash-Next\"]", "[\"unsloth\", \"Qwen3.8-Flash-Next (Unsloth)\"]",
+                          "[\"gyro\", \"Qwen3.8-Flash-Next (Gyro)\"]", "[\"coder\", \"Qwen3.8-Flash-Next Coder\"]",
+                          "[\"qwen36\", \"Qwen3.6-35B-A3B\"]", "[\"swift\", \"Swift 1.5\"]",
+                          "[\"glm53\", \"GLM-5.3-Flash (Project Maya)\"]", "[\"custom\", \"Your downloads\"]"}) {
+    expect(js.find(fam) != std::string::npos, std::string{"a friendly family heading: "} + fam);
+  }
+  expect(js.find("card.family") != std::string::npos, "the cards are grouped by their family field");
+  // The sub-tabs stay usable on a phone.
+  const auto phone = css.find("@media (max-width: 640px) {");
+  const std::string block = phone == std::string::npos ? std::string{} : css.substr(phone, css.find("\n}", phone) - phone);
+  expect(css.find(".models-subtab") != std::string::npos, "the sub-tabs are styled");
+  expect(block.find(".models-subtab") != std::string::npos, "the sub-tabs have a phone-width rule");
+}
+
 void web_ui_models_tab_has_a_downloads_section() {
   const std::string html{secure_frontend::find_web_asset("/")->body};
   const std::string js{secure_frontend::find_web_asset("/ui/app.js")->body};
@@ -498,8 +546,8 @@ void web_ui_models_tab_has_a_downloads_section() {
   expect(denied != std::string::npos && html.find("control_remote", denied) < html.find("</p>", denied),
          "the downloads 403 note names the switch that allows other machines");
   expect(js.find("api(\"/v1/strata/downloads\")") != std::string::npos, "the download list is asked through the keyed API helper");
-  expect(js.find("if (name === \"models\") { renderModels(false); refreshLauncher(); refreshDownloads(); }") != std::string::npos,
-         "opening the Models tab reads the downloads too");
+  expect(js.find("if (name === \"models\") { renderModels(false); refreshLauncher(); refreshDownloads(); showModelsSubtab(modelsSubtab); }") != std::string::npos,
+         "opening the Models tab reads the downloads too and applies the sub-tab");
   expect(js.find("if (response.status === 404) { setDownloadsShown(false); return; }") != std::string::npos &&
              js.find("$(\"downloads\").hidden = !on;") != std::string::npos,
          "a 404 (downloads off) keeps the section hidden");
@@ -509,8 +557,9 @@ void web_ui_models_tab_has_a_downloads_section() {
   expect(js.find("\"Free space on \" + root") != std::string::npos && js.find("\" GB of \" + dgb(disk.total_bytes) + \" GB\"") != std::string::npos &&
              js.find("function dgb(bytes) { return fmt((Number(bytes) || 0) / 1e9, 1); }") != std::string::npos,
          "a disk line: the downloads drive's free space of its total, in decimal GB with one decimal");
-  for (const char* group : {"[\"strata\", \"Strata models\"]", "[\"maya\", \"Project Maya models\"]", "[\"custom\", \"Your downloads\"]"}) {
-    expect(js.find(group) != std::string::npos, std::string{"the cards are grouped by source: "} + group);
+for (const char* group : {"[\"qwen\", \"Qwen3.8-Flash-Next\"]", "[\"glm53\", \"GLM-5.3-Flash (Project Maya)\"]",
+                            "[\"custom\", \"Your downloads\"]"}) {
+    expect(js.find(group) != std::string::npos, std::string{"the download cards are grouped by family: "} + group);
   }
   expect(js.find("if (card.runnable === false && card.note)") != std::string::npos, "a card that cannot run here shows its note");
 }
@@ -898,6 +947,7 @@ int main(int argc, char** argv) {
       {"web_ui_models_tab_starts_stops_and_polls", web_ui_models_tab_starts_stops_and_polls},
       {"web_ui_chat_follows_the_running_model", web_ui_chat_follows_the_running_model},
       {"web_ui_models_tab_has_a_downloads_section", web_ui_models_tab_has_a_downloads_section},
+      {"web_ui_models_tab_subtabs_and_family_groups", web_ui_models_tab_subtabs_and_family_groups},
       {"web_ui_downloads_start_cancel_poll_and_check_links", web_ui_downloads_start_cancel_poll_and_check_links},
       {"web_ui_downloads_pause_and_resume", web_ui_downloads_pause_and_resume},
       {"web_ui_header_fits_a_phone", web_ui_header_fits_a_phone},

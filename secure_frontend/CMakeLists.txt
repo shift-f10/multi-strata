@@ -1264,7 +1264,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         metrics_route_needs_the_key_and_the_switch web_ui_has_the_monitor_and_four_thinking_levels
         web_ui_has_the_models_tab_hidden_until_the_server_offers_it web_ui_models_tab_starts_stops_and_polls
         web_ui_chat_follows_the_running_model web_ui_models_tab_has_a_downloads_section
-        web_ui_downloads_start_cancel_poll_and_check_links web_ui_downloads_pause_and_resume web_ui_header_fits_a_phone)
+        web_ui_downloads_start_cancel_poll_and_check_links web_ui_downloads_pause_and_resume web_ui_header_fits_a_phone
+        web_ui_models_tab_subtabs_and_family_groups)
     target_link_libraries(secure_frontend_api_router_tests PRIVATE
         secure_frontend_secrets secure_frontend_api_router secure_frontend_http_policy)
 
