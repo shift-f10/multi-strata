@@ -480,6 +480,15 @@ fonts are data, not code (contract C6 is about executables). They are WOFF2, che
 test, and the page's CSP allows fonts from this origin only. The licence texts are kept
 beside the files and are not served.
 
+The page's Models tab (the model launcher, 2026-10-23; spec
+`docs/superpowers/specs/2026-10-23-model-launcher-design.md`) is ours: upstream's page has no
+model launcher. It is written for this server's `/v1/strata/models` routes with the kit's
+existing components and sprite icons (`i-layers`, `i-refresh`); no upstream file was copied for
+it. The launcher's server code (`model_cards`, `model_options`, `model_runtime`,
+`model_launcher`) is ours too. Each option's flag, bounds and units were read from the pinned
+upstream engine's argument parser (`upstream/src/program/generate.cpp`, cited per option in
+`secure_frontend/src/model_options.cpp`); nothing was copied from it.
+
 ## Release evidence (SP7 M2 — placeholder)
 
 The SP7 offline release validation kit is `docs/validation/sp7-offline-kit.md`

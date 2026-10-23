@@ -350,6 +350,34 @@ Trust boundaries:
   idle engine child, the MTP rows compose argv — they hand no control to the
   engine.
 
+### Model launcher (models.cards, 2026-10-23)
+
+Spec `docs/superpowers/specs/2026-10-23-model-launcher-design.md` §7; the owner accepted
+D1-D10.
+
+- The page and the API never supply a path, an executable, an environment variable or a
+  free-form argument. A start names a **model card** (an owner-only file the operator wrote,
+  read like the config file: trusted directory, no link followed, not writable by others) and
+  typed option values. Each value is checked twice: against the card's bounds (inside the
+  engine's own, model_options.cpp) and by the profile's argument rules when the config is
+  validated (the `strata_gemma4` allowlist, the frontend-owned flags). A card may not fix a
+  flag one of its listed options sets, so the page's value is the only one.
+- Model control (`/v1/strata/models*`) is off unless `models.control`, keyed like every route,
+  and for loopback peers only unless `models.control_remote` (D2); the peer's class comes from
+  the accepted socket's address, never from a header. Every start and stop is logged on stderr
+  with the card, the option values and the client's class, never the key.
+- A start validates and composes the new model (its tokenizer loads) before the running engine
+  is touched, so a bad card or option never takes the running model down. One start or stop at a
+  time; during a switch chat answers 503 instead of queueing. The generation in flight finishes
+  for up to 60 s and is then ended through the same stop flag as a shutdown (D3). The old engine
+  goes through the supervisor's orderly shutdown before the new one spawns: one supervised engine
+  at a time, the same environment, confinement and Job/process group as a single-model server.
+- Each start gets its own supervisor, port, gate and chat route bound to that card's tokenizer
+  and profile (ModelRuntime). A request holds the runtime it was validated against until its
+  response or stream ends, so it never runs on another model's engine.
+- The remembered options (D7) live in `<roots.state>/model-options.json`, written with the
+  owner-only atomic writer; a file of another shape is ignored (the card's defaults apply).
+
 ### Extensions and MCP
 
 - MCP, tool execution, arbitrary plugins, and remote command execution are
@@ -369,6 +397,14 @@ Trust boundaries:
   can use the model. Browsers cannot: DNS rebinding fails the Host check, a page
   on another origin fails the Origin check, and a plain form post fails the
   Content-Type check. Use it only on a single-user machine.
+- **Model launcher residual (2026-10-23):** a key holder with model control can stop the running
+  model, switch models (each switch reloads tens of GB) and pick any option value the card
+  allows; a card whose bounds let a context's KV cache exceed the machine's memory can make a
+  start fail or slow the box. Mitigations: control is off by default and loopback-only unless
+  `models.control_remote`; the operator narrows each card's bounds; one switch at a time. On
+  Windows, after a switch the console handler's completion event is already set, so a console
+  *close* (not Ctrl+C/Ctrl+Break) no longer waits for the orderly shutdown; the Job still kills
+  the engine with the server.
 - Model outputs can be harmful or unreliable. Prompt injection is not solved by
   transport security; the initial release has no tool execution surface.
 - GPU drivers, inference libraries, and upstream engine vulnerabilities remain

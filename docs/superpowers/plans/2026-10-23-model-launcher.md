@@ -1,5 +1,14 @@
 # Model launcher — Implementation Plan
 
+**Status (2026-10-23):** Tasks 1-5 built test-first on the local `main` (Tasks 1-2 commit
+`3ad44536`, Tasks 3-5 the commit after it); Task 6's box run and docs follow in the session log
+(`docs/validation/2026-10-21-windows-gpu-session.md`, item 57) and `docs/AGENT_HANDOFF.md`.
+Departures from the text below, all recorded where they live: the control routes sit in their
+own table (`kModelControlRoutes`), not in `kRouteTable`, which existing tests pin as every
+server's API; the single-model boot keeps its own path and shares `compose_model()` with the
+launcher instead of becoming a one-card launcher; `spec` stays when `mtp` is off (upstream drafts
+by prompt lookup without the draft layer, and a native pack needs `--spec`).
+
 **Goal:** with the page up, the operator picks a configured model card, sets its typed options
 (MTP, KV precision, KV streaming, context, expert cache, chunking, thinking, sampling) and starts
 it; Stop unloads it; chat uses the running model. Spec

@@ -1127,6 +1127,52 @@ written beside it: `engines/gemma4/` (`strata-gemma4-engine`), plan
     - The serve config: `--max-context 262144`, `limits.chat.max_prompt_tokens` and
       `max_completion_tokens` 262,144.
 
+57. **The model launcher: choose, configure and start models from the page** (owner, 2026-10-23:
+    "when the web ui is up, I am able to select configure models in the webui then be able to
+    select settings like mtp, kv cache streaming, etc and start it up"; then "Accept the
+    recommendations for D1-D10 ... write the plan and start"). Spec and plan under
+    `docs/superpowers/`; commits `02ad1b02` (spec accepted, plan), `3ad44536` (Tasks 1-2: cards,
+    `models.*`, options), `07c4f8d9` (Tasks 3-5: launcher, API, page; it also holds the fix that
+    shows a restarted card as starting, which `0589af28`'s message lists by mistake), `0589af28`
+    (box-run fixes). Local `main`, not pushed.
+    - **Box setup (local files, not committed):** `out/serve/cards/qwen-iq3s.json`
+      (Qwen3.8-Flash-Next IQ3_S on the upstream `v0.2.2` engine, 10 page options: context, KV
+      precision, KV streaming, KV grow, MTP, draft window and confidence, expert cache, prompt
+      chunk, thinking) and `out/serve/cards/gemma4-q8.json` (Gemma 4 26B-A4B Q8 on our engine, 7
+      options: context, expert VRAM, thinking, sampling); `out/serve/config-launcher-lan.json`
+      (the LAN server, `models.control` for loopback clients) and
+      `config-launcher-local-keyless.json` (127.0.0.1:8091, no key: the page walk-through, so no
+      key was typed into a browser). `--check`: both cards usable, configuration valid.
+    - **The page (built-in browser, keyless instance):** the server booted with no engine
+      (`/health` `engine: none`); the chat said "No model is running — open the Models tab";
+      the Models tab listed both cards with their options and bounds. Gemma started from the page
+      at 32K (the page showed the load and the GPU memory rising), then a chat: 337 tokens,
+      64.3 tok/s. Stop from the page; Qwen started from the page with its defaults (MTP on, KV
+      int8, KV streaming 32,768 resident cells at 131,072 context): 81 tokens, 87.9 tok/s.
+    - **Switching through the API** (`out/launcher-box-run.log`; a chat during each load got 503):
+      | start | load | reply | engine decode |
+      | --- | --- | --- | --- |
+      | Qwen, MTP off, KV k8v4, KV streaming 32,768 at 131,072 | 49.6 s | 175 tokens | 60.9 tok/s |
+      | Qwen, MTP on, KV int8, no streaming, 32,768 context | 48.2 s | 180 tokens | 68.4 tok/s |
+      | Gemma, 262,144 context (870 of 3,840 experts in VRAM) | 33.3 s | 147 tokens | 34.6 tok/s (first answer) |
+      The load times include the old engine's orderly stop (no generation was in flight, so no
+      drain wait) and the new engine's load; `/v1/models` then listed Gemma with `strata_models`.
+    - **Found and fixed on the box** (`0589af28`): a chat naming the card being started, sent
+      while its tokenizer loaded, got 409 `model_not_running` from the old model (now 503
+      `model_switching`; re-check: six chats during a Qwen -> Gemma start, all 503
+      `model_switching`); the Monitor kept Qwen's expert cache under Gemma (now dropped at each
+      engine change; re-check: under Gemma at 32K it shows 3,840 experts, 1,620 in VRAM); top_p's
+      open lower bound read "5e-324" on the page (now "above 0").
+    - **Tests:** full MSVC suite at `0589af28`: 985 cases, 984 passed, 1 skipped (cfg03, the long-standing skip), 0 failed, with the real Gemma pack set (`out/ctest-launcher-full-3.log`). Every task's cases went RED first (see the commits).
+    - **Left running for the owner:** `out/serve/serve-launcher-lan.ps1 -Start Gemma-4-26B-A4B-it`
+      on `0.0.0.0:8080` (the no-hooks build). The script's start took the remembered 32K from the
+      walk-through (D7 at work), so the card was restarted through the API at 262,144: it answers,
+      870 of 3,840 experts in VRAM (`out/launcher-lan-start.log`). The remembered Qwen values are
+      the walk-through's last (32K, no KV streaming, MTP on, thinking none); the page's Defaults
+      button puts the card's own back (128K, KV streaming 32,768, thinking high). The Models tab
+      answers loopback clients (`http://127.0.0.1:8080` on the box); from another machine it
+      stays hidden until `"control_remote": true` is added to the config's `models` block (D2).
+
 ### Not done in this session
 
 - Resume doc §8 item 3 (`qwen35moe` family behaviour): not applicable to these packs (no

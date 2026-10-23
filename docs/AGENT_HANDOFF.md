@@ -207,6 +207,52 @@ Follow [`PROVENANCE.md`](PROVENANCE.md), "Updating the baseline" (the only copy 
 
 ## What has changed
 
+### Model launcher: choose, configure and start models from the page (2026-10-23, local `main`, not pushed)
+
+Owner request: "when the web ui is up, I am able to select configure models in the webui then be
+able to select settings like mtp, kv cache streaming, etc and start it up"; then "Accept the
+recommendations for D1-D10 in the model launcher spec; write the plan and start." Spec
+[`superpowers/specs/2026-10-23-model-launcher-design.md`](superpowers/specs/2026-10-23-model-launcher-design.md)
+(ACCEPTED, D1-D10), plan [`superpowers/plans/2026-10-23-model-launcher.md`](superpowers/plans/2026-10-23-model-launcher.md).
+Commits on the local `main` (no branch switch, nothing pushed); Tasks 2 (options) and 5 (page)
+were written by two workers in detached worktrees and integrated as patches (the worktrees were
+moved to `out/retired-worktrees/` and pruned).
+
+- **What runs:** with `models.cards` in the main config, `strata-secure-server --config` boots
+  the launcher (`launcher_run`; `--check` lists each card's verdict). Each card file
+  (`model_cards.hpp`) holds one model: name, profile (`qwen` | `gemma4`), the card-owned config
+  rows and the page options with their bounds (`model_options.hpp`: qwen max_context, kv,
+  kv_resident = KV streaming, kv_grow, mtp, spec, spec_min_p, expert_cache, prefill, thinking,
+  sampling; gemma4 max_context, chunk, expert_vram, thinking, sampling). A start composes the
+  model (`compose_model`, the per-model half of the boot moved verbatim from
+  `server_bootstrap.cpp` into `model_runtime.cpp`, which the single-model boot now also uses)
+  into its own `ModelRuntime` (tokenizer, supervisor, port, gate, chat route). The launcher
+  (`model_launcher.hpp`) keeps one running at a time: compose first, then refuse chat
+  (`model_switching`), refuse the old queue, let the generation in flight finish for 60 s and
+  cut it (D3), shut the old engine down, prepare the state dir, start, wait for READY; a start
+  that ends before READY stays `failed` (D4). Options are remembered in
+  `<roots.state>/model-options.json` (D7).
+- **API:** `GET /v1/strata/models`, `POST /v1/strata/models/start`, `POST /v1/strata/models/stop`
+  (`kModelControlRoutes`, outside `kRouteTable`, served only with `models.control`; remote
+  clients need `models.control_remote`, D2 — the peer's class now rides `RequestContext`
+  from the pool). `/v1/models` lists the running card plus `strata_models`; `/health` says
+  `engine: none` with nothing running. Six new error rows: `invalid_option` (param = the
+  option), `control_not_allowed`, `model_not_running` (D6), `switch_in_progress`,
+  `model_switching` (Retry-After 5), `no_model_running`.
+- **Page:** a Models tab (hidden when the routes answer 404/403): the cards with their state, the
+  selected card's options rendered from their kinds, Start (confirm when another model runs),
+  Stop, polling while a card loads; the header shows the running model; with none running the
+  composer says so and links to the tab.
+- **Proof:** TDD with RED evidence per task (cards 5 cases, options 10, typed config 1, error
+  rows 1, router 2, page 3, launcher end to end 7 — the launcher's RED is the server refusing a
+  cards config with the dispatch disabled). Full MSVC suite: at `0589af28`: 985 cases, 984 passed, 1 skipped (cfg03, the long-standing skip), 0 failed, with the real Gemma pack set (`out/ctest-launcher-full-3.log`). `3ad44536` alone (an isolated worktree) builds clean and its 98 config, card, option and CLI cases pass. Box run: see session log
+  item 57.
+- **Open:** Gemma KV streaming (D8, its own engine plan); GLM cards (D10); vision with cards
+  (refused for now); the `strata` CLI verbs (`serve`, `key`, ...) still read single-model
+  configs only; the page's Sampling drawer does not yet take its defaults from the running card
+  (spec §6 bullet 3); on Windows a console *close* after a switch no longer waits for the
+  orderly shutdown (threat model residual); Windows CI (`windows-msys2-clang`) has not run.
+
 ### SP5-P2 parity refresh at the new pins (branch `sp5-p2-parity-refresh`, base `c71206f1`; closes issue 27)
 
 Owner-bumped pins (`upstream` v0.2.2 @ `011c9e60`, `engines/maya-ref` v1.1.21 @

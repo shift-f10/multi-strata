@@ -59,6 +59,18 @@ expert mode (session log steps 17-18, items 44-55; `docs/validation/gemma4/`). *
 owner:** the CPU expert pool ruling (plans 2-3 R2), plan 4 (managed manifests, the gate opening,
 the full acceptance battery), the glm53 page issue (session log item 46).
 
+**2026-10-23 — Model launcher built on the local `main` (not pushed).** Owner: choose, configure
+(MTP, KV streaming, ...) and start models from the page; then "Accept the recommendations for
+D1-D10 in the model launcher spec; write the plan and start. Work on this to completion without
+asking me anything else". Spec `2026-10-23-model-launcher-design.md` (ACCEPTED), plan
+`2026-10-23-model-launcher.md`; commits `02ad1b02`, `3ad44536`, `07c4f8d9`, `0589af28` and the
+docs commit after them, on the checked-out `main` (no branch could be switched to; **the owner
+decides whether to push**). Two worktree workers (options, page) handed over patches. Full MSVC
+suite 985 cases: 984 passed, 1 skipped (cfg03). Box: both cards (Qwen IQ3_S, Gemma Q8) started,
+switched with different options and chatted from the page and the API (session log item 57);
+left serving on `0.0.0.0:8080` with the Gemma card started. **Waiting on the owner:** push;
+`models.control_remote` for the LAN; Gemma KV streaming (D8); GLM cards (D10).
+
 ### Is it deployable? (owner asked 2026-10-14; answer still holds)
 No. The frontend side is strongly evidenced; the system is not. It has **never run against a real engine or GPU** (every test uses a fake engine). Streaming does not exist and the serving path is single-threaded until SP3 lands. The downloader exists but the catalog ships **empty** by owner decision (D5(D)), so v1 acquisition is import-from-developer-bundle. No packaging, installer, validation kit, or GLM engine. The first real answer comes from one session on the GPU box (§8).
 
