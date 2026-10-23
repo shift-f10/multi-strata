@@ -5,6 +5,11 @@ O1-O4 (his messages), D1-D6 and D8 as recommended ("Yes, build it"), **D7: build
 automatically** ("Build packs automatically": run upstream's pack tools after a Qwen download, with
 numpy in `.venv-dev`). Commits on local `main`; workers in detached worktrees hand over patches.
 
+**Status (2026-10-23):** Tasks 1-5 built with RED/GREEN evidence, plus the owner's later "Have a
+download pause and resume functionality" (pause keeps the partial files, Resume is a start of
+the same manifest, Cancel deletes them; `POST /v1/strata/downloads/pause`). Task 6 (the box)
+follows; see `docs/AGENT_HANDOFF.md` and session log item 59.
+
 ## Shape
 
 - **Every download is an SP4 manifest pulled by `strata pull`**, the confined downloader the CLI

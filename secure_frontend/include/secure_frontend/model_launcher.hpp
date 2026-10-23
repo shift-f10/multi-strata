@@ -42,6 +42,10 @@
 
 namespace secure_frontend {
 
+// The cards one launcher holds: the listed ones (kMaxModelCards) and the cards prepared
+// downloads add (model downloads, plan 2026-10-23-model-downloads Task 4).
+inline constexpr std::size_t kMaxLauncherCards = 64;
+
 enum class CardState { stopped, starting, running, failed };
 [[nodiscard]] std::string_view card_state_name(CardState state) noexcept;
 
@@ -77,6 +81,9 @@ class ModelLauncher final {
   [[nodiscard]] std::optional<Refusal> start(std::string_view name, const JsonValue* options, bool remote_client);
   // Stops the running model (or the one starting, once its start is done). nullopt: accepted.
   [[nodiscard]] std::optional<Refusal> stop(bool remote_client);
+  // A card made while the server runs (a prepared download's): listed at once, stopped. false:
+  // a card of that name is already held, or kMaxLauncherCards are.
+  [[nodiscard]] bool add_card(ModelCard card);
 
   // GET /v1/strata/models (the plan's JSON shape).
   [[nodiscard]] std::string list_json() const;
@@ -116,6 +123,8 @@ class ModelLauncher final {
   void run_start(const Job& job);
   void retire_running(std::unique_lock<std::mutex>& lock);
   void remember(std::size_t card, const ModelOptionValues& values);
+  // Under mutex_: add_card appends to settings_.cards (reserved to kMaxLauncherCards, so a held
+  // card reference stays valid), and every lookup or walk of the list holds the lock.
   [[nodiscard]] std::optional<std::size_t> find_card(std::string_view name) const;
   [[nodiscard]] std::shared_ptr<ModelRuntime> running_runtime() const;
   void log(std::string_view line) const;

@@ -101,7 +101,7 @@ int main(int argc, char* argv[]) {
   if (std::get<secure_frontend::FrontendConfigDraft>(draft).entries.contains("models.cards")) {
     const auto& main_draft = std::get<secure_frontend::FrontendConfigDraft>(draft);
     if (invocation.command == secure_frontend::ServerCommand::check) return secure_frontend::launcher_check(main_draft, overridden);
-    return secure_frontend::launcher_run(main_draft);
+    return secure_frontend::launcher_run(main_draft, invocation.config_file);
   }
   const auto loaded = secure_frontend::validate(std::get<secure_frontend::FrontendConfigDraft>(draft));
   if (const auto* issues = std::get_if<secure_frontend::ConfigErrors>(&loaded)) {

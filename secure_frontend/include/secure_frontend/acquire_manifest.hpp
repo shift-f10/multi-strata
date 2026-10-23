@@ -14,7 +14,10 @@
 
 namespace secure_frontend {
 
-enum class ManifestProfile { qwen, glm53, gemma4, raw };  // raw: SECURE_FRONTEND_TEST_HOOKS builds only
+// raw: SECURE_FRONTEND_TEST_HOOKS builds only. gguf (model downloads, owner 2026-10-23): .gguf
+// weights (and at most one mmproj) fetched from Hugging Face to be prepared on this machine; no
+// launch keys, never launched as a managed model.
+enum class ManifestProfile { qwen, glm53, gemma4, raw, gguf };
 enum class ManifestFamily { strata, glm, gemma4, none };
 // SP5 M1 Task 11 (D-9): FileRole gains mmproj — the vision encoder artifact, listed like
 // any other file, AT MOST ONE entry, named by the optional launch.mmproj (Ruling T11-bb).

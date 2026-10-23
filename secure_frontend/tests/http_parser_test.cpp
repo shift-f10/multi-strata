@@ -62,6 +62,11 @@ constexpr ExpectedRow kExpected[] = {
     {ApiError::switch_in_progress, 409, "invalid_request_error", "switch_in_progress", "A model start or stop is already in progress."},
     {ApiError::model_switching, 503, "server_error", "model_switching", "The server is switching models; retry shortly."},
     {ApiError::no_model_running, 503, "server_error", "no_model_running", "No model is running; start one first."},
+    // Model downloads (plan 2026-10-23-model-downloads Task 4).
+    {ApiError::download_in_progress, 409, "invalid_request_error", "download_in_progress", "This model is already downloading, queued or installed as a card."},
+    {ApiError::upstream_unavailable, 502, "server_error", "upstream_unavailable", "Hugging Face could not be reached or answered unexpectedly."},
+    {ApiError::insufficient_storage, 507, "server_error", "insufficient_storage", "Insufficient disk space on the data drive for this download."},
+    {ApiError::download_not_active, 409, "invalid_request_error", "download_not_active", "This model is not downloading or queued."},
 };
 
 // Model launcher (plan 2026-10-23): a switch answers like a restarting engine (Retry-After 5),
@@ -81,7 +86,7 @@ void err_launcher_rows_carry_their_headers_and_option() {
 }
 
 void err_every_code_renders_fixed_body() {
-  expect(secure_frontend::api_error_table().size() == std::size(kExpected), "the table has exactly the 23 rows of spec §7.2 and the launcher's 6");
+  expect(secure_frontend::api_error_table().size() == std::size(kExpected), "the table has exactly the 23 rows of spec §7.2, the launcher's 6 and the downloads' 4");
   for (const auto& row : kExpected) {
     const std::string body = std::string{"{\"error\":{\"message\":\""} + row.message + "\",\"type\":\"" + row.type +
                              "\",\"param\":null,\"code\":\"" + row.code + "\"}}\n";

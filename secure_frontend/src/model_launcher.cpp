@@ -66,7 +66,12 @@ std::string_view card_state_name(const CardState state) noexcept {
   return "stopped";  // unreachable: every value is a case above
 }
 
-ModelLauncher::ModelLauncher(LauncherSettings settings) : settings_(std::move(settings)), status_(settings_.cards.size()) {
+ModelLauncher::ModelLauncher(LauncherSettings settings) : settings_(std::move(settings)) {
+  // add_card never reallocates: a start holds its card by reference outside the lock.
+  if (settings_.cards.size() > kMaxLauncherCards) settings_.cards.resize(kMaxLauncherCards);
+  settings_.cards.reserve(kMaxLauncherCards);
+  status_.resize(settings_.cards.size());
+  status_.reserve(kMaxLauncherCards);
   if (!settings_.factory) {
     settings_.factory = [](EngineLaunchPlan plan) { return make_stdio_process_factory(std::move(plan)); };
   }
@@ -78,6 +83,18 @@ ModelLauncher::ModelLauncher(LauncherSettings settings) : settings_(std::move(se
 }
 
 ModelLauncher::~ModelLauncher() { shutdown(); }
+
+bool ModelLauncher::add_card(ModelCard card) {
+  std::string name = card.name;
+  {
+    std::lock_guard lock(mutex_);
+    if (shutting_down_ || find_card(card.name).has_value() || settings_.cards.size() >= kMaxLauncherCards) return false;
+    settings_.cards.push_back(std::move(card));
+    status_.emplace_back();
+  }
+  log("[strata] models: added " + name);
+  return true;
+}
 
 void ModelLauncher::log(const std::string_view line) const {
   if (settings_.log) {
@@ -96,20 +113,23 @@ std::optional<std::size_t> ModelLauncher::find_card(const std::string_view name)
 
 std::optional<ModelLauncher::Refusal> ModelLauncher::start(const std::string_view name, const JsonValue* options,
                                                            const bool remote_client) {
-  const auto card = find_card(name);
+  std::optional<std::size_t> card;
+  const ModelCard* chosen_card = nullptr;
   {
     std::lock_guard lock(mutex_);
+    card = find_card(name);
     if (shutting_down_) return Refusal{ApiError::server_shutting_down};
     if (busy_ || pending_.has_value()) return Refusal{ApiError::switch_in_progress};
     if (!card.has_value()) return Refusal{ApiError::model_not_found};
     busy_ = true;  // reserved: one start or stop at a time
+    chosen_card = &settings_.cards[*card];
   }
   const auto release = [this] {
     std::lock_guard lock(mutex_);
     busy_ = false;
     changed_.notify_all();
   };
-  const ModelCard& chosen = settings_.cards[*card];
+  const ModelCard& chosen = *chosen_card;
   ModelOptionValues remembered;
   {
     std::lock_guard lock(mutex_);
@@ -214,13 +234,17 @@ void ModelLauncher::retire_running(std::unique_lock<std::mutex>& lock) {
   running_.reset();
   running_card_.reset();
   status_[card] = CardStatus{CardState::stopped, {}};
+  const std::string name = settings_.cards[card].name;
   lock.unlock();
-  log("[strata] models: stopped " + settings_.cards[card].name);
+  log("[strata] models: stopped " + name);
   lock.lock();
 }
 
 void ModelLauncher::run_start(const Job& job) {
-  const ModelCard& card = settings_.cards[job.card];
+  const ModelCard& card = [this, &job]() -> const ModelCard& {
+    std::lock_guard lock(mutex_);
+    return settings_.cards[job.card];
+  }();
   const auto fail = [this, &job, &card](const std::string_view reason) {
     {
       std::lock_guard lock(mutex_);
@@ -418,10 +442,10 @@ RouteResult ModelLauncher::chat(const std::string_view body, const RequestContex
     if (const auto* root = std::get_if<JsonValue>(&parsed); root != nullptr && root->if_object() != nullptr) {
       for (const auto& member : *root->if_object()) {
         if (member.key != "model" || member.value.if_string() == nullptr) continue;
+        std::lock_guard lock(mutex_);
         const auto named = find_card(*member.value.if_string());
         if (!named.has_value()) continue;
         // The card an accepted start is bringing up is on its way, not stopped.
-        std::lock_guard lock(mutex_);
         if (starting_card_ == named) return make_error_response(ApiError::model_switching);
         return make_error_response(ApiError::model_not_running);
       }
@@ -493,8 +517,8 @@ bool ModelLauncher::wait_until_settled(const std::chrono::milliseconds timeout) 
 }
 
 CardState ModelLauncher::state_of(const std::string_view name) const {
-  const auto card = find_card(name);
   std::lock_guard lock(mutex_);
+  const auto card = find_card(name);
   return card.has_value() ? status_[*card].state : CardState::stopped;
 }
 

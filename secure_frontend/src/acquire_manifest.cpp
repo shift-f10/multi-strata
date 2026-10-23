@@ -194,6 +194,7 @@ std::string_view profile_name(const ManifestProfile profile) noexcept {
     case ManifestProfile::glm53: return "glm53";
     case ManifestProfile::gemma4: return "gemma4";
     case ManifestProfile::raw: return "raw";
+    case ManifestProfile::gguf: return "gguf";
   }
   return "unknown";
 }
@@ -230,6 +231,7 @@ ManifestFamily family_for(const ManifestProfile profile) {
     case ManifestProfile::glm53: return ManifestFamily::glm;
     case ManifestProfile::gemma4: return ManifestFamily::gemma4;
     case ManifestProfile::raw: return ManifestFamily::none;
+    case ManifestProfile::gguf: return ManifestFamily::none;
   }
   return ManifestFamily::none;  // unreachable: every value is a case above
 }
@@ -259,10 +261,11 @@ std::optional<ManifestIssue> validate_manifest(const AcquireManifest& m, const M
     return bad("profile", "raw is available only in SECURE_FRONTEND_TEST_HOOKS builds");
   }
   if (m.family != family_for(m.profile)) {
-    return bad("engine.family", "must be strata for qwen, glm for glm53, gemma4 for gemma4, none for raw");
+    return bad("engine.family", "must be strata for qwen, glm for glm53, gemma4 for gemma4, none for raw and gguf");
   }
-  if (m.profile == ManifestProfile::raw && compare_versions(m.min_version, EngineVersion{}) != 0) {
-    return bad("engine.min_version", "must be 0.0.0 for raw");
+  if ((m.profile == ManifestProfile::raw || m.profile == ManifestProfile::gguf) &&
+      compare_versions(m.min_version, EngineVersion{}) != 0) {
+    return bad("engine.min_version", "must be 0.0.0 for raw and gguf");
   }
   std::string key;
   if (const auto why = license_problem(m.license, key, "license")) return bad(key, *why);
@@ -352,6 +355,20 @@ std::optional<ManifestIssue> validate_manifest(const AcquireManifest& m, const M
     return f != nullptr && f->role == FileRole::weights;
   };
   switch (m.profile) {
+    case ManifestProfile::gguf:
+      // Model downloads (owner rule O4, 2026-10-23): .gguf weights and at most one mmproj, to be
+      // prepared on this machine; no launch keys (never launched as a managed model).
+      if (launch.native || launch.ple_gguf || launch.pack || launch.tokenizer_pack || launch.mmproj) {
+        return bad("launch", "gguf has no launch keys");
+      }
+      for (std::size_t i = 0; i < m.files.size(); ++i) {
+        const auto& f = m.files[i];
+        if (f.role != FileRole::weights && f.role != FileRole::mmproj) {
+          return bad("files[" + std::to_string(i) + "].role", "gguf lists only weights and mmproj files");
+        }
+        if (!ascii_lower(f.path).ends_with(".gguf")) return bad("files[" + std::to_string(i) + "].path", "gguf lists only .gguf files");
+      }
+      break;
     case ManifestProfile::raw:
       if (launch.native) return bad("launch.native", "raw has no launch keys");
       if (launch.ple_gguf) return bad("launch.ple_gguf", "raw has no launch keys");

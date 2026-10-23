@@ -170,7 +170,8 @@ ManifestParseResult parse_manifest(const std::string_view bytes, const ManifestR
   else if (profile == "glm53") m.profile = ManifestProfile::glm53;
   else if (profile == "gemma4") m.profile = ManifestProfile::gemma4;
   else if (profile == "raw") m.profile = ManifestProfile::raw;
-  else r.fail("profile", "must be qwen, glm53 or gemma4");
+  else if (profile == "gguf") m.profile = ManifestProfile::gguf;  // model downloads (owner, 2026-10-23)
+  else r.fail("profile", "must be qwen, glm53, gemma4 or gguf");
   if (const auto* engine = r.object(Reader::find(*top, "engine"), "engine")) {
     r.only(*engine, {"family", "min_version"}, "engine");
     const auto family = r.text(*engine, "family", "engine", 16).value_or("");

@@ -489,6 +489,19 @@ it. The launcher's server code (`model_cards`, `model_options`, `model_runtime`,
 upstream engine's argument parser (`upstream/src/program/generate.cpp`, cited per option in
 `secure_frontend/src/model_options.cpp`); nothing was copied from it.
 
+The Models tab's Downloads section (model downloads, 2026-10-23; spec
+`docs/superpowers/specs/2026-10-23-model-downloads-design.md`) is ours, and so is its server code
+(`hf_source`, `download_catalog`, `download_manager`, the `gguf` manifest profile, `strata
+hf-info` and `pull --progress-lines`). Its data come from the pins, never copied as code:
+`tools/secure/download_catalog.py` reads upstream's `setup.py` tables (`MODELS`, `FAMILIES`,
+`REPO_PINS`, `HF_REVISIONS`, ...) and Maya's `maya.py` `MODELS` with `ast`, without importing or
+running them, restates their file rules and refuses to run when the pinned source no longer
+contains those rules word for word; its output `secure_frontend/catalog/downloads.json`
+(commits, sizes and SHA-256 values: facts, not code) is embedded at build. The prepare step
+`tools/secure/prepare_download.py` is ours and embedded at build too; it runs upstream's
+`tools/iq_pack.py` and `tools/strata_tokenizer.py` in place at run time (read only, from the
+operator's `models.prepare_tools`), and nothing of them is copied into this tree.
+
 ## Release evidence (SP7 M2 — placeholder)
 
 The SP7 offline release validation kit is `docs/validation/sp7-offline-kit.md`

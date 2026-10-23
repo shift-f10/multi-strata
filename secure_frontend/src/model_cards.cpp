@@ -205,6 +205,31 @@ ConfigValidationResult card_config(const FrontendConfigDraft& main, const ModelC
   return validate(card_draft(main, card, values));
 }
 
+ConfigValidationResult launcher_store_config(const FrontendConfigDraft& main) {
+  if (auto issues = main_config_card_issues(main); !issues.empty()) return issues;
+  const auto root = main.entries.find("models.downloads_root");
+  if (root == main.entries.end()) {
+    return ConfigErrors{ConfigIssue{"models.downloads_root", ConfigIssueCode::missing_required,
+                                    "is needed for strata's own verbs with models.cards (it is their model store)"}};
+  }
+  const auto cards = main.entries.find("models.cards");
+  const auto* listed = cards == main.entries.end() ? nullptr : std::get_if<std::vector<std::string>>(&cards->second.value);
+  if (listed == nullptr) return ConfigErrors{ConfigIssue{"models.cards", ConfigIssueCode::wrong_type, "must be an array of strings"}};
+  std::vector<std::filesystem::path> files;
+  for (const auto& text : *listed) files.push_back(path_from_utf8(text));
+  auto loaded = load_model_cards(files);
+  std::optional<ConfigErrors> first_issues;
+  for (const auto& card : loaded.cards) {
+    FrontendConfigDraft draft = card_draft(main, card, default_option_values(card));
+    draft.entries["roots.models"] = root->second;
+    auto result = validate(draft);
+    if (std::holds_alternative<ValidatedConfig>(result)) return result;
+    if (!first_issues) first_issues = std::get<ConfigErrors>(std::move(result));
+  }
+  if (first_issues) return std::move(*first_issues);
+  return ConfigErrors{ConfigIssue{"models.cards", ConfigIssueCode::invalid_value, "no model card is usable"}};
+}
+
 ModelOptionValues default_option_values(const ModelCard& card) {
   ModelOptionValues values;
   for (const auto& limit : card.options) values.emplace(std::string{limit.spec->name}, limit.default_value);

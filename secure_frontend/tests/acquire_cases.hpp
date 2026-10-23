@@ -92,6 +92,8 @@ void list_outdated_uses_catalog_sequence();
 #endif
 // acquire_network_cli_test.cpp (Task 27)
 void pull_cli_prints_summary_and_installs();
+void pull_progress_lines_are_machine_readable();
+void hf_info_resolves_a_link();
 void run_installed_model_needs_no_network();
 void run_refuses_glm53_without_engine();
 void engine_gate_refuses_gemma4_until_the_engine_exists();  // Gemma 4 plan 1 Task 2

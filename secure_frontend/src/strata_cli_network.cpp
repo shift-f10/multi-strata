@@ -7,6 +7,8 @@
 #include "secure_frontend/downloader.hpp"
 #include "secure_frontend/engine_gate.hpp"
 #include "secure_frontend/fetch_file.hpp"
+#include "secure_frontend/hf_source.hpp"
+#include "secure_frontend/json.hpp"
 #include "secure_frontend/sha256.hpp"
 #include "secure_frontend/strata_cli.hpp"
 #include "doctor_checks.hpp"
@@ -19,6 +21,7 @@
 #include <array>
 #include <atomic>
 #include <charconv>
+#include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
@@ -179,14 +182,45 @@ std::string utc_now() {
 // §7.3: one record per transferred file in <roots.logs>/acquire.log when roots.logs is set
 // (off by default). Fixed fields only: relative path, size, digest, host, result, confinement —
 // never a URL, address, proxy or config value. A log failure never fails the pull (I14).
+// Model downloads (plan 2026-10-23-model-downloads Task 3): pull --progress-lines. stdout carries
+// only fixed one-line records the server reads; notices go to stderr. Paths are the manifest's
+// relative paths; BYTES at most every 250 ms (and at the end of a file).
+class LineProgress final : public ProgressSink {
+ public:
+  explicit LineProgress(CliStreams& io) : io_(io) {}
+  void notice(const std::string_view line) override { io_.err << line << '\n'; }
+  void manifest_selected(const std::string_view name_tag, const std::string_view sha256) override {
+    io_.out << "MANIFEST " << name_tag << ' ' << sha256 << '\n' << std::flush;
+  }
+  void file_started(const std::string_view path, const std::uint64_t total) override {
+    io_.out << "FILE " << path << ' ' << total << '\n' << std::flush;
+    last_ = {};
+  }
+  void file_bytes(const std::string_view path, const std::uint64_t done, const std::uint64_t total) override {
+    const auto now = std::chrono::steady_clock::now();
+    if (done != total && now - last_ < std::chrono::milliseconds(250)) return;
+    last_ = now;
+    io_.out << "BYTES " << path << ' ' << done << ' ' << total << '\n' << std::flush;
+  }
+  void file_finished(const std::string_view path, const std::uint64_t, const std::string_view, const std::string_view,
+                     const std::string_view result) override {
+    io_.out << "FINISHED " << path << ' ' << result << '\n' << std::flush;
+  }
+
+ private:
+  CliStreams& io_;
+  std::chrono::steady_clock::time_point last_{};
+};
+
 class LoggingProgress final : public ProgressSink {
  public:
-  LoggingProgress(StreamProgress& inner, const FrontendConfig& config, std::string verb, std::string confinement)
+  LoggingProgress(ProgressSink& inner, const FrontendConfig& config, std::string verb, std::string confinement)
       : inner_(inner), config_(config), verb_(std::move(verb)), confinement_(std::move(confinement)) {}
   void notice(const std::string_view line) override { inner_.notice(line); }
   void manifest_selected(const std::string_view name_tag, const std::string_view sha256) override {
     model_ = std::string{name_tag};
     manifest_ = std::string{sha256};
+    inner_.manifest_selected(name_tag, sha256);
   }
   void file_started(const std::string_view path, const std::uint64_t total) override { inner_.file_started(path, total); }
   void file_bytes(const std::string_view path, const std::uint64_t done, const std::uint64_t total) override {
@@ -194,6 +228,7 @@ class LoggingProgress final : public ProgressSink {
   }
   void file_finished(const std::string_view path, const std::uint64_t size, const std::string_view sha256, const std::string_view host,
                      const std::string_view result) override {
+    inner_.file_finished(path, size, sha256, host, result);
     if (!config_.roots.logs) return;
     auto root = open_root(*config_.roots.logs, RootPolicy::create_private);
     if (!std::holds_alternative<CanonicalRoot>(root)) return;
@@ -209,7 +244,7 @@ class LoggingProgress final : public ProgressSink {
   }
 
  private:
-  StreamProgress& inner_;
+  ProgressSink& inner_;
   const FrontendConfig& config_;
   std::string verb_;
   std::string confinement_;
@@ -218,15 +253,26 @@ class LoggingProgress final : public ProgressSink {
 };
 
 int do_pull(PullRequest request, const std::string& verb, const FrontendConfig& config, const std::filesystem::path& config_file,
-            CliStreams& io, CliServices& services) {
+            CliStreams& io, CliServices& services, const bool progress_lines = false) {
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
   request.test_cacert = services.test_cacert;  // F-51 / ruling R1: a test config only; never a CLI option
 #endif
+  // --progress-lines: the people-facing text (summary, notices, refusals) goes to stderr; stdout
+  // carries only LineProgress's records and the final RESULT.
+  CliStreams people{io.in, progress_lines ? io.err : io.out, io.err, io.interactive};
+  const auto finish = [&io, progress_lines](const std::optional<AcquireError>& error) {
+    if (progress_lines) io.out << "RESULT " << (error ? reason_name(error->reason) : std::string_view{"ok"}) << '\n' << std::flush;
+  };
   NetworkKit kit;
-  if (auto failure = fill_kit(kit, config, config_file, services, true)) return report(io, *failure);
-  StreamConfirmer ui(io);
-  StreamProgress stream(io);
-  LoggingProgress progress(stream, config, verb, kit.probe->confinement());
+  if (auto failure = fill_kit(kit, config, config_file, services, true)) {
+    finish(failure);
+    return report(people, *failure);
+  }
+  StreamConfirmer ui(people);
+  StreamProgress stream(people);
+  LineProgress lines(io);
+  LoggingProgress progress(progress_lines ? static_cast<ProgressSink&>(lines) : static_cast<ProgressSink&>(stream), config, verb,
+                           kit.probe->confinement());
   PullServices pull_services{*kit.transport, *kit.probe, *kit.resolver, *kit.clock, store_for(services), *kit.loaded, ui, progress,
                              *kit.interrupted};
   const auto outcome = run_pull(request, config.roots.models, config.pull, pull_services);
@@ -234,15 +280,19 @@ int do_pull(PullRequest request, const std::string& verb, const FrontendConfig& 
     // §8.2 (controller ruling): a signal at a pending [y/N] is an interrupt, never a No. EOF
     // (Ctrl-D) leaves the flag clear and stays `declined` (exit 2). Nothing was spawned: the
     // probe runs only after a yes.
-    return report(io, AcquireError{AcquireReason::interrupted, outcome.error->detail});
+    const AcquireError interrupted{AcquireReason::interrupted, outcome.error->detail};
+    finish(interrupted);
+    return report(people, interrupted);
   }
-  if (outcome.error) return report(io, *outcome.error);
+  finish(outcome.error);
+  if (outcome.error) return report(people, *outcome.error);
   return exit_code_value(outcome.exit);
 }
 
 int verb_pull(const FrontendConfig& config, const std::filesystem::path& config_file, const std::span<const std::string> rest,
               CliStreams& io, CliServices& services) {
-  const auto args = parse_args(rest, {"--yes", "--allow-downgrade", "--verify", "--discard-partial"}, {"--bundle", "--manifest", "--trust-manifest"});
+  const auto args = parse_args(rest, {"--yes", "--allow-downgrade", "--verify", "--discard-partial", "--progress-lines"},
+                               {"--bundle", "--manifest", "--trust-manifest"});
   if (!args) return usage(io, "pull: unknown or incomplete option");
   bool bad = false;
   PullRequest request;
@@ -260,7 +310,7 @@ int verb_pull(const FrontendConfig& config, const std::filesystem::path& config_
     if (args->positional.size() != 1) return usage(io, "pull takes one <name[:tag]>");
     request.reference = args->positional[0];
   }
-  return do_pull(std::move(request), "pull", config, config_file, io, services);
+  return do_pull(std::move(request), "pull", config, config_file, io, services, args->flags.contains("--progress-lines"));
 }
 
 // The tail both run branches share: the engine gate, then where to start the server.
@@ -1197,12 +1247,118 @@ int verb_uninstall(const FrontendConfig& config, const std::filesystem::path& co
   return 0;
 }
 
+// Model downloads (plan 2026-10-23-model-downloads Task 3): strata hf-info <link>. The link is read
+// by hf_source (O4: huggingface.co, a .gguf file) before anything is spawned; then Hugging Face's
+// API, through the confined downloader (fetch_envelope: 200 only, no redirect, 1 MiB), gives the
+// revision's commit and the file's folder listing; stdout is one JSON object with the file's whole
+// shard set, each with its LFS size and SHA-256, or `ERROR <code>` (the reason on stderr).
+int verb_hf_info(const FrontendConfig& config, const std::filesystem::path& config_file, const std::span<const std::string> rest,
+                 CliStreams& io, CliServices& services) {
+  const auto args = parse_args(rest, {}, {});
+  if (!args || args->positional.size() != 1) return usage(io, "hf-info takes one Hugging Face link");
+  const auto refuse = [&io](const std::string_view code, const std::string_view why) {
+    io.out << "ERROR " << code << '\n' << std::flush;
+    io.err << "strata: hf-info: " << why << '\n';
+    return exit_code_value(ExitCode::usage);
+  };
+  const auto parsed = parse_hf_link(args->positional[0]);
+  if (const auto* reason = std::get_if<std::string_view>(&parsed)) return refuse("link_refused", *reason);
+  const auto& link = std::get<HfFileLink>(parsed);
+  NetworkKit kit;
+  if (auto failure = fill_kit(kit, config, config_file, services, true)) {
+    io.out << "ERROR " << reason_name(failure->reason) << '\n' << std::flush;
+    return report(io, *failure);
+  }
+  const FetchSettings fetch = fetch_settings_from(config.pull);
+  constexpr JsonLimits kApiLimits{.max_bytes = 1U << 20U, .max_depth = 8U, .max_container_entries = 65536U,
+                                  .max_string_bytes = 4096U, .allow_fractions = true};
+  std::optional<AcquireError> network_failure;
+  const auto get_json = [&](const std::string& url_text) -> std::optional<JsonValue> {
+    const auto url = parse_source_url(url_text);
+    if (!std::holds_alternative<HttpsUrl>(url)) {
+      network_failure = AcquireError{AcquireReason::manifest_invalid, "hf-info"};
+      return std::nullopt;
+    }
+    std::string body;
+    if (auto failure = fetch_envelope(kit, fetch, std::get<HttpsUrl>(url), body)) {
+      network_failure = std::move(failure);
+      return std::nullopt;
+    }
+    auto json = parse_json(body, kApiLimits);
+    if (auto* value = std::get_if<JsonValue>(&json)) return std::move(*value);
+    return std::nullopt;
+  };
+  const auto member = [](const JsonValue& object, const std::string_view key) -> const JsonValue* {
+    const auto* members = object.if_object();
+    if (members == nullptr) return nullptr;
+    for (const auto& m : *members) {
+      if (m.key == key) return &m.value;
+    }
+    return nullptr;
+  };
+  const auto network_refusal = [&]() {
+    if (network_failure) {
+      io.out << "ERROR " << reason_name(network_failure->reason) << '\n' << std::flush;
+      return report(io, *network_failure);
+    }
+    return refuse("unexpected_answer", "Hugging Face answered in an unexpected shape");
+  };
+  std::string commit = link.revision;
+  if (!is_hf_commit(commit)) {
+    const auto revision = get_json(hf_revision_api_url(link.repo, link.revision));
+    const auto* sha = revision ? member(*revision, "sha") : nullptr;
+    if (sha == nullptr || sha->if_string() == nullptr) return network_refusal();
+    commit = *sha->if_string();
+    if (!is_hf_commit(commit)) return refuse("unexpected_answer", "the revision did not resolve to a commit");
+  }
+  const auto slash = link.path.rfind('/');
+  const std::string folder = slash == std::string::npos ? std::string{} : link.path.substr(0, slash);
+  const auto listing = get_json(hf_tree_api_url(link.repo, commit, folder));
+  if (!listing || listing->if_array() == nullptr) return network_refusal();
+  std::string out = "{\"repo\":";
+  append_json_string(&out, link.repo);
+  out += ",\"commit\":";
+  append_json_string(&out, commit);
+  out += ",\"files\":[";
+  const auto shards = gguf_shard_set(link.path);
+  for (std::size_t i = 0; i < shards.size(); ++i) {
+    const JsonValue* found = nullptr;
+    for (const auto& entry : *listing->if_array()) {
+      const auto* path = member(entry, "path");
+      if (path != nullptr && path->if_string() != nullptr && *path->if_string() == shards[i]) found = &entry;
+    }
+    if (found == nullptr) return refuse("file_not_found", "the file (or one of its shards) is not at that revision");
+    const auto* lfs = member(*found, "lfs");
+    const auto* oid = lfs ? member(*lfs, "oid") : nullptr;
+    const auto* size = lfs ? member(*lfs, "size") : nullptr;
+    if (oid == nullptr || oid->if_string() == nullptr || size == nullptr || size->if_integer() == nullptr || *size->if_integer() <= 0) {
+      return refuse("not_lfs", "the file carries no LFS size and SHA-256");
+    }
+    const std::string& sha256 = *oid->if_string();
+    if (sha256.size() != 64 || !std::all_of(sha256.begin(), sha256.end(), [](const char c) {
+          return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        })) {
+      return refuse("not_lfs", "the file's LFS SHA-256 is malformed");
+    }
+    if (i != 0U) out += ',';
+    out += "{\"path\":";
+    append_json_string(&out, shards[i]);
+    out += ",\"size\":" + std::to_string(*size->if_integer()) + ",\"sha256\":";
+    append_json_string(&out, sha256);
+    out += '}';
+  }
+  out += "]}\n";
+  io.out << out << std::flush;
+  return 0;
+}
+
 }  // namespace
 
 int run_network_verb(const std::string& verb, const FrontendConfig& config, const std::filesystem::path& config_file,
                      const std::span<const std::string> rest, CliStreams& io, CliServices& services) {
   const InterruptScope scope;  // the whole verb: prompts, every update --models target, run's re-read
   if (verb == "pull") return verb_pull(config, config_file, rest, io, services);
+  if (verb == "hf-info") return verb_hf_info(config, config_file, rest, io, services);
   if (verb == "run") return verb_run(config, config_file, rest, io, services);
   if (verb == "doctor") return verb_doctor(config, config_file, rest, io, services);
   if (verb == "service") return verb_service(config, config_file, rest, io, services);

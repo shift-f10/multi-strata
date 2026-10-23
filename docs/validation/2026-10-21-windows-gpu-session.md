@@ -1208,6 +1208,15 @@ written beside it: `engines/gemma4/` (`strata-gemma4-engine`), plan
       comfortable ceiling on this machine. Long-context quality past 256K was not measured here
       (upstream reports needle and real-document runs to 1M with yarn 4).
     - Left serving: Gemma at 262K, as before.
+59. **Model downloads on the Models tab, with pause and resume** (owner, 2026-10-23: O1-O4, D7
+    "Build packs automatically", then "Have a download pause and resume functionality"; README
+    "Model downloads", `docs/AGENT_HANDOFF.md`).
+    - Built and tested without the network (a scripted `strata` child, a fake disk); the full
+      suite in the handoff entry. `.venv-dev` got numpy 2.5.4 and regex 2026.9.10 for the
+      prepare step (upstream's pack tools).
+    - **Box:** pending at this commit (a real pasted-link pull from Hugging Face with pause and
+      resume, a catalog card refused for space, the page on a keyless loopback instance with
+      `out/serve/config-downloads-local-keyless.json`).
 
 ### Not done in this session
 

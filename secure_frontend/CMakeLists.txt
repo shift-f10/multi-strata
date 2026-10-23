@@ -646,6 +646,25 @@ target_link_libraries(secure_frontend_launch PUBLIC secure_frontend_model_store 
 secure_frontend_set_warnings(secure_frontend_launch)
 target_link_libraries(strata-secure-server PRIVATE secure_frontend_launch)
 
+# Model downloads (plan 2026-10-23-model-downloads Task 1): Hugging Face links and the SP4 manifests
+# a download becomes (O4: Hugging Face and .gguf only). Pure: no network, no filesystem.
+secure_frontend_add_library(secure_frontend_hf_source SOURCES src/hf_source.cpp
+    LINKS secure_frontend_json secure_frontend_manifest_core)
+
+# Model downloads (plan 2026-10-23-model-downloads Task 4): the embedded download catalog and the
+# server's download manager (it runs `strata` as a child; the server links no network code).
+include(cmake/EmbedDownloadCatalog.cmake)
+secure_frontend_embed_download_catalog("${CMAKE_CURRENT_SOURCE_DIR}/catalog/downloads.json"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/download_catalog_embedded.cpp" embedded_download_catalog)
+secure_frontend_embed_download_catalog("${CMAKE_CURRENT_SOURCE_DIR}/../tools/secure/prepare_download.py"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/prepare_script_embedded.cpp" embedded_prepare_script)
+secure_frontend_add_library(secure_frontend_downloads
+    SOURCES src/download_catalog.cpp src/download_manager.cpp "${CMAKE_CURRENT_BINARY_DIR}/generated/download_catalog_embedded.cpp"
+            "${CMAKE_CURRENT_BINARY_DIR}/generated/prepare_script_embedded.cpp"
+    LINKS secure_frontend_hf_source secure_frontend_model_store secure_frontend_token_store secure_frontend_engine_stdio_process
+          secure_frontend_json secure_frontend_paths secure_frontend_sha256 secure_frontend_typed_config
+          secure_frontend_api_core secure_frontend_http_request_handler)
+
 # Model launcher (plan 2026-10-23 Tasks 1-2): the page-settable options per engine profile and
 # the model card files (one per model, listed by models.cards).
 secure_frontend_add_library(secure_frontend_model_options SOURCES src/model_options.cpp
@@ -678,7 +697,7 @@ secure_frontend_add_library(secure_frontend_server_bootstrap
           secure_frontend_typed_config secure_frontend_subsystem_limits secure_frontend_engine_supervisor
           secure_frontend_socket_io secure_frontend_api_core secure_frontend_connection_pool
           secure_frontend_chat_route secure_frontend_request_log secure_frontend_launch secure_frontend_model_runtime
-          secure_frontend_model_launcher)
+          secure_frontend_model_launcher secure_frontend_downloads)
 target_link_libraries(strata-secure-server PRIVATE secure_frontend_server_bootstrap)
 
 # SP4 Task 23 (spec §1.5): the strata CLI's verbs.
@@ -690,6 +709,8 @@ target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_acquire 
     secure_frontend_server_bootstrap
     secure_frontend_server_cli)  # SP5 M1 Tasks 13/14: shared boot; frontend_init's token store for `key`
 target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_launch)
+# Model downloads (plan 2026-10-23-model-downloads Task 3): hf-info reads links with hf_source.
+target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_hf_source)
 # SP4 Task 27: pull, run, update --models and doctor drive the confined downloader.
 target_sources(secure_frontend_strata_cli PRIVATE src/strata_cli_network.cpp)
 target_link_libraries(secure_frontend_strata_cli PUBLIC secure_frontend_downloader)
@@ -1229,7 +1250,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 120)
     secure_frontend_add_test_executable(secure_frontend_api_router_tests tests/api_router_test.cpp secure_frontend_api_router)
     secure_frontend_add_cases(secure_frontend_api_router_tests
-        model_control_routes_need_the_switch_and_the_key served_models_follow_the_running_card
+        model_control_routes_need_the_switch_and_the_key model_download_routes_need_the_switch_and_the_key
+        served_models_follow_the_running_card
         web_ui_listed_integers_are_dropdowns
         health_samples_status_before_state_once_each health_includes_engine_state_when_provided
         health_is_503_with_engine_state_when_unavailable dispatches_exact_health_route
@@ -1241,7 +1263,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         web_ui_assets_are_bundled_and_inert keyless_router_answers_without_a_key
         metrics_route_needs_the_key_and_the_switch web_ui_has_the_monitor_and_four_thinking_levels
         web_ui_has_the_models_tab_hidden_until_the_server_offers_it web_ui_models_tab_starts_stops_and_polls
-        web_ui_chat_follows_the_running_model)
+        web_ui_chat_follows_the_running_model web_ui_models_tab_has_a_downloads_section
+        web_ui_downloads_start_cancel_poll_and_check_links web_ui_downloads_pause_and_resume)
     target_link_libraries(secure_frontend_api_router_tests PRIVATE
         secure_frontend_secrets secure_frontend_api_router secure_frontend_http_policy)
 
@@ -1422,7 +1445,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         session_rows_match_the_pin
         slot_save_path_is_a_bounded_private_path
         web_ui_and_loopback_without_key_rows
-        model_name_row monitor_row models_keys_typed_and_described
+        model_name_row monitor_row models_keys_typed_and_described download_keys_typed_and_described
         codex_and_tool_call_rows_are_dispositioned
         session_rows_at_each_edge
         replicas_parallel_row_at_the_pin
@@ -1508,13 +1531,28 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # Model launcher (plan 2026-10-23 Tasks 3-4): the real server booted with model cards over the
     # supervision fake engine: start, switch, failed start, refusals, remembered options.
     secure_frontend_add_test_executable(secure_frontend_model_launcher_tests tests/model_launcher_test.cpp
-        secure_frontend_test_support secure_frontend_api_core secure_frontend_json)
+        secure_frontend_test_support secure_frontend_api_core secure_frontend_json secure_frontend_model_launcher)
     secure_frontend_test_paths(secure_frontend_model_launcher_tests)
     secure_frontend_add_cases(secure_frontend_model_launcher_tests
         launcher_boots_idle_and_starts_a_card switch_waits_for_the_generation_then_swaps failed_start_keeps_the_server_usable
         start_refusals_name_the_problem options_are_remembered models_start_and_control_off
-        bad_card_refused_at_boot_and_main_rows_refused
+        bad_card_refused_at_boot_and_main_rows_refused downloads_serve_the_catalog_and_load_download_cards
+        cards_can_be_added_while_serving
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME} TIMEOUT 180)
+
+    # Model downloads (plan 2026-10-23-model-downloads Task 4): the download manager over a scripted child.
+    secure_frontend_add_test_executable(secure_frontend_download_manager_tests tests/download_manager_test.cpp
+        secure_frontend_downloads secure_frontend_model_store)
+    secure_frontend_add_cases(secure_frontend_download_manager_tests
+        catalog_cards_and_the_disk_check pull_runs_strata_and_tracks_progress failures_and_cancel maya_main_is_resolved_and_checked
+        pasted_links pause_resume_and_cancel_discards download_routes_answer_the_contract
+        maya_sizes_meet_the_free_space_and_resume_keeps_the_commit a_resume_counts_its_rate_from_the_kept_bytes LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+
+    # Model downloads (plan 2026-10-23-model-downloads Task 1): the link rules and the manifests (O4).
+    secure_frontend_add_test_executable(secure_frontend_hf_source_tests tests/hf_source_test.cpp
+        secure_frontend_hf_source secure_frontend_model_store)
+    secure_frontend_add_cases(secure_frontend_hf_source_tests
+        links_only_huggingface_gguf urls_and_shard_sets manifests_are_huggingface_gguf_only)
 
     # Model launcher plan Task 2 (spec §4): the engine options a card lets the page set.
     secure_frontend_add_test_executable(secure_frontend_model_options_tests tests/model_options_test.cpp
@@ -1531,7 +1569,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         secure_frontend_model_cards)
     secure_frontend_add_cases(secure_frontend_model_cards_tests
         card_parses_and_merges_into_a_valid_config card_refusals_name_the_rule bad_card_is_refused_others_load
-        main_config_may_not_set_card_keys card_options_reach_the_engine_arguments
+        main_config_may_not_set_card_keys card_options_reach_the_engine_arguments launcher_store_config_uses_the_downloads_root
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     # Gemma 4 plan 1 Task 8 (spec §2.5, §6.3)
@@ -1857,6 +1895,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # SP4 Task 27 (spec §1.3, §6.1, §8.3, D6): the network verbs through CliServices seams.
     target_sources(secure_frontend_acquire_tests PRIVATE tests/acquire_network_cli_test.cpp)
     secure_frontend_add_cases(secure_frontend_acquire_tests pull_cli_prints_summary_and_installs run_installed_model_needs_no_network
+        pull_progress_lines_are_machine_readable hf_info_resolves_a_link
         run_refuses_glm53_without_engine engine_gate_refuses_gemma4_until_the_engine_exists
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     if(SECURE_FRONTEND_TEST_HOOKS)

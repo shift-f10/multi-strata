@@ -4,7 +4,10 @@
 // failed start leaves the server usable, one switch runs at a time, and the page's options are
 // remembered.
 #include "secure_frontend/api_errors.hpp"
+#include "secure_frontend/canonical_path.hpp"
 #include "secure_frontend/json.hpp"
+#include "secure_frontend/model_launcher.hpp"
+#include "support/config_json.hpp"
 #include "support/fake_engine_dump.hpp"
 #include "support/server_harness.hpp"
 #include "support/test_paths.hpp"
@@ -16,6 +19,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <optional>
@@ -314,9 +318,10 @@ void models_start_and_control_off() {
   }
   expect(chat && chat->status == 200, "the card models.start names serves: " + shown(chat));
   for (const auto& [method, target] : std::vector<std::pair<std::string, std::string>>{
-           {"GET", "/v1/strata/models"}, {"POST", "/v1/strata/models/start"}, {"POST", "/v1/strata/models/stop"}}) {
+           {"GET", "/v1/strata/models"}, {"POST", "/v1/strata/models/start"}, {"POST", "/v1/strata/models/stop"},
+           {"GET", "/v1/strata/downloads"}, {"POST", "/v1/strata/downloads/start"}}) {
     const auto r = call(*server, method, target, method == "POST" ? R"({"name":"Alpha"})" : "");
-    expect(r && r->status == 404, method + " " + target + " is no route with models.control off: " + shown(r));
+    expect(r && r->status == 404, method + " " + target + " is no route with models.control and models.downloads off: " + shown(r));
   }
   server->stop(ServerProcess::Stop::ctrl_break);
   expect(server->wait_exit(std::chrono::seconds(20)) == std::optional<int>{0}, "a clean exit with a model running");
@@ -348,6 +353,82 @@ void bad_card_refused_at_boot_and_main_rows_refused() {
          "a card row in the main config refuses the boot by name: " + refused->stderr_text());
 }
 
+
+// Model downloads (plan 2026-10-23-model-downloads Task 4): models.downloads serves the download
+// routes (the embedded catalog and the drive's free space), makes the store and <state>/downloads
+// and <state>/cards owner-only, and a card a prepared download wrote there loads at boot like a
+// listed one.
+void downloads_serve_the_catalog_and_load_download_cards() {
+  const auto scratch = secure_frontend_test::make_scratch_directory();
+  secure_frontend_test::make_owner_private_directory(scratch / "state");
+  auto options = two_cards({}, {}, {{"models.control", "true"}, {"models.downloads", "true"},
+                                    {"models.downloads_root", secure_frontend_test::json_literal(secure_frontend::path_to_utf8(scratch / "store"))}});
+  options.state_dir = scratch / "state";
+  auto first = ServerProcess::start(options);
+  expect(first && first->wait_until_listening(std::chrono::seconds(20)), "the launcher boots with downloads on");
+  if (!first) return;
+  const auto listed = call(*first, "GET", "/v1/strata/downloads");
+  expect(listed && listed->status == 200 && listed->body.find("\"disk\":{\"root\":") != std::string::npos &&
+             listed->body.find("\"id\":\"qwen3.8-flash-next-iq2_xs\"") != std::string::npos &&
+             listed->body.find("\"source\":\"maya\"") != std::string::npos,
+         "the embedded catalog and the disk: " + shown(listed).substr(0, 400) + " " + first->stderr_text());
+  std::error_code ec;
+  expect(std::filesystem::is_directory(scratch / "store", ec) && std::filesystem::is_directory(scratch / "state" / "downloads", ec) &&
+             std::filesystem::is_directory(scratch / "state" / "cards", ec),
+         "the store, <state>/downloads and <state>/cards are made");
+  expect(has_code(call(*first, "POST", "/v1/strata/downloads/start", R"({"id":"nope"})"), 404, "model_not_found"),
+         "a start of an unknown id is refused");
+  expect(has_code(call(*first, "POST", "/v1/strata/downloads/link", R"({"url":"https://example.com/a/b/resolve/main/m.gguf"})"), 400,
+                  "invalid_request"),
+         "a link off Hugging Face is refused (O4)");
+  // The card a prepared download wrote: Alpha's own file under another name.
+  std::ifstream alpha_file(first->root() / "cards" / "1.json", std::ios::binary);
+  std::string card{std::istreambuf_iterator<char>(alpha_file), std::istreambuf_iterator<char>()};
+  const auto named = card.find("\"name\": \"Alpha\"");
+  expect(named != std::string::npos, "the harness card names Alpha");
+  if (named == std::string::npos) return;
+  card.replace(named, std::string_view{"\"name\": \"Alpha\""}.size(), "\"name\": \"Gamma\"");
+  secure_frontend_test::write_file(scratch / "state" / "cards" / "gamma.json", card, 0600);
+  first->stop(ServerProcess::Stop::ctrl_break);
+  expect(first->wait_exit(std::chrono::seconds(20)) == std::optional<int>{0}, "a clean exit");
+
+  auto second = ServerProcess::start(options);
+  expect(second && second->wait_until_listening(std::chrono::seconds(20)), "the launcher boots again");
+  if (!second) return;
+  expect(card_state(*second, "Gamma") == "stopped" && card_state(*second, "Alpha") == "stopped",
+         "the download's card loads at boot beside the listed ones: " + second->stderr_text());
+  second->stop(ServerProcess::Stop::ctrl_break);
+  expect(second->wait_exit(std::chrono::seconds(20)) == std::optional<int>{0}, "a clean exit again");
+}
+
+// A prepared download becomes a card while the server runs: the launcher adds it (listed at
+// once), refuses a second card of the same name, and holds at most kMaxLauncherCards.
+void cards_can_be_added_while_serving() {
+  secure_frontend::ModelCard alpha;
+  alpha.name = "Alpha";
+  secure_frontend::LauncherSettings settings;
+  settings.cards = {alpha};
+  settings.log = [](std::string_view) {};
+  secure_frontend::ModelLauncher launcher(std::move(settings));
+  secure_frontend::ModelCard gamma;
+  gamma.name = "Gamma";
+  expect(launcher.add_card(gamma), "a card is added");
+  expect(launcher.list_json().find("\"name\":\"Gamma\"") != std::string::npos, "it is listed at once");
+  expect(launcher.served().extension.find("\"id\":\"Gamma\"") != std::string::npos, "and in /v1/models' card states");
+  expect(!launcher.add_card(gamma), "a second card of the same name is refused");
+  std::size_t added = 2;
+  for (std::size_t i = 0; i < 2U * secure_frontend::kMaxLauncherCards && launcher.add_card([i] {
+         secure_frontend::ModelCard more;
+         more.name = "M" + std::to_string(i);
+         return more;
+       }());
+       ++i) {
+    ++added;
+  }
+  expect(added == secure_frontend::kMaxLauncherCards, "at most kMaxLauncherCards cards: " + std::to_string(added));
+  launcher.shutdown();
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -358,6 +439,8 @@ int main(int argc, char** argv) {
       {"start_refusals_name_the_problem", start_refusals_name_the_problem},
       {"options_are_remembered", options_are_remembered},
       {"models_start_and_control_off", models_start_and_control_off},
+      {"downloads_serve_the_catalog_and_load_download_cards", downloads_serve_the_catalog_and_load_download_cards},
+      {"cards_can_be_added_while_serving", cards_can_be_added_while_serving},
       {"bad_card_refused_at_boot_and_main_rows_refused", bad_card_refused_at_boot_and_main_rows_refused},
   }, failures);
 }

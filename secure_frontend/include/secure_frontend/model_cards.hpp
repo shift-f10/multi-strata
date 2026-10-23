@@ -79,4 +79,10 @@ struct LoadedCards final {
 
 [[nodiscard]] std::string_view profile_name(EngineProfile profile) noexcept;
 
+// Model downloads (plan 2026-10-23-model-downloads Task 3): the config strata's own verbs (pull,
+// hf-info, list, ...) read from a models.cards config: the main config and the first usable card
+// at its defaults, with models.downloads_root as roots.models (the downloads' store). Without
+// models.downloads_root, refused by name.
+[[nodiscard]] ConfigValidationResult launcher_store_config(const FrontendConfigDraft& main);
+
 }  // namespace secure_frontend

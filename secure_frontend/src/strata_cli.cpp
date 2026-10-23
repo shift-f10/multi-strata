@@ -1,4 +1,5 @@
 #include "secure_frontend/strata_cli.hpp"
+#include "secure_frontend/model_cards.hpp"
 
 #include "secure_frontend/bundle_io.hpp"
 #include "secure_frontend/catalog.hpp"
@@ -26,7 +27,8 @@ const std::string_view kUsage =
     "  list [--all] [--outdated]\n"
     "  show <name[:tag]> [--digests]\n"
     "  rm <name[:tag]> [--force] | rm --retired | rm --partials <name:tag>\n"
-    "  pull <name[:tag]> | pull --manifest <file> --trust-manifest sha256:<hex>\n"
+    "  pull <name[:tag]> | pull --manifest <file> --trust-manifest sha256:<hex> [--progress-lines]\n"
+    "  hf-info <https://huggingface.co/.../<file>.gguf>   (a .gguf's commit, shard sizes and SHA-256s)\n"
     "       [--yes] [--bundle <dir>] [--allow-downgrade] [--verify] [--discard-partial]\n"
     "  update --models [<name:tag> ...] [--yes]\n"
     "  run <name[:tag]> [--yes]\n"
@@ -377,7 +379,10 @@ std::variant<ValidatedConfig, int> load_config(const std::string& file, CliStrea
     for (const auto& issue : *issues) io.err << "strata: config: " << format_issue(issue) << '\n';
     return exit_code_value(ExitCode::usage);
   }
-  auto validated = validate(std::get<FrontendConfigDraft>(draft));
+  // Model downloads (plan 2026-10-23-model-downloads Task 3): a models.cards config gives the
+  // verbs its downloads root as their store.
+  const auto& read = std::get<FrontendConfigDraft>(draft);
+  auto validated = read.entries.contains("models.cards") ? launcher_store_config(read) : validate(read);
   if (auto* issues = std::get_if<ConfigErrors>(&validated)) {
     for (const auto& issue : *issues) io.err << "strata: config: " << format_issue(issue) << '\n';
     return exit_code_value(ExitCode::usage);
@@ -519,7 +524,8 @@ int run_strata(const std::span<const std::string> all_args, CliStreams& io, CliS
   const auto& config = std::get<ValidatedConfig>(loaded).get();
   const std::string verb = args[2];
   const auto rest = args.subspan(3);
-  if (verb == "pull" || verb == "run" || verb == "doctor" || verb == "update" || verb == "service" || verb == "uninstall") {
+  if (verb == "pull" || verb == "run" || verb == "doctor" || verb == "update" || verb == "service" || verb == "uninstall" ||
+      verb == "hf-info") {
     return run_network_verb(verb, config, path_from_utf8(args[1]), rest, io, services);
   }
   struct Grammar final {

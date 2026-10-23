@@ -47,7 +47,8 @@ std::optional<AcquireError> check_layout(const CanonicalRoot& root, const Relati
     case ManifestProfile::gemma4: return check_gemma4_layout(root, dir, m);
     // glm53: shard-set rule only, until SP6.
     case ManifestProfile::glm53:
-    case ManifestProfile::raw: return std::nullopt;
+    case ManifestProfile::raw:
+    case ManifestProfile::gguf: return std::nullopt;  // the shard-set rule only (validate_manifest)
   }
   if (!m.launch.pack || !m.launch.tokenizer_pack) return AcquireError{AcquireReason::pack_layout_invalid, where(m) + ": launch.pack"};
   std::set<std::string> listed;

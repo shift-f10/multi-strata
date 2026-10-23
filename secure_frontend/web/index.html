@@ -9,7 +9,8 @@
      (pin v0.2.2, MIT License, Copyright (c) 2026 Niko1221 and the Strata contributors; see
      LICENSE.strata-ui.txt): the header, chat, composer, monitor, about and sampling drawer kept; the
      API-key sign-in, the labelled New chat button and the Models tab (the model launcher, shown only
-     when the server answers GET /v1/strata/models) added; the images view, the conversation-cache
+     when the server answers GET /v1/strata/models, with its Downloads section, shown only when the
+     server answers GET /v1/strata/downloads) added; the images view, the conversation-cache
      and MCP cards and the server-side settings dropped (this server has none of those); no inline
      script or style. -->
 <link rel="icon" href="/ui/favicon.svg" type="image/svg+xml">
@@ -124,6 +125,32 @@
           <span class="model-progress" id="model-progress" role="status" aria-live="polite"></span>
         </div>
         <p class="msg-error" id="model-start-error" role="alert" hidden></p>
+      </div>
+      <!-- Downloads (models.downloads, GET /v1/strata/downloads): hidden unless the server offers them -->
+      <div class="st-card downloads" id="downloads" hidden>
+        <div class="models-head"><span class="card-title">Downloads</span>
+          <button type="button" class="st-btn st-btn--icon" id="downloads-refresh" title="Refresh" aria-label="Refresh the downloads">
+            <svg class="st-icon"><use href="/ui/sprite.svg#i-refresh"/></svg></button></div>
+        <p class="muted" id="downloads-denied" hidden>This server lets only its own machine download models. To allow
+          other machines, add <code>"control_remote": true</code> to the <code>models</code> block of the server's
+          config file and restart the server, or open this page on the server itself.</p>
+        <div class="downloads-body" id="downloads-body">
+          <p class="muted small">GGUF models from Hugging Face. The server knows each file's size and SHA-256 before the
+            transfer, checks the free space first and every file at the end.</p>
+          <p class="downloads-disk" id="downloads-disk" hidden></p>
+          <div class="downloads-list" id="downloads-list"></div>
+          <form class="downloads-link" id="downloads-link-form" autocomplete="off" novalidate>
+            <label class="st-label" for="downloads-url">Hugging Face link to a .gguf file</label>
+            <div class="downloads-link__row">
+              <input class="st-input" id="downloads-url" type="text" inputmode="url" spellcheck="false" autocapitalize="off"
+                     placeholder="The address of the file's page on huggingface.co">
+              <button type="submit" class="st-btn st-btn--secondary" id="downloads-check">Check</button></div>
+            <p class="muted small">One file (a split model's first part brings the others). Its size, commit and SHA-256 are
+              shown before anything is downloaded.</p>
+            <p class="msg-error" id="downloads-link-error" role="alert" hidden></p>
+            <div class="downloads-confirm" id="downloads-confirm" hidden></div>
+          </form>
+        </div>
       </div>
     </div>
   </section>

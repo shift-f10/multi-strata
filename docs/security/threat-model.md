@@ -77,7 +77,11 @@ Trust boundaries:
   the same confirmation — `strata run`. Each runs only after the operator
   confirms the manifest-pinned hosts and digests it displays. `strata import`,
   `export` and `verify` are local. None can be invoked by the HTTP API, a model,
-  a plugin, configuration or automatic logic.
+  a plugin, configuration or automatic logic — with one owner-accepted exception
+  (2026-10-23, model downloads D1): with `models.downloads` set, a key holder on
+  the Models tab may start a `strata pull` of a catalog card or a confirmed
+  Hugging Face `.gguf` link. The server itself still holds no network code; the
+  pull runs as a separate confined `strata` child (below, "Model downloads").
 - Privacy-relevant behavior is build-time auditable: the release manifest lists
   enabled network-capable components, and CI tests prove that a normal service
   lifecycle makes no outbound network connection.
@@ -211,7 +215,9 @@ Trust boundaries:
 ### Artifact acquisition
 
 - Runtime networking is off by default. No model, executable, dependency, or
-  plugin is downloaded implicitly on startup or request handling.
+  plugin is downloaded implicitly on startup or request handling. The one
+  request that can start a transfer is a model download route, off unless
+  `models.downloads` (below).
 - An explicit acquire command accepts a manifest containing HTTPS source,
   artifact name/version, byte limit, and SHA-256 digest. The artifact is written
   to a temporary file, size-checked, hashed, then atomically moved into the
@@ -378,6 +384,52 @@ D1-D10.
 - The remembered options (D7) live in `<roots.state>/model-options.json`, written with the
   owner-only atomic writer; a file of another shape is ignored (the card's defaults apply).
 
+### Model downloads (models.downloads, 2026-10-23)
+
+Spec `docs/superpowers/specs/2026-10-23-model-downloads-design.md`; the owner's rules O1-O4
+(O4: "make sure there is a safety in the download that only downloads from huggingface and a
+gguf") and decisions D1-D8; pause and resume added the same day.
+
+- **Off by default; the same gate as model control.** The download routes
+  (`/v1/strata/downloads*`) are no routes unless `models.downloads`, keyed like every route,
+  and for loopback peers only unless `models.control_remote`. The page and the API name a
+  catalog card's id or a link; never a path, a host, a file name of the store, an executable or
+  an argument.
+- **No network code in the server.** Every transfer is a `strata --config <the server's config>
+  pull --manifest <m> --trust-manifest sha256:<d> --yes --progress-lines` child, every link
+  lookup a `strata ... hf-info <link>` child: no shell, a fixed argv, a closed environment (the
+  system's variables, a private temp folder, `STRATA_GGUF_PY` when the server has it), the
+  working folder `<roots.state>/downloads`, the Job / process group. Inside it SP4's pull runs
+  unchanged: the confined downloader child, HTTPS only, every file's size and SHA-256 fixed in
+  the manifest before a byte moves, and the manifest itself trusted by its digest. The server
+  reads only the child's fixed progress words (`MANIFEST`, `FILE`, `BYTES`, `FINISHED`,
+  `RESULT`).
+- **O4, three times.** The page pre-checks a pasted link (convenience only). The server's link
+  grammar (`hf_source`) accepts only `https://huggingface.co/<owner>/<repo>/(resolve|blob)/<rev>/
+  <path>.gguf`: no other host, no port, no user info, no `..` or empty segment, no datasets or
+  spaces, a path ending `.gguf`. The manifest the server writes (profile `gguf`, or `glm53` for
+  Maya's GLM files) lists only `weights`/`mmproj` roles with `.gguf` paths, names the host
+  `huggingface.co` and allows redirects only to `*.huggingface.co`, `*.hf.co` and
+  `*.xethub.hf.co` (Hugging Face's own storage); the engine gate refuses a `gguf` manifest as a
+  launch, so a downloaded file runs only through a card.
+- **What is trusted.** Catalog cards carry the commit, size and SHA-256 that upstream's
+  `setup.py` pins (Maya's: SHA-256 at `main`; the commit and sizes are looked up at start and
+  every reported SHA-256 must equal the pinned one). A pasted link is trust on first use: the
+  commit and each file's LFS SHA-256 and size come from Hugging Face's tree listing at the moment
+  of the check (one answer, 200 only, no redirect, 1 MiB cap), are shown to the person, and are
+  then fixed in the manifest; the confirmation is valid for that link for ten minutes.
+- **Space (O2).** A start that does not leave 2 GiB free on the store's drive is refused (507);
+  Maya's are checked again once their sizes are known; the pull checks while it writes. Pause
+  keeps the partial files in the store's owner-only staging; Cancel deletes them (`strata rm
+  --partials`).
+- **The prepare step (D7).** Only for catalog cards upstream packs (never a pasted link): the
+  script the server was built with (`tools/secure/prepare_download.py`, written owner-only to
+  `<roots.state>/downloads/` at boot) runs under the operator's `models.prepare_python` with
+  `-I` and calls upstream's pack tools read-only from `models.prepare_tools`. The card the server
+  then writes copies only the engine settings of the operator's `models.download_engine_card`
+  and the paths it made; it is read back through the card reader (owner-only, validated with the
+  main config) before the launcher adds it.
+
 ### Extensions and MCP
 
 - MCP, tool execution, arbitrary plugins, and remote command execution are
@@ -405,6 +457,13 @@ D1-D10.
   Windows, after a switch the console handler's completion event is already set, so a console
   *close* (not Ctrl+C/Ctrl+Break) no longer waits for the orderly shutdown; the Job still kills
   the engine with the server.
+- **Model downloads residual (2026-10-23):** a key holder with downloads can fill the store's
+  drive down to the 2 GiB margin and spend the line's bandwidth; a pasted link downloads
+  whatever `.gguf` file Hugging Face serves at the confirmed commit (its content is not vetted,
+  only fixed by its SHA-256). The prepare step runs upstream's Python tools (with numpy) over a
+  pinned catalog file as the server's user; a flaw in them meets only files whose SHA-256
+  upstream or Maya pinned. Mitigations: off by default, loopback-only unless
+  `models.control_remote`, one download at a time, pasted links are files only.
 - Model outputs can be harmful or unreliable. Prompt injection is not solved by
   transport security; the initial release has no tool execution surface.
 - GPU drivers, inference libraries, and upstream engine vulnerabilities remain

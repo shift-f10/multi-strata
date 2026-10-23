@@ -9,6 +9,8 @@
 
 #include "secure_frontend/frontend_config.hpp"
 
+#include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -24,8 +26,10 @@ namespace secure_frontend {
 // Model launcher (plan 2026-10-23 Task 3): the boot of a main config with models.cards. The
 // cards are loaded (a bad one refused by name, D9), each validated with the main config; the
 // server-wide settings come from the main config; the card models.start names starts after
-// bind (none: the server waits for the page, D5). The same SP3 I1 shutdown.
-[[nodiscard]] int launcher_run(const FrontendConfigDraft& main);
+// bind (none: the server waits for the page, D5). The same SP3 I1 shutdown. With
+// models.downloads the download routes are served (plan 2026-10-23-model-downloads Task 4): each
+// transfer is a `strata --config <config_file> pull` child, so the config file is needed.
+[[nodiscard]] int launcher_run(const FrontendConfigDraft& main, const std::optional<std::filesystem::path>& config_file);
 // --check for a launcher config: the server's settings, each card's verdict, the token read.
 [[nodiscard]] int launcher_check(const FrontendConfigDraft& main, const std::vector<std::string>& overridden);
 

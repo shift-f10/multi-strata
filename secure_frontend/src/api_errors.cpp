@@ -9,7 +9,7 @@
 namespace secure_frontend {
 namespace {
 
-constexpr std::array<ApiErrorRow, 29> kTable{{
+constexpr std::array<ApiErrorRow, 33> kTable{{
     {ApiError::invalid_request, 400, "invalid_request_error", "invalid_request", "The request is malformed or not supported."},
     {ApiError::invalid_json, 400, "invalid_request_error", "invalid_json", "The request body is not valid JSON within the allowed limits."},
     {ApiError::unsupported_parameter, 400, "invalid_request_error", "unsupported_parameter", "This parameter is not supported by this server."},
@@ -40,6 +40,11 @@ constexpr std::array<ApiErrorRow, 29> kTable{{
     {ApiError::switch_in_progress, 409, "invalid_request_error", "switch_in_progress", "A model start or stop is already in progress."},
     {ApiError::model_switching, 503, "server_error", "model_switching", "The server is switching models; retry shortly."},
     {ApiError::no_model_running, 503, "server_error", "no_model_running", "No model is running; start one first."},
+    // Model downloads (plan 2026-10-23-model-downloads Task 4).
+    {ApiError::download_in_progress, 409, "invalid_request_error", "download_in_progress", "This model is already downloading, queued or installed as a card."},
+    {ApiError::upstream_unavailable, 502, "server_error", "upstream_unavailable", "Hugging Face could not be reached or answered unexpectedly."},
+    {ApiError::insufficient_storage, 507, "server_error", "insufficient_storage", "Insufficient disk space on the data drive for this download."},
+    {ApiError::download_not_active, 409, "invalid_request_error", "download_not_active", "This model is not downloading or queued."},
 }};
 
 constexpr std::array<std::string_view, 21> kFixedParamKeys{

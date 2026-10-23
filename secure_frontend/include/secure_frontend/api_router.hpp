@@ -44,6 +44,11 @@ struct ModelControl final {
   std::function<RouteResult(const RequestContext& context)> stop{};
 };
 
+// The download routes' handler (kModelDownloadRoutes); empty: the routes are not served (404).
+struct ModelDownloads final {
+  std::function<RouteResult(RouteId route, std::string_view body, const RequestContext& context)> handle{};
+};
+
 struct ApiRouterConfig final {
   HttpPolicy policy;
   BearerTokenValidator validator;
@@ -66,6 +71,7 @@ struct ApiRouterConfig final {
   // Model launcher: set, /v1/models and /v1/models/<id> answer from it instead of model_id/aliases.
   ServedModelsProvider served{};
   ModelControl control{};
+  ModelDownloads downloads{};
 };
 
 // application/json, optionally followed by `; charset=utf-8`; ASCII

@@ -333,6 +333,12 @@ struct ModelsConfig final {
   std::optional<std::string> start{};          // models.start: unset = boot with no engine (D5)
   bool control{false};                         // models.control: the page and API may start/stop
   bool control_remote{false};                  // models.control_remote: ... also from non-loopback clients (D2)
+  // Model downloads (plan 2026-10-23-model-downloads Task 4).
+  bool downloads{false};                                    // models.downloads: the Models tab's downloads
+  std::optional<std::filesystem::path> downloads_root{};    // models.downloads_root: the downloads' store
+  std::optional<std::filesystem::path> prepare_python{};    // models.prepare_python: runs upstream's pack tools
+  std::optional<std::filesystem::path> prepare_tools{};     // models.prepare_tools: upstream's tools folder
+  std::optional<std::string> download_engine_card{};        // models.download_engine_card: a prepared card's engine
 };
 
 // SP4 §3.9. pull.downloader is only a syntactically absolute path here; the

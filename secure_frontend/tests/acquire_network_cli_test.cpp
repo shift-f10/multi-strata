@@ -86,6 +86,124 @@ void pull_cli_prints_summary_and_installs() {
   expect(index.models.size() == 1 && index.models.front().name == "m", "installed and indexed");
 }
 
+// Model downloads (plan 2026-10-23-model-downloads Task 3): with --progress-lines, stdout carries
+// only fixed one-line records the server reads (MANIFEST, FILE, BYTES, FINISHED, RESULT); the
+// summary and every notice go to stderr.
+void pull_progress_lines_are_machine_readable() {
+  CliHarness h;
+  NetworkSeams seams(h, fx::qwen_payload());
+  const auto text = fx::manifest_text("m", "t", 1, fx::qwen_payload());
+  const std::string digest = secure_frontend::to_hex(secure_frontend::sha256(text));
+  const int code = h.run({"pull", "--manifest", write_manifest(h, text), "--trust-manifest", "sha256:" + digest, "--yes",
+                          "--progress-lines"});
+  expect(code == 0, "pull exits 0: " + h.err);
+  std::vector<std::string> lines;
+  for (std::size_t start = 0; start < h.out.size();) {
+    const auto end = h.out.find('\n', start);
+    lines.push_back(h.out.substr(start, end == std::string::npos ? std::string::npos : end - start));
+    start = end == std::string::npos ? h.out.size() : end + 1;
+  }
+  expect(!lines.empty() && lines.front() == "MANIFEST m:t " + digest, "the first record names the manifest: " + h.out);
+  expect(!lines.empty() && lines.back() == "RESULT ok", "the last record is the result: " + h.out);
+  for (const auto& line : lines) {
+    const bool known = line.rfind("MANIFEST ", 0) == 0 || line.rfind("FILE ", 0) == 0 || line.rfind("BYTES ", 0) == 0 ||
+                       line.rfind("FINISHED ", 0) == 0 || line.rfind("RESULT ", 0) == 0;
+    expect(known, "only fixed records on stdout: " + line);
+  }
+  for (const auto& file : fx::qwen_payload()) {
+    expect(std::find(lines.begin(), lines.end(), "FILE " + file.path + " " + std::to_string(file.bytes.size())) != lines.end() &&
+               std::find(lines.begin(), lines.end(), "FINISHED " + file.path + " ok") != lines.end(),
+           "a file's start and end: " + file.path);
+  }
+  expect(h.err.find("The source host sees your IP address and which files you download.") != std::string::npos,
+         "the summary goes to stderr");
+  expect(h.out.find("https://") == std::string::npos && h.err.find("https://fixture.example/fx/") == std::string::npos,
+         "never a source URL");
+
+  CliHarness refused;
+  NetworkSeams refused_seams(refused, fx::qwen_payload());
+  const int refused_code = refused.run({"pull", "--manifest", write_manifest(refused, text), "--trust-manifest",
+                                        "sha256:" + std::string(64, '0'), "--yes", "--progress-lines"});
+  expect(refused_code != 0 && refused.out.rfind("RESULT ", 0) == 0 && refused.out.find("RESULT ok") == std::string::npos,
+         "a refusal ends with its RESULT record: " + refused.out);
+}
+
+// Model downloads (plan 2026-10-23-model-downloads Task 3): strata hf-info <link> reads the link
+// (O4: huggingface.co, a .gguf), asks Hugging Face's API through the confined downloader for the
+// revision's commit and the folder's listing, and prints the file's whole shard set with each
+// size and LFS SHA-256 as one JSON object; a refused link never reaches the network.
+namespace {
+struct HfSeams final {
+  explicit HfSeams(CliHarness& h, const std::string& scenario, const std::map<std::string, std::string>& fixtures) {
+    transport = std::make_shared<secure_frontend_test::ScriptedTransport>(*secure_frontend_test::curl::parse_scenario(scenario), fixtures);
+    probe = std::make_shared<secure_frontend_test::pull::FakeProbe>();
+    h.services.transport = [t = transport](const secure_frontend::FrontendConfig&) {
+      return std::unique_ptr<secure_frontend::HopTransport>(std::make_unique<secure_frontend_test::pull::ForwardTransport>(*t));
+    };
+    h.services.probe = [p = probe](const secure_frontend::FrontendConfig&) {
+      return std::unique_ptr<secure_frontend::DownloaderProbe>(std::make_unique<secure_frontend_test::pull::ForwardProbe>(*p));
+    };
+    h.services.resolver = [] {
+      auto r = std::make_unique<secure_frontend_test::ScriptedResolver>();
+      r->answers["huggingface.co"] = {secure_frontend::make_ipv4(18, 160, 143, 32)};
+      return std::unique_ptr<secure_frontend::Resolver>(std::move(r));
+    };
+    h.services.clock = &clock;
+  }
+  std::shared_ptr<secure_frontend_test::ScriptedTransport> transport;
+  std::shared_ptr<secure_frontend_test::pull::FakeProbe> probe;
+  secure_frontend_test::ManualClock clock;
+};
+}  // namespace
+
+void hf_info_resolves_a_link() {
+  const std::string commit = "0123456789abcdef0123456789abcdef01234567";
+  const std::string sha1(64, 'a');
+  const std::string sha2(64, 'b');
+  const std::string scenario =
+      "response https://huggingface.co/api/models/acme/Model-GGUF/revision/main\nstatus 200 OK\n"
+      "header Content-Type: application/json\nbody-file revision.json\nend\n"
+      "response https://huggingface.co/api/models/acme/Model-GGUF/tree/" + commit + "/IQ2_XS\nstatus 200 OK\n"
+      "header Content-Type: application/json\nbody-file tree.json\nend\n";
+  const std::map<std::string, std::string> fixtures{
+      {"revision.json", "{\"id\":\"acme/Model-GGUF\",\"sha\":\"" + commit + "\",\"siblings\":[]}"},
+      {"tree.json", "[{\"type\":\"file\",\"path\":\"IQ2_XS/m-00001-of-00002.gguf\",\"size\":134,\"oid\":\"x\",\"lfs\":{\"oid\":\"" + sha1 +
+                        "\",\"size\":1000,\"pointerSize\":134}},"
+                        "{\"type\":\"file\",\"path\":\"IQ2_XS/m-00002-of-00002.gguf\",\"size\":134,\"lfs\":{\"oid\":\"" + sha2 +
+                        "\",\"size\":2000,\"pointerSize\":134}},"
+                        "{\"type\":\"file\",\"path\":\"IQ2_XS/README.md\",\"size\":10,\"oid\":\"y\"}]"}};
+  CliHarness h;
+  HfSeams seams(h, scenario, fixtures);
+  const int code = h.run({"hf-info", "https://huggingface.co/acme/Model-GGUF/resolve/main/IQ2_XS/m-00002-of-00002.gguf"});
+  expect(code == 0, "hf-info exits 0: " + h.err + h.out);
+  expect(h.out == "{\"repo\":\"acme/Model-GGUF\",\"commit\":\"" + commit +
+                      "\",\"files\":[{\"path\":\"IQ2_XS/m-00001-of-00002.gguf\",\"size\":1000,\"sha256\":\"" + sha1 +
+                      "\"},{\"path\":\"IQ2_XS/m-00002-of-00002.gguf\",\"size\":2000,\"sha256\":\"" + sha2 + "\"}]}\n",
+         "the whole shard set with LFS sizes and SHA-256s: " + h.out);
+
+  // A link at a commit asks no revision.
+  CliHarness pinned;
+  HfSeams pinned_seams(pinned, scenario, fixtures);
+  expect(pinned.run({"hf-info", "https://huggingface.co/acme/Model-GGUF/blob/" + commit + "/IQ2_XS/m-00001-of-00002.gguf"}) == 0 &&
+             pinned.out.find("\"commit\":\"" + commit + "\"") != std::string::npos,
+         "a commit link: " + pinned.err + pinned.out);
+
+  // Refused links never reach the network.
+  for (const std::string bad : {"https://example.com/a/b/resolve/main/x.gguf", "https://huggingface.co/a/b/resolve/main/x.safetensors"}) {
+    CliHarness refused;
+    HfSeams refused_seams(refused, scenario, fixtures);
+    const int refused_code = refused.run({"hf-info", bad});
+    expect(refused_code != 0 && refused.out.rfind("ERROR ", 0) == 0 && refused_seams.probe->calls == 0,
+           "refused before any network: " + bad + " -> " + refused.out);
+  }
+  // A shard the listing does not have, or a file without LFS metadata, is refused.
+  CliHarness missing;
+  HfSeams missing_seams(missing, scenario, fixtures);
+  expect(missing.run({"hf-info", "https://huggingface.co/acme/Model-GGUF/resolve/main/IQ2_XS/other.gguf"}) != 0 &&
+             missing.out.rfind("ERROR ", 0) == 0,
+         "a file the listing lacks: " + missing.out);
+}
+
 void run_missing_model_non_interactive_exits_2() {
   CliHarness h;
   NetworkSeams seams(h, fx::qwen_payload());

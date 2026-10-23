@@ -472,6 +472,141 @@ void web_ui_models_tab_starts_stops_and_polls() {
   expect(js.find("$(\"model-progress\").textContent") != std::string::npos, "a progress line while a card loads");
 }
 
+// Model downloads plan Task 5 (spec sections 3-4, O1-O4): a Downloads section on the Models tab.
+// It is in the page from the start but hidden, and shown only when GET /v1/strata/downloads
+// answers: a server with models.downloads off answers 404 and the section stays hidden (the tab is
+// exactly the launcher's); a 403 (a remote client without models.control_remote) shows the
+// reason and the switch, like the Models tab's own note. A disk line heads the cards (O2), which
+// are grouped by where they come from (O1), and a paste box takes one Hugging Face link (O3).
+void web_ui_models_tab_has_a_downloads_section() {
+  const std::string html{secure_frontend::find_web_asset("/")->body};
+  const std::string js{secure_frontend::find_web_asset("/ui/app.js")->body};
+  const auto section = html.find("<div class=\"st-card downloads\" id=\"downloads\" hidden>");
+  expect(section != std::string::npos && section > html.find("id=\"view-models\"") && section < html.find("id=\"view-monitor\""),
+         "a Downloads section inside the Models view, hidden until the server offers it");
+  for (const char* id : {"id=\"downloads-refresh\"", "id=\"downloads-denied\"", "id=\"downloads-body\"", "id=\"downloads-disk\"",
+                         "id=\"downloads-list\"", "id=\"downloads-link-form\"", "id=\"downloads-url\"", "id=\"downloads-check\"",
+                         "id=\"downloads-link-error\"", "id=\"downloads-confirm\""}) {
+    expect(html.find(id) != std::string::npos, std::string{"the Downloads section has "} + id);
+  }
+  expect(html.find("<label class=\"st-label\" for=\"downloads-url\">Hugging Face link to a .gguf file</label>") != std::string::npos &&
+             html.find("id=\"downloads-check\">Check</button>") != std::string::npos,
+         "a paste box for a Hugging Face .gguf link, with a Check button");
+  expect(html.find("id=\"downloads-url\" type=\"text\"") != std::string::npos && html.find("name=\"url\"") == std::string::npos,
+         "the link field has no name, so no form can ever put it in a URL");
+  const auto denied = html.find("id=\"downloads-denied\"");
+  expect(denied != std::string::npos && html.find("control_remote", denied) < html.find("</p>", denied),
+         "the downloads 403 note names the switch that allows other machines");
+  expect(js.find("api(\"/v1/strata/downloads\")") != std::string::npos, "the download list is asked through the keyed API helper");
+  expect(js.find("if (name === \"models\") { renderModels(false); refreshLauncher(); refreshDownloads(); }") != std::string::npos,
+         "opening the Models tab reads the downloads too");
+  expect(js.find("if (response.status === 404) { setDownloadsShown(false); return; }") != std::string::npos &&
+             js.find("$(\"downloads\").hidden = !on;") != std::string::npos,
+         "a 404 (downloads off) keeps the section hidden");
+  expect(js.find("if (response.status === 403) { setDownloadsDenied(); return; }") != std::string::npos &&
+             js.find("$(\"downloads-denied\").hidden = false;") != std::string::npos && js.find("$(\"downloads-body\").hidden = true;") != std::string::npos,
+         "a 403 shows the section with the reason instead of the cards");
+  expect(js.find("\"Free space on \" + root") != std::string::npos && js.find("\" GB of \" + dgb(disk.total_bytes) + \" GB\"") != std::string::npos &&
+             js.find("function dgb(bytes) { return fmt((Number(bytes) || 0) / 1e9, 1); }") != std::string::npos,
+         "a disk line: the downloads drive's free space of its total, in decimal GB with one decimal");
+  for (const char* group : {"[\"strata\", \"Strata models\"]", "[\"maya\", \"Project Maya models\"]", "[\"custom\", \"Your downloads\"]"}) {
+    expect(js.find(group) != std::string::npos, std::string{"the cards are grouped by source: "} + group);
+  }
+  expect(js.find("if (card.runnable === false && card.note)") != std::string::npos, "a card that cannot run here shows its note");
+}
+
+// The Downloads cards drive the download routes, every call through the keyed helper: Download
+// and Cancel post the card's id; a card that does not fit says so with both figures and cannot
+// start; a refusal (507 insufficient_storage too) is the server's sentence on its card; a progress
+// bar and line for the running transfer; a 2 s poll while a card is queued, downloading,
+// verifying or preparing, and none otherwise; the model list read again when a card turns ready;
+// a pasted link pre-checked (O4: https on huggingface.co, a .gguf file before any query) before
+// the server is asked, then shown and confirmed.
+// Owner: "Have a download pause and resume functionality". Pause while a card is queued or
+// downloading; a paused card keeps its bar and figures, offers Resume (the start route: the server
+// continues from the partial files) and Cancel (which deletes them, and says so first).
+void web_ui_downloads_pause_and_resume() {
+  const std::string js{secure_frontend::find_web_asset("/ui/app.js")->body};
+  expect(js.find("paused: [\"st-badge--queued\", \"Paused\"]") != std::string::npos, "a paused card has its badge");
+  expect(js.find("api(\"/v1/strata/downloads/pause\", jsonPost({ id: card.id }))") != std::string::npos,
+         "Pause posts the card's id to the pause route");
+  const auto pause_at = js.find("var pause = el(\"button\", \"st-btn st-btn--secondary st-btn--sm\", \"Pause\");");
+  expect(pause_at != std::string::npos && js.rfind("if (card.state === \"queued\" || card.state === \"downloading\") {", pause_at) != std::string::npos &&
+             js.find("pause.addEventListener(\"click\", function () { pauseDownload(card); });") != std::string::npos,
+         "Pause is offered while a card is queued or downloading");
+  expect(js.find("var resume = el(\"button\", \"st-btn st-btn--primary st-btn--sm\", \"Resume\");") != std::string::npos &&
+             js.find("resume.addEventListener(\"click\", function () { startDownload(card); });") != std::string::npos &&
+             js.find("resume.disabled = card.fits === false || downloads.acting;") != std::string::npos,
+         "a paused card offers Resume, which is a start, and only when the rest fits");
+  expect(js.find("var DL_CANCELLABLE = [\"queued\", \"downloading\", \"paused\"];") != std::string::npos &&
+             js.find("if (oneOf(DL_CANCELLABLE, card.state)) {") != std::string::npos,
+         "Cancel is offered while a card is queued, downloading or paused");
+  expect(js.find("\"Cancel the download of \" + card.name + \"? The part downloaded so far is deleted.\"") != std::string::npos,
+         "Cancel says that the partial download is deleted");
+  expect(js.find("if (card.state === \"downloading\" || card.state === \"paused\") {") != std::string::npos &&
+             js.find("\"Paused at \" + transferText(figures, null) + \"; Resume continues from there\"") != std::string::npos,
+         "a paused card keeps its bar and says how far it got");
+  expect(js.find("if (card.state === \"paused\" && card.fits === false) { box.appendChild(el(\"p\", \"msg-warn\", noRoomText(card.needed_bytes))); }") !=
+             std::string::npos,
+         "a paused card whose rest does not fit says so");
+  expect(js.find("toast(\"info\", \"Download paused\", card.name + \": Resume continues from where it stopped\");") != std::string::npos,
+         "a pause is confirmed");
+  expect(js.find("(parsed.reason ? \": \" + parsed.reason : \"\")") != std::string::npos,
+         "a refused link shows the server's fixed reason");
+  const std::string css{secure_frontend::find_web_asset("/ui/app.css")->body};
+  expect(css.find(".dl-card[data-state=\"paused\"]") != std::string::npos, "a paused card is styled");
+}
+
+void web_ui_downloads_start_cancel_poll_and_check_links() {
+  const std::string js{secure_frontend::find_web_asset("/ui/app.js")->body};
+  expect(js.find("function jsonPost(payload) { return { method: \"POST\", headers: { \"Content-Type\": \"application/json\" }, "
+                 "body: JSON.stringify(payload) }; }") != std::string::npos,
+         "the download routes take JSON bodies");
+  expect(js.find("api(\"/v1/strata/downloads/start\", jsonPost({ id: card.id }))") != std::string::npos,
+         "Download posts the card's id to the start route");
+  expect(js.find("api(\"/v1/strata/downloads/cancel\", jsonPost({ id: card.id }))") != std::string::npos,
+         "Cancel posts the card's id to the cancel route");
+  expect(js.find("api(\"/v1/strata/downloads/link\", jsonPost({ url: url }))") != std::string::npos,
+         "Check posts the pasted link to the link route");
+  expect(js.find("api(\"/v1/strata/downloads/start\", jsonPost({ url: offer.url, confirm: true }))") != std::string::npos,
+         "a confirmed link starts with confirm: true");
+  expect(js.find("var noRoom = startable && card.fits === false;") != std::string::npos &&
+             js.find("download.disabled = noRoom || downloads.acting;") != std::string::npos,
+         "a card that does not fit cannot start");
+  expect(js.find("if (noRoom) { box.appendChild(el(\"p\", \"msg-warn\", noRoomText(card.needed_bytes))); }") != std::string::npos &&
+             js.find("return \"Insufficient disk space: \" + dgb(needed) + \" GB needed, \" + (free === null ? \"-\" : dgb(free)) + \" GB free\";") !=
+                 std::string::npos,
+         "a card that does not fit says how much it needs and how much is free");
+  expect(js.find("if (card.state === \"queued\" || card.state === \"downloading\") {") != std::string::npos,
+         "Cancel is offered while a card is queued or downloading");
+  expect(js.find("if (answer.error) { downloads.errors[card.id] = answer.error; }") != std::string::npos &&
+             js.find("var refused = downloads.errors[card.id];") != std::string::npos,
+         "a refusal is shown on its card");
+  expect(js.find("fill.style.width = ") != std::string::npos && js.find("\" of \" + dgb(figures.total) + \" GB (\" + pct + \"%)\"") != std::string::npos &&
+             js.find("\" MB/s\"") != std::string::npos && js.find("\"ETA \" + clock(active.eta_s)") != std::string::npos,
+         "the running transfer has a bar and a line: GB done of the total, the percentage, the rate and the ETA");
+  expect(js.find("\"Verifying: ") != std::string::npos && js.find("\"Preparing: ") != std::string::npos,
+         "verifying and preparing are said in words");
+  expect(js.find("var DL_ACTIVE = [\"queued\", \"downloading\", \"verifying\", \"preparing\"];") != std::string::npos &&
+             js.find("downloads.timer = window.setTimeout(pollDownloads, 2000);") != std::string::npos &&
+             js.find("if (!downloadsActive(parsed)) { stopDownloadsPoll(); return; }") != std::string::npos,
+         "the page asks again every 2 s while a card is active, and stops when none is");
+  expect(js.find("if (card.state === \"ready\") { readyNow.push(card); }") != std::string::npos &&
+             js.find("if (readyNow.length) { refreshLauncher();") != std::string::npos,
+         "a card that turns ready reads the model list again, so its new model card appears");
+  expect(js.find(R"(var HF_LINK = /^https:\/\/huggingface\.co\//;)") != std::string::npos &&
+             js.find(R"(var GGUF_FILE = /\.gguf$/i;)") != std::string::npos &&
+             js.find("if (!GGUF_FILE.test(url.split(/[?#]/)[0]))") != std::string::npos,
+         "a pasted link must be https on huggingface.co and name a .gguf file (before any query)");
+  const auto precheck = js.find("var problem = linkProblem(url);");
+  expect(precheck != std::string::npos &&
+             js.find("if (problem) { showLinkError(problem); return; }", precheck) < js.find("api(\"/v1/strata/downloads/link\"", precheck),
+         "a link that fails the pre-check is refused without asking the server");
+  expect(js.find("row(\"Repository\", ") != std::string::npos && js.find("row(\"Commit\", commit ? commit.slice(0, 7) : \"-\", commit);") != std::string::npos &&
+             js.find("go.disabled = !fits || downloads.acting;") != std::string::npos,
+         "the confirm block shows the repository and the short commit, and cannot start what does not fit");
+}
+
 // The chat follows the running model: the header names it, the composer is off with a link to
 // the Models tab when none runs, /v1/models is asked again when the running card changes, and
 // the launcher's chat refusals read as plain sentences.
@@ -637,6 +772,64 @@ void model_control_routes_need_the_switch_and_the_key() {
   expect(get(single, "/v1/strata/models").status == 404, "a single-model server has no control routes");
 }
 
+// Model downloads (plan 2026-10-23-model-downloads Task 4): the download routes, keyed, served
+// only while their handler is set (models.downloads), each POST a small JSON body.
+secure_frontend::ApiRouter downloads_router(std::vector<std::string>* calls, const bool on) {
+  secure_frontend::SecretBytes secret;
+  (void)secret.assign(kRouterToken);
+  secure_frontend::ModelDownloads downloads;
+  if (on) {
+    downloads.handle = [calls](const secure_frontend::RouteId route, const std::string_view body,
+                               const secure_frontend::RequestContext& context) -> secure_frontend::RouteResult {
+      calls->push_back(std::to_string(static_cast<int>(route)) + " " + std::string{body} + (context.loopback_peer ? "" : " remote"));
+      return secure_frontend::HttpResponse{.status = 202, .headers = {}, .body = "{}\n"};
+    };
+  }
+  return secure_frontend::ApiRouter({
+      .policy = secure_frontend::make_http_policy(*secure_frontend::parse_listener_address("127.0.0.1"), 8080, {}, {}),
+      .validator = secure_frontend::make_bearer_validator(std::make_shared<const secure_frontend::TokenVerifier>(std::move(secret))),
+      .model_id = "", .owned_by = "local", .chat_body_limit = 49152,
+      .health = [] { return secure_frontend::HealthView{true, "none", ""}; },
+      .chat = {},
+      .served = [] { return secure_frontend::ServedModels{}; },
+      .downloads = std::move(downloads)});
+}
+
+void model_download_routes_need_the_switch_and_the_key() {
+  using secure_frontend::RouteId;
+  const std::vector<std::tuple<std::string, std::string, RouteId>> routes{
+      {"GET", "/v1/strata/downloads", RouteId::strata_downloads},
+      {"POST", "/v1/strata/downloads/start", RouteId::strata_download_start},
+      {"POST", "/v1/strata/downloads/pause", RouteId::strata_download_pause},
+      {"POST", "/v1/strata/downloads/cancel", RouteId::strata_download_cancel},
+      {"POST", "/v1/strata/downloads/link", RouteId::strata_download_link}};
+  std::vector<std::string> calls;
+  auto router = downloads_router(&calls, true);
+  for (const auto& [method, target, route] : routes) {
+    expect(request(router, method, target, method == "POST" ? "{}" : "", false).status == 401, method + " " + target + " needs the key");
+  }
+  expect(calls.empty(), "no download handler runs before the key");
+  for (const auto& [method, target, route] : routes) {
+    const std::string body = method == "POST" ? "{\"id\":\"x\"}" : "";
+    expect(request(router, method, target, body).status == 202 && !calls.empty() &&
+               calls.back() == std::to_string(static_cast<int>(route)) + " " + body,
+           method + " " + target + " reaches the handler with its route and body");
+  }
+  expect(request(router, "GET", "/v1/strata/downloads", "", true, false).status == 202 && calls.back().ends_with(" remote"),
+         "the handler learns the client's class");
+  expect(request(router, "POST", "/v1/strata/downloads").status == 405, "the list is GET only");
+  expect(request(router, "GET", "/v1/strata/downloads/pause").status == 405, "a pause is POST only");
+  expect(request(router, "POST", "/v1/strata/downloads/start", "{}", true, true, "text/plain").status == 415, "a start body is JSON");
+  expect(request(router, "POST", "/v1/strata/downloads/link", std::string(5000, ' ')).status == 413, "a link body is small");
+  expect(request(router, "GET", "/v1/strata/downloads/other").status == 404, "no other download route");
+  std::vector<std::string> none;
+  auto off = downloads_router(&none, false);
+  for (const auto& [method, target, route] : routes) {
+    expect(request(off, method, target, method == "POST" ? "{}" : "").status == 404, method + " " + target + " is no route with downloads off");
+  }
+  expect(none.empty(), "downloads off: nothing is called");
+}
+
 void served_models_follow_the_running_card() {
   std::vector<std::string> calls;
   auto router = launcher_router(&calls);
@@ -662,6 +855,7 @@ int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
       {"health_samples_status_before_state_once_each", health_samples_status_before_state_once_each},
       {"model_control_routes_need_the_switch_and_the_key", model_control_routes_need_the_switch_and_the_key},
+      {"model_download_routes_need_the_switch_and_the_key", model_download_routes_need_the_switch_and_the_key},
       {"web_ui_listed_integers_are_dropdowns", web_ui_listed_integers_are_dropdowns},
       {"served_models_follow_the_running_card", served_models_follow_the_running_card},
       {"health_carries_recovery_only_with_failed", health_carries_recovery_only_with_failed},
@@ -682,6 +876,9 @@ int main(int argc, char** argv) {
       {"web_ui_has_the_models_tab_hidden_until_the_server_offers_it", web_ui_has_the_models_tab_hidden_until_the_server_offers_it},
       {"web_ui_models_tab_starts_stops_and_polls", web_ui_models_tab_starts_stops_and_polls},
       {"web_ui_chat_follows_the_running_model", web_ui_chat_follows_the_running_model},
+      {"web_ui_models_tab_has_a_downloads_section", web_ui_models_tab_has_a_downloads_section},
+      {"web_ui_downloads_start_cancel_poll_and_check_links", web_ui_downloads_start_cancel_poll_and_check_links},
+      {"web_ui_downloads_pause_and_resume", web_ui_downloads_pause_and_resume},
       {"keyless_router_answers_without_a_key", keyless_router_answers_without_a_key},
       {"metrics_route_needs_the_key_and_the_switch", metrics_route_needs_the_key_and_the_switch},
   }, failures);

@@ -315,6 +315,8 @@ int main(int argc, char** argv) {
       {"list_outdated_uses_catalog_sequence", acquire_cases::list_outdated_uses_catalog_sequence},
 #endif
       {"pull_cli_prints_summary_and_installs", acquire_cases::pull_cli_prints_summary_and_installs},
+      {"pull_progress_lines_are_machine_readable", acquire_cases::pull_progress_lines_are_machine_readable},
+      {"hf_info_resolves_a_link", acquire_cases::hf_info_resolves_a_link},
       {"run_installed_model_needs_no_network", acquire_cases::run_installed_model_needs_no_network},
       {"run_refuses_glm53_without_engine", acquire_cases::run_refuses_glm53_without_engine},
       {"engine_gate_refuses_gemma4_until_the_engine_exists", acquire_cases::engine_gate_refuses_gemma4_until_the_engine_exists},

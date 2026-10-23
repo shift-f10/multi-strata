@@ -35,7 +35,7 @@ std::string decimal_text(const double value) {
   return ec == std::errc{} ? std::string{buffer, end} : std::string{"?"};
 }
 
-constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 + 1 + 2 + 1 + 1 + 2 + 4> kSchema{{
+constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 + 1 + 2 + 1 + 1 + 2 + 4 + 5> kSchema{{
     {"schema_version", T::integer, false, 1, 1, d::kSchemaVersion, false, "", "",
      "Config format version; must be 1. Required in a config file."},
     {"listener.host", T::string, false, 0, 0, 0, false, "127.0.0.1", "--host",
@@ -368,6 +368,17 @@ constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 
      "The page and API may start and stop model cards (keyed; loopback clients only unless models.control_remote). Needs models.cards."},
     {"models.control_remote", T::boolean, false, 0, 0, 0, false, "", "",
      "Model control also from non-loopback clients. Needs models.control."},
+    // Model downloads (plan 2026-10-23-model-downloads; owner rule O4: Hugging Face and .gguf only).
+    {"models.downloads", T::boolean, false, 0, 0, 0, false, "", "",
+     "The Models tab's downloads: Hugging Face .gguf files only, fetched by strata pull as a separate confined process (the server itself has no network code). Keyed; loopback clients only unless models.control_remote. Needs models.cards and models.downloads_root."},
+    {"models.downloads_root", T::string, false, 0, 0, 0, false, "", "",
+     "Absolute, existing owner-only directory the downloads are installed in (strata's model store layout); strata's own verbs use it as roots.models with a models.cards config."},
+    {"models.prepare_python", T::string, false, 0, 0, 0, false, "", "",
+     "Absolute path of the Python that prepares a downloaded Qwen model (upstream's pack tools; they need numpy and regex). Unset: Qwen downloads stay files only. Needs models.prepare_tools."},
+    {"models.prepare_tools", T::string, false, 0, 0, 0, false, "", "",
+     "Absolute directory of upstream Strata's tools (iq_pack.py, strata_tokenizer.py, gguf_reader.py), read only. Needs models.prepare_python."},
+    {"models.download_engine_card", T::string, false, 0, 0, 0, false, "", "",
+     "The qwen card whose engine (executable, library folders, GPU, options) a prepared download's card uses."},
 }};
 
 void add(ConfigErrors& errors, std::string key, const ConfigIssueCode code, std::string reason) {
@@ -1292,6 +1303,34 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   if (models_config.control_remote && !models_config.control) {
     add(errors, "models.control_remote", ConfigIssueCode::conflicting_values, "needs models.control");
   }
+  // Model downloads: the switch, its store, and the prepare step (each path absolute; the files
+  // are checked at boot, never here).
+  models_config.downloads = read.boolean("models.downloads");
+  const auto absolute_path = [&read, &errors](const std::string_view row) -> std::optional<std::filesystem::path> {
+    const auto text = read.string(row);
+    if (!text.has_value()) return std::nullopt;
+    if (!is_absolute_store_path(*text)) {
+      add(errors, std::string{row}, ConfigIssueCode::invalid_value, "must be an absolute path");
+      return std::nullopt;
+    }
+    return path_from_utf8(*text);
+  };
+  models_config.downloads_root = absolute_path("models.downloads_root");
+  models_config.prepare_python = absolute_path("models.prepare_python");
+  models_config.prepare_tools = absolute_path("models.prepare_tools");
+  models_config.download_engine_card = read.string("models.download_engine_card");
+  if (models_config.download_engine_card.has_value() && !is_valid_model_alias(*models_config.download_engine_card)) {
+    add(errors, "models.download_engine_card", ConfigIssueCode::invalid_value, "must be a card name");
+    models_config.download_engine_card.reset();
+  }
+  if (models_config.downloads && !launcher) add(errors, "models.downloads", ConfigIssueCode::conflicting_values, "needs models.cards");
+  if (models_config.downloads && launcher && !draft.entries.contains("models.downloads_root")) {
+    add(errors, "models.downloads", ConfigIssueCode::conflicting_values, "needs models.downloads_root");
+  }
+  if (draft.entries.contains("models.prepare_python") != draft.entries.contains("models.prepare_tools")) {
+    add(errors, draft.entries.contains("models.prepare_python") ? "models.prepare_python" : "models.prepare_tools",
+        ConfigIssueCode::conflicting_values, "needs both models.prepare_python and models.prepare_tools");
+  }
   if (launcher) {
     for (const std::string_view row : {"engine.lazy_load", "engine.idle_unload_s", "vision.enabled"}) {
       if (draft.entries.contains(row)) {
@@ -1528,6 +1567,15 @@ std::string describe(const FrontendConfig& c) {
   line("models.start", c.models.start.has_value() ? json_quoted(*c.models.start) : std::string{"(unset)"});
   line("models.control", c.models.control ? "true" : "false");
   line("models.control_remote", c.models.control_remote ? "true" : "false");
+  const auto path_line = [](const std::optional<std::filesystem::path>& p) {
+    return p.has_value() ? json_quoted(path_to_utf8(*p)) : std::string{"(unset)"};
+  };
+  line("models.downloads", c.models.downloads ? "true" : "false");
+  line("models.downloads_root", path_line(c.models.downloads_root));
+  line("models.prepare_python", path_line(c.models.prepare_python));
+  line("models.prepare_tools", path_line(c.models.prepare_tools));
+  line("models.download_engine_card",
+       c.models.download_engine_card.has_value() ? json_quoted(*c.models.download_engine_card) : std::string{"(unset)"});
   line("glm.tokenizer", c.glm.tokenizer.has_value() ? json_quoted(*c.glm.tokenizer) : std::string{"(unset)"});
   line("glm.model_name", c.glm.model_name.has_value() ? json_quoted(*c.glm.model_name) : std::string{"(unset)"});
   line("engine.fit_max_tokens", c.engine.fit_max_tokens ? "true" : "false");

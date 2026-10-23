@@ -18,6 +18,8 @@ enum class ApiError {
   internal_error, server_busy, engine_unavailable, engine_error, server_shutting_down, http_version_not_supported,
   // Model launcher (plan 2026-10-23 Tasks 3-4; spec §5.3-§5.4, D2/D6).
   invalid_option, control_not_allowed, model_not_running, switch_in_progress, model_switching, no_model_running,
+  // Model downloads (plan 2026-10-23-model-downloads Task 4).
+  download_in_progress, upstream_unavailable, insufficient_storage, download_not_active,
 };
 
 struct ApiErrorRow final {

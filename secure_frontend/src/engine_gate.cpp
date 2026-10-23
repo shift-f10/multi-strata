@@ -25,6 +25,7 @@ std::optional<AcquireError> engine_gate(const AcquireManifest& manifest) {
       return AcquireError{AcquireReason::engine_profile_unavailable, std::string{kGemma4EngineMissing}};
     case ManifestProfile::glm53:
     case ManifestProfile::raw:
+    case ManifestProfile::gguf:
       return AcquireError{AcquireReason::engine_profile_unavailable, std::string{profile_name(manifest.profile)}};
   }
   if (compare_versions(manifest.min_version, built_engine_version()) > 0) {

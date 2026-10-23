@@ -21,7 +21,12 @@ namespace secure_frontend {
 // outside kRouteTable, which stays the authenticated API.
 // strata_models / strata_start / strata_stop: the model launcher's control routes
 // (kModelControlRoutes; plan 2026-10-23 Task 4).
-enum class RouteId { health, models, model, chat, other, web, metrics, strata_models, strata_start, strata_stop };
+// strata_downloads...strata_download_link: the model downloads' routes (kModelDownloadRoutes;
+// plan 2026-10-23-model-downloads Task 4).
+enum class RouteId {
+  health, models, model, chat, other, web, metrics, strata_models, strata_start, strata_stop,
+  strata_downloads, strata_download_start, strata_download_pause, strata_download_cancel, strata_download_link,
+};
 
 struct RouteEntry final {
   std::string_view method;
@@ -49,7 +54,16 @@ inline constexpr std::array<RouteEntry, 3> kModelControlRoutes{{
     {"POST", "/v1/strata/models/start", false, RouteId::strata_start},
     {"POST", "/v1/strata/models/stop", false, RouteId::strata_stop},
 }};
-// The largest start or stop body the control routes read.
+// Model downloads (plan 2026-10-23-model-downloads Task 4): served only with models.downloads,
+// keyed like kRouteTable. Every POST body is a small JSON object ({"id"} or {"url"}).
+inline constexpr std::array<RouteEntry, 5> kModelDownloadRoutes{{
+    {"GET", "/v1/strata/downloads", false, RouteId::strata_downloads},
+    {"POST", "/v1/strata/downloads/start", false, RouteId::strata_download_start},
+    {"POST", "/v1/strata/downloads/pause", false, RouteId::strata_download_pause},
+    {"POST", "/v1/strata/downloads/cancel", false, RouteId::strata_download_cancel},
+    {"POST", "/v1/strata/downloads/link", false, RouteId::strata_download_link},
+}};
+// The largest start or stop body the control routes read (and the download routes').
 inline constexpr std::size_t kModelControlBodyLimit = 4096;
 
 struct RouteDecision final {

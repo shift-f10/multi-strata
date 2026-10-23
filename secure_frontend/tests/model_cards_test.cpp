@@ -257,6 +257,32 @@ void card_options_reach_the_engine_arguments() {
   expect(std::holds_alternative<ConfigErrors>(bad_option), "an option of another engine is refused");
 }
 
+// Model downloads (plan 2026-10-23-model-downloads Task 3): strata's own verbs (pull, hf-info,
+// list) read a models.cards config with models.downloads_root as their store (roots.models), the
+// server's settings from the main config and the first usable card; without the root they refuse.
+void launcher_store_config_uses_the_downloads_root() {
+  ConfigFixture f;
+  const auto cards = f.dir / "cards";
+  secure_frontend_test::make_private_directory(cards);
+  secure_frontend_test::make_private_directory(f.dir / "downloads");
+  secure_frontend_test::write_file(cards / "a.json", card_text("Alpha", "qwen", card_config_object(f)), 0600);
+  const std::string listed = "[" + json_literal((cards / "a.json").string()) + "]";
+  auto main = main_draft(f, {{"models.cards", listed}, {"models.downloads_root", json_literal((f.dir / "downloads").string())}});
+  const auto result = secure_frontend::launcher_store_config(main);
+  const auto* validated = std::get_if<secure_frontend::ValidatedConfig>(&result);
+  expect(validated != nullptr, "a launcher config gives strata a config: " +
+                                   (validated ? std::string{} : issues_text(std::get<ConfigErrors>(result))));
+  if (validated != nullptr) {
+    expect(std::filesystem::equivalent(validated->get().roots.models.path(), f.dir / "downloads"),
+           "roots.models is the downloads root");
+  }
+  const auto without = secure_frontend::launcher_store_config(main_draft(f, {{"models.cards", listed}}));
+  const auto* errors = std::get_if<ConfigErrors>(&without);
+  expect(errors != nullptr && std::any_of(errors->begin(), errors->end(),
+                                          [](const auto& issue) { return issue.key_path == "models.downloads_root"; }),
+         "without a downloads root strata's verbs refuse by name");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -266,5 +292,6 @@ int main(int argc, char** argv) {
       {"bad_card_is_refused_others_load", bad_card_is_refused_others_load},
       {"main_config_may_not_set_card_keys", main_config_may_not_set_card_keys},
       {"card_options_reach_the_engine_arguments", card_options_reach_the_engine_arguments},
+      {"launcher_store_config_uses_the_downloads_root", launcher_store_config_uses_the_downloads_root},
   }, failures);
 }

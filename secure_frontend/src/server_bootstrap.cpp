@@ -11,6 +11,9 @@
 #include "secure_frontend/chat_schema.hpp"
 #include "secure_frontend/config.hpp"
 #include "secure_frontend/connection_pool.hpp"
+#include "secure_frontend/crt_environment.hpp"
+#include "secure_frontend/download_catalog.hpp"
+#include "secure_frontend/download_manager.hpp"
 #include "secure_frontend/engine_arguments.hpp"
 #include "secure_frontend/engine_environment.hpp"
 #include "secure_frontend/engine_stdio_process.hpp"
@@ -32,6 +35,7 @@
 #include "secure_frontend/shutdown_signal.hpp"
 #include "secure_frontend/subsystem_limits.hpp"
 #include "secure_frontend/test_hooks.hpp"
+#include "secure_frontend/token_store.hpp"
 #include "secure_frontend/token_reader.hpp"
 #include "secure_frontend/token_verifier.hpp"
 #include "secure_frontend/tokenizer_pack.hpp"
@@ -403,6 +407,23 @@ struct UsableCards final {
   std::shared_ptr<const FrontendConfig> server;
 };
 
+// One card with the main config at its defaults; null (each issue logged by the card's name)
+// when it does not validate or launch.
+std::shared_ptr<const FrontendConfig> usable_card_config(const secure_frontend::FrontendConfigDraft& main,
+                                                         const secure_frontend::ModelCard& card) {
+  auto validated = secure_frontend::card_config(main, card, secure_frontend::default_option_values(card));
+  if (const auto* issues = std::get_if<secure_frontend::ConfigErrors>(&validated)) {
+    for (const auto& issue : *issues) std::cerr << "model card " << card.name << " refused: " << secure_frontend::format_issue(issue) << '\n';
+    return nullptr;
+  }
+  auto config = std::get<secure_frontend::ValidatedConfig>(validated).shared();
+  if (const auto issues = secure_frontend::launch_config_issues(*config, true); !issues.empty()) {
+    for (const auto& issue : issues) std::cerr << "model card " << card.name << " refused: " << issue << '\n';
+    return nullptr;
+  }
+  return config;
+}
+
 std::optional<UsableCards> usable_cards(const secure_frontend::FrontendConfigDraft& main) {
   if (const auto issues = secure_frontend::main_config_card_issues(main); !issues.empty()) {
     for (const auto& issue : issues) std::cerr << "Configuration error: " << secure_frontend::format_issue(issue) << '\n';
@@ -425,16 +446,8 @@ std::optional<UsableCards> usable_cards(const secure_frontend::FrontendConfigDra
   }
   UsableCards usable;
   for (auto& card : loaded.cards) {
-    auto validated = secure_frontend::card_config(main, card, secure_frontend::default_option_values(card));
-    if (const auto* issues = std::get_if<secure_frontend::ConfigErrors>(&validated)) {
-      for (const auto& issue : *issues) std::cerr << "model card " << card.name << " refused: " << secure_frontend::format_issue(issue) << '\n';
-      continue;
-    }
-    auto config = std::get<secure_frontend::ValidatedConfig>(validated).shared();
-    if (const auto issues = secure_frontend::launch_config_issues(*config, true); !issues.empty()) {
-      for (const auto& issue : issues) std::cerr << "model card " << card.name << " refused: " << issue << '\n';
-      continue;
-    }
+    auto config = usable_card_config(main, card);
+    if (config == nullptr) continue;
     if (usable.server == nullptr) usable.server = config;
     usable.cards.push_back(std::move(card));
   }
@@ -501,7 +514,88 @@ secure_frontend::HttpResponse start_answer(secure_frontend::ModelLauncher& launc
   return json_answer(202, text + "}\n");
 }
 
-int launcher_run_impl(const secure_frontend::FrontendConfigDraft& main) {
+// Model downloads (plan 2026-10-23-model-downloads Task 4): the cards prepared downloads wrote
+// (<roots.state>/cards/*.json, by file name), each read and validated like a listed card; one
+// whose name is already held is refused by name.
+void load_download_cards(const secure_frontend::FrontendConfigDraft& main, const std::filesystem::path& directory,
+                         std::vector<secure_frontend::ModelCard>& cards) {
+  std::vector<std::filesystem::path> files;
+  std::error_code ec;
+  for (std::filesystem::directory_iterator it(directory, ec), end; !ec && it != end; it.increment(ec)) {
+    if (it->is_regular_file(ec) && it->path().extension() == ".json") files.push_back(it->path());
+  }
+  std::sort(files.begin(), files.end());
+  for (const auto& file : files) {
+    const std::string shown = secure_frontend::path_to_utf8(file.filename());
+    if (cards.size() >= secure_frontend::kMaxLauncherCards) {
+      std::cerr << "download card " << shown << " refused: the launcher holds " << secure_frontend::kMaxLauncherCards << " cards\n";
+      break;
+    }
+    auto read = secure_frontend::read_model_card(file);
+    if (const auto* issues = std::get_if<secure_frontend::ConfigErrors>(&read)) {
+      for (const auto& issue : *issues) std::cerr << "download card " << shown << " refused: " << secure_frontend::format_issue(issue) << '\n';
+      continue;
+    }
+    auto& card = std::get<secure_frontend::ModelCard>(read);
+    if (std::any_of(cards.begin(), cards.end(), [&card](const secure_frontend::ModelCard& held) { return held.name == card.name; })) {
+      std::cerr << "download card " << shown << " (" << card.name << ") refused: a card of that name is already loaded\n";
+      continue;
+    }
+    if (usable_card_config(main, card) == nullptr) continue;
+    cards.push_back(std::move(card));
+  }
+}
+
+// What a prepared Qwen download's card takes from models.download_engine_card: its engine.
+std::optional<secure_frontend::DownloadCardTemplate> download_card_template(const FrontendConfig& config,
+                                                                            const std::vector<secure_frontend::ModelCard>& cards) {
+  if (!config.models.download_engine_card.has_value()) return std::nullopt;
+  for (const auto& card : cards) {
+    if (card.name != *config.models.download_engine_card) continue;
+    const auto& entries = card.config.entries;
+    const auto text = [&entries](const std::string_view key) -> const std::string* {
+      const auto found = entries.find(std::string{key});
+      return found == entries.end() ? nullptr : std::get_if<std::string>(&found->second.value);
+    };
+    const auto* executable = text("engine.executable");
+    if (card.profile != secure_frontend::EngineProfile::qwen || executable == nullptr) break;
+    secure_frontend::DownloadCardTemplate made;
+    made.engine_executable = *executable;
+    if (const auto found = entries.find("engine.lib_dirs"); found != entries.end()) {
+      if (const auto* dirs = std::get_if<std::vector<std::string>>(&found->second.value)) made.engine_lib_dirs = *dirs;
+    }
+    if (const auto* gpu = text("engine.gpu")) made.engine_gpu = *gpu;
+    return made;
+  }
+  std::cerr << "[strata] downloads: models.download_engine_card names no usable qwen card; a prepared download gets no card\n";
+  return std::nullopt;
+}
+
+// The downloads' children (strata, the prepare Python) get a closed environment: the system's
+// own variables and a private temp folder, plus STRATA_GGUF_PY when the server has it (upstream's
+// pack tools find gguf-py through it).
+std::map<std::string, std::string, std::less<>> download_environment(const std::filesystem::path& temp) {
+  std::map<std::string, std::string, std::less<>> environment;
+  const std::string temp_text = secure_frontend::path_to_utf8(temp);
+#if defined(_WIN32)
+  const auto system = secure_frontend::query_windows_system_values();
+  environment.emplace("SystemRoot", system.system_root);
+  environment.emplace("WINDIR", system.system_root);
+  environment.emplace("SystemDrive", system.system_drive);
+  environment.emplace("PATH", system.system_root + "\\System32");
+  environment.emplace("TEMP", temp_text);
+  environment.emplace("TMP", temp_text);
+#else
+  environment.emplace("PATH", "/usr/bin:/bin");
+  environment.emplace("TMPDIR", temp_text);
+#endif
+  if (const char* gguf_py = secure_frontend::crt_getenv("STRATA_GGUF_PY"); gguf_py != nullptr && *gguf_py != '\0') {
+    environment.emplace("STRATA_GGUF_PY", gguf_py);
+  }
+  return environment;
+}
+
+int launcher_run_impl(const secure_frontend::FrontendConfigDraft& main, const std::optional<std::filesystem::path>& config_file) {
   // Ruling T13-c: server-grade process defaults (idempotent).
   secure_frontend::install_process_defaults();
   auto usable = usable_cards(main);
@@ -528,7 +622,27 @@ int launcher_run_impl(const secure_frontend::FrontendConfigDraft& main) {
   const std::string authority = host_header(listener);  // the startup line only
   std::optional<secure_frontend::ServeMonitor> monitor;
   if (config.listener.monitor) monitor.emplace();
+  // Model downloads: the store and the downloads' own folders, owner-only; the cards prepared
+  // downloads wrote load beside the listed ones.
+  const std::filesystem::path downloads_dir = *config.roots.state / "downloads";
+  const std::filesystem::path download_cards_dir = *config.roots.state / "cards";
+  if (config.models.downloads) {
+    if (!config_file.has_value() || !config.models.downloads_root.has_value()) {
+      std::cerr << "models.downloads: needs the config file (--config) and models.downloads_root\n";
+      return EXIT_FAILURE;
+    }
+    for (const auto& directory : {*config.models.downloads_root, downloads_dir, downloads_dir / "tmp", download_cards_dir}) {
+      if (const auto opened = secure_frontend::open_root(directory, secure_frontend::RootPolicy::create_private);
+          const auto* failure = std::get_if<secure_frontend::PathError>(&opened)) {
+        std::cerr << "models.downloads: " << secure_frontend::path_to_utf8(directory) << ": " << failure->message << '\n';
+        return EXIT_FAILURE;
+      }
+    }
+    load_download_cards(main, download_cards_dir, usable->cards);
+  }
   const std::size_t card_count = usable->cards.size();
+  std::optional<secure_frontend::DownloadCardTemplate> card_template;
+  if (config.models.downloads) card_template = download_card_template(config, usable->cards);
   // D7: the page's last options per card, owner-only beside the engine's state.
   secure_frontend::ModelLauncher launcher(secure_frontend::LauncherSettings{
       .main = main,
@@ -537,12 +651,12 @@ int launcher_run_impl(const secure_frontend::FrontendConfigDraft& main) {
       .gate = {.max_queued = config.limits.concurrency.max_queued_generations, .queue_timeout = config.limits.concurrency.queue_timeout},
       .monitor = monitor.has_value() ? &*monitor : nullptr});
   // D2: model control for key holders on loopback; remote clients only with models.control_remote.
+  const bool remote_allowed = config.models.control_remote;
+  const auto allowed = [remote_allowed](const secure_frontend::RequestContext& context) {
+    return context.loopback_peer || remote_allowed;
+  };
   secure_frontend::ModelControl control;
   if (config.models.control) {
-    const bool remote_allowed = config.models.control_remote;
-    const auto allowed = [remote_allowed](const secure_frontend::RequestContext& context) {
-      return context.loopback_peer || remote_allowed;
-    };
     control.list = [&launcher, allowed](const secure_frontend::RequestContext& context) -> secure_frontend::RouteResult {
       if (!allowed(context)) return secure_frontend::make_error_response(secure_frontend::ApiError::control_not_allowed);
       return json_answer(200, launcher.list_json());
@@ -556,6 +670,53 @@ int launcher_run_impl(const secure_frontend::FrontendConfigDraft& main) {
       if (!allowed(context)) return secure_frontend::make_error_response(secure_frontend::ApiError::control_not_allowed);
       if (const auto refused = launcher.stop(!context.loopback_peer)) return refusal_answer(*refused);
       return json_answer(202, "{\"state\":\"stopped\"}\n");
+    };
+  }
+  // Model downloads (O1-O4): every transfer and link lookup a `strata` child, the prepare step
+  // the embedded script under the configured Python; a prepared card joins the launcher.
+  std::optional<secure_frontend::DownloadManager> downloads;
+  secure_frontend::ModelDownloads download_routes;
+  if (config.models.downloads) {
+    secure_frontend::DownloadSettings settings;
+    settings.catalog = secure_frontend::parse_download_catalog(secure_frontend::embedded_download_catalog());
+    settings.strata_executable = secure_frontend::strata_beside_this_executable();
+    std::error_code ec;
+    settings.config_file = std::filesystem::absolute(*config_file, ec);
+    settings.downloads_root = *config.models.downloads_root;
+    settings.work_dir = downloads_dir;
+    settings.cards_dir = download_cards_dir;
+    settings.prepare_python = config.models.prepare_python;
+    settings.prepare_tools = config.models.prepare_tools;
+    if (config.models.prepare_python.has_value()) {
+      auto root = secure_frontend::open_root(downloads_dir);
+      const auto script = secure_frontend::parse_relative_path("prepare_download.py");
+      if (std::holds_alternative<secure_frontend::CanonicalRoot>(root) && std::holds_alternative<secure_frontend::RelativePath>(script) &&
+          !secure_frontend::write_private_file(std::get<secure_frontend::CanonicalRoot>(root), std::get<secure_frontend::RelativePath>(script),
+                                               secure_frontend::embedded_prepare_script(), secure_frontend::TokenStoreMode::replace)) {
+        settings.prepare_script = downloads_dir / "prepare_download.py";
+      } else {
+        std::cerr << "[strata] downloads: the prepare script could not be written; Qwen downloads stay files only\n";
+      }
+    }
+    settings.card_template = card_template;
+    settings.child_environment = download_environment(downloads_dir / "tmp");
+    settings.on_card = [&launcher, &main](const std::string&, const std::filesystem::path& file) {
+      auto read = secure_frontend::read_model_card(file);
+      if (const auto* issues = std::get_if<secure_frontend::ConfigErrors>(&read)) {
+        for (const auto& issue : *issues) std::cerr << "download card refused: " << secure_frontend::format_issue(issue) << '\n';
+        return false;
+      }
+      auto& card = std::get<secure_frontend::ModelCard>(read);
+      if (usable_card_config(main, card) == nullptr) return false;
+      return launcher.add_card(std::move(card));
+    };
+    settings.log = [](const std::string_view line) { std::cerr << line << '\n' << std::flush; };
+    settings.seams = secure_frontend::production_download_seams();
+    downloads.emplace(std::move(settings));
+    download_routes.handle = [&manager = *downloads, allowed](const secure_frontend::RouteId route, const std::string_view body,
+                                                             const secure_frontend::RequestContext& context) -> secure_frontend::RouteResult {
+      if (!allowed(context)) return secure_frontend::make_error_response(secure_frontend::ApiError::control_not_allowed);
+      return secure_frontend::download_route_answer(manager, route, body);
     };
   }
   secure_frontend::ApiRouter router(secure_frontend::ApiRouterConfig{
@@ -575,7 +736,8 @@ int launcher_run_impl(const secure_frontend::FrontendConfigDraft& main) {
       .metrics = monitor.has_value() ? secure_frontend::MetricsProvider{[&launcher] { return launcher.metrics_json(); }}
                                      : secure_frontend::MetricsProvider{},
       .served = [&launcher] { return launcher.served(); },
-      .control = std::move(control)});
+      .control = std::move(control),
+      .downloads = std::move(download_routes)});
   const secure_frontend::ConnectionLimits connection_bounds = secure_frontend::connection_limits(config);
   std::string bind_error;
   auto server = secure_frontend::HttpSocketServer::bind(listener, static_cast<int>(config.listener.backlog), &bind_error);
@@ -592,7 +754,7 @@ int launcher_run_impl(const secure_frontend::FrontendConfigDraft& main) {
             << ", queued generations " << config.limits.concurrency.max_queued_generations << ", model cards " << card_count
             << (config.models.control ? (config.models.control_remote ? " (control: loopback and remote)" : " (control: loopback)")
                                       : " (control off)")
-            << '\n' << std::flush;
+            << (config.models.downloads ? ", downloads on" : "") << '\n' << std::flush;
   HostSampler host_sampler;
   if (monitor.has_value()) host_sampler.start(*monitor);
   if (keyless) {
@@ -625,6 +787,7 @@ int launcher_run_impl(const secure_frontend::FrontendConfigDraft& main) {
     // runtime's stop flag) and refuses its queue, before the workers are joined.
     pool_exit = pool.run_until([] { return secure_frontend::shutdown_signalled(); }, [&launcher] { launcher.begin_shutdown(); });
   }
+  if (downloads) downloads->shutdown();  // a running transfer stops; its partial files are kept
   launcher.shutdown();
   secure_frontend::notify_shutdown_complete();
   if (pool_exit == secure_frontend::PoolExit::listener_failed) {
@@ -645,7 +808,9 @@ int server_run(const FrontendConfig& config, const bool expert) { return server_
 int server_check(const FrontendConfig& config, const std::vector<std::string>& overridden, bool expert) {
   return server_check_impl(config, overridden, expert);
 }
-int launcher_run(const FrontendConfigDraft& main) { return launcher_run_impl(main); }
+int launcher_run(const FrontendConfigDraft& main, const std::optional<std::filesystem::path>& config_file) {
+  return launcher_run_impl(main, config_file);
+}
 int launcher_check(const FrontendConfigDraft& main, const std::vector<std::string>& overridden) {
   return launcher_check_impl(main, overridden);
 }

@@ -71,6 +71,16 @@ switched with different options and chatted from the page and the API (session l
 left serving on `0.0.0.0:8080` with the Gemma card started. **Waiting on the owner:** push;
 `models.control_remote` for the LAN; Gemma KV streaming (D8); GLM cards (D10).
 
+**2026-10-23 — Model downloads on the Models tab, with pause and resume (local `main`, not
+pushed).** Owner: O1-O4 (a card per Strata/Maya model with its status, the data drive's free
+space and an insufficient-space refusal, a pasted Hugging Face link, Hugging Face and `.gguf`
+only), D7 "Build packs automatically", then "Have a download pause and resume functionality".
+Spec `2026-10-23-model-downloads-design.md` (ACCEPTED), plan `2026-10-23-model-downloads.md`.
+Every transfer is a confined `strata pull` child; the server still links no network code (the
+threat model's one accepted exception). Box run (a real Hugging Face pull, pause/resume, the
+space refusal, the page) and enabling `models.downloads` on the owner's LAN server: session log
+item 59. **Waiting on the owner:** push (`391997ee` onward).
+
 ### Is it deployable? (owner asked 2026-10-14; answer still holds)
 No. The frontend side is strongly evidenced; the system is not. It has **never run against a real engine or GPU** (every test uses a fake engine). Streaming does not exist and the serving path is single-threaded until SP3 lands. The downloader exists but the catalog ships **empty** by owner decision (D5(D)), so v1 acquisition is import-from-developer-bundle. No packaging, installer, validation kit, or GLM engine. The first real answer comes from one session on the GPU box (§8).
 

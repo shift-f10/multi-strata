@@ -1,8 +1,9 @@
 // Strata's built-in chat page (listener.web_ui), modelled on upstream Strata's serve/web UI (pin
 // v0.2.2, MIT License, Copyright (c) 2026 Niko1221 and the Strata contributors; see
 // LICENSE.strata-ui.txt) and written for this server's routes: /health, /v1/models,
-// /v1/chat/completions, (listener.monitor) /metrics and (models.control) /v1/strata/models with
-// its start and stop routes, nothing else.
+// /v1/chat/completions, (listener.monitor) /metrics, (models.control) /v1/strata/models with
+// its start and stop routes and (models.downloads) /v1/strata/downloads with its start, cancel
+// and link routes, nothing else.
 //
 // The API key is the login: kept in sessionStorage (this tab only) and sent only as
 // "Authorization: Bearer" to this origin, with cookies off. On a keyless loopback server
@@ -114,7 +115,10 @@
   function errorText(status, body) {
     try {
       var parsed = JSON.parse(body);
-      if (parsed && parsed.error && parsed.error.message) { return parsed.error.message + " (" + (parsed.error.code || status) + ")"; }
+      // A refused link also carries the server's fixed reason (which Hugging Face or .gguf rule).
+      if (parsed && parsed.error && parsed.error.message) {
+        return parsed.error.message + (parsed.reason ? ": " + parsed.reason : "") + " (" + (parsed.error.code || status) + ")";
+      }
     } catch (e) { /* not JSON */ }
     return "HTTP " + status;
   }
@@ -137,7 +141,7 @@
     $("header-model").hidden = !signedIn || !launcher.enabled;
     ["chat", "models", "monitor", "about"].forEach(function (tab) { $("tab-btn-" + tab).setAttribute("aria-selected", tab === name ? "true" : "false"); });
     if (name === "monitor") { startMonitor(); } else { stopMonitor(); }
-    if (name === "models") { renderModels(false); refreshLauncher(); }
+    if (name === "models") { renderModels(false); refreshLauncher(); refreshDownloads(); }
     if (name === "about") { renderAbout(); }
     if (name === "chat") { $("input").focus(); }
   }
@@ -145,6 +149,7 @@
     stopPolling();
     stopMonitor();
     stopLauncherPoll();
+    stopDownloadsPoll();
     setPill("idle", "Signed out");
     $("login-error").textContent = message || "";
     $("login-error").hidden = !message;
@@ -160,6 +165,7 @@
     showView("chat");
     startPolling();
     refreshLauncher();  // a server with model control off answers 404 and the page stays as it was
+    refreshDownloads();  // likewise with downloads off; a transfer already running is followed
   }
 
   async function signIn(key) {
@@ -1147,6 +1153,380 @@
     await refreshLauncher();
   }
 
+  // ---------------------------------------------------------------- Downloads (models.downloads)
+  // The Models tab's Downloads section (GET /v1/strata/downloads): the free space of the downloads
+  // drive, one card per catalog GGUF (Strata's, Project Maya's) and per pasted link, Download,
+  // Pause, Resume and Cancel, and a progress line for the running transfer. A paused download keeps
+  // its partial files on the server; Resume is a start, which continues from them. The server decides everything (the
+  // Hugging Face and .gguf rules, the sizes and hashes, the space check); the page pre-checks a
+  // pasted link only so that an obvious mistake is named without a round trip. A server with
+  // downloads off answers 404 and the section stays hidden.
+  var DL_GROUPS = [["strata", "Strata models"], ["maya", "Project Maya models"], ["custom", "Your downloads"]];
+  var DL_STATES = {
+    available: ["", "Available"], queued: ["st-badge--queued", "Queued"], downloading: ["st-badge--reading", "Downloading"],
+    verifying: ["st-badge--reading", "Verifying"], preparing: ["st-badge--reading", "Preparing"],
+    ready: ["st-badge--generating", "Ready"], installed: ["st-badge--generating", "Downloaded"],
+    failed: ["st-badge--error", "Failed"], cancelled: ["st-badge--queued", "Cancelled"],
+    paused: ["st-badge--queued", "Paused"]
+  };
+  var DL_ACTIVE = ["queued", "downloading", "verifying", "preparing"];
+  var DL_STARTABLE = ["available", "failed", "cancelled"];
+  var DL_CANCELLABLE = ["queued", "downloading", "paused"];
+  // A pasted link: an https address on huggingface.co whose path (before any query or fragment)
+  // names a .gguf file. The server checks the link again, and the downloader every redirect.
+  var HF_LINK = /^https:\/\/huggingface\.co\//;
+  var GGUF_FILE = /\.gguf$/i;
+  var downloads = { enabled: false, data: null, timer: null, acting: false, errors: Object.create(null),
+                    states: Object.create(null), confirm: null };
+
+  function oneOf(list, value) { return list.indexOf(value) >= 0; }
+  function dlCards(d) {
+    return d && Array.isArray(d.data) ? d.data.filter(function (card) { return card && typeof card.id === "string" && typeof card.name === "string"; }) : [];
+  }
+  function downloadsActive(d) { return dlCards(d).some(function (card) { return oneOf(DL_ACTIVE, card.state); }); }
+  // Sizes in decimal GB with one decimal, as the server's refusal text writes them.
+  function dgb(bytes) { return fmt((Number(bytes) || 0) / 1e9, 1); }
+  function clock(seconds) {
+    var s = Math.max(0, Math.round(seconds));
+    var rest = s % 60;
+    return Math.floor(s / 60) + ":" + (rest < 10 ? "0" : "") + rest;
+  }
+  function freeBytes() {
+    var disk = downloads.data && downloads.data.disk;
+    return disk && typeof disk.free_bytes === "number" ? disk.free_bytes : null;
+  }
+  function noRoomText(needed) {
+    var free = freeBytes();
+    return "Insufficient disk space: " + dgb(needed) + " GB needed, " + (free === null ? "-" : dgb(free)) + " GB free";
+  }
+  function dlBadge(name) {
+    var badge = Object.prototype.hasOwnProperty.call(DL_STATES, name) ? DL_STATES[name] : ["", String(name || "-")];
+    return el("span", "st-badge " + badge[0], badge[1]);
+  }
+  // The running transfer's figures: the card's (all its files), else the transfer's own.
+  function transferFigures(card, active) {
+    if (typeof card.total === "number" && card.total > 0) { return { done: Number(card.bytes) || 0, total: card.total }; }
+    if (active && typeof active.total === "number" && active.total > 0) { return { done: Number(active.bytes) || 0, total: active.total }; }
+    return { done: 0, total: Number(card.size_bytes) || 0 };
+  }
+  function transferText(figures, active) {
+    var pct = figures.total > 0 ? Math.min(100, Math.floor((100 * figures.done) / figures.total)) : 0;
+    var parts = [dgb(figures.done) + " of " + dgb(figures.total) + " GB (" + pct + "%)"];
+    if (active && typeof active.rate_bps === "number" && active.rate_bps > 0) { parts.push(fmt(active.rate_bps / 1e6, 1) + " MB/s"); }
+    if (active && typeof active.eta_s === "number" && isFinite(active.eta_s) && active.eta_s >= 0) { parts.push("ETA " + clock(active.eta_s)); }
+    return parts.join(DOT);
+  }
+
+  function downloadCard(card, d) {
+    var active = d.active && d.active.id === card.id ? d.active : null;
+    var box = el("div", "dl-card");
+    box.setAttribute("data-state", String(card.state));
+    var head = el("div", "dl-card__head");
+    head.appendChild(el("span", "dl-card__name", card.name));
+    head.appendChild(dlBadge(card.state));
+    box.appendChild(head);
+    if (card.about) { box.appendChild(el("p", "muted small", String(card.about))); }
+    var facts = [dgb(card.size_bytes) + " GB", fmt(card.files) + (card.files === 1 ? " file" : " files")];
+    if (card.repo) { facts.push(String(card.repo)); }
+    box.appendChild(el("p", "dl-card__facts", facts.join(DOT)));
+    if (card.state === "ready") { box.appendChild(el("p", "muted small", "Downloaded and set up: its card is in the model list.")); }
+    else if (card.runnable === false && card.note) { box.appendChild(el("p", "dl-card__note", String(card.note))); }
+    else if (card.note) { box.appendChild(el("p", "muted small", String(card.note))); }
+    var startable = oneOf(DL_STARTABLE, card.state);
+    var noRoom = startable && card.fits === false;
+    if (noRoom) { box.appendChild(el("p", "msg-warn", noRoomText(card.needed_bytes))); }
+    if (card.state === "paused" && card.fits === false) { box.appendChild(el("p", "msg-warn", noRoomText(card.needed_bytes))); }
+    if (card.state === "downloading" || card.state === "paused") {
+      var paused = card.state === "paused";
+      var figures = transferFigures(card, paused ? null : active);
+      var bar = el("div", "st-progress");
+      var fill = el("div", "st-progress__bar");
+      fill.style.width = (figures.total > 0 ? Math.min(100, (100 * figures.done) / figures.total) : 0) + "%";
+      bar.appendChild(fill);
+      box.appendChild(bar);
+      box.appendChild(el("p", "dl-card__progress", paused ? "Paused at " + transferText(figures, null) + "; Resume continues from there"
+                                                          : transferText(figures, active)));
+      if (!paused && active && typeof active.file === "string" && active.file && card.files > 1) { box.appendChild(el("p", "muted small", "Now: " + active.file)); }
+    } else if (card.state === "verifying" || card.state === "preparing") {
+      var wait = el("div", "st-progress model-loading");
+      wait.appendChild(el("div", "st-progress__bar"));
+      box.appendChild(wait);
+      box.appendChild(el("p", "dl-card__progress", card.state === "verifying" ? "Verifying: checking each file's size and SHA-256"
+                                                                              : "Preparing: building the model's pack and its card"));
+    } else if (card.state === "queued") {
+      box.appendChild(el("p", "dl-card__progress", "Queued: starts when the download before it ends"));
+    }
+    if (card.state === "failed") { box.appendChild(el("p", "msg-error", "Download failed: " + (card.error ? String(card.error) : "no reason given"))); }
+    var refused = downloads.errors[card.id];
+    if (refused) { box.appendChild(el("p", "msg-error", refused)); }
+    var actions = el("div", "dl-card__actions");
+    if (startable) {
+      var download = el("button", "st-btn st-btn--primary st-btn--sm", "Download");
+      download.type = "button";
+      download.disabled = noRoom || downloads.acting;
+      if (noRoom) { download.title = "Not enough free space on the downloads drive"; }
+      download.addEventListener("click", function () { startDownload(card); });
+      actions.appendChild(download);
+    }
+    if (card.state === "paused") {
+      var resume = el("button", "st-btn st-btn--primary st-btn--sm", "Resume");
+      resume.type = "button";
+      resume.disabled = card.fits === false || downloads.acting;
+      if (card.fits === false) { resume.title = "Not enough free space on the downloads drive"; }
+      resume.addEventListener("click", function () { startDownload(card); });
+      actions.appendChild(resume);
+    }
+    if (card.state === "queued" || card.state === "downloading") {
+      var pause = el("button", "st-btn st-btn--secondary st-btn--sm", "Pause");
+      pause.type = "button";
+      pause.disabled = downloads.acting;
+      pause.title = "Stop for now and keep what is downloaded; Resume continues from there";
+      pause.addEventListener("click", function () { pauseDownload(card); });
+      actions.appendChild(pause);
+    }
+    if (oneOf(DL_CANCELLABLE, card.state)) {
+      var cancel = el("button", "st-btn st-btn--secondary st-btn--sm", "Cancel");
+      cancel.type = "button";
+      cancel.disabled = downloads.acting;
+      cancel.addEventListener("click", function () { cancelDownload(card); });
+      actions.appendChild(cancel);
+    }
+    if (actions.firstChild) { box.appendChild(actions); }
+    return box;
+  }
+  function renderDownloads() {
+    var d = downloads.data;
+    if (!d) { return; }
+    var disk = d.disk || null;
+    var line = $("downloads-disk");
+    if (disk && typeof disk.free_bytes === "number" && typeof disk.total_bytes === "number") {
+      var root = String(disk.root || "the downloads drive");
+      line.textContent = "Free space on " + root + (/:$/.test(root) ? " " : ": ") + dgb(disk.free_bytes) + " GB of " + dgb(disk.total_bytes) + " GB";
+      line.hidden = false;
+    } else {
+      line.hidden = true;
+    }
+    var list = $("downloads-list");
+    clear(list);
+    var cards = dlCards(d);
+    var known = DL_GROUPS.map(function (group) { return group[0]; });
+    DL_GROUPS.concat([["", "Other models"]]).forEach(function (group) {
+      var members = cards.filter(function (card) { return group[0] ? card.source === group[0] : !oneOf(known, card.source); });
+      if (!members.length) { return; }
+      var section = el("div", "dl-group");
+      section.appendChild(el("span", "dl-group__title", group[1]));
+      var grid = el("div", "dl-cards");
+      members.forEach(function (card) { grid.appendChild(downloadCard(card, d)); });
+      section.appendChild(grid);
+      list.appendChild(section);
+    });
+  }
+
+  function setDownloadsShown(on) {
+    downloads.enabled = on;
+    $("downloads").hidden = !on;
+    $("downloads-body").hidden = !on;
+    $("downloads-denied").hidden = true;
+    if (on) { return; }
+    downloads.data = null;
+    stopDownloadsPoll();
+  }
+  // A client the server does not let download (a remote one without models.control_remote): the
+  // section shows the reason and the switch instead of the cards, like the Models tab's note.
+  function setDownloadsDenied() {
+    downloads.enabled = false;
+    downloads.data = null;
+    stopDownloadsPoll();
+    $("downloads").hidden = false;
+    $("downloads-body").hidden = true;
+    $("downloads-denied").hidden = false;
+  }
+  function applyDownloads(parsed) {
+    var before = downloads.states;
+    var after = Object.create(null);
+    var readyNow = [];
+    dlCards(parsed).forEach(function (card) {
+      var was = before[card.id];
+      after[card.id] = card.state;
+      if (!was || was === card.state) { return; }
+      if (card.state === "ready") { readyNow.push(card); }
+      else if (card.state === "installed") { toast("success", card.name + " is downloaded", card.note ? String(card.note) : ""); }
+      else if (card.state === "failed") { toast("error", card.name + " did not download", card.error ? String(card.error) : ""); }
+    });
+    downloads.states = after;
+    downloads.data = parsed;
+    setDownloadsShown(true);
+    renderDownloads();
+    // A card turned ready: the launcher has its new model card, so the list above is read again.
+    if (readyNow.length) { refreshLauncher(); toast("success", readyNow[0].name + " is ready", "Its card is in the model list."); }
+    if (!downloadsActive(parsed)) { stopDownloadsPoll(); return; }
+    if (!downloads.timer) { downloads.timer = window.setTimeout(pollDownloads, 2000); }
+  }
+  async function refreshDownloads() {
+    var response, text;
+    try { response = await api("/v1/strata/downloads"); text = await response.text(); } catch (e) { return; }
+    if (response.status === 404) { setDownloadsShown(false); return; }
+    // 403: this client may not download (models.control_remote off): the section says why.
+    if (response.status === 403) { setDownloadsDenied(); return; }
+    if (!response.ok) { return; }
+    var parsed;
+    try { parsed = JSON.parse(text); } catch (e) { return; }
+    if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.data)) { return; }
+    applyDownloads(parsed);
+  }
+  // While a card is queued, downloading, verifying or preparing: the list every 2 s.
+  async function pollDownloads() {
+    downloads.timer = null;
+    await refreshDownloads();
+    // A poll that failed (the server busy or briefly away) asks again while a transfer runs.
+    if (downloads.enabled && downloadsActive(downloads.data) && !downloads.timer) { downloads.timer = window.setTimeout(pollDownloads, 2000); }
+  }
+  function stopDownloadsPoll() { if (downloads.timer) { window.clearTimeout(downloads.timer); downloads.timer = null; } }
+
+  function jsonPost(payload) { return { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }; }
+  // A download route's answer: { body } on success, { error } with the server's refusal as text
+  // (its message and code: 409 already queued, 507 insufficient_storage with both figures, ...),
+  // or { signedOut } when the key is no longer accepted.
+  async function downloadsAnswer(request) {
+    var response, text;
+    try { response = await request; text = await response.text(); } catch (e) {
+      return { error: "Cannot reach the server: " + (e && e.message ? e.message : e) };
+    }
+    if (response.status === 401 && !state.keyless) { signOut("The server no longer accepts this API key."); return { signedOut: true }; }
+    if (!response.ok) { return { error: errorText(response.status, text) }; }
+    var parsed = null;
+    try { parsed = text ? JSON.parse(text) : null; } catch (e) { parsed = null; }
+    return { body: parsed };
+  }
+  async function startDownload(card) {
+    if (downloads.acting) { return; }
+    downloads.errors[card.id] = "";
+    downloads.acting = true;
+    renderDownloads();
+    var answer = await downloadsAnswer(api("/v1/strata/downloads/start", jsonPost({ id: card.id })));
+    downloads.acting = false;
+    if (answer.signedOut) { return; }
+    if (answer.error) { downloads.errors[card.id] = answer.error; }
+    renderDownloads();
+    await refreshDownloads();
+  }
+  // Pause: the server stops the transfer and keeps the partial files.
+  async function pauseDownload(card) {
+    if (downloads.acting) { return; }
+    downloads.errors[card.id] = "";
+    downloads.acting = true;
+    renderDownloads();
+    var answer = await downloadsAnswer(api("/v1/strata/downloads/pause", jsonPost({ id: card.id })));
+    downloads.acting = false;
+    if (answer.signedOut) { return; }
+    if (answer.error) { downloads.errors[card.id] = answer.error; } else { toast("info", "Download paused", card.name + ": Resume continues from where it stopped"); }
+    renderDownloads();
+    await refreshDownloads();
+  }
+  async function cancelDownload(card) {
+    if (downloads.acting || !window.confirm("Cancel the download of " + card.name + "? The part downloaded so far is deleted.")) { return; }
+    downloads.errors[card.id] = "";
+    downloads.acting = true;
+    renderDownloads();
+    var answer = await downloadsAnswer(api("/v1/strata/downloads/cancel", jsonPost({ id: card.id })));
+    downloads.acting = false;
+    if (answer.signedOut) { return; }
+    if (answer.error) { downloads.errors[card.id] = answer.error; } else { toast("info", "Download cancelled", card.name); }
+    renderDownloads();
+    await refreshDownloads();
+  }
+
+  // The pasted link (O3), pre-checked here (O4 is enforced by the server and the downloader).
+  function linkProblem(url) {
+    if (!url) { return "Paste the address of a .gguf file on Hugging Face."; }
+    if (!HF_LINK.test(url)) { return "Only Hugging Face links can be downloaded: the address must be an https link on huggingface.co."; }
+    if (!GGUF_FILE.test(url.split(/[?#]/)[0])) { return "Only .gguf files can be downloaded: the address must name a file ending in .gguf."; }
+    return "";
+  }
+  function showLinkError(text) {
+    $("downloads-link-error").textContent = text;
+    $("downloads-link-error").hidden = !text;
+  }
+  function hideConfirm() {
+    downloads.confirm = null;
+    clear($("downloads-confirm"));
+    $("downloads-confirm").hidden = true;
+  }
+  async function checkLink() {
+    var url = $("downloads-url").value.trim();
+    hideConfirm();
+    var problem = linkProblem(url);
+    if (problem) { showLinkError(problem); return; }
+    showLinkError("");
+    $("downloads-check").disabled = true;
+    var answer = await downloadsAnswer(api("/v1/strata/downloads/link", jsonPost({ url: url })));
+    $("downloads-check").disabled = false;
+    if (answer.signedOut) { return; }
+    if (answer.error) { showLinkError(answer.error); return; }
+    var offer = answer.body && answer.body.confirm;
+    if (!offer || typeof offer !== "object") { showLinkError("The server's answer did not describe the file."); return; }
+    downloads.confirm = { url: url, data: offer };
+    renderConfirm();
+  }
+  // What the link brings, before anything is fetched: the repository, the commit, each file with
+  // its size, the total and whether it fits; Download starts it.
+  function renderConfirm() {
+    var box = $("downloads-confirm");
+    clear(box);
+    var offer = downloads.confirm && downloads.confirm.data;
+    if (!offer) { box.hidden = true; return; }
+    box.appendChild(el("span", "dl-card__name", offer.name ? String(offer.name) : "This file"));
+    var rows = el("dl", "facts");
+    var row = function (label, value, title) {
+      rows.appendChild(el("dt", null, label));
+      var dd = el("dd");
+      var code = el("code", null, value);
+      if (title) { code.title = title; }
+      dd.appendChild(code);
+      rows.appendChild(dd);
+    };
+    row("Repository", offer.repo ? String(offer.repo) : "-");
+    var commit = typeof offer.commit === "string" ? offer.commit : "";
+    row("Commit", commit ? commit.slice(0, 7) : "-", commit);
+    box.appendChild(rows);
+    var files = Array.isArray(offer.files) ? offer.files.filter(function (file) { return file && typeof file.path === "string"; }) : [];
+    var list = el("ul", "dl-confirm__files");
+    files.forEach(function (file) { list.appendChild(el("li", null, file.path + DOT + dgb(file.size) + " GB")); });
+    box.appendChild(list);
+    box.appendChild(el("p", "dl-card__facts", "Total " + dgb(offer.size_bytes) + " GB" + DOT + files.length + (files.length === 1 ? " file" : " files")));
+    var fits = offer.fits !== false;
+    var free = freeBytes();
+    box.appendChild(fits ? el("p", "muted small", "Fits: " + dgb(offer.needed_bytes) + " GB needed" + (free === null ? "" : ", " + dgb(free) + " GB free"))
+                         : el("p", "msg-warn", noRoomText(offer.needed_bytes)));
+    var actions = el("div", "dl-card__actions");
+    var go = el("button", "st-btn st-btn--primary st-btn--sm", "Download");
+    go.type = "button";
+    go.disabled = !fits || downloads.acting;
+    go.addEventListener("click", startLink);
+    actions.appendChild(go);
+    var later = el("button", "st-btn st-btn--secondary st-btn--sm", "Not now");
+    later.type = "button";
+    later.addEventListener("click", hideConfirm);
+    actions.appendChild(later);
+    box.appendChild(actions);
+    box.hidden = false;
+  }
+  async function startLink() {
+    var offer = downloads.confirm;
+    if (!offer || downloads.acting) { return; }
+    showLinkError("");
+    downloads.acting = true;
+    renderConfirm();
+    var answer = await downloadsAnswer(api("/v1/strata/downloads/start", jsonPost({ url: offer.url, confirm: true })));
+    downloads.acting = false;
+    if (answer.signedOut) { return; }
+    if (answer.error) { renderConfirm(); showLinkError(answer.error); return; }
+    hideConfirm();
+    $("downloads-url").value = "";
+    toast("success", "Download queued", offer.data.name ? String(offer.data.name) : "");
+    await refreshDownloads();
+  }
+
   // ---------------------------------------------------------------- Monitor (GET /metrics)
   // Upstream's Monitor tab on this server's /metrics (listener.monitor): asked once a second
   // while the tab is open. A server with the Monitor off answers 404 and the tab says so.
@@ -1465,6 +1845,12 @@
     $("model-start").addEventListener("click", startModel);
     $("model-stop").addEventListener("click", stopModel);
     $("model-defaults").addEventListener("click", resetOptions);
+    $("downloads-refresh").addEventListener("click", function () { refreshDownloads(); });
+    $("downloads-link-form").addEventListener("submit", function (event) { event.preventDefault(); checkLink(); });
+    $("downloads-url").addEventListener("input", function () {
+      showLinkError("");
+      if (downloads.confirm && downloads.confirm.url !== $("downloads-url").value.trim()) { hideConfirm(); }
+    });
     $("tab-btn-monitor").addEventListener("click", function () { showView("monitor"); });
     $("tab-btn-about").addEventListener("click", function () { showView("about"); });
     $("req-all").addEventListener("click", function () {

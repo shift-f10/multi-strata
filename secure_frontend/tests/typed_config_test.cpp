@@ -1847,6 +1847,57 @@ void models_keys_typed_and_described() {
   }
 }
 
+// Model downloads (plan 2026-10-23-model-downloads Task 4): the download switch, the store root,
+// and the prepare step's Python and upstream tools; the card a prepared Qwen download borrows its
+// engine from.
+void download_keys_typed_and_described() {
+  ConfigFixture f;
+  for (const char* path : {"models.downloads", "models.downloads_root", "models.prepare_python", "models.prepare_tools",
+                           "models.download_engine_card"}) {
+    const auto* key = secure_frontend::find_config_key(path);
+    expect(key != nullptr && !key->required && key->flag.empty() && !key->default_boolean, std::string{"a config-file row: "} + path);
+  }
+  const auto bare = with_literals(f, {});
+  const auto* config = config_of(bare);
+  expect(config != nullptr && !config->models.downloads && !config->models.downloads_root.has_value() &&
+             !config->models.prepare_python.has_value() && !config->models.prepare_tools.has_value() &&
+             !config->models.download_engine_card.has_value(),
+         "off and unset by default: " + issues_of(bare));
+  for (const char* line : {"models.downloads = false\n", "models.downloads_root = (unset)\n", "models.prepare_python = (unset)\n",
+                           "models.prepare_tools = (unset)\n", "models.download_engine_card = (unset)\n"}) {
+    expect(describe_of(bare).find(line) != std::string::npos, std::string{"--check reports "} + line);
+  }
+  const std::string cards = string_array({host_absolute("/srv/cards/qwen.json")});
+  const std::string root = secure_frontend_test::json_literal(host_absolute("/srv/downloads"));
+  const std::string python = secure_frontend_test::json_literal(host_absolute("/srv/venv/python.exe"));
+  const std::string tools = secure_frontend_test::json_literal(host_absolute("/srv/upstream/tools"));
+  const auto on = with_literals(f, {{"models.cards", cards}, {"models.downloads", "true"}, {"models.downloads_root", root},
+                                    {"models.prepare_python", python}, {"models.prepare_tools", tools},
+                                    {"models.download_engine_card", "\"Qwen3.8-Flash-Next\""}});
+  const auto* with = config_of(on);
+  expect(with != nullptr && with->models.downloads && with->models.downloads_root.has_value() &&
+             with->models.prepare_python.has_value() && with->models.prepare_tools.has_value() &&
+             with->models.download_engine_card == std::optional<std::string>{"Qwen3.8-Flash-Next"},
+         "the rows are kept: " + issues_of(on));
+  expect(has_issue(with_literals(f, {{"models.downloads", "true"}}), "models.downloads", ConfigIssueCode::conflicting_values),
+         "downloads need models.cards");
+  expect(has_issue(with_literals(f, {{"models.cards", cards}, {"models.downloads", "true"}}), "models.downloads",
+                   ConfigIssueCode::conflicting_values),
+         "downloads need a store root");
+  expect(has_issue(with_literals(f, {{"models.cards", cards}, {"models.downloads_root", "\"downloads\""}}), "models.downloads_root",
+                   ConfigIssueCode::invalid_value),
+         "the store root is absolute");
+  expect(has_issue(with_literals(f, {{"models.cards", cards}, {"models.prepare_python", python}}), "models.prepare_python",
+                   ConfigIssueCode::conflicting_values),
+         "the prepare step needs both its Python and the tools");
+  expect(has_issue(with_literals(f, {{"models.cards", cards}, {"models.prepare_tools", "\"tools\""}, {"models.prepare_python", python}}),
+                   "models.prepare_tools", ConfigIssueCode::invalid_value),
+         "the tools folder is absolute");
+  expect(has_issue(with_literals(f, {{"models.cards", cards}, {"models.download_engine_card", "\"has space\""}}),
+                   "models.download_engine_card", ConfigIssueCode::invalid_value),
+         "the engine card is a card name");
+}
+
 void codex_and_tool_call_rows_are_dispositioned() {
   struct Expected { const char* key; const char* path; };
   for (const Expected e : {Expected{"slot_save_path", "session.slot_save_path"},
@@ -2070,6 +2121,7 @@ int main(int argc, char** argv) {
       {"web_ui_and_loopback_without_key_rows", web_ui_and_loopback_without_key_rows},
       {"model_name_row", model_name_row},
       {"models_keys_typed_and_described", models_keys_typed_and_described},
+      {"download_keys_typed_and_described", download_keys_typed_and_described},
       {"monitor_row", monitor_row},
       {"codex_and_tool_call_rows_are_dispositioned", codex_and_tool_call_rows_are_dispositioned},
       {"session_rows_at_each_edge", session_rows_at_each_edge},

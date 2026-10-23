@@ -381,7 +381,7 @@ void auth04_no_switch_disables_auth() {
                  path == "session.codex_thread_titles" || path == "session.codex_compaction_cache" ||
                  path == "vision.enabled" || path == "vision.no_flash_attn" || path == "vision.resident" ||
                  path == "glm.fit_max_tokens" || path == "glm.experimental_speed_projection" ||
-                 path == "models.control" || path == "models.control_remote",
+                 path == "models.control" || path == "models.control_remote" || path == "models.downloads",
              "the only switches are the two bind opt-ins, the page and the Monitor, the engine's NNP opt-out, "
              "the pull address opt-in, request logging and the SP5 behaviour, lifecycle, vram/turn, answer-room, "
              "session and vision opt-ins, and the model launcher's two control switches: " + path);

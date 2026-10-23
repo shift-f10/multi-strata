@@ -127,6 +127,13 @@ RouteDecision ApiRouter::authorize(const RequestHead& head) {
       if (head.method == entry.method) matched = &entry;
     }
   }
+  if (config_.downloads.handle) {
+    for (const auto& entry : kModelDownloadRoutes) {
+      if (target != entry.path) continue;
+      allow = entry.method;
+      if (head.method == entry.method) matched = &entry;
+    }
+  }
   for (const auto& entry : kRouteTable) {
     // listener.monitor off: /metrics is no route at all, for any method (EXT-01: upstream's
     // /metrics stays 404 after authentication, never 405).
@@ -150,7 +157,9 @@ RouteDecision ApiRouter::authorize(const RequestHead& head) {
     if (head.content_length.value_or(0U) > config_.chat_body_limit) return early(make_error_response(ApiError::request_too_large));
   }
   // The control routes' bodies: JSON (a start names its card and options; a stop's is ignored), small.
-  if (decision.route == RouteId::strata_start || decision.route == RouteId::strata_stop) {
+  const bool download_post = decision.route == RouteId::strata_download_start || decision.route == RouteId::strata_download_pause ||
+                             decision.route == RouteId::strata_download_cancel || decision.route == RouteId::strata_download_link;
+  if (decision.route == RouteId::strata_start || decision.route == RouteId::strata_stop || download_post) {
     const auto types = head.values("content-type");
     if (head.content_length.value_or(0U) > 0U && (types.size() != 1U || !is_json_content_type(types.front()))) {
       return early(make_error_response(ApiError::unsupported_media_type));
@@ -265,6 +274,20 @@ RouteResult ApiRouter::handle(const RequestHead& head, const std::string_view bo
         RouteResult result = decision.route == RouteId::strata_models ? config_.control.list(context)
                              : decision.route == RouteId::strata_start ? config_.control.start(body, context)
                                                                         : config_.control.stop(context);
+        if (auto* complete = std::get_if<HttpResponse>(&result)) {
+          response = std::move(*complete);
+          break;
+        }
+        return result;
+      }
+      // Model downloads (plan 2026-10-23-model-downloads Task 4): keyed above; the handler
+      // answers its own refusals (403 for a remote client without models.control_remote).
+      case RouteId::strata_downloads:
+      case RouteId::strata_download_start:
+      case RouteId::strata_download_pause:
+      case RouteId::strata_download_cancel:
+      case RouteId::strata_download_link: {
+        RouteResult result = config_.downloads.handle(decision.route, body, context);
         if (auto* complete = std::get_if<HttpResponse>(&result)) {
           response = std::move(*complete);
           break;
