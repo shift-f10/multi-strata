@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <cstdio>
 #include <map>
 #include <set>
 
@@ -186,6 +187,16 @@ unsigned long long request_seed(const unsigned long long requested, const unsign
   z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
   z ^= z >> 31;
   return z == 0 ? 1 : z;
+}
+
+std::string engine_info_line(const LoadReport& r, const int context) {
+  char buffer[512];
+  std::snprintf(buffer, sizeof(buffer),
+                "INFO engine=strata-gemma4 context=%d expert_slots=%d expert_slots_primary=%d slots_per_layer=%d "
+                "experts_resident_pct=%.1f vram_used_mib=%.0f vram_total_mib=%.0f pinned_gib=%.2f ring_rows=%d load_s=%.1f",
+                context, kLayers * kExperts, kLayers * r.slots_per_layer, r.slots_per_layer, r.resident_pct, r.vram_used_mib,
+                r.vram_total_mib, r.pinned_gib, r.ring_rows, r.load_seconds);
+  return buffer;
 }
 
 bool penalties_on(const Sampling& s) { return s.last_n != 0 && (s.repeat != 1.0f || s.freq != 0.0f || s.present != 0.0f); }

@@ -1114,6 +1114,18 @@ written beside it: `engines/gemma4/` (`strata-gemma4-engine`), plan
       seed still reproduces. The same question asked twice now gives two different, correct
       answers (T1055 and its sub-techniques).
     - The serve config adds `min_p` 0.05 to the model card's defaults; the README recommends it.
+56. **Served at 262K context; the Monitor shows the expert split** (owner: "restart it with
+    262K context with kv streaming on", then "tell me the experts distribution"):
+    - Our engine has no KV streaming (the upstream and GLM engines' option; the `strata_gemma4`
+      allowlist refuses it). 262,144 tokens fit without it: the five full-attention layers' f16
+      K/V take 5.37 GB of VRAM, at the cost of expert slots.
+    - The engine's INFO record now also carries the main engine's `expert_slots` (all 3,840
+      experts) and `expert_slots_primary` (those in VRAM slots), the keys the frontend's Monitor
+      whitelist already reads, plus `context` (case `info_line_reports_the_expert_split`, RED
+      then GREEN; engine ctest 27/27). The page's VRAM and RAM cards show "N experts loaded"
+      after the first request.
+    - The serve config: `--max-context 262144`, `limits.chat.max_prompt_tokens` and
+      `max_completion_tokens` 262,144.
 
 ### Not done in this session
 

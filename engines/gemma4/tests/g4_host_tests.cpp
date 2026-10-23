@@ -660,6 +660,40 @@ void unseeded_requests_draw_fresh_seeds() {
   expect(differ > 0, "different seeds give different draws");
 }
 
+// The INFO record: the expert split under the main engine's key names (the frontend's
+// Monitor whitelist), and every field in the shape the frontend keeps (a [a-z0-9_] key up to
+// 32 bytes, a value up to 64 bytes).
+void info_line_reports_the_expert_split() {
+  g4::LoadReport r;
+  r.slots_per_layer = 31;
+  r.resident_pct = 24.2;
+  r.vram_used_mib = 15500;
+  r.vram_total_mib = 16376;
+  r.pinned_gib = 23.49;
+  r.load_seconds = 29.5;
+  r.ring_rows = 2048;
+  const std::string line = g4::engine_info_line(r, 262144);
+  expect(line.rfind("INFO ", 0) == 0, "an INFO record");
+  for (const char* want : {" expert_slots=3840", " expert_slots_primary=930", " slots_per_layer=31", " context=262144",
+                           " experts_resident_pct=24.2"}) {
+    expect(line.find(want) != std::string::npos, std::string{"carries"} + want);
+  }
+  std::size_t at = 5;
+  bool shaped = line.find('\n') == std::string::npos;
+  while (at < line.size()) {
+    const std::size_t end = std::min(line.find(' ', at), line.size());
+    const std::string field = line.substr(at, end - at);
+    const std::size_t eq = field.find('=');
+    shaped = shaped && eq != std::string::npos && eq > 0 && eq <= 32 && field.size() - eq - 1 <= 64 && field.size() - eq - 1 > 0;
+    for (std::size_t i = 0; i < eq && eq != std::string::npos; ++i) {
+      const char c = field[i];
+      shaped = shaped && ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_');
+    }
+    at = end + 1;
+  }
+  expect(shaped, "every field is key=value as the frontend keeps them: " + line);
+}
+
 void reuse_keeps_exact_prefixes_within_the_ring() {
   const std::vector<std::int32_t> held{1, 2, 3, 4, 5, 6};
   expect(g4::reuse_length(held, {1, 2, 3, 4, 5, 6, 7, 8}, 1024) == 6, "a strict prefix is reused whole");
@@ -688,5 +722,6 @@ int main(int argc, char** argv) {
       {"reuse_keeps_exact_prefixes_within_the_ring", reuse_keeps_exact_prefixes_within_the_ring},
       {"sorted_candidates_sample_like_the_full_sampler", sorted_candidates_sample_like_the_full_sampler},
       {"unseeded_requests_draw_fresh_seeds", unseeded_requests_draw_fresh_seeds},
+      {"info_line_reports_the_expert_split", info_line_reports_the_expert_split},
   });
 }

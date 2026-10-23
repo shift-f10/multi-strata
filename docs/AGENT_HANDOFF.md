@@ -537,7 +537,9 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
       distributions along it; about 1 sampled answer in 30 at the model card's values, none of 32
       with `min_p` 0.05, now in the serve config), and retries repeated it because an unseeded
       GEN used seed 0; unseeded requests now get a clock seed as upstream's generate.cpp does
-      (engine ctest 26/26). Open:
+      (engine ctest 26/26). Item 56: served at 262K (no KV streaming in our engine; the f16 KV
+      of the full layers fits in VRAM at the cost of expert slots); the INFO record carries
+      `expert_slots`/`expert_slots_primary` for the Monitor (engine ctest 27/27). Open:
       the `/apply-template` cross-check; the CPU pool ruling; plan 4.
 - The `windows-runtime`-labelled cases run under the MSVC preset on the owner's box; the
   supported Windows toolchains (MSYS2 clang, llvm-mingw) are still not installed (issue 3).

@@ -2,6 +2,8 @@
 // request parsing and sampling (the q36 engine's grammar and sampler semantics).
 #pragma once
 
+#include "g4_engine.hpp"
+
 #include <cstdint>
 #include <random>
 #include <string>
@@ -77,6 +79,12 @@ struct GenRequest final {
 
 // The q36 sampler's candidate count: top_k when set (> 0), else 64, at most `vocab`.
 [[nodiscard]] int candidate_count(const Sampling& s, int vocab);
+
+// The INFO record printed before READY (strata_0143 lets INFO key=value records precede it;
+// the frontend keeps them for the Monitor). Besides our own figures it carries the main
+// engine's expert keys the Monitor's VRAM and RAM cards read: expert_slots (every layer's
+// experts, 30 x 128) and expert_slots_primary (those held in VRAM slots).
+[[nodiscard]] std::string engine_info_line(const LoadReport& report, int context);
 
 // Prefix reuse (plan R4): the held tokens' longest common prefix with the prompt, kept
 // only when the held tail past it fits the sliding ring's spare rows (`spare` = ring -

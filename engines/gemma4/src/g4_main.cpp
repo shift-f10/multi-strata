@@ -169,8 +169,7 @@ struct Serve {
   }
 
   int run(const g4::LoadReport& r) {
-    std::printf("INFO engine=strata-gemma4 slots_per_layer=%d experts_resident_pct=%.1f vram_used_mib=%.0f vram_total_mib=%.0f pinned_gib=%.2f load_s=%.1f\n",
-                r.slots_per_layer, r.resident_pct, r.vram_used_mib, r.vram_total_mib, r.pinned_gib, r.load_seconds);
+    std::printf("%s\n", g4::engine_info_line(r, E.context()).c_str());
     std::printf("READY %d stop\n", E.context());
     std::fflush(stdout);
     std::thread reader([this] {
