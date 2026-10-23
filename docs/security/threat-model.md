@@ -60,6 +60,11 @@ Trust boundaries:
   (2026-10-21: 256 MiB request/body/message, 1,048,576 prompt and output tokens, 65,536
   messages). An operator who raises them accepts that each worker may hold one request
   that large in memory (bounded by `limits.concurrency.max_concurrent_requests`).
+  One remote address may hold at most `limits.concurrency.max_connections_per_remote_address`
+  workers: derived min(4, workers), and min(6, workers) with `listener.web_ui` (owner,
+  2026-10-23: a browser fetches the page's files over up to six connections, and a phone lost
+  `app.js` to the cap of 4). At the default 8 workers one page client can then hold 6 of them;
+  a header-phase connection is still evictable, and an explicit value is used as written.
   Streaming requests must be cancellable on client disconnect and shutdown.
 
 ### Privacy and offline operation

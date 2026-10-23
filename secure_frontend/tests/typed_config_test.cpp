@@ -921,9 +921,43 @@ void cfg01_derived_defaults_follow_worker_count() {
            c->limits.concurrency.max_connections_per_remote_address == expected.second,
            "derived for " + std::to_string(workers) + " workers");
     expect(secure_frontend::derived_max_queued_generations(static_cast<std::uint32_t>(workers)) == expected.first &&
-           secure_frontend::derived_max_connections_per_remote_address(static_cast<std::uint32_t>(workers)) == expected.second,
+           secure_frontend::derived_max_connections_per_remote_address(static_cast<std::uint32_t>(workers), false) == expected.second,
            "derivation functions for " + std::to_string(workers));
   }
+}
+
+// Owner 2026-10-23 ("Raise it", after an iPhone's page load lost app.js to the cap): a browser
+// opens up to six connections to one server for the page's files, so with listener.web_ui the
+// per-remote-address cap derives min(6, workers) instead of min(4, workers). An explicit value
+// is still used as written.
+void cfg01_web_ui_raises_the_remote_cap() {
+  ConfigFixture f;
+  const std::pair<int, unsigned> table[] = {{1, 1U}, {4, 4U}, {6, 6U}, {8, 6U}, {256, 6U}};
+  for (const auto& [workers, expected] : table) {
+    const auto result = with_literals(f, {{"listener.web_ui", "true"}, {"limits.concurrency.max_concurrent_requests", std::to_string(workers)}});
+    const auto* c = config_of(result);  // `result` outlives the reads
+    expect(c != nullptr && c->limits.concurrency.max_connections_per_remote_address == expected &&
+               c->limits.concurrency.remote_cap_derived,
+           "with the page, derived for " + std::to_string(workers) + " workers: " + issues_of(result));
+    expect(secure_frontend::derived_max_connections_per_remote_address(static_cast<std::uint32_t>(workers), true) == expected,
+           "the derivation function with the page, " + std::to_string(workers) + " workers");
+  }
+  const auto page = with_literals(f, {{"listener.web_ui", "true"}});
+  const auto* c = config_of(page);
+  expect(c != nullptr && secure_frontend::describe(*c).find("limits.concurrency.max_connections_per_remote_address = 6 (derived)") !=
+                             std::string::npos,
+         "--check shows the page's derived cap");
+  const auto off = with_literals(f, {{"listener.web_ui", "false"}});
+  const auto* o = config_of(off);
+  expect(o != nullptr && o->limits.concurrency.max_connections_per_remote_address == 4U &&
+             secure_frontend::derived_max_connections_per_remote_address(8U, false) == 4U,
+         "without the page the cap stays min(4, workers)");
+  const auto explicit_cap = with_literals(f, {{"listener.web_ui", "true"}, {"limits.concurrency.max_connections_per_remote_address", "3"}});
+  const auto* e = config_of(explicit_cap);
+  expect(e != nullptr && e->limits.concurrency.max_connections_per_remote_address == 3U && !e->limits.concurrency.remote_cap_derived,
+         "an explicit cap is used as written");
+  const auto* key = secure_frontend::find_config_key("limits.concurrency.max_connections_per_remote_address");
+  expect(key != nullptr, "the row exists");
 }
 
 void cfg01_explicit_values_are_not_adjusted() {
@@ -2159,6 +2193,7 @@ int main(int argc, char** argv) {
       {"cfg01_remote_cap_le_workers", cfg01_remote_cap_le_workers},
       {"cfg01_sp1_config_with_one_worker_still_valid", cfg01_sp1_config_with_one_worker_still_valid},
       {"cfg01_derived_defaults_follow_worker_count", cfg01_derived_defaults_follow_worker_count},
+      {"cfg01_web_ui_raises_the_remote_cap", cfg01_web_ui_raises_the_remote_cap},
       {"cfg01_explicit_values_are_not_adjusted", cfg01_explicit_values_are_not_adjusted},
 #if !defined(_WIN32)
       {"cfg02_env_token_ignores_config_folder_permissions", cfg02_env_token_ignores_config_folder_permissions},

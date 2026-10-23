@@ -77,7 +77,8 @@ the SP2 merge).
   bytes. Unauthenticated clients can hold a worker only in the header phase
   (oldest-P1 eviction); bodies are read only after the bearer token checks.
   Over-admission (per-remote cap `max_connections_per_remote_address`, derived
-  min(4, workers), loopback exempt) and an over-full generation queue
+  min(4, workers), or min(6, workers) with `listener.web_ui`; loopback exempt) and an
+  over-full generation queue
   (`limits.concurrency.max_queued_generations`, derived default 4,
   `queue_timeout_ms` default 300 s) answer one fixed 503 `server_busy` +
   `Retry-After: 1` read through a lingering close. Response writes are bounded
@@ -280,7 +281,7 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `limits.concurrency.max_concurrent_requests` | integer | `8` | 1-256 | - | Worker threads: connections read or answered at once; 1 = serial. |
 | `limits.concurrency.max_queued_generations` | integer | `derived: min(4, max(0, workers-2))` | 0-254 | - | Chats waiting behind the running generation; 0 when max_concurrent_requests is 1, otherwise at most max_concurrent_requests - 2. |
 | `limits.concurrency.queue_timeout_ms` | integer | `300000` | 1000-3600000 | - | Longest wait for the engine before 503 server_busy. |
-| `limits.concurrency.max_connections_per_remote_address` | integer | `derived: min(4, workers)` | 1-256 | - | Workers one non-loopback address may hold; at most max_concurrent_requests. Loopback is exempt. |
+| `limits.concurrency.max_connections_per_remote_address` | integer | `derived: min(4, workers); min(6, workers) with listener.web_ui` | 1-256 | - | Workers one non-loopback address may hold; at most max_concurrent_requests. Loopback is exempt. |
 | `roots.models` | string | required | - | `--models-root` | Absolute directory of .gguf files. The root itself may be a symlink; nothing below it may be. |
 | `roots.tokenizer_pack` | string | unset | - | `--tokenizer-pack` | Absolute tokenizer directory; only with strata-secure-server --expert (a managed model brings its own). |
 | `roots.secret` | string | unset | - | `--secret-root` | Absolute directory holding the token file. Default: the config file's directory. |
@@ -1447,11 +1448,11 @@ from any other server, and reach no route.
     server-side settings need features this server does not have.
   - **Phones** (owner, 2026-10-23): below 640 px the header takes two rows (the brand and
     the controls, then the tabs across the width), and every view fits 320 px without
-    sideways scrolling. A phone loads the page's files over up to six connections at once,
-    while `limits.concurrency.max_connections_per_remote_address` defaults to 4 per remote
-    address: an over-cap connection is answered 503 unlogged, and when that was `app.js` the
-    sign-in never appeared. A page used from other machines needs that key at 6 or more (at
-    most `limits.concurrency.max_concurrent_requests`); loopback clients are exempt.
+    sideways scrolling. A browser loads the page's files over up to six connections at once;
+    an over-cap connection is answered 503 without a log line, and when that was `app.js` an
+    iPhone never showed the sign-in (the cap was 4). With `listener.web_ui` the cap
+    `limits.concurrency.max_connections_per_remote_address` now derives min(6, workers) (owner,
+    same day); an explicit value is used as written; loopback clients are exempt.
 - **Its own policy:** the page's responses carry `Content-Security-Policy:
   default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self';
   img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none';

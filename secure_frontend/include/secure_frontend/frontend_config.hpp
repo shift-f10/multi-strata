@@ -170,7 +170,7 @@ struct ConcurrencyLimits final {
   bool remote_cap_derived;
 };
 [[nodiscard]] std::uint32_t derived_max_queued_generations(std::uint32_t workers) noexcept;
-[[nodiscard]] std::uint32_t derived_max_connections_per_remote_address(std::uint32_t workers) noexcept;
+[[nodiscard]] std::uint32_t derived_max_connections_per_remote_address(std::uint32_t workers, bool web_ui) noexcept;
 struct Limits final {
   HttpLimits http;
   ChatLimits chat;

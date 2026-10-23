@@ -1481,7 +1481,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         web05_cors_origin_config_rejects_wildcard_null_path_duplicate_and_17_entries
         cfg01_sp3_concurrency_rows_and_defaults cfg01_queue_plus_two_le_workers cfg01_serial_requires_zero_queue
         cfg01_remote_cap_le_workers cfg01_sp1_config_with_one_worker_still_valid
-        cfg01_derived_defaults_follow_worker_count cfg01_explicit_values_are_not_adjusted)
+        cfg01_derived_defaults_follow_worker_count cfg01_web_ui_raises_the_remote_cap cfg01_explicit_values_are_not_adjusted)
     if(WIN32)
         secure_frontend_add_cases(secure_frontend_typed_config_tests cfg01_config_with_everyone_write_ace_rejected
             LABELS windows-runtime)

@@ -636,7 +636,7 @@ constexpr std::array<ConfigKeyExtension, 7> kSchemaExtensions{{
     {"model.aliases", static_cast<std::size_t>(config_defaults::kMaxListEntries), &is_valid_model_alias,
      "each entry must be a model name: ASCII letters, digits, dot, underscore or hyphen, at most 64 characters", ""},
     {"limits.concurrency.max_queued_generations", 0U, nullptr, "", "derived: min(4, max(0, workers-2))"},
-    {"limits.concurrency.max_connections_per_remote_address", 0U, nullptr, "", "derived: min(4, workers)"},
+    {"limits.concurrency.max_connections_per_remote_address", 0U, nullptr, "", "derived: min(4, workers); min(6, workers) with listener.web_ui"},
 }};
 
 // Reads a string-array row and applies its SP3 bounds; any failure records one
@@ -679,8 +679,9 @@ std::uint32_t derived_max_queued_generations(const std::uint32_t workers) noexce
   return std::min<std::uint32_t>(static_cast<std::uint32_t>(config_defaults::kDerivedQueueCap), spare);
 }
 
-std::uint32_t derived_max_connections_per_remote_address(const std::uint32_t workers) noexcept {
-  return std::min<std::uint32_t>(static_cast<std::uint32_t>(config_defaults::kDerivedRemoteCap), workers);
+std::uint32_t derived_max_connections_per_remote_address(const std::uint32_t workers, const bool web_ui) noexcept {
+  const auto cap = web_ui ? config_defaults::kDerivedRemoteCapWebUi : config_defaults::kDerivedRemoteCap;
+  return std::min<std::uint32_t>(static_cast<std::uint32_t>(cap), workers);
 }
 
 bool is_config_section(const std::string_view path) noexcept {
@@ -900,7 +901,7 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   const auto queue_timeout_ms = read.integer("limits.concurrency.queue_timeout_ms");
   const bool cap_set = read.present("limits.concurrency.max_connections_per_remote_address");
   const auto remote_cap = cap_set ? read.integer("limits.concurrency.max_connections_per_remote_address")
-                                  : static_cast<std::int64_t>(derived_max_connections_per_remote_address(workers));
+                                  : static_cast<std::int64_t>(derived_max_connections_per_remote_address(workers, web_ui));
   if (max_header > max_request) {
     add(errors, "limits.http.max_header_bytes", ConfigIssueCode::conflicting_values,
         "must not exceed limits.http.max_request_bytes");

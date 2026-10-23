@@ -41,6 +41,9 @@ inline constexpr std::int64_t kMaxConcurrentRequests = 8;  // SP3 B11
 inline constexpr std::int64_t kQueueTimeoutMs = 300'000;
 inline constexpr std::int64_t kDerivedQueueCap = 4;   // max_queued_generations = min(4, max(0, workers - 2))
 inline constexpr std::int64_t kDerivedRemoteCap = 4;  // max_connections_per_remote_address = min(4, workers)
+// ... and min(6, workers) with listener.web_ui: a browser opens up to six connections for the
+// page's files (owner 2026-10-23, after an iPhone's page load lost app.js to the cap of 4).
+inline constexpr std::int64_t kDerivedRemoteCapWebUi = 6;
 
 // Supervision (SP2). Restart policy (spec §3.3, owner decision 2026-10-13);
 // the READY timeout is kEngineReadyTimeoutS above, not a second copy.

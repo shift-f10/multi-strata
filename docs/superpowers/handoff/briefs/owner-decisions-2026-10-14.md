@@ -29,7 +29,7 @@ B5. Stream framing → chunked transfer coding.
 B6. Sampling → neutral values are no-ops; bounded temperature/top_p/seed passed to GEN (option e).
 B7. /v1/completions out. B8. /v1/messages out of SP3 (SP5 candidate). B9. Ollama /api/* out.
 B10. CORS off by default; exact-origin opt-in via listener.cors_origins.
-B11. Defaults: 8 workers; queue derived min(4, max(0, workers−2)); 300 s queue timeout; per-remote-address cap derived min(4, workers).
+B11. Defaults: 8 workers; queue derived min(4, max(0, workers−2)); 300 s queue timeout; per-remote-address cap derived min(4, workers). *Amended 2026-10-23 (owner: "Raise it"): with `listener.web_ui` the per-remote-address cap derives min(6, workers); a phone's page load had lost `app.js` to the cap of 4.*
 B12. Loopback local-DoS residual after the early-auth fix: accepted, recorded in the threat model.
 Plans: TWO — M1 (concurrency + hardening), M2 (streaming).
 

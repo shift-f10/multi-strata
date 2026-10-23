@@ -265,10 +265,10 @@ worktrees and integrated as patches.
 - **Phones (owner, same day):** the sign-in did not appear on an iPhone because the over-cap
   connection (default 4 per remote address) that carried `app.js` was refused with 503; the LAN
   config now sets `limits.concurrency.max_connections_per_remote_address` to 8 (restart pending
-  on the owner). The signed-in header now takes two rows below 640 px; every view fits 320 px
-  (session log item 60).
-- **Open:** whether `max_connections_per_remote_address` should default higher with
-  `listener.web_ui` (the owner's call); a paused card shows as `available` after a server restart (a Download then continues
+  on the owner), and the owner chose to raise the default: with `listener.web_ui` the cap derives
+  min(6, workers) (B11 amended for page servers). The signed-in header now takes two rows below
+  640 px; every view fits 320 px (session log item 60).
+- **Open:** a paused card shows as `available` after a server restart (a Download then continues
   from the kept partial files); the image encoders (`mmproj`) are not downloaded; Qwen3.6 and
   pasted-link cards are not made automatically; GLM-5.3 files are download-only (no GLM engine
   here); `--compat-bf16` packs need `STRATA_GGUF_PY` in the server's environment; Windows CI

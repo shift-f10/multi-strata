@@ -1254,8 +1254,11 @@ written beside it: `engines/gemma4/` (`strata-gemma4-engine`), plan
       sign-in included. Loopback clients are exempt, which is why the page worked on the box itself.
     - **Fix for the LAN server:** `out/serve/config-launcher-lan.json` sets the key to 8 (the
       server's workers); `--check` passes. It needs a restart: this session's stop of the running
-      server was refused by the permission check, so the owner restarts it. Whether the default
-      should rise for a server with `listener.web_ui` is left to the owner.
+      server was refused by the permission check, so the owner restarts it.
+    - **The default** (owner: "Raise it"): with `listener.web_ui` the per-remote-address cap now
+      derives min(6, workers) instead of min(4, workers), so a page server works from a phone without
+      the key (`cfg01_web_ui_raises_the_remote_cap`, RED then GREEN; the README table regenerated).
+      This amends decision B11 for page servers only; without the page the cap stays min(4, workers).
     - **Layout:** signed in, the header (brand, four tabs, New chat, the pill, the theme button) needs
       about 480 px, so a 375 px phone laid the page out at 473 px and cut off its right side. Below
       640 px the header now takes two rows, the tabs sharing the full width
