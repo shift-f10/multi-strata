@@ -314,7 +314,7 @@ library `secure_frontend_gemma4_prompt_renderer`; tests new `gemma4_profile_test
   audio and video markers) fails closed. `trim` uses a fixed table equal to Python's
   `str.isspace()` set.
 
-- [ ] **Step 1: RED**
+- [x] **Step 1: RED**
   ```cpp
   void renders_the_template_bytes_thinking_off();          // exact strings, with and without a system message
   void renders_the_template_bytes_thinking_on();
@@ -329,9 +329,9 @@ library `secure_frontend_gemma4_prompt_renderer`; tests new `gemma4_profile_test
   authority: llama.cpp reports this file's template as outdated and applies compatibility
   workarounds (step 17), so any difference is listed and ruled on, not copied.
   FAIL.
-- [ ] **Step 2:** implement; the plan sets `think_tokens = {channel_open, channel_close}`,
+- [x] **Step 2:** implement; the plan sets `think_tokens = {channel_open, channel_close}`,
   `starts_in_reasoning = false` (both modes), `stop_tokens` per Task 9.
-- [ ] **Step 3:** GREEN + gates; commit `gemma4: renderer, marker encoder and generation plan`.
+- [x] **Step 3:** GREEN + gates; commit `gemma4: renderer, marker encoder and generation plan`.
 
 ---
 

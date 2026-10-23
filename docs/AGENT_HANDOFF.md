@@ -447,6 +447,19 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
       texts refused. Fixture: `secure_frontend/tests/fixtures/gemma4_tokenizer_texts.json`
       (texts + ids). Session log step 17, item 45. Gates: MSVC build clean; tokenizer cases 18/18
       with the real pack; the full suite runs once after Tasks 8-9 (controller's batch gate).
+    - Task 8 done (written by a parallel worker in a detached worktree, integrated by the lane):
+      `render_gemma4_text_prompt` (new `gemma4_prompt_renderer`) renders the GGUF template's
+      text path byte for byte (`<bos>`; a system turn only for a leading system message or
+      thinking on, `<|think|>` first; `<|turn>user\n…<turn|>\n`; earlier answers as
+      `<|turn>model\n…<turn|>\n`; the generation prompt plus `<|channel>thought\n<channel|>`
+      when thinking is off); `gemma4_trim` is Python's `str.strip()` (a fixed 29-point table);
+      strict user/assistant order, any of the 24 special literals, an empty text, C0 controls
+      or the parts form fail closed. `find_gemma4_markers` (each literal once, the GGUF's own
+      types), `encode_gemma4_prompt` (markers by position, one spm index per prompt) and
+      `make_gemma4_chat_generation_plan` (think tokens `<|channel>`/`<channel|>`, never starting
+      in reasoning). Not done: the one-time cross-check against llama-server's
+      `/apply-template` (needs a running server on the box). Gates: MSVC build clean; 90/90
+      targeted; full suite with Task 9.
 - The `windows-runtime`-labelled cases run under the MSVC preset on the owner's box; the
   supported Windows toolchains (MSYS2 clang, llvm-mingw) are still not installed (issue 3).
 

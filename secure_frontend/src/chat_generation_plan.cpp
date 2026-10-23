@@ -2,6 +2,7 @@
 
 #include "secure_frontend/qwen_prompt_renderer.hpp"
 #include "secure_frontend/glm_prompt_renderer.hpp"
+#include "secure_frontend/gemma4_prompt_renderer.hpp"
 
 #include <utility>
 
@@ -134,13 +135,42 @@ ChatGenerationPlanResult make_gemma4_chat_generation_plan(const ChatCompletionRe
                                                           const std::size_t maximum_prompt_tokens,
                                                           const std::size_t default_max_tokens, const SamplingDefaults& defaults,
                                                           const bool thinking) {
-  static_cast<void>(request);
-  static_cast<void>(tokenizer);
-  static_cast<void>(maximum_prompt_tokens);
-  static_cast<void>(default_max_tokens);
-  static_cast<void>(defaults);
-  static_cast<void>(thinking);
-  return ChatGenerationPlanError{ChatGenerationPlanErrorCode::invalid_request, "the Gemma 4 renderer is not built yet"};
+  if (request.model.empty() || request.messages.empty() || maximum_prompt_tokens == 0U ||
+      (request.max_tokens.has_value() && *request.max_tokens == 0U)) {
+    return error(ChatGenerationPlanErrorCode::invalid_request,
+                 "chat generation request is outside native serving limits");
+  }
+  // Gemma 4 plan 1 is text only (vision_capable false, Task 10): an image part closes the plan.
+  if (count_image_parts(request) != 0U) {
+    return error(ChatGenerationPlanErrorCode::invalid_request, "the Gemma 4 profile cannot serve image parts");
+  }
+  // The pack must be Gemma's (spm_bpe, every marker exactly once with its GGUF type) before
+  // anything is rendered for it.
+  const auto markers = find_gemma4_markers(tokenizer);
+  if (!markers.has_value()) {
+    return error(ChatGenerationPlanErrorCode::tokenization_failed,
+                 "the local tokenizer pack does not carry the Gemma 4 markers");
+  }
+  const auto prompt = render_gemma4_text_prompt(request.messages, thinking);
+  if (!prompt) {
+    return error(ChatGenerationPlanErrorCode::prompt_render_failed,
+                 "chat messages cannot be represented by the fixed Gemma 4 template");
+  }
+  const auto encoded = encode_gemma4_prompt(tokenizer, *prompt);
+  const auto* token_ids = std::get_if<std::vector<std::size_t>>(&encoded);
+  if (token_ids == nullptr) {
+    return error(ChatGenerationPlanErrorCode::tokenization_failed,
+                 "rendered Gemma 4 prompt cannot be encoded by the local tokenizer pack");
+  }
+  if (token_ids->empty() || token_ids->size() > maximum_prompt_tokens) {
+    return error(ChatGenerationPlanErrorCode::prompt_too_large,
+                 "encoded chat prompt exceeds native serving limits");
+  }
+  // The reasoning split is the thought channel in both modes. The reply never starts inside it:
+  // thinking off closed it in the prompt, and thinking on leaves the model to open it.
+  return ChatGenerationPlan{request.model, *token_ids, request.max_tokens.value_or(default_max_tokens),
+                            merge_sampling(request.sampling, defaults), ThinkTokens{markers->channel_open, markers->channel_close},
+                            false, std::vector<std::size_t>{}};
 }
 
 }  // namespace secure_frontend

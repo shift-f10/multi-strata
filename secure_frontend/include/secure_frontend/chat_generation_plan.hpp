@@ -79,9 +79,11 @@ using ChatGenerationPlanResult = std::variant<ChatGenerationPlan, ChatGeneration
     const SamplingDefaults& defaults = {}, std::span<const std::size_t> image_token_counts = {});
 
 // Gemma 4 plan 1 (spec §2.5, §6.3-§6.5): a schema-validated text request through the fixed
-// Gemma 4 template. thinking writes <|think|> in the system turn; off closes the thought
-// channel in the generation prompt. Gemma 4 plan 1 Task 3: a stub refusing every request
-// (invalid_request) until Task 8 writes the renderer.
+// Gemma 4 template (render_gemma4_text_prompt, encode_gemma4_prompt). thinking writes <|think|>
+// in the system turn; off closes the thought channel in the generation prompt. The pack must
+// carry the Gemma 4 markers (find_gemma4_markers), else tokenization_failed; an image part is
+// invalid_request (text only). The reasoning split is the thought channel, <|channel> and
+// <channel|>, and the reply never starts inside it (starts_in_reasoning false in both modes).
 [[nodiscard]] ChatGenerationPlanResult make_gemma4_chat_generation_plan(
     const ChatCompletionRequest& request, const TokenizerPack& tokenizer,
     std::size_t maximum_prompt_tokens = static_cast<std::size_t>(config_defaults::kChatMaxPromptTokens),

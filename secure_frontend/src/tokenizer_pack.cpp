@@ -797,4 +797,114 @@ TokenizerEncodeResult encode_glm53_prompt(const TokenizerPack& pack,
   return output;
 }
 
+
+namespace {
+
+constexpr int kTokenTypeControl = 3;
+constexpr int kTokenTypeUserDefined = 4;
+
+// Gemma 4 plan 1 Task 8: the id of `literal` when it occurs exactly once, typed `type`.
+std::optional<std::size_t> unique_token_of_type(const TokenizerPack& pack, const std::string_view literal, const int type) {
+  std::optional<std::size_t> found;
+  for (std::size_t id = 0U; id < pack.tokens_by_id.size(); ++id) {
+    if (pack.tokens_by_id[id] != literal) continue;
+    if (found.has_value() || id >= pack.token_types.size() || pack.token_types[id] != type) return std::nullopt;
+    found = id;
+  }
+  return found;
+}
+
+}  // namespace
+
+std::optional<Gemma4Markers> find_gemma4_markers(const TokenizerPack& pack) {
+  if (pack.mode != TokenizerMode::spm_bpe || pack.tokens_by_id.size() != pack.token_types.size()) return std::nullopt;
+  const auto bos = unique_token_of_type(pack, "<bos>", kTokenTypeControl);
+  const auto eos = unique_token_of_type(pack, "<eos>", kTokenTypeControl);
+  const auto turn_open = unique_token_of_type(pack, "<|turn>", kTokenTypeControl);
+  const auto turn_close = unique_token_of_type(pack, "<turn|>", kTokenTypeControl);
+  const auto think = unique_token_of_type(pack, "<|think|>", kTokenTypeControl);
+  const auto channel_open = unique_token_of_type(pack, "<|channel>", kTokenTypeUserDefined);
+  const auto channel_close = unique_token_of_type(pack, "<channel|>", kTokenTypeUserDefined);
+  if (!bos || !eos || !turn_open || !turn_close || !think || !channel_open || !channel_close) return std::nullopt;
+  return Gemma4Markers{*bos, *eos, *turn_open, *turn_close, *think, *channel_open, *channel_close};
+}
+
+TokenizerEncodeResult encode_gemma4_prompt(const TokenizerPack& pack, const std::string_view prompt) {
+  constexpr std::string_view kBos = "<bos>";
+  constexpr std::string_view kTurnOpen = "<|turn>";
+  constexpr std::string_view kTurnClose = "<turn|>";
+  constexpr std::string_view kThinkingSystemHead = "<|turn>system\n<|think|>";
+  constexpr std::string_view kGenerationHeader = "<|turn>model\n";
+  constexpr std::string_view kClosedChannelTail = "<|turn>model\n<|channel>thought\n<channel|>";
+  if (pack.mode != TokenizerMode::spm_bpe) {
+    return error(TokenizerPackErrorCode::unsupported_special_token, "a Gemma 4 prompt needs an spm_bpe tokenizer pack");
+  }
+  const auto markers = find_gemma4_markers(pack);
+  if (!markers.has_value()) {
+    return error(TokenizerPackErrorCode::unsupported_special_token,
+                 "Gemma 4 markers must be exactly one token each, of the expected type");
+  }
+  auto built = build_spm_index(pack);
+  if (const auto* failure = std::get_if<TokenizerPackError>(&built)) return *failure;
+  const SpmIndex& index = std::get<SpmIndex>(built);
+  // The vocabulary's CONTROL and USER_DEFINED literals, collected once for every span.
+  std::vector<std::string_view> specials;
+  for (std::size_t id = 0U; id < pack.tokens_by_id.size(); ++id) {
+    if (is_special_type(pack.token_types[id])) specials.emplace_back(pack.tokens_by_id[id]);
+  }
+
+  std::vector<std::size_t> output;
+  const auto marker = [&output](const std::size_t id) -> std::optional<TokenizerPackError> {
+    if (output.size() >= kMaximumVocabularyEntries) {
+      return error(TokenizerPackErrorCode::input_text_too_large, "encoded token count exceeds fixed limit");
+    }
+    output.push_back(id);
+    return std::nullopt;
+  };
+  // Ordinary text: encode_text's rules (bounded, UTF-8, no special literal), one shared index.
+  const auto text = [&](const std::string_view span) -> std::optional<TokenizerPackError> {
+    if (span.size() > kMaximumDecodedBytes) return error(TokenizerPackErrorCode::input_text_too_large, "input text exceeds fixed limit");
+    if (!valid_utf8(span)) return error(TokenizerPackErrorCode::input_text_not_utf8, "input text must be valid UTF-8");
+    for (const std::string_view literal : specials) {
+      if (span.find(literal) != std::string_view::npos) {
+        return error(TokenizerPackErrorCode::unsupported_special_token, "special token literals are not accepted as ordinary input");
+      }
+    }
+    return spm_encode_text(pack, index, span, output);
+  };
+
+  std::string_view rest = prompt;
+  if (!rest.starts_with(kBos)) {
+    return error(TokenizerPackErrorCode::unsupported_special_token, "a Gemma 4 prompt begins with exactly one <bos>");
+  }
+  if (const auto failure = marker(markers->bos)) return *failure;
+  rest.remove_prefix(kBos.size());
+  if (rest.starts_with(kThinkingSystemHead)) {  // <|think|> only first in the leading system turn
+    if (const auto failure = marker(markers->turn_open)) return *failure;
+    if (const auto failure = text("system\n")) return *failure;
+    if (const auto failure = marker(markers->think)) return *failure;
+    rest.remove_prefix(kThinkingSystemHead.size());
+  }
+  // The closed thought channel only as the whole tail after the final generation header.
+  const bool closed_channel = rest.ends_with(kClosedChannelTail);
+  if (closed_channel) rest.remove_suffix(kClosedChannelTail.size() - kGenerationHeader.size());
+
+  while (!rest.empty()) {
+    const std::size_t open_at = rest.find(kTurnOpen);
+    const std::size_t close_at = rest.find(kTurnClose);
+    const std::size_t at = std::min(open_at, close_at);
+    if (const auto failure = text(rest.substr(0U, at))) return *failure;
+    if (at == std::string_view::npos) break;
+    const bool open = at == open_at;
+    if (const auto failure = marker(open ? markers->turn_open : markers->turn_close)) return *failure;
+    rest.remove_prefix(at + (open ? kTurnOpen.size() : kTurnClose.size()));
+  }
+  if (closed_channel) {
+    if (const auto failure = marker(markers->channel_open)) return *failure;
+    if (const auto failure = text("thought\n")) return *failure;
+    if (const auto failure = marker(markers->channel_close)) return *failure;
+  }
+  return output;
+}
+
 }  // namespace secure_frontend

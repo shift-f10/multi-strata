@@ -147,4 +147,29 @@ struct ThinkTokens final {
 [[nodiscard]] TokenizerEncodeResult encode_glm53_prompt(
     const TokenizerPack& pack, std::string_view rendered_prompt);
 
+// Gemma 4 plan 1 Task 8 (spec §2.5, §6.3): the seven Gemma 4 markers the renderer and the
+// reasoning split use, each found by its literal, never by number. Found only in an spm_bpe pack
+// and only when every literal occurs exactly once with the type the GGUF gives it: <bos>, <eos>,
+// <|turn>, <turn|> and <|think|> CONTROL (3); <|channel> and <channel|> USER_DEFINED (4). nullopt
+// otherwise (a pack that is not Gemma's cannot serve the gemma4 profile).
+struct Gemma4Markers final {
+  std::size_t bos;
+  std::size_t eos;
+  std::size_t turn_open;      // <|turn>
+  std::size_t turn_close;     // <turn|>
+  std::size_t think;          // <|think|>
+  std::size_t channel_open;   // <|channel>
+  std::size_t channel_close;  // <channel|>
+};
+[[nodiscard]] std::optional<Gemma4Markers> find_gemma4_markers(const TokenizerPack& pack);
+
+// Encodes a prompt produced by render_gemma4_text_prompt (spm_bpe packs only). It recognizes the
+// renderer's own markers by position, never by a scan of client text: <bos> exactly once, first;
+// <|think|> only right after a leading "<|turn>system\n"; <|channel> and <channel|> only as the
+// closed thought channel "<|channel>thought\n<channel|>" that ends the prompt right after its
+// final "<|turn>model\n"; <|turn> and <turn|> as the turn framing. Each maps to its single id
+// (find_gemma4_markers); every other span is ordinary text through the spm_bpe encoder, so any
+// CONTROL or USER_DEFINED literal anywhere else is refused (unsupported_special_token).
+[[nodiscard]] TokenizerEncodeResult encode_gemma4_prompt(const TokenizerPack& pack, std::string_view prompt);
+
 }  // namespace secure_frontend

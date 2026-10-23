@@ -201,6 +201,11 @@ add_library(secure_frontend_glm_prompt_renderer
     src/glm_prompt_renderer.cpp
 )
 
+# Gemma 4 plan 1 Task 8 (spec §6.3): the fixed Gemma 4 text template.
+add_library(secure_frontend_gemma4_prompt_renderer
+    src/gemma4_prompt_renderer.cpp
+)
+
 add_library(secure_frontend_chat_generation_plan
     src/chat_generation_plan.cpp
 )
@@ -392,6 +397,13 @@ target_include_directories(secure_frontend_glm_prompt_renderer
         $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(secure_frontend_glm_prompt_renderer PUBLIC secure_frontend_chat_schema)
+target_compile_features(secure_frontend_gemma4_prompt_renderer PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_gemma4_prompt_renderer
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(secure_frontend_gemma4_prompt_renderer PUBLIC secure_frontend_chat_schema)
 target_compile_features(secure_frontend_chat_generation_plan PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_chat_generation_plan
     PUBLIC
@@ -399,7 +411,8 @@ target_include_directories(secure_frontend_chat_generation_plan
         $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(secure_frontend_chat_generation_plan
-    PUBLIC secure_frontend_chat_schema secure_frontend_qwen_prompt_renderer secure_frontend_glm_prompt_renderer secure_frontend_tokenizer_pack)
+    PUBLIC secure_frontend_chat_schema secure_frontend_qwen_prompt_renderer secure_frontend_glm_prompt_renderer
+           secure_frontend_gemma4_prompt_renderer secure_frontend_tokenizer_pack)
 target_compile_features(secure_frontend_chat_execution PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_chat_execution
     PUBLIC
@@ -497,6 +510,7 @@ foreach(_target IN ITEMS
         secure_frontend_http_socket_server secure_frontend_model_inventory secure_frontend_engine_arguments
         secure_frontend_json secure_frontend_typed_config secure_frontend_server_cli secure_frontend_chat_schema
         secure_frontend_tokenizer_pack secure_frontend_qwen_prompt_renderer secure_frontend_glm_prompt_renderer
+        secure_frontend_gemma4_prompt_renderer
         secure_frontend_chat_generation_plan secure_frontend_chat_execution secure_frontend_engine_supervisor
         secure_frontend_subsystem_limits secure_frontend_secrets secure_frontend_token_store
         secure-frontend-smoke strata-secure-smoke-server strata-secure-server)
@@ -1455,6 +1469,13 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_glm_profile_tests
         renders_exact_fixed_profile rejects_boundary_injection_and_invalid_order creates_plan_only_with_control_tokens
         renders_long_conversations_past_the_old_caps)
+
+    # Gemma 4 plan 1 Task 8 (spec §2.5, §6.3)
+    secure_frontend_add_test_executable(secure_frontend_gemma4_profile_tests tests/gemma4_profile_test.cpp
+        secure_frontend_chat_generation_plan)
+    secure_frontend_add_cases(secure_frontend_gemma4_profile_tests
+        renders_the_template_bytes_thinking_off renders_the_template_bytes_thinking_on trims_like_jinja
+        refuses_markers_order_and_empty_text plan_encodes_markers_as_single_ids_and_text_as_spm)
 
     secure_frontend_add_test_executable(secure_frontend_chat_generation_plan_tests tests/chat_generation_plan_test.cpp
         secure_frontend_chat_generation_plan)
