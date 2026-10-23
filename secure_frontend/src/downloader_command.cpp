@@ -47,7 +47,9 @@ std::vector<std::string> build_transfer_argv(const std::string_view executable, 
   }
   if (request.range_from.has_value()) {
     argv.emplace_back("--range");
-    argv.push_back(std::to_string(*request.range_from) + "-");
+    // A bounded piece "lo-hi" (parallel ranged downloads); range_from alone stays open-ended "lo-".
+    argv.push_back(std::to_string(*request.range_from) + "-" +
+                   (request.range_to.has_value() ? std::to_string(*request.range_to) : std::string{}));
   }
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
   if (!request.test_cacert.empty()) {

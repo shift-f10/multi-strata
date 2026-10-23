@@ -19,6 +19,7 @@ struct TransferRequest final {
   std::string host;
   std::optional<ResolvedAddress> pin;        // only without a proxy
   std::optional<std::uint64_t> range_from;   // only when resuming
+  std::optional<std::uint64_t> range_to;     // with range_from: a bounded piece "lo-hi" (parallel downloads)
   std::optional<ProxySetting> proxy;
   std::uint32_t connect_timeout_s{30};
   std::uint32_t stall_timeout_s{120};

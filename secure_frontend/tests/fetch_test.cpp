@@ -1,6 +1,7 @@
 #include "secure_frontend/acquire_url.hpp"
 #include "secure_frontend/address_policy.hpp"
 #include "secure_frontend/confinement_plan.hpp"
+#include "secure_frontend/download_pieces.hpp"
 #include "secure_frontend/download_response.hpp"
 #include "secure_frontend/downloader_command.hpp"
 #include "secure_frontend/fetch_schedule.hpp"
@@ -176,6 +177,50 @@ void transfer_argv_exact_order() {
   const auto with_proxy = secure_frontend::build_transfer_argv("/usr/bin/curl", proxied);
   expect(with_proxy[with_proxy.size() - 2] == "--proxy" && with_proxy.back() == "http://proxy.corp:3128",
          "--proxy replaces --noproxy and no --resolve with a proxy");
+}
+
+void transfer_argv_bounded_range() {
+  secure_frontend::TransferRequest request;
+  request.url = "https://huggingface.co/r/resolve/abc/f.gguf";
+  request.host = "huggingface.co";
+  request.pin = secure_frontend::make_ipv4(1, 2, 3, 4);
+  request.range_from = 1000;
+  request.range_to = 1999;
+  const auto argv = secure_frontend::build_transfer_argv("/usr/bin/curl", request);
+  expect(argv[argv.size() - 2] == "--range" && argv.back() == "1000-1999", "a bounded piece renders lo-hi: " + argv.back());
+  secure_frontend::TransferRequest open = request;
+  open.range_to.reset();
+  const auto open_argv = secure_frontend::build_transfer_argv("/usr/bin/curl", open);
+  expect(open_argv.back() == "1000-", "range_from alone stays open-ended");
+}
+
+void piece_map_roundtrip_and_resume() {
+  // 70 MiB over 32 MiB pieces: 3 pieces, the last short (70 - 64 = 6 MiB).
+  const std::uint64_t total = (std::uint64_t{70} << 20U);
+  auto map = secure_frontend::piece_map_new(total, "\"abc123\"");
+  expect(map.done.size() == 3U && !secure_frontend::all_done(map) && secure_frontend::done_bytes(map) == 0U, "3 pieces, none done");
+  expect(secure_frontend::piece_span(map, 2).offset == (std::uint64_t{64} << 20U) &&
+             secure_frontend::piece_span(map, 2).length == (std::uint64_t{6} << 20U),
+         "the last piece is short");
+  map.done[0] = true;
+  map.done[2] = true;
+  expect(secure_frontend::done_bytes(map) == (std::uint64_t{32} << 20U) + (std::uint64_t{6} << 20U) && !secure_frontend::all_done(map),
+         "done_bytes counts full and short pieces; not all done");
+  const auto text = secure_frontend::serialize_piece_map(map);
+  const auto back = secure_frontend::parse_piece_map(text);
+  expect(back && back->total == total && back->piece_bytes == (std::uint64_t{32} << 20U) && back->etag == "\"abc123\"" &&
+             back->done == map.done,
+         "serialize -> parse round-trips the total, piece size, ETag (quotes and all) and the bitmap");
+  map.done[1] = true;
+  expect(secure_frontend::all_done(map) && secure_frontend::done_bytes(map) == total, "all pieces done");
+  // Malformed sidecars parse to nullopt (a corrupt file restarts from zero).
+  expect(!secure_frontend::parse_piece_map("garbage"), "not the magic");
+  expect(!secure_frontend::parse_piece_map("STRATA-CHUNKS 1 total=10 piece=0 etag=61 bits=00"), "a zero piece size");
+  expect(!secure_frontend::parse_piece_map("STRATA-CHUNKS 1 total=100 piece=32 etag=61 bits=0000"), "a bitmap of the wrong length (4 pieces need 1 byte)");
+  expect(!secure_frontend::parse_piece_map("STRATA-CHUNKS 1 total=10 piece=32 etag=6 bits=01"), "an odd-length etag hex");
+  expect(!secure_frontend::parse_piece_map("STRATA-CHUNKS 1 total=10 piece=32 etag=61 bits=01 extra=1"), "an unknown field");
+  const auto empty = secure_frontend::parse_piece_map("STRATA-CHUNKS 1 total=0 piece=32 etag= bits=");
+  expect(empty && empty->done.empty(), "a zero-byte file has no pieces");
 }
 
 void config_line_is_single_quoted_url() {
@@ -563,6 +608,8 @@ int main(int argc, char** argv) {
       {"allow_private_addresses_pins_first_ipv4", allow_private_addresses_pins_first_ipv4},
       {"resolve_argument_brackets_ipv6", resolve_argument_brackets_ipv6},
       {"transfer_argv_exact_order", transfer_argv_exact_order},
+      {"transfer_argv_bounded_range", transfer_argv_bounded_range},
+      {"piece_map_roundtrip_and_resume", piece_map_roundtrip_and_resume},
       {"config_line_is_single_quoted_url", config_line_is_single_quoted_url},
       {"probe_argv_is_version_only", probe_argv_is_version_only},
       {"probe_output_parsing_and_floor", probe_output_parsing_and_floor},

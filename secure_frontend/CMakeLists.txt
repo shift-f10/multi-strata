@@ -534,7 +534,7 @@ target_link_libraries(secure_frontend_manifest_core PUBLIC secure_frontend_sha25
 target_link_libraries(secure_frontend_manifest_core PUBLIC secure_frontend_model_inventory)
 secure_frontend_set_warnings(secure_frontend_manifest_core)
 
-add_library(secure_frontend_acquire_core src/address_policy.cpp src/download_response.cpp src/downloader_command.cpp
+add_library(secure_frontend_acquire_core src/address_policy.cpp src/download_response.cpp src/downloader_command.cpp src/download_pieces.cpp
     src/fetch_schedule.cpp src/staging_plan.cpp src/bundle_text.cpp src/manifest_diff.cpp
     src/confinement_plan.cpp)
 target_compile_features(secure_frontend_acquire_core PUBLIC cxx_std_20)
@@ -2002,7 +2002,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         location_resolution_and_host_normalization location_query_characters
         address_policy_denies_special_ranges address_policy_any_denied_answer_rejects_hop ipv6_only_answer_fails_closed
         allow_private_addresses_pins_first_ipv4 resolve_argument_brackets_ipv6
-        transfer_argv_exact_order config_line_is_single_quoted_url probe_argv_is_version_only
+        transfer_argv_exact_order transfer_argv_bounded_range piece_map_roundtrip_and_resume config_line_is_single_quoted_url probe_argv_is_version_only
         probe_output_parsing_and_floor curl_exit_codes_map_to_reasons
         informational_header_blocks_skipped header_block_limits_enforced split_feed_reports_exact_body_offset
         status_table_decisions
