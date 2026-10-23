@@ -27,6 +27,19 @@ inline constexpr std::size_t kMaxConfigFileBytes = 64U * 1024U;
 [[nodiscard]] std::variant<FrontendConfigDraft, ConfigErrors> parse_config_text(
     std::string_view text, const std::filesystem::path& config_directory);
 
+// parse_config_text's reader over an already parsed JSON object (model launcher: a model card's
+// "config" member, plan 2026-10-23 Task 1). The same rules in the same order: a fraction outside
+// a decimal row, an excluded upstream key, then unknown keys, duplicates and types.
+[[nodiscard]] std::variant<FrontendConfigDraft, ConfigErrors> parse_config_object(
+    const JsonValue& root, const std::filesystem::path& config_directory);
+// The text of an operator file read the way read_config_file reads the config (the directory
+// opened as a trusted root, the file beneath it without following a link, not writable by
+// others, bounded at kMaxConfigFileBytes); issues name "config file". For model cards.
+struct TrustedConfigText final {
+  std::string text;
+  std::filesystem::path directory;
+};
+[[nodiscard]] std::variant<TrustedConfigText, ConfigErrors> read_trusted_config_text(const std::filesystem::path& file);
 // Reads a config file (bounded at kMaxConfigFileBytes) and parses it; the
 // file's directory becomes the draft's config_directory. Task 12 replaces the
 // read with a trusted, handle-based open.

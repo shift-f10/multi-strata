@@ -365,6 +365,9 @@ void auth04_no_switch_disables_auth() {
       // that turns the key off — config-file only (no flag, no environment variable), false
       // by default, loopback binds only (refused at load and again at bind). Session log step
       // 16: listener.monitor serves GET /metrics, a keyed route like the rest; it reads no key.
+      // Model launcher (owner decisions D1-D10, 2026-10-23): models.control serves the keyed
+      // model-control routes and models.control_remote opens them to non-loopback key holders;
+      // neither reads, skips or replaces the key.
       if (path == "listener.loopback_without_key") {
         expect(key.flag.empty() && key.default_string.empty(), "the keyless switch has no flag and is off by default");
         continue;
@@ -377,10 +380,11 @@ void auth04_no_switch_disables_auth() {
                  path == "engine.answer_room" || path == "session.tool_call_recovery" || path == "session.env_to_user" ||
                  path == "session.codex_thread_titles" || path == "session.codex_compaction_cache" ||
                  path == "vision.enabled" || path == "vision.no_flash_attn" || path == "vision.resident" ||
-                 path == "glm.fit_max_tokens" || path == "glm.experimental_speed_projection",
+                 path == "glm.fit_max_tokens" || path == "glm.experimental_speed_projection" ||
+                 path == "models.control" || path == "models.control_remote",
              "the only switches are the two bind opt-ins, the page and the Monitor, the engine's NNP opt-out, "
              "the pull address opt-in, request logging and the SP5 behaviour, lifecycle, vram/turn, answer-room, "
-             "session and vision opt-ins: " + path);
+             "session and vision opt-ins, and the model launcher's two control switches: " + path);
     }
   }
   expect(flags.count("--allow-remote") == 1U && flags.count("--token-env") == 1U && flags.count("--check") == 1U,

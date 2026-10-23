@@ -35,7 +35,7 @@ std::string decimal_text(const double value) {
   return ec == std::errc{} ? std::string{buffer, end} : std::string{"?"};
 }
 
-constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 + 1 + 2 + 1 + 1 + 2> kSchema{{
+constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 + 1 + 2 + 1 + 1 + 2 + 4> kSchema{{
     {"schema_version", T::integer, false, 1, 1, d::kSchemaVersion, false, "", "",
      "Config format version; must be 1. Required in a config file."},
     {"listener.host", T::string, false, 0, 0, 0, false, "127.0.0.1", "--host",
@@ -357,6 +357,17 @@ constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 
     // cap is added, same as the M1 key (C-1).
     {"glm.idle_unload_s", T::integer, false, 0, 86400, 0, false, "", "",
      "Seconds a GLM engine idles unloaded before it gives back the memory (0 = never; under glm53 this wins over engine.idle_unload_s)."},
+    // Model launcher (plan 2026-10-23 Task 1; spec §3.1, D1/D2/D5): the model cards the page may
+    // start. With models.cards set, each card file holds its model's engine, weights, tokenizer
+    // and page options, and the main config holds the server.
+    {"models.cards", T::string_array, false, 0, 0, 0, false, "", "",
+     "Absolute paths of model card files (at most 16): the page's Models tab starts and stops them. Each card holds its model's engine.*, model.aliases, roots.models, roots.tokenizer_pack, defaults.sampling.*, reasoning.* and limits.chat token rows, which the main config then may not set."},
+    {"models.start", T::string, false, 0, 0, 0, false, "", "",
+     "The card (by name) started at boot; unset: the server boots with no engine and waits for the page. Needs models.cards."},
+    {"models.control", T::boolean, false, 0, 0, 0, false, "", "",
+     "The page and API may start and stop model cards (keyed; loopback clients only unless models.control_remote). Needs models.cards."},
+    {"models.control_remote", T::boolean, false, 0, 0, 0, false, "", "",
+     "Model control also from non-loopback clients. Needs models.control."},
 }};
 
 void add(ConfigErrors& errors, std::string key, const ConfigIssueCode code, std::string reason) {
@@ -591,7 +602,17 @@ bool is_valid_release_source_url(std::string_view text) noexcept {
   return !host.empty() && host.front() != '-' && host.back() != '-' && host.find("..") == std::string_view::npos;
 }
 
-constexpr std::array<ConfigKeyExtension, 6> kSchemaExtensions{{
+// Model launcher: a card file is named by an absolute path (no config-cwd to resolve against;
+// load never touches the filesystem, the launcher reads the cards at boot).
+bool is_absolute_card_file(const std::string_view text) noexcept {
+  return !text.empty() && std::none_of(text.begin(), text.end(), [](const char c) {
+           return static_cast<unsigned char>(c) < 0x20U || c == 0x7f;
+         }) &&
+         path_from_utf8(std::string{text}).is_absolute();
+}
+
+constexpr std::array<ConfigKeyExtension, 7> kSchemaExtensions{{
+    {"models.cards", 16U, &is_absolute_card_file, "each entry must be an absolute path of a card file", ""},
     {"listener.cors_origins", static_cast<std::size_t>(config_defaults::kMaxListEntries), &is_valid_cors_origin,
      "each entry must be http:// or https://, a lower-case host, an optional port and no path; * and null are not allowed", ""},
     {"update.source", static_cast<std::size_t>(config_defaults::kMaxListEntries), &is_valid_release_source_url,
@@ -1249,6 +1270,37 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   const auto stall = read.integer("pull.stall_timeout_s");
   const auto connect = read.integer("pull.connect_timeout_s");
 
+  // Model launcher (plan 2026-10-23 Task 1): the card files and the control switches. The
+  // launcher starts and stops engines itself, so the lifecycle rows and the vision family are
+  // refused beside it by name; models.start names a card in the served-name grammar (the
+  // launcher checks it against the cards it loaded).
+  ModelsConfig models_config;
+  for (const auto& text : read_bounded_strings(read, errors, "models.cards")) models_config.cards.push_back(path_from_utf8(text));
+  models_config.start = read.string("models.start");
+  models_config.control = read.boolean("models.control");
+  models_config.control_remote = read.boolean("models.control_remote");
+  const bool launcher = draft.entries.contains("models.cards");
+  if (models_config.start.has_value() && !is_valid_model_alias(*models_config.start)) {
+    add(errors, "models.start", ConfigIssueCode::invalid_value,
+        "must be a card name: 1-64 characters of [A-Za-z0-9._-] (name or name:tag), starting with a letter or digit");
+  }
+  if (!launcher) {
+    for (const std::string_view row : {"models.start", "models.control"}) {
+      if (draft.entries.contains(row)) add(errors, std::string{row}, ConfigIssueCode::conflicting_values, "needs models.cards");
+    }
+  }
+  if (models_config.control_remote && !models_config.control) {
+    add(errors, "models.control_remote", ConfigIssueCode::conflicting_values, "needs models.control");
+  }
+  if (launcher) {
+    for (const std::string_view row : {"engine.lazy_load", "engine.idle_unload_s", "vision.enabled"}) {
+      if (draft.entries.contains(row)) {
+        add(errors, std::string{row}, ConfigIssueCode::conflicting_values,
+            "is not supported with models.cards (the launcher starts and stops each engine)");
+      }
+    }
+  }
+
   if (!errors.empty() || !host || !models || !token || !executable || !model_id) {
     if (errors.empty()) add(errors, "config file", ConfigIssueCode::invalid_value, "is incomplete");
     return errors;
@@ -1310,7 +1362,8 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
                                       static_cast<std::uint64_t>(max_total), std::chrono::seconds(max_duration),
                                       std::chrono::seconds(stall), std::chrono::seconds(connect)},
                          LoggingConfig{log_requests}, std::move(sampling_defaults), reasoning, std::move(session),
-                         replicas, vision, std::move(glm), UpdateSettings{std::move(update_source)}));
+                         replicas, vision, std::move(glm), UpdateSettings{std::move(update_source)},
+                         std::move(models_config)));
   return ValidatedConfig{std::move(config_ptr)};
 }
 
@@ -1468,6 +1521,13 @@ std::string describe(const FrontendConfig& c) {
   for (const unsigned device : c.glm.gpus) glm_gpus += (glm_gpus.empty() ? "" : ",") + std::to_string(device);
   line("glm.gpu", glm_gpus.empty() ? std::string{"(unset)"} : json_quoted(glm_gpus));
   line("glm.layer_split", json_quoted(c.glm.layer_split));
+  // Model launcher (plan 2026-10-23 Task 1).
+  std::string cards = "[";
+  for (const auto& card : c.models.cards) cards += (cards.size() > 1U ? "," : "") + json_quoted(path_to_utf8(card));
+  line("models.cards", cards + "]");
+  line("models.start", c.models.start.has_value() ? json_quoted(*c.models.start) : std::string{"(unset)"});
+  line("models.control", c.models.control ? "true" : "false");
+  line("models.control_remote", c.models.control_remote ? "true" : "false");
   line("glm.tokenizer", c.glm.tokenizer.has_value() ? json_quoted(*c.glm.tokenizer) : std::string{"(unset)"});
   line("glm.model_name", c.glm.model_name.has_value() ? json_quoted(*c.glm.model_name) : std::string{"(unset)"});
   line("engine.fit_max_tokens", c.engine.fit_max_tokens ? "true" : "false");

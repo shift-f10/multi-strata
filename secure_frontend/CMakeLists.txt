@@ -646,6 +646,13 @@ target_link_libraries(secure_frontend_launch PUBLIC secure_frontend_model_store 
 secure_frontend_set_warnings(secure_frontend_launch)
 target_link_libraries(strata-secure-server PRIVATE secure_frontend_launch)
 
+# Model launcher (plan 2026-10-23 Tasks 1-2): the page-settable options per engine profile and
+# the model card files (one per model, listed by models.cards).
+secure_frontend_add_library(secure_frontend_model_options SOURCES src/model_options.cpp
+    LINKS secure_frontend_typed_config secure_frontend_json)
+secure_frontend_add_library(secure_frontend_model_cards SOURCES src/model_cards.cpp
+    LINKS secure_frontend_model_options secure_frontend_typed_config secure_frontend_model_inventory)
+
 # SP5 M1 Task 13 (Ruling T13-b): the supervised serve path as a library — the one
 # boot `strata-secure-server` and `strata serve` share (server_bootstrap.hpp).
 secure_frontend_add_library(secure_frontend_server_bootstrap
@@ -1397,7 +1404,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         session_rows_match_the_pin
         slot_save_path_is_a_bounded_private_path
         web_ui_and_loopback_without_key_rows
-        model_name_row monitor_row
+        model_name_row monitor_row models_keys_typed_and_described
         codex_and_tool_call_rows_are_dispositioned
         session_rows_at_each_edge
         replicas_parallel_row_at_the_pin
@@ -1479,6 +1486,23 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_glm_profile_tests
         renders_exact_fixed_profile rejects_boundary_injection_and_invalid_order creates_plan_only_with_control_tokens
         renders_long_conversations_past_the_old_caps)
+
+    # Model launcher plan Task 2 (spec §4): the engine options a card lets the page set.
+    secure_frontend_add_test_executable(secure_frontend_model_options_tests tests/model_options_test.cpp
+        secure_frontend_model_options)
+    secure_frontend_add_cases(secure_frontend_model_options_tests
+        option_tables_per_profile card_options_parse_and_bound card_option_refusals_name_the_option
+        page_values_resolve_within_bounds kv_resident_cross_rules options_apply_as_flags_and_keys
+        mtp_off_drops_the_draft_options controlled_flags_listed description_json_shape
+        remembered_options_round_trip_and_tolerate_junk)
+
+    # Model launcher (plan 2026-10-23 Task 1): card files, their refusals, the main + card merge.
+    secure_frontend_add_test_executable(secure_frontend_model_cards_tests tests/model_cards_test.cpp
+        secure_frontend_model_cards)
+    secure_frontend_add_cases(secure_frontend_model_cards_tests
+        card_parses_and_merges_into_a_valid_config card_refusals_name_the_rule bad_card_is_refused_others_load
+        main_config_may_not_set_card_keys card_options_reach_the_engine_arguments
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     # Gemma 4 plan 1 Task 8 (spec §2.5, §6.3)
     secure_frontend_add_test_executable(secure_frontend_gemma4_profile_tests tests/gemma4_profile_test.cpp

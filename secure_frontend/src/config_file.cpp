@@ -146,7 +146,12 @@ std::variant<FrontendConfigDraft, ConfigErrors> parse_config_text(const std::str
                                     std::string{describe_json_error(error->code)} + " (byte " +
                                         std::to_string(error->offset) + ")"}};
   }
-  const auto* members = std::get<JsonValue>(parsed).if_object();
+  return parse_config_object(std::get<JsonValue>(parsed), config_directory);
+}
+
+std::variant<FrontendConfigDraft, ConfigErrors> parse_config_object(const JsonValue& root,
+                                                                    const std::filesystem::path& config_directory) {
+  const auto* members = root.if_object();
   if (members == nullptr) {
     return ConfigErrors{ConfigIssue{"config file", ConfigIssueCode::malformed_document, "must be a JSON object"}};
   }
@@ -157,7 +162,7 @@ std::variant<FrontendConfigDraft, ConfigErrors> parse_config_text(const std::str
   }
   // SP5 M1 Task 3: an excluded upstream option is named with its rule before
   // generic unknown-key detection (spec D-3).
-  if (const auto rejected = find_rejected_key(std::get<JsonValue>(parsed))) {
+  if (const auto rejected = find_rejected_key(root)) {
     return ConfigErrors{ConfigIssue{*rejected, ConfigIssueCode::excluded_key,
                                     "is an excluded upstream option (SP5 parity table; the accepted narrowing is in "
                                     "README, section Configuration; threat model docs/security/threat-model.md)"}};
@@ -170,7 +175,7 @@ std::variant<FrontendConfigDraft, ConfigErrors> parse_config_text(const std::str
   return draft;
 }
 
-std::variant<FrontendConfigDraft, ConfigErrors> read_config_file(const std::filesystem::path& file) {
+std::variant<TrustedConfigText, ConfigErrors> read_trusted_config_text(const std::filesystem::path& file) {
   const auto issue = [](const ConfigIssueCode code, std::string reason) {
     return ConfigErrors{ConfigIssue{"config file", code, std::move(reason)}};
   };
@@ -203,7 +208,14 @@ std::variant<FrontendConfigDraft, ConfigErrors> read_config_file(const std::file
     return failure->code == PathErrorCode::too_large ? issue(ConfigIssueCode::malformed_document, "is larger than 64 KiB")
                                                      : issue(ConfigIssueCode::file_unavailable, failure->message);
   }
-  return parse_config_text(std::get<std::string>(text), root.path());
+  return TrustedConfigText{std::move(std::get<std::string>(text)), root.path()};
+}
+
+std::variant<FrontendConfigDraft, ConfigErrors> read_config_file(const std::filesystem::path& file) {
+  auto text = read_trusted_config_text(file);
+  if (auto* errors = std::get_if<ConfigErrors>(&text)) return std::move(*errors);
+  const auto& read = std::get<TrustedConfigText>(text);
+  return parse_config_text(read.text, read.directory);
 }
 
 FrontendConfigDraft merge_drafts(FrontendConfigDraft file, const FrontendConfigDraft& flags) {

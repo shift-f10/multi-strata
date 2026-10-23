@@ -372,6 +372,10 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `glm.max_context` | integer | `32768` | 1-1048576 | - | GLM context length in tokens the engine is started with (Maya's default 32768). |
 | `glm.ram_headroom_gb` | integer | `16` | 6-1024 | - | Gigabytes of RAM the GLM engine leaves free when sizing its pinned tier (6-1024; default 16). |
 | `glm.idle_unload_s` | integer | `0` | 0-86400 | - | Seconds a GLM engine idles unloaded before it gives back the memory (0 = never; under glm53 this wins over engine.idle_unload_s). |
+| `models.cards` | string array | `[]` | - | - | Absolute paths of model card files (at most 16): the page's Models tab starts and stops them. Each card holds its model's engine.*, model.aliases, roots.models, roots.tokenizer_pack, defaults.sampling.*, reasoning.* and limits.chat token rows, which the main config then may not set. |
+| `models.start` | string | unset | - | - | The card (by name) started at boot; unset: the server boots with no engine and waits for the page. Needs models.cards. |
+| `models.control` | boolean | `false` | - | - | The page and API may start and stop model cards (keyed; loopback clients only unless models.control_remote). Needs models.cards. |
+| `models.control_remote` | boolean | `false` | - | - | Model control also from non-loopback clients. Needs models.control. |
 <!-- config-keys:end -->
 
 `roots.secret` defaults to the config file's directory only for a `file:` token

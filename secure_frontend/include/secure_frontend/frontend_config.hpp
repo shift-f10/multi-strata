@@ -325,6 +325,16 @@ struct EngineLaunch final {
   std::optional<std::string> served_name{};
 };
 
+// Model launcher (plan 2026-10-23 Task 1; spec §3.1, D1/D2/D5): the card files the page may
+// start, the card started at boot, and who may start and stop them. Launcher mode is on when
+// `cards` is non-empty (model_cards.hpp holds the cards themselves).
+struct ModelsConfig final {
+  std::vector<std::filesystem::path> cards{};  // models.cards: absolute card files
+  std::optional<std::string> start{};          // models.start: unset = boot with no engine (D5)
+  bool control{false};                         // models.control: the page and API may start/stop
+  bool control_remote{false};                  // models.control_remote: ... also from non-loopback clients (D2)
+};
+
 // SP4 §3.9. pull.downloader is only a syntactically absolute path here; the
 // file rules run lazily when a transferring verb or doctor --downloader runs
 // (a recorded CFG-01 exception: a box without curl can still serve and import).
@@ -367,6 +377,7 @@ class FrontendConfig final {
   const ReplicasConfig replicas;    // SP5 M1 Task 10: replicas.parallel (the C-4 narrowing)
   const VisionConfig vision;        // SP5 M1 Task 11: vision.* (the D-9 split)
   const GlmSettings glm;            // SP5 M2 Task 3: glm.* (Maya's names, §D-2)
+  const ModelsConfig models;        // model launcher: models.* (plan 2026-10-23 Task 1)
 
  private:
   friend std::variant<ValidatedConfig, std::vector<ConfigIssue>> validate(const FrontendConfigDraft& draft);
@@ -374,12 +385,13 @@ class FrontendConfig final {
                  EngineLaunch engine_value, PullSettings pull_value, LoggingConfig logging_value,
                  SamplingDefaults sampling_value, ReasoningConfig reasoning_value, SessionPolicy session_value,
                  ReplicasConfig replicas_value, VisionConfig vision_value, GlmSettings glm_value,
-                 UpdateSettings update_value = {})
+                 UpdateSettings update_value = {}, ModelsConfig models_value = {})
       : listener(std::move(listener_value)), limits(limits_value), roots(std::move(roots_value)),
         token(std::move(token_value)), engine(std::move(engine_value)), pull(std::move(pull_value)),
         update(std::move(update_value)),
         logging(logging_value), sampling(std::move(sampling_value)), reasoning(reasoning_value),
-        session(std::move(session_value)), replicas(replicas_value), vision(vision_value), glm(std::move(glm_value)) {}
+        session(std::move(session_value)), replicas(replicas_value), vision(vision_value), glm(std::move(glm_value)),
+        models(std::move(models_value)) {}
 };
 
 // Immutable after validation; subsystems derive their limits from it once.

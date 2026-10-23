@@ -1787,6 +1787,66 @@ void model_name_row() {
          "at most 64 characters, like an alias");
 }
 
+// Model launcher (plan 2026-10-23 Task 1): models.cards (the card files), models.start (the card
+// started at boot), models.control and models.control_remote (who may start and stop, D2).
+void models_keys_typed_and_described() {
+  ConfigFixture f;
+  struct Row {
+    const char* path;
+    ConfigValueType type;
+  };
+  for (const Row row : {Row{"models.cards", ConfigValueType::string_array}, Row{"models.start", ConfigValueType::string},
+                        Row{"models.control", ConfigValueType::boolean}, Row{"models.control_remote", ConfigValueType::boolean}}) {
+    const auto* key = secure_frontend::find_config_key(row.path);
+    expect(key != nullptr && key->type == row.type && !key->required && key->flag.empty() && !key->default_boolean,
+           std::string{"a config-file row with its type, off by default: "} + row.path);
+  }
+  const auto bare_result = with_literals(f, {});
+  const auto* bare = config_of(bare_result);
+  expect(bare != nullptr && bare->models.cards.empty() && !bare->models.start.has_value() && !bare->models.control &&
+             !bare->models.control_remote,
+         "no cards, no start, control off by default: " + issues_of(bare_result));
+  const std::string described = describe_of(bare_result);
+  for (const char* line : {"models.cards = []\n", "models.start = (unset)\n", "models.control = false\n", "models.control_remote = false\n"}) {
+    expect(described.find(line) != std::string::npos, std::string{"--check reports "} + line);
+  }
+  const std::string card_a = host_absolute("/srv/cards/qwen.json");
+  const std::string card_b = host_absolute("/srv/cards/gemma.json");
+  const auto on_result = with_literals(f, {{"models.cards", string_array({card_a, card_b})}, {"models.start", "\"Gemma-4\""},
+                                           {"models.control", "true"}, {"models.control_remote", "true"}});
+  const auto* on = config_of(on_result);
+  expect(on != nullptr && on->models.cards.size() == 2U && on->models.cards[0] == secure_frontend::path_from_utf8(card_a) &&
+             on->models.start == std::optional<std::string>{"Gemma-4"} && on->models.control && on->models.control_remote,
+         "the rows are kept: " + issues_of(on_result));
+  expect(describe_of(on_result).find("models.control = true\n") != std::string::npos, "--check reports the switch on");
+  expect(has_issue(with_literals(f, {{"models.cards", string_array({"cards/qwen.json"})}}), "models.cards", ConfigIssueCode::invalid_value),
+         "a card path is absolute");
+  expect(has_issue(with_literals(f, {{"models.cards", string_array({card_a, card_a})}}), "models.cards", ConfigIssueCode::invalid_value),
+         "a card is listed once");
+  std::vector<std::string> seventeen;
+  for (int i = 0; i < 17; ++i) seventeen.push_back(host_absolute("/srv/cards/" + std::to_string(i) + ".json"));
+  expect(has_issue(with_literals(f, {{"models.cards", string_array(seventeen)}}), "models.cards", ConfigIssueCode::out_of_range),
+         "at most 16 cards");
+  expect(has_issue(with_literals(f, {{"models.control", "true"}}), "models.control", ConfigIssueCode::conflicting_values),
+         "models.control needs models.cards");
+  expect(has_issue(with_literals(f, {{"models.start", "\"Gemma-4\""}}), "models.start", ConfigIssueCode::conflicting_values),
+         "models.start needs models.cards");
+  expect(has_issue(with_literals(f, {{"models.cards", string_array({card_a})}, {"models.control_remote", "true"}}),
+                   "models.control_remote", ConfigIssueCode::conflicting_values),
+         "models.control_remote needs models.control");
+  expect(has_issue(with_literals(f, {{"models.cards", string_array({card_a})}, {"models.start", "\"has space\""}}), "models.start",
+                   ConfigIssueCode::invalid_value),
+         "models.start is a model name");
+  // The launcher starts and stops engines itself: the lifecycle rows and the vision family
+  // have no meaning beside it and are refused by name.
+  for (const auto& [row, literal] : std::vector<std::pair<std::string, std::string>>{
+           {"engine.lazy_load", "true"}, {"engine.idle_unload_s", "30"}, {"vision.enabled", "true"}}) {
+    expect(has_issue(with_literals(f, {{"models.cards", string_array({card_a})}, {row, literal}}), row,
+                     ConfigIssueCode::conflicting_values),
+           "refused with models.cards: " + row);
+  }
+}
+
 void codex_and_tool_call_rows_are_dispositioned() {
   struct Expected { const char* key; const char* path; };
   for (const Expected e : {Expected{"slot_save_path", "session.slot_save_path"},
@@ -2009,6 +2069,7 @@ int main(int argc, char** argv) {
       {"slot_save_path_is_a_bounded_private_path", slot_save_path_is_a_bounded_private_path},
       {"web_ui_and_loopback_without_key_rows", web_ui_and_loopback_without_key_rows},
       {"model_name_row", model_name_row},
+      {"models_keys_typed_and_described", models_keys_typed_and_described},
       {"monitor_row", monitor_row},
       {"codex_and_tool_call_rows_are_dispositioned", codex_and_tool_call_rows_are_dispositioned},
       {"session_rows_at_each_edge", session_rows_at_each_edge},
