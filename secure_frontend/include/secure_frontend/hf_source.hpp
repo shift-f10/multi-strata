@@ -19,7 +19,9 @@ namespace secure_frontend {
 // The one host a source may name, and the hosts Hugging Face redirects a file download to (its
 // LFS CDN and its Xet bridge). A pattern matches exactly one extra leftmost label (SP4's rule).
 inline constexpr std::string_view kHfHost = "huggingface.co";
-inline constexpr std::array<std::string_view, 3> kHfRedirectPatterns{"*.huggingface.co", "*.hf.co", "*.xethub.hf.co"};
+// So each level is named; the box run of 2026-10-23 was sent to us.aws.cdn.hf.co.
+inline constexpr std::array<std::string_view, 5> kHfRedirectPatterns{"*.huggingface.co", "*.hf.co", "*.xethub.hf.co", "*.cdn.hf.co",
+                                                                     "*.aws.cdn.hf.co"};
 
 // "owner/name": each part 1-96 characters of [A-Za-z0-9._-], not starting with '.' or '-'.
 [[nodiscard]] bool is_hf_repo(std::string_view repo) noexcept;

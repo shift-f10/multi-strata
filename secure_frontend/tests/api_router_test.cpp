@@ -557,6 +557,27 @@ void web_ui_downloads_pause_and_resume() {
   expect(css.find(".dl-card[data-state=\"paused\"]") != std::string::npos, "a paused card is styled");
 }
 
+// Owner: "On mobile the api login is not showing up, we need to make sure it is mobile
+// responsive". Signed in, the header (brand, four tabs, New chat, the pill, the theme button)
+// needs about 480 px; on a phone it takes two rows, the tabs sharing the full width below, so
+// the page never lays out wider than the screen.
+void web_ui_header_fits_a_phone() {
+  const std::string css{secure_frontend::find_web_asset("/ui/app.css")->body};
+  const auto phone = css.find("@media (max-width: 640px) {");
+  expect(phone != std::string::npos, "a phone-width block");
+  const std::string block = phone == std::string::npos ? std::string{} : css.substr(phone, css.find("\n}", phone) - phone);
+  expect(block.find(".st-header { flex-wrap: wrap; height: auto; padding: var(--st-s-2) var(--st-s-3); gap: var(--st-s-2); }") !=
+             std::string::npos,
+         "the header wraps onto a second row");
+  expect(block.find(".st-header .st-tabs { order: 3; flex: 1 0 100%; margin-left: 0; }") != std::string::npos,
+         "the tabs take their own full-width row");
+  expect(block.find(".st-tab { flex: 1; justify-content: center; padding: 0 6px; }") != std::string::npos,
+         "the four tabs share that row");
+  const std::string html{secure_frontend::find_web_asset("/")->body};
+  expect(html.find("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">") != std::string::npos,
+         "the page lays out at the device's width");
+}
+
 void web_ui_downloads_start_cancel_poll_and_check_links() {
   const std::string js{secure_frontend::find_web_asset("/ui/app.js")->body};
   expect(js.find("function jsonPost(payload) { return { method: \"POST\", headers: { \"Content-Type\": \"application/json\" }, "
@@ -879,6 +900,7 @@ int main(int argc, char** argv) {
       {"web_ui_models_tab_has_a_downloads_section", web_ui_models_tab_has_a_downloads_section},
       {"web_ui_downloads_start_cancel_poll_and_check_links", web_ui_downloads_start_cancel_poll_and_check_links},
       {"web_ui_downloads_pause_and_resume", web_ui_downloads_pause_and_resume},
+      {"web_ui_header_fits_a_phone", web_ui_header_fits_a_phone},
       {"keyless_router_answers_without_a_key", keyless_router_answers_without_a_key},
       {"metrics_route_needs_the_key_and_the_switch", metrics_route_needs_the_key_and_the_switch},
   }, failures);

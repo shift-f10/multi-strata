@@ -1445,6 +1445,13 @@ from any other server, and reach no route.
     `localStorage` (`strata.theme`, nothing else).
   - **Left out:** upstream's Images and MCP views, its conversation-cache card and its
     server-side settings need features this server does not have.
+  - **Phones** (owner, 2026-10-23): below 640 px the header takes two rows (the brand and
+    the controls, then the tabs across the width), and every view fits 320 px without
+    sideways scrolling. A phone loads the page's files over up to six connections at once,
+    while `limits.concurrency.max_connections_per_remote_address` defaults to 4 per remote
+    address: an over-cap connection is answered 503 unlogged, and when that was `app.js` the
+    sign-in never appeared. A page used from other machines needs that key at 6 or more (at
+    most `limits.concurrency.max_concurrent_requests`); loopback clients are exempt.
 - **Its own policy:** the page's responses carry `Content-Security-Policy:
   default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self';
   img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none';
@@ -1635,7 +1642,8 @@ download pause and resume functionality". Spec
   the running transfer, every card with its state: available, queued, downloading, verifying,
   preparing, paused, installed, ready, failed, cancelled), `POST /v1/strata/downloads/start`
   `{"id"}` or `{"url", "confirm": true}` (202; 404, 409 `download_in_progress`, 507),
-  `POST .../pause` and `.../cancel` `{"id"}` (202; pause 409 `download_not_active`),
+  `POST .../pause` and `.../cancel` `{"id"}` (202; 409 `download_not_active` when there is nothing
+  to pause or cancel),
   `POST .../link` `{"url"}` (200 `{"confirm": {...}}`; 400 with a fixed `reason`, 502
   `upstream_unavailable`).
 - **The store:** `models.downloads_root` is an SP4 store (`<id>/download/v<seq>-<hex>/`); the

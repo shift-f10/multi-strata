@@ -255,9 +255,20 @@ worktrees and integrated as patches.
   manager runs against a scripted `strata` child and a fake disk; no test reaches the network.
   Python: 27 pytest cases for the catalog generator and the prepare script; `download_catalog.py
   --check` reports the committed catalog current (23 models). Full MSVC suite: 1010 cases, 1009 passed, 1 skipped (cfg03), 0 failed, with the real Gemma pack set (`out/ctest-downloads-pause-2.log`).
-  Box run (a real pull from Hugging Face, pause and resume, the space refusal, the page):
-  pending, see session log item 59.
-- **Open:** a paused card shows as `available` after a server restart (a Download then continues
+  Box run (session log item 59): a real pasted-link pull from Hugging Face (415 MB) paused at
+  83.8 MB, resumed from there and installed with the pinned SHA-256; Cancel deleted a partial;
+  the 188 GB card refused for space; the page's buttons. It found three bugs, fixed with RED/GREEN:
+  Hugging Face's CDN host `us.aws.cdn.hf.co` (SP4's one-label wildcard), a 10.6 KB string in a
+  revision answer (`hf-info`'s per-string cap), and a cancel of an idle card answering 202.
+  After those fixes and the phone fix: 1012 cases, 1011 passed, 1 skipped (cfg03), 0 failed
+  (`out/ctest-box-and-phone.log`).
+- **Phones (owner, same day):** the sign-in did not appear on an iPhone because the over-cap
+  connection (default 4 per remote address) that carried `app.js` was refused with 503; the LAN
+  config now sets `limits.concurrency.max_connections_per_remote_address` to 8 (restart pending
+  on the owner). The signed-in header now takes two rows below 640 px; every view fits 320 px
+  (session log item 60).
+- **Open:** whether `max_connections_per_remote_address` should default higher with
+  `listener.web_ui` (the owner's call); a paused card shows as `available` after a server restart (a Download then continues
   from the kept partial files); the image encoders (`mmproj`) are not downloaded; Qwen3.6 and
   pasted-link cards are not made automatically; GLM-5.3 files are download-only (no GLM engine
   here); `--compat-bf16` packs need `STRATA_GGUF_PY` in the server's environment; Windows CI

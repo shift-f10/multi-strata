@@ -107,7 +107,7 @@ class DownloadManager final {
   [[nodiscard]] LinkAnswer check_link(std::string_view url);
   // Starts the download a check_link confirmed (the same link, within ten minutes).
   [[nodiscard]] std::optional<Refusal> start_link(std::string_view url);
-  // Stops a running or queued download and discards its partial files.
+  // Stops a running, queued or paused download and discards its partial files (409 when none is).
   [[nodiscard]] std::optional<Refusal> cancel(std::string_view id);
   // Stops a running or queued download and keeps its partial files: a later start resumes it.
   [[nodiscard]] std::optional<Refusal> pause(std::string_view id);

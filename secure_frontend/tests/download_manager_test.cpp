@@ -413,6 +413,9 @@ void download_routes_answer_the_contract() {
   const auto cancelled = answer(RouteId::strata_download_cancel, "{\"id\":\"qwen-small\"}");
   expect(cancelled.status == 202 && has(cancelled.body, "\"state\":\"cancelled\"") && has(m.list_json(), "\"state\":\"cancelled\""),
          "a cancel of a paused download: 202: " + cancelled.body);
+  // Box run 2026-10-23: a cancel of a card that is not running said "cancelled" and changed nothing.
+  const auto nothing = answer(RouteId::strata_download_cancel, "{\"id\":\"qwen-small\"}");
+  expect(nothing.status == 409 && has(nothing.body, "\"code\":\"download_not_active\""), "nothing to cancel: " + nothing.body);
   const auto off_host = answer(RouteId::strata_download_link, "{\"url\":\"https://example.com/a/b/resolve/main/m.gguf\"}");
   expect(off_host.status == 400 && has(off_host.body, "\"code\":\"invalid_request\"") && has(off_host.body, "\"reason\":\""),
          "a link off Hugging Face: 400 with the fixed reason (O4): " + off_host.body);

@@ -470,7 +470,7 @@ std::optional<DownloadManager::Refusal> DownloadManager::cancel(const std::strin
       cancel_requested_ = true;
       pause_requested_ = false;
     } else {
-      return std::nullopt;  // nothing to cancel
+      return Refusal{409, "download_not_active"};  // nothing running, queued or paused to cancel
     }
   }
   log("[strata] downloads: cancel " + std::string{id});

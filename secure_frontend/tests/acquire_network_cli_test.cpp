@@ -188,6 +188,17 @@ void hf_info_resolves_a_link() {
              pinned.out.find("\"commit\":\"" + commit + "\"") != std::string::npos,
          "a commit link: " + pinned.err + pinned.out);
 
+  // Box run 2026-10-23: a real revision answer carries the model card's long strings (a GGUF chat
+  // template of 10.6 KB); only the commit is read from it, so a long string is no refusal.
+  auto long_fixtures = fixtures;
+  long_fixtures["revision.json"] = "{\"id\":\"acme/Model-GGUF\",\"sha\":\"" + commit +
+                                   "\",\"gguf\":{\"chat_template\":\"" + std::string(10648, 'x') + "\"},\"siblings\":[]}";
+  CliHarness long_answer;
+  HfSeams long_seams(long_answer, scenario, long_fixtures);
+  expect(long_answer.run({"hf-info", "https://huggingface.co/acme/Model-GGUF/resolve/main/IQ2_XS/m-00001-of-00002.gguf"}) == 0 &&
+             long_answer.out.find("\"commit\":\"" + commit + "\"") != std::string::npos,
+         "a revision answer with a long string: " + long_answer.err + long_answer.out);
+
   // Refused links never reach the network.
   for (const std::string bad : {"https://example.com/a/b/resolve/main/x.gguf", "https://huggingface.co/a/b/resolve/main/x.safetensors"}) {
     CliHarness refused;

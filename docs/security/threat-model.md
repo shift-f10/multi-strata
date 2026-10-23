@@ -409,8 +409,9 @@ gguf") and decisions D1-D8; pause and resume added the same day.
   <path>.gguf`: no other host, no port, no user info, no `..` or empty segment, no datasets or
   spaces, a path ending `.gguf`. The manifest the server writes (profile `gguf`, or `glm53` for
   Maya's GLM files) lists only `weights`/`mmproj` roles with `.gguf` paths, names the host
-  `huggingface.co` and allows redirects only to `*.huggingface.co`, `*.hf.co` and
-  `*.xethub.hf.co` (Hugging Face's own storage); the engine gate refuses a `gguf` manifest as a
+  `huggingface.co` and allows redirects only to `*.huggingface.co`, `*.hf.co`,
+  `*.xethub.hf.co`, `*.cdn.hf.co` and `*.aws.cdn.hf.co` (Hugging Face's own storage and CDN; SP4's
+  wildcard covers one label, so each level is named); the engine gate refuses a `gguf` manifest as a
   launch, so a downloaded file runs only through a card.
 - **What is trusted.** Catalog cards carry the commit, size and SHA-256 that upstream's
   `setup.py` pins (Maya's: SHA-256 at `main`; the commit and sizes are looked up at start and

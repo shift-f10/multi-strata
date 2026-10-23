@@ -1214,9 +1214,55 @@ written beside it: `engines/gemma4/` (`strata-gemma4-engine`), plan
     - Built and tested without the network (a scripted `strata` child, a fake disk); the full
       suite in the handoff entry. `.venv-dev` got numpy 2.5.4 and regex 2026.9.10 for the
       prepare step (upstream's pack tools).
-    - **Box:** pending at this commit (a real pasted-link pull from Hugging Face with pause and
-      resume, a catalog card refused for space, the page on a keyless loopback instance with
-      `out/serve/config-downloads-local-keyless.json`).
+    - **Box** (a keyless loopback instance on 127.0.0.1:8092, `out/serve/config-downloads-local-keyless.json`,
+      the no-hooks build `out/frontend-msvc-serve-downloads`; the store `C:\Strata-data\downloads`, 173.5 GB
+      free of 511 GB):
+      - Refusals: the 188.2 GB `qwen3.8-flash-next-unsloth-q8_0` 507 `insufficient_storage`; a link
+        off Hugging Face and a `.safetensors` link 400 with their fixed reasons; an unknown id 404.
+      - A pasted link, `Qwen/Qwen2.5-0.5B-Instruct-GGUF` `qwen2.5-0.5b-instruct-q2_k.gguf`: `strata
+        hf-info` resolved `main` to `9217f5db`, 415,182,688 bytes, LFS SHA-256 `9ee36184...`. The first
+        pull failed `redirect_not_allowed`: Hugging Face now answers the resolve URL with a 302 to
+        `us.aws.cdn.hf.co`, three labels under `hf.co`, and SP4's wildcard covers one. Fix: the
+        manifests also allow `*.cdn.hf.co` and `*.aws.cdn.hf.co` (`cdn_redirects_are_admitted`, RED
+        then GREEN; SP4's rule unchanged). Then: about 3 MB/s; **Pause** at 83.8 MB (the 84,380,963-byte
+        `.part` kept in the store's staging); **Resume** continued from there (not from zero) and the
+        card was `installed` 123 s later; the stored file's SHA-256 equals the pin.
+      - **Cancel:** `qwen2.5-0.5b-instruct-q4_0.gguf` (428,730,208 bytes) cancelled at about 10 MB:
+        `cancelled`, 0 bytes, the partial file deleted (`strata rm --partials`).
+      - **The page** (desktop and 375 px): Download, Pause ("Paused at ... (3%); Resume continues from
+        there", Resume and Cancel), Resume (2.2 MB/s, the rate counted from the kept bytes), the
+        installed and cancelled custom cards.
+      - **Maya:** `glm-5.3-flash-maya-s24` failed at start with `unexpected_answer`: Hugging Face's
+        revision answer for that repository carries a 10,648-byte string (the GGUF chat template)
+        and `hf-info` capped strings at 4 KB. The cap is now the answer's own 1 MiB (the commit, paths
+        and SHA-256s read from it keep their grammars; `hf_info_resolves_a_link` extended, RED then
+        GREEN). The lookup then resolved `f16ee4ba`, 3 shards, 94.7 GB, each SHA-256 equal to its pin.
+        Not downloaded (95 GB).
+      - A cancel of a card that was not running answered 202 "cancelled": now 409
+        `download_not_active` (RED then GREEN).
+      - Not done here: a catalog Qwen download and its prepare step (58-188 GB each, the owner's
+        call). Left on disk: the 415 MB test GGUF (a download-only card) and an empty staging folder
+        from the failed first attempt (`strata rm --partials <id>:download` removes it).
+60. **The page on a phone** (owner, 2026-10-23: "On mobile the api login is not showing up, we need to
+    make sure it is mobile responsive"; then "I refreshed and still don't see the api login box in
+    mobile on my iPhone").
+    - **Cause:** not the layout. The request log of the LAN server shows each iPhone load (requests
+      685-692 and 719-739) fetching every page file except `app.js` (the 74,247-byte answer), and no
+      API call after it. `limits.concurrency.max_connections_per_remote_address` defaults to 4 per
+      remote address; the phone opens up to six connections for the page's files, and the over-cap
+      one is answered 503 `server_busy` without a log line. Without `app.js` no view is shown, the
+      sign-in included. Loopback clients are exempt, which is why the page worked on the box itself.
+    - **Fix for the LAN server:** `out/serve/config-launcher-lan.json` sets the key to 8 (the
+      server's workers); `--check` passes. It needs a restart: this session's stop of the running
+      server was refused by the permission check, so the owner restarts it. Whether the default
+      should rise for a server with `listener.web_ui` is left to the owner.
+    - **Layout:** signed in, the header (brand, four tabs, New chat, the pill, the theme button) needs
+      about 480 px, so a 375 px phone laid the page out at 473 px and cut off its right side. Below
+      640 px the header now takes two rows, the tabs sharing the full width
+      (`web_ui_header_fits_a_phone`, RED then GREEN). Checked in the browser at 375 and 320 px: Chat,
+      Models with Downloads, Monitor, About and the sampling drawer fit without sideways scrolling.
+    - `out/serve/serve-launcher-lan.ps1` now runs a copy of the new no-hooks build
+      (`out/serve/bin-lan`), so the restart brings the header fix too (downloads stay off there).
 
 ### Not done in this session
 

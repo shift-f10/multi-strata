@@ -1270,8 +1270,10 @@ int verb_hf_info(const FrontendConfig& config, const std::filesystem::path& conf
     return report(io, *failure);
   }
   const FetchSettings fetch = fetch_settings_from(config.pull);
+  // A string may fill the answer (a model card's chat template runs past 10 KB); the fields read
+  // from it (the commit, each path and LFS SHA-256) are checked against their own grammars.
   constexpr JsonLimits kApiLimits{.max_bytes = 1U << 20U, .max_depth = 8U, .max_container_entries = 65536U,
-                                  .max_string_bytes = 4096U, .allow_fractions = true};
+                                  .max_string_bytes = 1U << 20U, .allow_fractions = true};
   std::optional<AcquireError> network_failure;
   const auto get_json = [&](const std::string& url_text) -> std::optional<JsonValue> {
     const auto url = parse_source_url(url_text);

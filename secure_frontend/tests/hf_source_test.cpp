@@ -3,6 +3,7 @@
 // link grammar, the source and API URLs, split-shard sets, and the SP4 manifest a download becomes
 // (parsed back by SP4's own reader with the release rules).
 #include "secure_frontend/acquire_manifest.hpp"
+#include "secure_frontend/acquire_url.hpp"
 #include "secure_frontend/hf_source.hpp"
 #include "secure_frontend/manifest_json.hpp"
 #include "support/test_support.hpp"
@@ -136,7 +137,8 @@ void manifests_are_huggingface_gguf_only() {
                                                                     std::string{std::get<secure_frontend::ManifestIssue>(parsed).message}));
     if (manifest == nullptr) continue;
     const auto& m = manifest->manifest;
-    expect(m.hosts == Strings{"huggingface.co"} && m.redirect_hosts == Strings{"*.huggingface.co", "*.hf.co", "*.xethub.hf.co"},
+    expect(m.hosts == Strings{"huggingface.co"} &&
+               m.redirect_hosts == Strings{"*.huggingface.co", "*.hf.co", "*.xethub.hf.co", "*.cdn.hf.co", "*.aws.cdn.hf.co"},
            "Hugging Face alone, and its download hosts");
     expect(m.files.size() == 3U && m.files[0].sources ==
                                        Strings{"https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/" +
@@ -194,10 +196,36 @@ void manifests_are_huggingface_gguf_only() {
 
 }  // namespace
 
+// Box run 2026-10-23: Hugging Face answered the resolve URL of a real GGUF with a 302 to
+// us.aws.cdn.hf.co, three labels under hf.co, which SP4's one-label wildcard (`*.hf.co`) does not
+// admit (redirect_not_allowed). The manifests name Hugging Face's CDN levels too; nothing else.
+void cdn_redirects_are_admitted() {
+  const auto text = secure_frontend::hf_manifest_json(sample("gguf"), "2026.10.23.1");
+  const auto* json = std::get_if<std::string>(&text);
+  expect(json != nullptr, "a manifest");
+  if (json == nullptr) return;
+  secure_frontend::ManifestRules rules;
+  rules.allow_raw_profile = false;
+  const auto parsed = secure_frontend::parse_manifest(*json, rules);
+  const auto* manifest = std::get_if<secure_frontend::ParsedManifest>(&parsed);
+  expect(manifest != nullptr, "SP4 reads it");
+  if (manifest == nullptr) return;
+  Strings allowed = manifest->manifest.hosts;
+  allowed.insert(allowed.end(), manifest->manifest.redirect_hosts.begin(), manifest->manifest.redirect_hosts.end());
+  for (const std::string host : {"us.aws.cdn.hf.co", "eu.aws.cdn.hf.co", "cas-bridge.xethub.hf.co", "cdn-lfs.hf.co", "cdn-lfs-us-1.hf.co",
+                                 "cdn-lfs.huggingface.co", "huggingface.co"}) {
+    expect(secure_frontend::host_in(allowed, host), host + " is admitted");
+  }
+  for (const std::string host : {"hf.co.example.com", "example.com", "a.b.us.aws.cdn.hf.co", "huggingface.co.example.net", "aws.cdn.hf.co.evil"}) {
+    expect(!secure_frontend::host_in(allowed, host), host + " is not");
+  }
+}
+
 int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
       {"links_only_huggingface_gguf", links_only_huggingface_gguf},
       {"urls_and_shard_sets", urls_and_shard_sets},
       {"manifests_are_huggingface_gguf_only", manifests_are_huggingface_gguf_only},
+      {"cdn_redirects_are_admitted", cdn_redirects_are_admitted},
   }, failures);
 }
