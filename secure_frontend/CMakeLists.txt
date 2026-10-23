@@ -921,7 +921,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_test_paths(secure_frontend_fake_engine_tests)
     # Crash exit codes are Windows runtime semantics: MSYS2 only.
     secure_frontend_add_cases(secure_frontend_fake_engine_tests fake_engine_modes_selftest fake_engine_dump_is_parseable
-        fake_engine_stream_modes_selftest
+        fake_engine_stream_modes_selftest fake_engine_reads_options_beside_itself
         TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     # F3: start/stop the real server with the fake engine; process-tree helpers.
@@ -1039,6 +1039,10 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         engine_error_carries_should_retry_false dos02_shutdown_during_stream_ends_with_error_event)
     secure_frontend_add_cases(secure_frontend_api_server_tests ${SECURE_FRONTEND_API_SERVER_M2_CASES}
         TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # Gemma 4 plan 1 Task 11: the gemma4 profile end to end on the fake engine (real sockets,
+    # ServerProcess with --profile gemma4 and the spm_bpe pack): windows-runtime like its neighbours.
+    secure_frontend_add_cases(secure_frontend_api_server_tests gemma4_profile_chats_end_to_end gemma4_thinking_round_trip
+        gemma4_monitor_and_page_unchanged TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     secure_frontend_add_test_executable(secure_frontend_deadline_tests tests/deadline_test.cpp secure_frontend_engine_stdio_process)
     secure_frontend_test_paths(secure_frontend_deadline_tests)

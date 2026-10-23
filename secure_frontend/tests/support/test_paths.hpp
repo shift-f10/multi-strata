@@ -51,6 +51,10 @@ inline constexpr int kSkipReturnCode = 77;
 }
 
 inline std::filesystem::path fake_engine_path() { return std::filesystem::path(STRATA_FAKE_ENGINE_PATH); }
+// Gemma 4 plan 1 Task 11: the supervision fake reads more options from this file beside its own
+// executable, one per line, after its command line (supervision_fake_engine_main.cpp spells the
+// same name). ServerOptions::fake_engine_options writes it.
+inline constexpr std::string_view kFakeEngineOptionsFile = "fake-engine.options";
 // SP5 M1 Task 11: the test-only maya-vision stand-in (tests/fake_vision_child_main.cpp).
 inline std::filesystem::path fake_vision_child_path() { return std::filesystem::path(STRATA_FAKE_VISION_CHILD_PATH); }
 inline std::filesystem::path server_path() { return std::filesystem::path(STRATA_SECURE_SERVER_PATH); }

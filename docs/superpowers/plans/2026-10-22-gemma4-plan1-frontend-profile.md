@@ -396,16 +396,16 @@ library `secure_frontend_gemma4_prompt_renderer`; tests new `gemma4_profile_test
 `tests/support/server_harness.{hpp,cpp}` (`ServerOptions.profile` → `--profile`, pack mode),
 `tests/api_server_test.cpp`.
 
-- [ ] **Step 1: RED**
+- [x] **Step 1: RED**
   ```cpp
   void gemma4_profile_chats_end_to_end();     // stream + not: answer text; GEN record's ids equal encode_gemma4_prompt of the rendered bytes
   void gemma4_thinking_round_trip();          // fake emits <|channel> thought\n … <channel|> answer <turn|>: reasoning_content + content
   void gemma4_monitor_and_page_unchanged();   // /metrics and the page work on the gemma4 profile (fake engine)
   ```
   FAIL.
-- [ ] **Step 2:** implement the harness options; no product change expected (if one is
+- [x] **Step 2:** implement the harness options; no product change expected (if one is
   needed, it is a bug in Tasks 1-10 and goes back to that task).
-- [ ] **Step 3:** GREEN + full gates; commit `test: gemma4 profile end to end on the fake engine`.
+- [x] **Step 3:** GREEN + full gates; commit `test: gemma4 profile end to end on the fake engine`.
 
 ---
 

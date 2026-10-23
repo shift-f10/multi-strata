@@ -1821,6 +1821,322 @@ void dos02_shutdown_during_stream_ends_with_error_event() {
   expect(server->wait_exit(5s) == 0, "exit 0 within SP2's 5 s bound");
 }
 
+// ---- Gemma 4 plan 1 Task 11: the gemma4 profile end to end on the fake engine ----------------
+// The server runs --expert --profile gemma4 over write_spm_tokenizer_pack (the synthetic
+// spm_tokenizer() pack); the fake engine's flags travel in ServerOptions::fake_engine_options,
+// since strata_gemma4's allowlist refuses them as engine.args. The fake models the Gemma engine:
+// it emits the reply ids, the last one <turn|> (the engine ends its turn by itself), then
+// `DONE ... stop`. Every expected prompt is written by hand from the template bytes (spec §2.5)
+// and the pack's literals, never through the renderer or encoder under test.
+const secure_frontend::TokenizerPack& gemma4_pack() {
+  static const auto pack = test_support::spm_tokenizer();
+  return pack;
+}
+
+const std::string kGemma4Space{test_support::kSpmSpace};  // U+2581, a space in spm_bpe text
+
+// The synthetic pack's ids of `literals`, in order; a literal the pack lacks fails the case.
+std::vector<std::size_t> gemma4_ids(const std::vector<std::string>& literals) {
+  std::vector<std::size_t> ids;
+  for (const auto& literal : literals) {
+    const auto id = test_support::token_id(gemma4_pack(), literal);
+    expect(id < gemma4_pack().tokens_by_id.size(), "test setup: the synthetic pack holds " + literal);
+    ids.push_back(id);
+  }
+  return ids;
+}
+
+std::vector<std::string> gemma4_join(const std::vector<std::vector<std::string>>& parts) {
+  std::vector<std::string> joined;
+  for (const auto& part : parts) joined.insert(joined.end(), part.begin(), part.end());
+  return joined;
+}
+
+// Text pieces as the pack's spm_bpe encoding: spaces are U+2581; "Hi", "<U+2581>world" and
+// "thought" are merges; every other ASCII character is its own token; "\n" is one token.
+const std::vector<std::string> kGemma4User{"u", "s", "e", "r", "\n"};
+const std::vector<std::string> kGemma4Model{"m", "o", "d", "e", "l", "\n"};
+const std::vector<std::string> kGemma4System{"s", "y", "s", "t", "e", "m", "\n"};
+const std::vector<std::string> kGemma4HelloWorld{"H", "e", "l", "l", "o", kGemma4Space + "world"};
+const std::vector<std::string> kGemma4HiWorld{"Hi", kGemma4Space + "world"};
+
+// The user text every gemma4 case sends; the template trims it (Jinja's trim) to "Hello world".
+constexpr std::string_view kGemma4UserContent = "  Hello world  ";
+
+// Spec §2.5, thinking off: <bos><|turn>user\nHello world<turn|>\n<|turn>model\n<|channel>thought\n<channel|>
+std::vector<std::size_t> gemma4_prompt_thinking_off() {
+  return gemma4_ids(gemma4_join({{"<bos>", "<|turn>"}, kGemma4User, kGemma4HelloWorld, {"<turn|>", "\n", "<|turn>"}, kGemma4Model,
+                                 {"<|channel>", "thought", "\n", "<channel|>"}}));
+}
+
+// Thinking on: the system turn holds <|think|> and no text (no system message), and the
+// generation prompt is the open model turn:
+// <bos><|turn>system\n<|think|><turn|>\n<|turn>user\nHello world<turn|>\n<|turn>model\n
+std::vector<std::size_t> gemma4_prompt_thinking_on() {
+  return gemma4_ids(gemma4_join({{"<bos>", "<|turn>"}, kGemma4System, {"<|think|>", "<turn|>", "\n", "<|turn>"}, kGemma4User,
+                                 kGemma4HelloWorld, {"<turn|>", "\n", "<|turn>"}, kGemma4Model}));
+}
+
+// A system message and an earlier exchange, thinking off:
+// <bos><|turn>system\nBe brief.<turn|>\n<|turn>user\nHi<turn|>\n<|turn>model\nHi world<turn|>\n
+// <|turn>user\nHello world<turn|>\n<|turn>model\n<|channel>thought\n<channel|>
+std::vector<std::size_t> gemma4_prompt_with_history() {
+  return gemma4_ids(gemma4_join({{"<bos>", "<|turn>"}, kGemma4System, {"B", "e", kGemma4Space, "b", "r", "i", "e", "f", "."},
+                                 {"<turn|>", "\n", "<|turn>"}, kGemma4User, {"Hi"}, {"<turn|>", "\n", "<|turn>"}, kGemma4Model,
+                                 kGemma4HiWorld, {"<turn|>", "\n", "<|turn>"}, kGemma4User, kGemma4HelloWorld,
+                                 {"<turn|>", "\n", "<|turn>"}, kGemma4Model, {"<|channel>", "thought", "\n", "<channel|>"}}));
+}
+
+std::string gemma4_csv(const std::vector<std::size_t>& ids) {
+  std::string csv;
+  for (const std::size_t id : ids) csv += (csv.empty() ? "" : ",") + std::to_string(id);
+  return csv;
+}
+
+// The prompt ids of one recorded `GEN <max_new> [k=v ...] <ids>` line (its last field).
+std::vector<std::size_t> gen_ids(const std::string& gen) {
+  std::vector<std::size_t> ids;
+  std::stringstream field(gen.substr(gen.rfind(' ') + 1U));
+  for (std::string id; std::getline(field, id, ',');) {
+    if (id.empty() || id.find_first_not_of("0123456789") != std::string::npos) return {};
+    ids.push_back(static_cast<std::size_t>(std::stoull(id)));
+  }
+  return ids;
+}
+
+std::string gemma4_body(const std::string& extra,
+                        const std::string& messages = R"([{"role":"user","content":")" + std::string{kGemma4UserContent} + R"("}])") {
+  return R"({"model":"fake-model","messages":)" + messages + R"(,"max_tokens":64)" + (extra.empty() ? "" : "," + extra) + "}";
+}
+
+// choices[0].message.<key> of a complete response, absent when the message has no such string.
+std::optional<std::string> message_string(const std::string& body, const std::string_view key) {
+  const auto root = test_support::parse_test_json(body);
+  const auto* choice = root ? test_support::first_choice(*root) : nullptr;
+  return test_support::string_at(choice != nullptr ? test_support::json_member(*choice, "message") : nullptr, key);
+}
+
+// The joined choices[0].delta.reasoning_content of a stream; *first_reasoning / *first_content
+// get the index of the first data item carrying each (the items' size when none does).
+std::string stream_reasoning(const secure_frontend::ChatExchangeResult& result, std::size_t* first_reasoning = nullptr,
+                             std::size_t* first_content = nullptr) {
+  std::string text;
+  if (first_reasoning != nullptr) *first_reasoning = result.items.size();
+  if (first_content != nullptr) *first_content = result.items.size();
+  for (std::size_t index = 0; index < result.items.size(); ++index) {
+    const auto& item = result.items[index];
+    if (item.kind != secure_frontend::SseItemKind::data || item.text == "[DONE]") continue;
+    const auto root = test_support::parse_test_json(item.text);
+    const auto* choice = root ? test_support::first_choice(*root) : nullptr;
+    const auto* delta = choice != nullptr ? test_support::json_member(*choice, "delta") : nullptr;
+    if (const auto reasoning = test_support::string_at(delta, "reasoning_content")) {
+      text += *reasoning;
+      if (first_reasoning != nullptr && *first_reasoning == result.items.size()) *first_reasoning = index;
+    }
+    // The role chunk carries "content":"" (sse_encoder.cpp); the first answer delta is the first
+    // non-empty content.
+    if (const auto content = test_support::string_at(delta, "content");
+        content.has_value() && !content->empty() && first_content != nullptr && *first_content == result.items.size()) {
+      *first_content = index;
+    }
+  }
+  return text;
+}
+
+// Every data payload of a stream, joined (for "no tag or channel name ever leaks" checks).
+std::string stream_payloads(const secure_frontend::ChatExchangeResult& result) {
+  std::string joined;
+  for (const auto& item : result.items) {
+    if (item.kind == secure_frontend::SseItemKind::data) joined += item.text + "\n";
+  }
+  return joined;
+}
+
+struct Gemma4Server final {
+  std::filesystem::path record;
+  std::unique_ptr<test_support::ServerProcess> server;
+};
+
+// A ready gemma4 server whose fake engine answers every GEN with `reply` (pack literals).
+Gemma4Server start_gemma4(const std::string& tag, const std::vector<std::string>& reply,
+                          std::map<std::string, std::string> literals = {}) {
+  Gemma4Server started;
+  started.record = test_support::make_temp_dir(tag) / "record.txt";
+  test_support::ServerOptions options;
+  options.profile = "gemma4";
+  options.config_literals = std::move(literals);
+  options.fake_engine_options = {"--token-ids=" + gemma4_csv(gemma4_ids(reply)),
+                                 "--record-file=" + test_support::utf8_path(started.record)};
+  started.server = test_support::ServerProcess::start(options);
+  const bool ready = started.server != nullptr && started.server->wait_until_listening(10s) &&
+                     started.server->wait_for_health(test_support::kHealthReady, 15s);
+  expect(ready, "the --expert --profile gemma4 server is ready" + (started.server ? ": " + started.server->stderr_text() : std::string{}));
+  if (!ready) started.server.reset();
+  return started;
+}
+
+std::string head_of(const secure_frontend::ChatExchangeResult& result) {
+  return "status=" + std::to_string(result.head.status) + " body=" + result.body.substr(0, 400);
+}
+
+// Plan Task 11 RED gemma4_profile_chats_end_to_end: thinking off (no reasoning_effort: the
+// template's default, D10), complete and streamed. The answer is the reply text, the finish is
+// stop, no reasoning_content; each GEN's ids are the rendered prompt: the trimmed user turn
+// and the closed empty thought channel. reasoning_effort "none" renders the same prompt, and a
+// system message with an earlier exchange renders the system turn and the model's turn.
+void gemma4_profile_chats_end_to_end() {
+  auto started = start_gemma4("g4e2e", gemma4_join({kGemma4HiWorld, {"<turn|>"}}));
+  if (!started.server) return;
+  auto& server = *started.server;
+  const auto complete = test_support::chat(server, gemma4_body(""));
+  expect(complete.end == ChatExchangeEnd::complete && complete.head.status == 200 && !complete.streamed,
+         "gemma4 complete chat answers 200: " + head_of(complete));
+  expect(test_support::complete_text(complete.body) == "Hi world", "the answer is the reply's text: " + complete.body.substr(0, 400));
+  expect(test_support::complete_finish(complete.body) == "stop", "<turn|> ends the reply as stop: " + complete.body.substr(0, 400));
+  expect(!message_string(complete.body, "reasoning_content").has_value(), "thinking off: no reasoning_content");
+  expect(complete.body.find("turn|") == std::string::npos, "the end-of-turn token is never output");
+
+  const auto streamed = test_support::chat(server, gemma4_body(R"("stream":true)"));
+  expect(streamed.end == ChatExchangeEnd::complete && streamed.head.status == 200 && streamed.streamed && streamed.done_seen &&
+             streamed.terminal_chunk_seen,
+         "gemma4 streamed chat: [DONE] and the terminal chunk: " + head_of(streamed));
+  expect(test_support::stream_text(streamed) == "Hi world", "stream text: " + test_support::stream_text(streamed));
+  expect(test_support::stream_finish(streamed) == "stop", "stream finish: " + test_support::stream_finish(streamed));
+  expect(stream_reasoning(streamed).empty(), "thinking off: no reasoning delta");
+
+  const auto none = test_support::chat(server, gemma4_body(R"("reasoning_effort":"none")"));
+  expect(none.head.status == 200 && test_support::complete_text(none.body) == "Hi world",
+         "reasoning_effort none is served on gemma4: " + head_of(none));
+  const auto history = test_support::chat(
+      server, gemma4_body("", R"([{"role":"system","content":"Be brief."},{"role":"user","content":"Hi"},)"
+                              R"({"role":"assistant","content":"Hi world"},{"role":"user","content":")" +
+                                  std::string{kGemma4UserContent} + R"("}])"));
+  expect(history.head.status == 200 && test_support::complete_text(history.body) == "Hi world",
+         "a system message and an earlier exchange are served: " + head_of(history));
+
+  const auto gens = gen_lines(record_of(started.record));
+  expect(gens.size() == 4U, "one GEN per chat reached the engine: " + std::to_string(gens.size()));
+  const auto off = gemma4_prompt_thinking_off();
+  const std::vector<std::string> what{"complete", "streamed", "reasoning_effort none"};
+  for (std::size_t index = 0; index < std::min<std::size_t>(gens.size(), 3U); ++index) {
+    expect(gen_ids(gens[index]) == off, "the " + what[index] + " GEN's ids are the rendered thinking-off prompt (" +
+                                            gemma4_csv(off) + "): " + gens[index]);
+  }
+  if (gens.size() == 4U) {
+    expect(gen_ids(gens[3]) == gemma4_prompt_with_history(),
+           "the history GEN's ids are the rendered prompt (" + gemma4_csv(gemma4_prompt_with_history()) + "): " + gens[3]);
+  }
+}
+
+// Plan Task 11 RED gemma4_thinking_round_trip: reasoning_effort "high" turns thinking on (the
+// system turn opens with <|think|>; the generation prompt is the open model turn). The fake
+// answers <|channel> "thought\n" <reasoning> <channel|> <answer> <turn|>, as the engine did on the
+// box: the channel-name line is dropped, the thought is reasoning_content, the rest is content,
+// and no tag or channel name is ever output. "low" is the same prompt (no levels, spec §6.6).
+void gemma4_thinking_round_trip() {
+  auto started = start_gemma4("g4think", gemma4_join({{"<|channel>", "thought", "\n"}, kGemma4HelloWorld, {"<channel|>"},
+                                                      kGemma4HiWorld, {"<turn|>"}}));
+  if (!started.server) return;
+  auto& server = *started.server;
+  const auto complete = test_support::chat(server, gemma4_body(R"("reasoning_effort":"high")"));
+  expect(complete.end == ChatExchangeEnd::complete && complete.head.status == 200 && !complete.streamed,
+         "gemma4 thinking chat answers 200: " + head_of(complete));
+  expect(test_support::complete_text(complete.body) == "Hi world", "content is the answer after <channel|>: " + complete.body.substr(0, 400));
+  expect(message_string(complete.body, "reasoning_content") == std::optional<std::string>{"Hello world"},
+         "reasoning_content is the thought, its channel-name line dropped: " + complete.body.substr(0, 400));
+  expect(test_support::complete_finish(complete.body) == "stop", "<turn|> ends the reply as stop");
+  expect(complete.body.find("thought") == std::string::npos && complete.body.find("channel") == std::string::npos,
+         "neither a channel tag nor the channel name is output: " + complete.body.substr(0, 400));
+
+  const auto streamed = test_support::chat(server, gemma4_body(R"("stream":true,"reasoning_effort":"high")"));
+  expect(streamed.end == ChatExchangeEnd::complete && streamed.head.status == 200 && streamed.streamed && streamed.done_seen &&
+             streamed.terminal_chunk_seen,
+         "gemma4 thinking stream: [DONE] and the terminal chunk: " + head_of(streamed));
+  std::size_t first_reasoning = 0;
+  std::size_t first_content = 0;
+  expect(stream_reasoning(streamed, &first_reasoning, &first_content) == "Hello world",
+         "the stream's reasoning deltas are the thought: " + stream_reasoning(streamed));
+  expect(test_support::stream_text(streamed) == "Hi world", "the stream's content deltas are the answer: " + test_support::stream_text(streamed));
+  expect(first_reasoning < first_content && first_content < streamed.items.size(), "the thought streams before the answer");
+  expect(test_support::stream_finish(streamed) == "stop", "stream finish: " + test_support::stream_finish(streamed));
+  const auto payloads = stream_payloads(streamed);
+  expect(payloads.find("thought") == std::string::npos && payloads.find("channel") == std::string::npos,
+         "no channel tag or name in any stream event");
+
+  const auto low = test_support::chat(server, gemma4_body(R"("reasoning_effort":"low")"));
+  expect(low.head.status == 200 && message_string(low.body, "reasoning_content") == std::optional<std::string>{"Hello world"} &&
+             test_support::complete_text(low.body) == "Hi world",
+         "reasoning_effort low is thinking on too: " + head_of(low));
+
+  const auto gens = gen_lines(record_of(started.record));
+  expect(gens.size() == 3U, "one GEN per chat reached the engine: " + std::to_string(gens.size()));
+  const auto on = gemma4_prompt_thinking_on();
+  const std::vector<std::string> what{"high complete", "high streamed", "low"};
+  for (std::size_t index = 0; index < std::min<std::size_t>(gens.size(), 3U); ++index) {
+    expect(gen_ids(gens[index]) == on, "the " + what[index] + " GEN's ids are the rendered thinking-on prompt (" +
+                                           gemma4_csv(on) + "): " + gens[index]);
+  }
+}
+
+// Plan Task 11 RED gemma4_monitor_and_page_unchanged: on the gemma4 profile the built-in page
+// (listener.web_ui) is served as on qwen, and GET /metrics (listener.monitor) reports each
+// generation's finish and count on both chat paths, never a prompt or an answer.
+void gemma4_monitor_and_page_unchanged() {
+  auto started = start_gemma4("g4mon", gemma4_join({kGemma4HiWorld, {"<turn|>"}}),
+                              {{"listener.monitor", "true"}, {"listener.web_ui", "true"}, {"logging.requests", "true"}});
+  if (!started.server) return;
+  auto& server = *started.server;
+  const auto page = raw(server, raw_http::request("GET", "/", authority(server), {}));
+  expect(page && page->status == 200 && page->body.find("<title>Strata</title>") != std::string::npos,
+         "GET / without a key is the page on gemma4");
+  if (page) {
+    expect(page->header("Content-Security-Policy") == std::optional<std::string>{std::string{secure_frontend::kWebUiContentSecurityPolicy}} &&
+               page->header("Content-Type") == std::optional<std::string>{"text/html; charset=utf-8"},
+           "the page's own policy and type");
+  }
+  const auto script = raw(server, raw_http::request("GET", "/ui/app.js", authority(server), {}));
+  expect(script && script->status == 200 && script->header("Content-Type") == std::optional<std::string>{"text/javascript; charset=utf-8"},
+         "the bundled script");
+  const auto models = raw(server, raw_http::request("GET", "/v1/models", authority(server), {raw_http::bearer(token())}));
+  expect(models && models->status == 200 && models->body.find("\"id\":\"fake-model\"") != std::string::npos, "/v1/models lists the model");
+
+  const auto metrics = [&server] {
+    return raw(server, raw_http::request("GET", "/metrics", authority(server), {raw_http::bearer(token())}));
+  };
+  const auto unkeyed = raw(server, raw_http::request("GET", "/metrics", authority(server), {}));
+  expect(unkeyed && unkeyed->status == 401, "the Monitor needs the key");
+  const auto idle = metrics();
+  expect(idle && idle->status == 200 && idle->body.find("\"state\":\"idle\"") != std::string::npos &&
+             idle->body.find("\"requests\":[]") != std::string::npos,
+         "idle, no requests yet: " + (idle ? idle->body.substr(0, 400) : std::string{"<none>"}));
+  // The page sends a reasoning_effort with every chat (web/app.js); the stream goes without one.
+  const auto plain = test_support::chat(server, gemma4_body(R"("reasoning_effort":"none")"));
+  expect(plain.head.status == 200 && test_support::complete_text(plain.body) == "Hi world", "a chat: " + head_of(plain));
+  const auto streamed = test_support::chat(server, gemma4_body(R"("stream":true)"));
+  expect(streamed.head.status == 200 && test_support::stream_text(streamed) == "Hi world", "a streamed chat: " + head_of(streamed));
+
+  const auto after = metrics();
+  const std::string body = after ? after->body : std::string{};
+  expect(after && after->status == 200 && body.find("\"requests_kept\":2") != std::string::npos,
+         "both generations are kept: " + body.substr(0, 600));
+  std::size_t stops = 0;
+  for (std::size_t at = body.find("\"finish\":\"stop\""); at != std::string::npos; at = body.find("\"finish\":\"stop\"", at + 1U)) ++stops;
+  expect(stops == 2U, "each one finished stop (at <turn|>): " + body.substr(0, 600));
+  expect(count_of(body, "\"output_tokens\":3") == 2U,
+         "each one counted the engine's three T records (<turn|> included, as the engine counts it): " + body.substr(0, 600));
+  expect(body.find("\"model\":\"fake-model\"") != std::string::npos, "the served model is named");
+  expect(body.find("Hello") == std::string::npos && body.find("Hi world") == std::string::npos &&
+             body.find("\"content\"") == std::string::npos,
+         "no prompt and no answer in the Monitor");
+  const secure_frontend::JsonLimits limits{.max_bytes = 1U << 20U, .max_depth = 8U, .max_container_entries = 4096U,
+                                           .max_string_bytes = 1U << 16U, .allow_fractions = true};
+  expect(std::holds_alternative<secure_frontend::JsonValue>(secure_frontend::parse_json(body, limits)), "valid JSON");
+  std::this_thread::sleep_for(200ms);
+  const std::string log = server.stderr_text();
+  expect(log.find(" web 200 - ") != std::string::npos && log.find(" metrics 200 - ") != std::string::npos,
+         "the request log names the page and the Monitor routes: " + log);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1907,5 +2223,8 @@ int main(int argc, char** argv) {
       {"dos01_slow_body_clients_cannot_starve_a_real_client", dos01_slow_body_clients_cannot_starve_a_real_client},
       {"net01_workers_add_no_listener", net01_workers_add_no_listener},
       {"net01_ipv6_loopback_listener_only", net01_ipv6_loopback_listener_only},
+      {"gemma4_profile_chats_end_to_end", gemma4_profile_chats_end_to_end},
+      {"gemma4_thinking_round_trip", gemma4_thinking_round_trip},
+      {"gemma4_monitor_and_page_unchanged", gemma4_monitor_and_page_unchanged},
   }, failures);
 }

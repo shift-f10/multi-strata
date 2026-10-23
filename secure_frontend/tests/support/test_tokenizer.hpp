@@ -178,4 +178,66 @@ inline void write_tokenizer_pack(const std::filesystem::path& directory) {
   }
 }
 
+// ---- Gemma 4 plan 1 Task 11: the spm_bpe pack as the files the loader reads (spec §6.2) ----
+// A JSON string literal for `text`: '"' and '\' escaped, C0 controls as \n, \t, \r or \u00XX
+// (the pack holds "\n", "\n\n" and "\t"), every other byte (UTF-8, U+2581 included) as it is.
+inline std::string json_string_literal(const std::string_view text) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out = "\"";
+  for (const char character : text) {
+    const auto byte = static_cast<unsigned char>(character);
+    if (character == '"' || character == '\\') {
+      out += '\\';
+      out += character;
+    } else if (character == '\n') {
+      out += "\\n";
+    } else if (character == '\t') {
+      out += "\\t";
+    } else if (character == '\r') {
+      out += "\\r";
+    } else if (byte < 0x20U) {
+      out += "\\u00";
+      out += kHex[byte >> 4U];
+      out += kHex[byte & 15U];
+    } else {
+      out += character;
+    }
+  }
+  out += '"';
+  return out;
+}
+
+// vocab.json, merges.json (a JSON array of [left, right] pairs in rank order) and token_type.json
+// for `pack`: the spm_bpe layout, with no merges.txt (spm_bpe refuses a pack that has one).
+inline std::vector<std::pair<std::string, std::string>> spm_tokenizer_pack_files(const secure_frontend::TokenizerPack& pack) {
+  std::string vocab = "{";
+  for (std::size_t id = 0; id < pack.tokens_by_id.size(); ++id) {
+    if (id != 0U) vocab += ',';
+    vocab += json_string_literal(pack.tokens_by_id[id]) + ":" + std::to_string(id);
+  }
+  vocab += '}';
+  std::string merges = "[";
+  for (std::size_t rank = 0; rank < pack.merges_by_rank.size(); ++rank) {
+    if (rank != 0U) merges += ',';
+    merges += "[" + json_string_literal(pack.merges_by_rank[rank].first) + "," +
+              json_string_literal(pack.merges_by_rank[rank].second) + "]";
+  }
+  merges += ']';
+  std::string types = "[";
+  for (std::size_t index = 0; index < pack.token_types.size(); ++index) {
+    if (index != 0U) types += ',';
+    types += std::to_string(pack.token_types[index]);
+  }
+  types += ']';
+  return {{"vocab.json", vocab}, {"merges.json", merges}, {"token_type.json", types}};
+}
+
+// spm_tokenizer() (the synthetic Gemma-style pack above) as those three files, each written 0600
+// into an existing 0700 directory: the gemma4 profile's roots.tokenizer_pack in the harness.
+inline void write_spm_tokenizer_pack(const std::filesystem::path& directory) {
+  for (const auto& [name, bytes] : spm_tokenizer_pack_files(spm_tokenizer())) {
+    secure_frontend_test::write_file(directory / name, bytes, 0600);
+  }
+}
+
 }  // namespace test_support

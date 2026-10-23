@@ -476,6 +476,17 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
       always sends a level (High by default), so page chats with Gemma think unless Off is
       picked; API clients that omit it get thinking off. Gates: MSVC build clean; 124/124 in
       the touched binaries; full suite in the Task 10-11 batch.
+    - Task 11 done (parallel worker, integrated by the lane): the gemma4 profile end to end on
+      the fake engine through the real server: `ServerOptions.profile` → `--profile`, the
+      synthetic spm pack written as `roots.tokenizer_pack` (`write_spm_tokenizer_pack`), and
+      `ServerOptions.fake_engine_options` in `<root>/bin/fake-engine.options` (the
+      `strata_gemma4` allowlist refuses the fake's own flags as `engine.args`). Proven: thinking
+      off by default (complete and streamed; GEN ids equal the template bytes written by hand),
+      `none` off, `low`/`high` on with `<|think|>` in the system turn, the thought channel as
+      `reasoning_content` (its name line dropped, tags never output, thought streamed first),
+      `<turn|>` ends the reply as stop, the page and `/metrics` unchanged. One test-only fix
+      (the role chunk's empty `content` was taken as the first answer delta). Gates: 4/4;
+      **batch full suite after Tasks 10-11: 953 passed, 1 skipped (cfg03), 954 cases.**
 - The `windows-runtime`-labelled cases run under the MSVC preset on the owner's box; the
   supported Windows toolchains (MSYS2 clang, llvm-mingw) are still not installed (issue 3).
 
