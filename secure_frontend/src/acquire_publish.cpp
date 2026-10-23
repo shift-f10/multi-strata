@@ -19,7 +19,14 @@ constexpr std::array<std::string_view, 4> kTokenizerRequired{"vocab.json", "merg
 std::string where(const AcquireManifest& m) { return model_ref_text(m.name, m.tag); }
 
 std::optional<AcquireError> check_layout(const CanonicalRoot& root, const RelativePath& dir, const AcquireManifest& m) {
-  if (m.profile != ManifestProfile::qwen) return std::nullopt;  // glm53: shard-set rule only, until SP6
+  switch (m.profile) {
+    case ManifestProfile::qwen: break;
+    // glm53: shard-set rule only, until SP6. gemma4: its tokenizer pack is checked once the
+    // spm_bpe mode exists (Gemma 4 plan 1 Task 4); the engine gate refuses it meanwhile.
+    case ManifestProfile::glm53:
+    case ManifestProfile::gemma4:
+    case ManifestProfile::raw: return std::nullopt;
+  }
   if (!m.launch.pack || !m.launch.tokenizer_pack) return AcquireError{AcquireReason::pack_layout_invalid, where(m) + ": launch.pack"};
   std::set<std::string> listed;
   for (const auto& f : m.files) listed.insert(f.path);

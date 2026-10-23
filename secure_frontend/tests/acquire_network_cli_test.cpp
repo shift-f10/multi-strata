@@ -1,5 +1,6 @@
 // SP4 Task 27 (spec §1.3, §1.5, §6.1, §8.3, D6/C6): the strata network verbs in-process.
 #include "acquire_cases.hpp"
+#include "secure_frontend/engine_gate.hpp"
 #include "secure_frontend/model_index_store.hpp"
 #include "support/cli_harness.hpp"
 #include "support/expect.hpp"
@@ -134,6 +135,65 @@ void run_refuses_glm53_without_engine() {
   const secure_frontend::StoreEnvironment env;
   (void)secure_frontend::publish_staged(root, key, manifest, nobody, env, true);
   expect(h.run({"run", "g:t"}) == 11 && h.err.find("engine_profile_unavailable") != std::string::npos, "exit 11 until SP6");
+}
+
+// Gemma 4 plan 1 Task 2 (spec §6.1, §7): a gemma4 manifest installs, but the engine gate
+// refuses it with a fixed reason until plan 4 opens it; list and show say so.
+void engine_gate_refuses_gemma4_until_the_engine_exists() {
+  secure_frontend::AcquireManifest m;
+  m.profile = secure_frontend::ManifestProfile::gemma4;
+  m.family = secure_frontend::ManifestFamily::gemma4;
+  m.min_version = *secure_frontend::parse_engine_version("0.0.1");
+  const auto gate = secure_frontend::engine_gate(m);
+  expect(gate && gate->reason == secure_frontend::AcquireReason::engine_profile_unavailable &&
+             gate->detail == "the Gemma 4 engine is not installed",
+         "gemma4: engine_profile_unavailable with the fixed reason");
+  expect(secure_frontend::engine_state_text(m) == "engine not available (the Gemma 4 engine is not installed)",
+         "gemma4 list/show state: " + secure_frontend::engine_state_text(m));
+  m.family = secure_frontend::ManifestFamily::strata;
+  const auto mixed = secure_frontend::engine_gate(m);
+  expect(mixed && mixed->reason == secure_frontend::AcquireReason::engine_profile_unavailable,
+         "a gemma4 profile never reaches the strata engine, whatever the family");
+  m.profile = secure_frontend::ManifestProfile::qwen;
+  m.family = secure_frontend::ManifestFamily::gemma4;
+  const auto qwen = secure_frontend::engine_gate(m);
+  expect(qwen && qwen->reason == secure_frontend::AcquireReason::engine_profile_unavailable,
+         "a qwen profile with family gemma4 is refused too");
+
+  CliHarness h;
+  NetworkSeams seams(h, fx::qwen_payload());
+  const std::string gemma =
+      "{\"format\":\"strata-model-manifest\",\"schema_version\":1,\"name\":\"g\",\"tag\":\"t\",\"version\":\"2026.10.22.1\","
+      "\"sequence\":1,\"profile\":\"gemma4\",\"engine\":{\"family\":\"gemma4\",\"min_version\":\"0.0.1\"},"
+      "\"license\":{\"id\":\"Apache-2.0\",\"url\":\"https://fixture.example/l\",\"bundle_allowed\":true},\"hosts\":[\"fixture.example\"],"
+      "\"files\":[{\"path\":\"w.gguf\",\"role\":\"weights\",\"size\":1,"
+      "\"sha256\":\"ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb\",\"sources\":[]},"
+      "{\"path\":\"tokenizer/vocab.json\",\"role\":\"tokenizer\",\"size\":1,"
+      "\"sha256\":\"3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d\",\"sources\":[]}],"
+      "\"launch\":{\"native\":\"w.gguf\",\"tokenizer_pack\":\"tokenizer\"}}";
+  const auto root = h.models();
+  const auto manifest = fx::trusted(gemma, secure_frontend::ModelOrigin::third_party);
+  const auto key = secure_frontend::staging_key(manifest.parsed.sha256);
+  (void)secure_frontend::ensure_directory(root, secure_frontend::staging_dir_path(key));
+  (void)secure_frontend::write_new_file(root, secure_frontend::join_rel(secure_frontend::staging_dir_path(key), "MANIFEST"), gemma);
+  (void)secure_frontend::write_new_file(root, secure_frontend::join_rel(secure_frontend::staging_dir_path(key), "w.gguf"), "a");
+  (void)secure_frontend::ensure_directory(root, secure_frontend::join_rel(secure_frontend::staging_dir_path(key), "tokenizer"));
+  (void)secure_frontend::write_new_file(root, secure_frontend::join_rel(secure_frontend::staging_dir_path(key), "tokenizer/vocab.json"),
+                                        "b");
+  fx::FakeLoaded nobody;
+  const secure_frontend::StoreEnvironment env;
+  expect(std::holds_alternative<secure_frontend::PublishResult>(secure_frontend::publish_staged(root, key, manifest, nobody, env, true)),
+         "test setup: the gemma4 model publishes");
+  expect(h.run({"list"}) == 0 && h.out.find("g:t") != std::string::npos &&
+             h.out.find("engine not available (the Gemma 4 engine is not installed)") != std::string::npos,
+         "list: engine not available: " + h.out);
+  expect(h.run({"show", "g:t"}) == 0 && h.out.find("profile: gemma4; engine gemma4 >= 0.0.1") != std::string::npos &&
+             h.out.find("engine not available (the Gemma 4 engine is not installed)") != std::string::npos,
+         "show: the profile, the family and the state: " + h.out);
+  expect(h.run({"run", "g:t"}) == 11 && h.err.find("error: engine_profile_unavailable: the Gemma 4 engine is not installed") !=
+                                            std::string::npos,
+         "run: exit 11 with the fixed reason: " + h.err);
+  expect(seams.probe->calls == 0 && seams.transport->argvs.empty(), "a refused gemma4 run spawns nothing");
 }
 
 #if defined(SECURE_FRONTEND_TEST_HOOKS)

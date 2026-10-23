@@ -38,8 +38,12 @@ std::variant<TrustedManifest, AcquireError> resolve_request(const PullRequest& r
 }
 
 std::string runnable_text(const AcquireManifest& m) {
-  if (m.profile == ManifestProfile::raw) return "no (test profile raw)";
-  if (m.profile == ManifestProfile::glm53) return "no (needs the glm engine, SP6)";
+  switch (m.profile) {
+    case ManifestProfile::raw: return "no (test profile raw)";
+    case ManifestProfile::glm53: return "no (needs the glm engine, SP6)";
+    case ManifestProfile::gemma4: return "no (engine not available: the Gemma 4 engine is not installed)";
+    case ManifestProfile::qwen: break;
+  }
   if (compare_versions(m.min_version, built_engine_version()) > 0) {
     return "no (needs engine strata >= " + render_engine_version(m.min_version) + ")";
   }

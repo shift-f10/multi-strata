@@ -316,6 +316,7 @@ int main(int argc, char** argv) {
       {"pull_cli_prints_summary_and_installs", acquire_cases::pull_cli_prints_summary_and_installs},
       {"run_installed_model_needs_no_network", acquire_cases::run_installed_model_needs_no_network},
       {"run_refuses_glm53_without_engine", acquire_cases::run_refuses_glm53_without_engine},
+      {"engine_gate_refuses_gemma4_until_the_engine_exists", acquire_cases::engine_gate_refuses_gemma4_until_the_engine_exists},
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
       {"run_missing_model_non_interactive_exits_2", acquire_cases::run_missing_model_non_interactive_exits_2},
       {"run_missing_model_prompts_and_decline_exits_2", acquire_cases::run_missing_model_prompts_and_decline_exits_2},

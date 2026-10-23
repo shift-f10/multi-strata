@@ -218,6 +218,8 @@ void manifest_field_rules_matrix() {
       {"launch.pack", "pack must be a directory prefix", [](auto& m) { m.launch.pack = "pack/index.txt"; }},
       {"launch.tokenizer_pack", "tokenizer_pack must be <pack>/tokenizer", [](auto& m) { m.launch.tokenizer_pack = "pack"; }},
       {"launch.pack", "qwen requires pack", [](auto& m) { m.launch.pack.reset(); }},
+      // Gemma 4 plan 1 Task 2: the gemma4 family belongs to the gemma4 profile only.
+      {"engine.family", "family gemma4 on a qwen profile", [](auto& m) { m.family = secure_frontend::ManifestFamily::gemma4; }},
   };
   for (const auto& mutation : mutations) {
     auto m = valid_qwen_manifest();
@@ -334,6 +336,16 @@ void launch_keys_follow_profile() {
   glm.launch.tokenizer_pack.reset();
   glm.launch.ple_gguf.reset();
   expect(!secure_frontend::validate_manifest(glm, rules()).has_value(), "glm53 with native only is valid");
+  // Gemma 4 plan 1 Task 2: the gemma4 case is its own (it never falls through to qwen's).
+  auto gemma = valid_qwen_manifest();
+  gemma.profile = ManifestProfile::gemma4;
+  gemma.family = secure_frontend::ManifestFamily::gemma4;
+  expect_issue(gemma, "launch.ple_gguf", "a qwen-shaped launch on gemma4 is refused (no ple_gguf)");
+  gemma.launch.ple_gguf.reset();
+  expect_issue(gemma, "launch.pack", "a qwen-shaped launch on gemma4 is refused (no pack)");
+  gemma.launch.pack.reset();
+  expect(!secure_frontend::validate_manifest(gemma, rules()).has_value(),
+         "gemma4 with native and tokenizer_pack is valid (the qwen pack files may still be listed)");
 }
 
 void wildcard_redirect_hosts_validated() {
@@ -470,6 +482,127 @@ void manifest_accepts_mmproj_role_and_rejects_duplicates() {
   glm.launch.tokenizer_pack.reset();
   glm.launch.ple_gguf.reset();
   expect_issue(glm, "launch.mmproj", "glm53 keeps only launch.native in schema 1 (Maya vision is the M2 kit, D-10)");
+}
+
+// ---- Gemma 4 plan 1 Task 2: the gemma4 profile and family (spec §6.1, §7) ----
+
+AcquireManifest valid_gemma4_manifest() {
+  AcquireManifest m;
+  m.name = "gemma-4-26b-a4b-it";
+  m.tag = "ud-q8_k_xl";
+  m.version = "2026.10.22.1";
+  m.sequence = 1;
+  m.profile = ManifestProfile::gemma4;
+  m.family = secure_frontend::ManifestFamily::gemma4;
+  m.min_version = *secure_frontend::parse_engine_version("0.0.1");
+  m.license = {"Apache-2.0", "https://fixture.example/license", true, "Gemma terms."};
+  m.hosts = {"fixture.example"};
+  m.files = {file("weights/gemma-4-26b-a4b-it-ud-q8_k_xl.gguf", FileRole::weights),
+             file("tokenizer/vocab.json", FileRole::tokenizer), file("tokenizer/merges.json", FileRole::tokenizer),
+             file("tokenizer/token_type.json", FileRole::tokenizer), file("tokenizer/tokenizer.json", FileRole::tokenizer)};
+  m.launch.native = "weights/gemma-4-26b-a4b-it-ud-q8_k_xl.gguf";
+  m.launch.tokenizer_pack = "tokenizer";
+  return m;
+}
+
+const std::string kGemma4Manifest = R"({
+  "format": "strata-model-manifest", "schema_version": 1, "name": "g", "tag": "t", "version": "2026.10.22.1",
+  "sequence": 1, "profile": "gemma4", "engine": {"family": "gemma4", "min_version": "0.0.1"},
+  "license": {"id": "Apache-2.0", "url": "https://h.example/l", "bundle_allowed": true},
+  "hosts": ["h.example"],
+  "files": [
+    {"path": "weights/g.gguf", "role": "weights", "size": 1, "sha256": "SHA1", "sources": []},
+    {"path": "tokenizer/vocab.json", "role": "tokenizer", "size": 1, "sha256": "SHA2", "sources": []}
+  ],
+  "launch": {"native": "weights/g.gguf", "tokenizer_pack": "tokenizer"}
+}
+)";
+
+std::string gemma4_manifest_text() {
+  std::string text = kGemma4Manifest;
+  for (const auto& [mark, digit] : {std::pair{"SHA1", 'a'}, std::pair{"SHA2", 'b'}}) {
+    text.replace(text.find(mark), 4, std::string(64, digit));
+  }
+  return text;
+}
+
+void manifest_accepts_gemma4_profile_with_gemma4_family() {
+  const auto issue = secure_frontend::validate_manifest(valid_gemma4_manifest(), rules());
+  expect(!issue.has_value(), "a gemma4 manifest (native + tokenizer_pack) is valid: " + (issue ? issue->key_path : std::string{}));
+  expect(secure_frontend::profile_name(ManifestProfile::gemma4) == "gemma4", "profile name gemma4");
+  expect(secure_frontend::family_name(secure_frontend::ManifestFamily::gemma4) == "gemma4", "family name gemma4");
+  const auto parsed = secure_frontend::parse_manifest(gemma4_manifest_text(), rules());
+  const auto* doc = std::get_if<secure_frontend::ParsedManifest>(&parsed);
+  expect(doc != nullptr, "the gemma4 JSON manifest parses");
+  if (doc != nullptr) {
+    expect(doc->manifest.profile == ManifestProfile::gemma4 && doc->manifest.family == secure_frontend::ManifestFamily::gemma4,
+           "JSON profile gemma4 with engine.family gemma4");
+    expect(secure_frontend::profile_name(doc->manifest.profile) == "gemma4" &&
+               secure_frontend::family_name(doc->manifest.family) == "gemma4",
+           "the parsed values render back to their JSON names");
+    expect(doc->manifest.launch.native == "weights/g.gguf" && doc->manifest.launch.tokenizer_pack == "tokenizer" &&
+               !doc->manifest.launch.pack && !doc->manifest.launch.ple_gguf && !doc->manifest.launch.mmproj,
+           "the gemma4 launch keys parse");
+  }
+  // A family that does not follow the profile is refused by name, both ways round.
+  const std::string text = gemma4_manifest_text();
+  for (const char* family : {"strata", "glm", "none"}) {
+    expect_rejected_at(replaced(text, "\"family\": \"gemma4\"", std::string{"\"family\": \""} + family + "\""), "engine.family",
+                       std::string{"gemma4 with family "} + family, AcquireReason::manifest_invalid);
+  }
+  expect_rejected_at(replaced(base_manifest(), "\"family\": \"strata\"", "\"family\": \"gemma4\""), "engine.family",
+                     "qwen with family gemma4", AcquireReason::manifest_invalid);
+  expect_rejected_at(replaced(text, "\"family\": \"gemma4\"", "\"family\": \"gemma\""), "engine.family",
+                     "an unknown family is refused", AcquireReason::manifest_invalid);
+  expect_rejected_at(replaced(text, "\"profile\": \"gemma4\"", "\"profile\": \"gemma\""), "profile",
+                     "an unknown profile is refused", AcquireReason::manifest_invalid);
+  for (const auto family : {secure_frontend::ManifestFamily::strata, secure_frontend::ManifestFamily::glm,
+                            secure_frontend::ManifestFamily::none}) {
+    auto m = valid_gemma4_manifest();
+    m.family = family;
+    expect_issue(m, "engine.family", "gemma4 needs family gemma4, not " + std::string{secure_frontend::family_name(family)});
+  }
+  auto glm = valid_gemma4_manifest();
+  glm.profile = ManifestProfile::glm53;
+  expect_issue(glm, "engine.family", "glm53 with family gemma4");
+}
+
+// D2: text only. gemma4 launches from native + tokenizer_pack; mmproj, ple_gguf and pack are refused.
+void gemma4_launch_keys_are_text_only() {
+  auto ple = valid_gemma4_manifest();
+  ple.files.push_back(file("weights/ple.gguf", FileRole::weights));
+  ple.launch.ple_gguf = "weights/ple.gguf";
+  expect_issue(ple, "launch.ple_gguf", "gemma4 refuses launch.ple_gguf");
+  auto pack = valid_gemma4_manifest();
+  pack.files.push_back(file("pack/index.txt", FileRole::pack));
+  pack.launch.pack = "pack";
+  expect_issue(pack, "launch.pack", "gemma4 refuses launch.pack");
+  auto vision = valid_gemma4_manifest();
+  vision.files.push_back(file("mmproj/v.gguf", FileRole::mmproj));
+  vision.launch.mmproj = "mmproj/v.gguf";
+  expect_issue(vision, "launch.mmproj", "gemma4 refuses launch.mmproj (text only, D2)");
+  auto no_tokenizer = valid_gemma4_manifest();
+  no_tokenizer.launch.tokenizer_pack.reset();
+  expect_issue(no_tokenizer, "launch.tokenizer_pack", "gemma4 requires launch.tokenizer_pack");
+  auto file_tokenizer = valid_gemma4_manifest();
+  file_tokenizer.launch.tokenizer_pack = "tokenizer/vocab.json";
+  expect_issue(file_tokenizer, "launch.tokenizer_pack", "launch.tokenizer_pack must be a directory of listed files");
+  auto unlisted = valid_gemma4_manifest();
+  unlisted.launch.tokenizer_pack = "other";
+  expect_issue(unlisted, "launch.tokenizer_pack", "launch.tokenizer_pack must name listed files");
+  auto no_native = valid_gemma4_manifest();
+  no_native.launch.native.reset();
+  expect_issue(no_native, "launch.native", "gemma4 requires launch.native");
+  auto tokenizer_native = valid_gemma4_manifest();
+  tokenizer_native.launch.native = "tokenizer/vocab.json";
+  expect_issue(tokenizer_native, "launch.native", "launch.native must name a weights file");
+  auto sharded = valid_gemma4_manifest();
+  sharded.files[0].path = "weights/g-00001-of-00002.gguf";
+  sharded.files.push_back(file("weights/g-00002-of-00002.gguf", FileRole::weights));
+  sharded.launch.native = "weights/g-00002-of-00002.gguf";
+  expect_issue(sharded, "launch.native", "gemma4 launch.native must be shard 00001");
+  sharded.launch.native = "weights/g-00001-of-00002.gguf";
+  expect(!secure_frontend::validate_manifest(sharded, rules()).has_value(), "a sharded gemma4 weights set is valid");
 }
 
 void base_manifest_parses() {
@@ -640,6 +773,8 @@ int main(int argc, char** argv) {
       {"shard_set_must_be_complete_in_one_directory", shard_set_must_be_complete_in_one_directory},
       {"launch_keys_follow_profile", launch_keys_follow_profile},
       {"manifest_accepts_mmproj_role_and_rejects_duplicates", manifest_accepts_mmproj_role_and_rejects_duplicates},
+      {"manifest_accepts_gemma4_profile_with_gemma4_family", manifest_accepts_gemma4_profile_with_gemma4_family},
+      {"gemma4_launch_keys_are_text_only", gemma4_launch_keys_are_text_only},
       {"wildcard_redirect_hosts_validated", wildcard_redirect_hosts_validated},
       {"total_size_above_budget_is_total_budget_exceeded", total_size_above_budget_is_total_budget_exceeded},
       {"raw_profile_rejected_in_release_build", raw_profile_rejected_in_release_build},

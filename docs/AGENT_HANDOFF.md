@@ -391,6 +391,14 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
       `--cpu-threads` 1-256; `--flag VALUE` only, once each; known foreign flags refused by
       name, unknown ones never echoed), the `glm.*` guard now "every profile but glm53".
       Gates: MSVC build clean; full suite 920 passed, 1 skipped (the symlink case).
+    - Task 2 done: manifests take `"profile": "gemma4"` with `"engine": {"family": "gemma4"}`
+      (`ManifestProfile::gemma4`, `ManifestFamily::gemma4`; the family per profile is an
+      exhaustive switch). gemma4 launch keys are `native` (a listed weights file, shard 00001)
+      and `tokenizer_pack` (a directory of listed files); `ple_gguf`, `pack` and `mmproj` are
+      refused (D2 text only). `engine_gate` refuses gemma4 as `engine_profile_unavailable`
+      with the fixed reason "the Gemma 4 engine is not installed" (plan 4 opens it); `list`
+      and `show` print "engine not available (…)", `run` exits 11. Gates: MSVC build clean;
+      full suite 922 passed, 1 skipped.
 - The `windows-runtime`-labelled cases run under the MSVC preset on the owner's box; the
   supported Windows toolchains (MSYS2 clang, llvm-mingw) are still not installed (issue 3).
 

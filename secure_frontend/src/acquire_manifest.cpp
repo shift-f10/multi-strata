@@ -192,6 +192,7 @@ std::string_view profile_name(const ManifestProfile profile) noexcept {
   switch (profile) {
     case ManifestProfile::qwen: return "qwen";
     case ManifestProfile::glm53: return "glm53";
+    case ManifestProfile::gemma4: return "gemma4";
     case ManifestProfile::raw: return "raw";
   }
   return "unknown";
@@ -201,6 +202,7 @@ std::string_view family_name(const ManifestFamily family) noexcept {
   switch (family) {
     case ManifestFamily::strata: return "strata";
     case ManifestFamily::glm: return "glm";
+    case ManifestFamily::gemma4: return "gemma4";
     case ManifestFamily::none: return "none";
   }
   return "unknown";
@@ -221,6 +223,17 @@ namespace {
 // Controller ruling A: the store and bundles address a file under a prefix, and
 // SP1's P1 grammar caps the WHOLE relative path, so the longest stored form must
 // fit or a later join would fail. Lengths only: any digest gives the real widths.
+// The one family each profile runs on (spec §6.1), an exhaustive switch.
+ManifestFamily family_for(const ManifestProfile profile) {
+  switch (profile) {
+    case ManifestProfile::qwen: return ManifestFamily::strata;
+    case ManifestProfile::glm53: return ManifestFamily::glm;
+    case ManifestProfile::gemma4: return ManifestFamily::gemma4;
+    case ManifestProfile::raw: return ManifestFamily::none;
+  }
+  return ManifestFamily::none;  // unreachable: every value is a case above
+}
+
 std::size_t stored_path_overhead(const AcquireManifest& m) {
   const std::string digest = to_hex(sha256(std::string_view{}));
   // <name>/<tag>/v<sequence>-<12 hex>/<path>
@@ -245,10 +258,9 @@ std::optional<ManifestIssue> validate_manifest(const AcquireManifest& m, const M
   if (m.profile == ManifestProfile::raw && !rules.allow_raw_profile) {
     return bad("profile", "raw is available only in SECURE_FRONTEND_TEST_HOOKS builds");
   }
-  const ManifestFamily expected_family = m.profile == ManifestProfile::qwen    ? ManifestFamily::strata
-                                       : m.profile == ManifestProfile::glm53 ? ManifestFamily::glm
-                                                                             : ManifestFamily::none;
-  if (m.family != expected_family) return bad("engine.family", "must be strata for qwen, glm for glm53, none for raw");
+  if (m.family != family_for(m.profile)) {
+    return bad("engine.family", "must be strata for qwen, glm for glm53, gemma4 for gemma4, none for raw");
+  }
   if (m.profile == ManifestProfile::raw && compare_versions(m.min_version, EngineVersion{}) != 0) {
     return bad("engine.min_version", "must be 0.0.0 for raw");
   }
@@ -346,6 +358,20 @@ std::optional<ManifestIssue> validate_manifest(const AcquireManifest& m, const M
       if (launch.pack) return bad("launch.pack", "raw has no launch keys");
       if (launch.tokenizer_pack) return bad("launch.tokenizer_pack", "raw has no launch keys");
       if (launch.mmproj) return bad("launch.mmproj", "raw has no launch keys");
+      break;
+    case ManifestProfile::gemma4:
+      // Gemma 4 plan 1 Task 2 (spec §6.1, §7; D2 text only): the weights and the frontend's
+      // tokenizer pack. Its own case: it never falls through to qwen's pack rules.
+      if (launch.ple_gguf) return bad("launch.ple_gguf", "gemma4 has only launch.native and launch.tokenizer_pack in schema 1");
+      if (launch.pack) return bad("launch.pack", "gemma4 has only launch.native and launch.tokenizer_pack in schema 1");
+      if (launch.mmproj) return bad("launch.mmproj", "gemma4 is text only (no launch.mmproj) in schema 1");
+      if (!weights_file(launch.native)) return bad("launch.native", "must name a listed weights file");
+      if (const auto shard = shard_name(*launch.native); shard && shard->number != 1) {
+        return bad("launch.native", "must be shard 00001");
+      }
+      if (!launch.tokenizer_pack || !is_directory_prefix(m, *launch.tokenizer_pack)) {
+        return bad("launch.tokenizer_pack", "must name a directory of listed files");
+      }
       break;
     case ManifestProfile::glm53:
       if (launch.ple_gguf) return bad("launch.ple_gguf", "glm53 has only launch.native in schema 1");

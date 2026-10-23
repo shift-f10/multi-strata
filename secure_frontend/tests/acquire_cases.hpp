@@ -93,6 +93,7 @@ void list_outdated_uses_catalog_sequence();
 void pull_cli_prints_summary_and_installs();
 void run_installed_model_needs_no_network();
 void run_refuses_glm53_without_engine();
+void engine_gate_refuses_gemma4_until_the_engine_exists();  // Gemma 4 plan 1 Task 2
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
 void run_missing_model_non_interactive_exits_2();
 void run_missing_model_prompts_and_decline_exits_2();

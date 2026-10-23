@@ -39,6 +39,14 @@
   Recorded as a session-log issue for the owner; plan 1 does not change glm53.
 - `tools/secure/make_bundle.py` is qwen-only (`:155-156`); bundles are not part of plan 1.
 
+Rulings taken during execution (2026-10-22; each also in its task's commit message):
+
+- **Task 2:** a gemma4 manifest's `launch.tokenizer_pack` is any directory of listed files (qwen's
+  `<pack>/tokenizer` rule cannot apply: gemma4 has no `launch.pack`) — why: the frontend pack is
+  the only launch directory — cost if wrong: a manifest could name a non-tokenizer directory; the
+  publish layout check (Task 4) and the loader refuse it. The publish-time gemma4 layout check
+  waits for Task 4's `spm_bpe` mode (the engine gate refuses gemma4 meanwhile).
+
 ## Global Constraints
 
 - TDD: every task's RED tests are written and seen failing for the right reason before the
@@ -116,16 +124,16 @@ tests `typed_config_test.cpp`, `engine_arguments_test.cpp`, `server_cli_test.cpp
   `engine_profile_unavailable` for gemma4 with a fixed reason ("the Gemma 4 engine is not
   installed").
 
-- [ ] **Step 1: RED**
+- [x] **Step 1: RED**
   ```cpp
   void manifest_accepts_gemma4_profile_with_gemma4_family();     // round trip; mismatched family refused by name
   void gemma4_launch_keys_are_text_only();                       // mmproj/ple_gguf/pack refused for gemma4
   void engine_gate_refuses_gemma4_until_the_engine_exists();     // list/show print "engine not available"
   ```
   extend `manifest_field_rules_matrix` and `launch_keys_follow_profile` rows. FAIL.
-- [ ] **Step 2:** implement; `acquire_manifest.cpp:248-251` becomes a switch; the `:342-375`
+- [x] **Step 2:** implement; `acquire_manifest.cpp:248-251` becomes a switch; the `:342-375`
   launch-key switch gains a `gemma4` case that does not fall through to qwen's.
-- [ ] **Step 3:** GREEN + gates; commit `manifest: gemma4 profile and family (gated until the engine exists)`.
+- [x] **Step 3:** GREEN + gates; commit `manifest: gemma4 profile and family (gated until the engine exists)`.
 
 ---
 

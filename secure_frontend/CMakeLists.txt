@@ -1754,7 +1754,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # SP4 Task 27 (spec §1.3, §6.1, §8.3, D6): the network verbs through CliServices seams.
     target_sources(secure_frontend_acquire_tests PRIVATE tests/acquire_network_cli_test.cpp)
     secure_frontend_add_cases(secure_frontend_acquire_tests pull_cli_prints_summary_and_installs run_installed_model_needs_no_network
-        run_refuses_glm53_without_engine LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+        run_refuses_glm53_without_engine engine_gate_refuses_gemma4_until_the_engine_exists
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     if(SECURE_FRONTEND_TEST_HOOKS)
         secure_frontend_add_cases(secure_frontend_acquire_tests run_missing_model_prompts_and_decline_exits_2
             run_missing_model_non_interactive_exits_2 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
@@ -1838,6 +1839,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         file_and_directory_prefix_collision_rejected shard_set_must_be_complete_in_one_directory
         launch_keys_follow_profile manifest_accepts_mmproj_role_and_rejects_duplicates wildcard_redirect_hosts_validated total_size_above_budget_is_total_budget_exceeded
         engine_version_parsed_with_fourth_component)
+    # Gemma 4 plan 1 Task 2 (spec §6.1, §7): the gemma4 profile and family, text-only launch keys.
+    secure_frontend_add_cases(secure_frontend_manifest_tests manifest_accepts_gemma4_profile_with_gemma4_family
+        gemma4_launch_keys_are_text_only)
     secure_frontend_add_cases(secure_frontend_manifest_tests raw_profile_rejected_in_release_build LABELS release-only)
     if(SECURE_FRONTEND_TEST_HOOKS)
         secure_frontend_add_cases(secure_frontend_manifest_tests raw_profile_accepted_with_test_hooks
