@@ -73,9 +73,11 @@ using TokenizerEncodeResult = std::variant<std::vector<std::size_t>, TokenizerPa
 // Opens the root first (open_root: canonical, private, existing).
 [[nodiscard]] TokenizerPackLoadResult load_local_tokenizer_pack(const std::filesystem::path& pack_root, TokenizerMode mode);
 
-// Decodes byte-level-BPE token IDs using GPT-2's reversible byte alphabet.
-// CONTROL (3) and USER_DEFINED (4)
-// token types fail closed rather than being silently rendered as plain output.
+// Decodes token IDs: byte_bpe through GPT-2's reversible byte alphabet; spm_bpe (Gemma 4
+// plan 1 Task 5) as NORMAL tokens with U+2581 for a space and <0xXX> BYTE tokens as their byte.
+// CONTROL (3) and USER_DEFINED (4) token types fail closed rather than being silently rendered
+// as plain output; so does a BYTE token in a byte_bpe pack, and any type but NORMAL or BYTE in
+// an spm_bpe pack.
 [[nodiscard]] TokenizerDecodeResult decode_token_ids(const TokenizerPack& pack,
                                                       const std::vector<std::size_t>& ids);
 
@@ -100,6 +102,10 @@ class TokenByteDecoder final {
 // a replacement for model-specific (for example Qwen) regex pre-tokenizers or
 // Jinja chat templates. Input containing a CONTROL or USER_DEFINED vocabulary
 // literal fails closed, as does text which cannot be expressed by this pack.
+// An spm_bpe pack (Gemma 4 plan 1 Task 5) encodes as llama.cpp's gemma4 tokenizer at
+// 3cf03257: spaces become U+2581, runs of non-newlines and runs of newlines are encoded apart, a newline-only
+// run that is a token is that token, code points merge by the lowest rank (then leftmost), and
+// a symbol that is no token becomes its bytes' <0xXX> tokens; no BOS, no space prefix.
 [[nodiscard]] TokenizerEncodeResult encode_text(const TokenizerPack& pack,
                                                  std::string_view text);
 

@@ -420,6 +420,14 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
       `vocab.json`, `merges.json`, `token_type.json`, `tokenizer.json` under
       `launch.tokenizer_pack`, loading in `spm_bpe`. Gates: MSVC build clean; full suite 931
       passed, 1 skipped.
+    - Task 5 done: `spm_bpe` encode/decode as llama.cpp `3cf03257`'s gemma4 tokenizer
+      (spaces → U+2581; `[^\n]+`/`[\n]+` runs; a known newline run is one token; code points
+      merged by a priority queue, lowest rank then leftmost; `<0xXX>` byte fallback; no BOS,
+      no space prefix). Fail-closed where llama.cpp is lenient: a missing byte token or a
+      merge landing on a special token is `unencodable_text`. Decode: NORMAL (U+2581 → space)
+      and BYTE (one raw byte) only; byte_bpe now refuses BYTE tokens too. Test pack
+      `spm_tokenizer()` in `tests/support/test_tokenizer.hpp`. Gates: MSVC build clean; full
+      suite 936 passed, 1 skipped.
 - The `windows-runtime`-labelled cases run under the MSVC preset on the owner's box; the
   supported Windows toolchains (MSYS2 clang, llvm-mingw) are still not installed (issue 3).
 

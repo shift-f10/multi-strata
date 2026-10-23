@@ -407,6 +407,148 @@ void merges_json_is_bounded_and_validated() {
          "merges.json above the 64 MiB file cap is refused before parsing");
   std::filesystem::remove_all(root);
 }
+// ---- Gemma 4 plan 1 Task 5 (spec §2.5, §6.2; LC llama-vocab.cpp:528-537, 637-644, 3186-3200) ----
+
+std::vector<std::size_t> spm_ids(const secure_frontend::TokenizerPack& pack, const std::vector<std::string>& tokens) {
+  std::vector<std::size_t> ids;
+  for (const auto& token : tokens) ids.push_back(test_support::token_id(pack, token));
+  return ids;
+}
+
+std::string spm_byte(const unsigned char byte) {
+  static constexpr char kHex[] = "0123456789ABCDEF";
+  return std::string{"<0x"} + kHex[byte >> 4U] + kHex[byte & 15U] + ">";
+}
+
+const std::string kU2581{test_support::kSpmSpace};
+
+// Spaces become U+2581 (no space prefix); merges apply by lowest rank, then leftmost.
+void spm_encodes_spaces_as_u2581_and_merges_by_rank() {
+  const auto pack = test_support::spm_tokenizer();
+  const auto encode = [&pack](const std::string_view text) { return ids_of(secure_frontend::encode_text(pack, text)); };
+  expect(encode("Hi world") == spm_ids(pack, {"Hi", kU2581 + "world"}), "Hi world -> Hi, U+2581world");
+  expect(encode("x") == spm_ids(pack, {"x"}), "no space prefix is added");
+  expect(encode("  x") == spm_ids(pack, {kU2581 + kU2581, "x"}), "two leading spaces merge into one U+2581U+2581 token");
+  expect(encode("x   ") == spm_ids(pack, {"x", kU2581 + kU2581, kU2581}), "trailing spaces: leftmost pair first");
+  expect(encode("abc") == spm_ids(pack, {"a", "bc"}), "b+c (rank 7) wins over a+b (rank 8)");
+  expect(encode("aaa") == spm_ids(pack, {"aa", "a"}), "equal ranks merge leftmost first");
+  expect(encode("thought") == spm_ids(pack, {"thought"}), "a chain of merges reaches the long token");
+  expect(encode("\t\t") == spm_ids(pack, {"\t\t"}), "tabs merge like any character");
+  expect(encode("") == std::vector<std::size_t>{}, "empty text is no tokens (no BOS: the renderer adds it)");
+  const auto merges_of = [&pack](const std::string& literal) { return test_support::token_id(pack, literal); };
+  expect(merges_of(kU2581) != pack.tokens_by_id.size(), "fixture: U+2581 is a token");
+}
+
+// The pre-tokenizer splits [^\n]+ from [\n]+; a newline-only run that is a token is that token.
+void spm_newline_runs_are_single_tokens_when_known() {
+  const auto pack = test_support::spm_tokenizer();
+  const auto encode = [&pack](const std::string_view text) { return ids_of(secure_frontend::encode_text(pack, text)); };
+  expect(encode("a\n\nb") == spm_ids(pack, {"a", "\n\n", "b"}), "a known newline run is one token");
+  expect(encode("\n\n\n") == spm_ids(pack, {"\n\n", "\n"}), "an unknown run is merged by rank");
+  expect(encode("Hi\n world") == spm_ids(pack, {"Hi", "\n", kU2581 + "world"}), "merges never cross a newline");
+  expect(encode("\r\n") == spm_ids(pack, {spm_byte(0x0D), "\n"}), "\\r has no token: its byte, then the newline");
+  auto no_merge = pack;
+  no_merge.merges_by_rank.erase(no_merge.merges_by_rank.begin() + 10);  // ("\n", "\n")
+  expect(ids_of(secure_frontend::encode_text(no_merge, "\n\n")) == spm_ids(pack, {"\n\n"}),
+         "the newline-run rule needs no merge");
+  expect(ids_of(secure_frontend::encode_text(no_merge, "\n\n\n")) == spm_ids(pack, {"\n", "\n", "\n"}),
+         "without the token or a merge a run is its characters");
+}
+
+// A character the merges cannot reach becomes its UTF-8 bytes' <0xXX> tokens.
+void spm_unknown_characters_fall_back_to_byte_tokens() {
+  const auto pack = test_support::spm_tokenizer();
+  const auto encode = [&pack](const std::string_view text) { return ids_of(secure_frontend::encode_text(pack, text)); };
+  expect(encode("\xC3\xA9") == spm_ids(pack, {spm_byte(0xC3), spm_byte(0xA9)}), "e-acute: two byte tokens");
+  expect(encode("\xF0\x9F\x98\x80") == spm_ids(pack, {spm_byte(0xF0), spm_byte(0x9F), spm_byte(0x98), spm_byte(0x80)}),
+         "an emoji: four byte tokens");
+  expect(encode("e\xCC\x81") == spm_ids(pack, {"e", spm_byte(0xCC), spm_byte(0x81)}), "a combining mark after e");
+  expect(encode(std::string{"\x01\x7f", 2U}) == spm_ids(pack, {spm_byte(0x01), spm_byte(0x7F)}), "C0 control and DEL");
+  expect(encode(std::string{"\0", 1U}) == spm_ids(pack, {spm_byte(0x00)}), "NUL is byte 0");
+  expect(encode("\xE4\xBD\xA0\xE5\xA5\xBD") == spm_ids(pack, {"\xE4\xBD\xA0\xE5\xA5\xBD"}), "CJK characters merge as whole characters");
+  auto missing = pack;
+  missing.tokens_by_id[test_support::kSpmByteBase + 0xA9U] = "<0xA9-gone>";
+  const auto refused = secure_frontend::encode_text(missing, "\xC3\xA9");
+  const auto* failure = std::get_if<secure_frontend::TokenizerPackError>(&refused);
+  expect(failure != nullptr && failure->code == secure_frontend::TokenizerPackErrorCode::unencodable_text,
+         "a missing byte token fails closed (llama.cpp would drop the byte)");
+  for (const auto& [literal, type] : test_support::gemma4_special_tokens()) {
+    const auto special = secure_frontend::encode_text(pack, "a " + literal + " b");
+    const auto* error = std::get_if<secure_frontend::TokenizerPackError>(&special);
+    expect(error != nullptr && error->code == secure_frontend::TokenizerPackErrorCode::unsupported_special_token,
+           "a Gemma marker in text is refused: " + literal);
+    static_cast<void>(type);
+  }
+  const auto invalid = secure_frontend::encode_text(pack, std::string{"\xff", 1U});
+  expect(std::holds_alternative<secure_frontend::TokenizerPackError>(invalid), "invalid UTF-8 is refused");
+}
+
+// upstream tools/strata_tokenizer.py --check's corpus: decode(encode(s)) == s.
+void spm_round_trips_the_upstream_corpus() {
+  const auto pack = test_support::spm_tokenizer();
+  const std::vector<std::string> corpus{"",
+                                        "Hello, world!",
+                                        "  leading and trailing  ",
+                                        "a\n\n\nb",
+                                        "def f(x):\n\treturn x  # comment\n",
+                                        "\xE4\xBD\xA0\xE5\xA5\xBD\xEF\xBC\x8C\xE4\xB8\x96\xE7\x95\x8C",
+                                        "\xD9\x85\xD8\xB1\xD8\xAD\xD8\xA8\xD8\xA7",
+                                        "\xF0\x9F\x98\x80\xF0\x9F\x9A\x80\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8",
+                                        "e\xCC\x81\xCC\x81 combining",
+                                        std::string{"\x00\x01\x7f control", 11U},
+                                        "\xC2\xA0non-breaking\xC2\xA0space",
+                                        "1234567890",
+                                        "MixedCASE_and-dashes",
+                                        "\r\n\r\n",
+                                        "\xE2\x80\xA8\xE2\x80\xA9",
+                                        std::string(5000U, 'x')};
+  for (const auto& text : corpus) {
+    const auto encoded = secure_frontend::encode_text(pack, text);
+    const auto* ids = std::get_if<std::vector<std::size_t>>(&encoded);
+    expect(ids != nullptr, "the corpus string encodes: " + text.substr(0U, 20U));
+    if (ids == nullptr) continue;
+    const auto decoded = secure_frontend::decode_token_ids(pack, *ids);
+    expect(std::holds_alternative<std::string>(decoded) && std::get<std::string>(decoded) == text,
+           "round trip: " + text.substr(0U, 20U));
+  }
+}
+
+// Decode: U+2581 -> space, <0xXX> (BYTE) -> that byte; CONTROL/USER_DEFINED fail closed; a byte
+// token in a byte_bpe pack stays refused.
+void spm_decoder_maps_u2581_and_byte_tokens() {
+  const auto pack = test_support::spm_tokenizer();
+  const auto decoded = secure_frontend::decode_token_ids(pack, spm_ids(pack, {"Hi", kU2581 + "world", kU2581 + kU2581}));
+  expect(std::holds_alternative<std::string>(decoded) && std::get<std::string>(decoded) == "Hi world  ", "U+2581 decodes to a space");
+  const auto bytes = secure_frontend::decode_token_ids(pack, spm_ids(pack, {spm_byte(0xC3), spm_byte(0xA9)}));
+  expect(std::holds_alternative<std::string>(bytes) && std::get<std::string>(bytes) == "\xC3\xA9", "byte tokens join into UTF-8");
+  const secure_frontend::TokenByteDecoder decoder(pack);
+  const auto lead = decoder.bytes_for(test_support::kSpmByteBase + 0xE2U);
+  expect(std::holds_alternative<std::string>(lead) && std::get<std::string>(lead) == "\xE2",
+         "one byte token is its raw byte (Utf8StreamDecoder joins a split character)");
+  const auto split = secure_frontend::decode_token_ids(pack, spm_ids(pack, {spm_byte(0xC3)}));
+  expect(std::holds_alternative<secure_frontend::TokenizerPackError>(split), "a lone lead byte is not valid UTF-8 text");
+  for (const auto& [literal, type] : test_support::gemma4_special_tokens()) {
+    const auto special = decoder.bytes_for(test_support::token_id(pack, literal));
+    const auto* failure = std::get_if<secure_frontend::TokenizerPackError>(&special);
+    expect(failure != nullptr && failure->code == secure_frontend::TokenizerPackErrorCode::undecodable_token,
+           "a special token is never ordinary output: " + literal);
+    static_cast<void>(type);
+  }
+  auto malformed = pack;
+  malformed.tokens_by_id[test_support::kSpmByteBase] = "<0xzz>";
+  const auto bad_byte = secure_frontend::TokenByteDecoder(malformed).bytes_for(test_support::kSpmByteBase);
+  expect(std::holds_alternative<secure_frontend::TokenizerPackError>(bad_byte), "a BYTE token not spelled <0xXX> fails closed");
+  auto unused = pack;
+  unused.token_types[test_support::token_id(pack, "x")] = 5;
+  expect(std::holds_alternative<secure_frontend::TokenizerPackError>(secure_frontend::TokenByteDecoder(unused).bytes_for(
+             test_support::token_id(pack, "x"))),
+         "an UNUSED (type 5) token fails closed in spm_bpe");
+  auto byte_level = test_support::byte_tokenizer();
+  byte_level.tokens_by_id.emplace_back("<0x41>");
+  byte_level.token_types.push_back(6);
+  const auto refused = secure_frontend::TokenByteDecoder(byte_level).bytes_for(byte_level.tokens_by_id.size() - 1U);
+  expect(std::holds_alternative<secure_frontend::TokenizerPackError>(refused), "a BYTE token in a byte_bpe pack stays refused");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -422,6 +564,11 @@ int main(int argc, char** argv) {
       {"spm_pack_loads_merges_json_with_newline_and_tab_tokens", spm_pack_loads_merges_json_with_newline_and_tab_tokens},
       {"mode_comes_from_the_profile_never_the_files", mode_comes_from_the_profile_never_the_files},
       {"merges_json_is_bounded_and_validated", merges_json_is_bounded_and_validated},
+      {"spm_encodes_spaces_as_u2581_and_merges_by_rank", spm_encodes_spaces_as_u2581_and_merges_by_rank},
+      {"spm_newline_runs_are_single_tokens_when_known", spm_newline_runs_are_single_tokens_when_known},
+      {"spm_unknown_characters_fall_back_to_byte_tokens", spm_unknown_characters_fall_back_to_byte_tokens},
+      {"spm_round_trips_the_upstream_corpus", spm_round_trips_the_upstream_corpus},
+      {"spm_decoder_maps_u2581_and_byte_tokens", spm_decoder_maps_u2581_and_byte_tokens},
 #ifndef _WIN32
       {"rejects_symlinked_assets", rejects_symlinked_assets},
       {"cfg03_tokenizer_file_swapped_to_symlink_rejected", cfg03_tokenizer_file_swapped_to_symlink_rejected},

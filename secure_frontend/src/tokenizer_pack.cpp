@@ -9,8 +9,10 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <queue>
 #include <set>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -158,6 +160,176 @@ TokenizerEncodeResult encode_piece(const TokenizerPack& pack, const std::string_
     encoded.push_back(found->second);
   }
   return encoded;
+}
+
+// ---- Gemma 4 plan 1 Task 5: spm_bpe (spec §2.5, §6.2; llama.cpp 3cf03257 llama-vocab.cpp
+// :528-537 the pre-tokenizer, :619-738 the BPE session with the Gemma 4 newline rule at
+// :637-644 and the <0xXX> fallback at :718-730, :3186-3200 and :3713-3730 the byte tokens) ----
+
+constexpr std::string_view kSpmSpace = "\xE2\x96\x81";  // U+2581, SentencePiece's escaped space
+constexpr int kTokenTypeNormal = 1;
+constexpr int kTokenTypeByte = 6;
+
+bool is_special_type(const int type) { return type == 3 || type == 4; }
+
+// <0xXX> with two uppercase hex digits, exactly as the GGUF spells its 256 byte tokens.
+std::optional<unsigned char> byte_token_value(const std::string_view token) {
+  if (token.size() != 6U || token.substr(0U, 3U) != "<0x" || token[5] != '>') return std::nullopt;
+  const auto hex = [](const char c) -> int {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+  };
+  const int high = hex(token[3]);
+  const int low = hex(token[4]);
+  if (high < 0 || low < 0) return std::nullopt;
+  return static_cast<unsigned char>(high * 16 + low);
+}
+
+// Built once per encode call (never cached in the pack, so a pack can never carry a stale index).
+struct SpmIndex final {
+  std::unordered_map<std::string_view, std::size_t> ids;  // views into the pack's own strings
+  std::unordered_map<std::uint64_t, std::size_t> ranks;   // (left id << 32) | right id -> rank
+  std::array<std::optional<std::size_t>, 256U> byte_ids{};
+};
+
+std::variant<SpmIndex, TokenizerPackError> build_spm_index(const TokenizerPack& pack) {
+  if (pack.tokens_by_id.size() != pack.token_types.size() || pack.tokens_by_id.size() > 0xFFFFFFFFU) {
+    return error(TokenizerPackErrorCode::invalid_token_types, "token type entries must match vocabulary entries");
+  }
+  SpmIndex index;
+  index.ids.reserve(pack.tokens_by_id.size());
+  for (std::size_t id = 0U; id < pack.tokens_by_id.size(); ++id) {
+    if (!index.ids.emplace(pack.tokens_by_id[id], id).second) {
+      return error(TokenizerPackErrorCode::invalid_vocabulary, "vocabulary tokens must be unique for encoding");
+    }
+    if (pack.token_types[id] == kTokenTypeByte) {
+      if (const auto value = byte_token_value(pack.tokens_by_id[id])) index.byte_ids[*value] = id;
+    }
+  }
+  index.ranks.reserve(pack.merges_by_rank.size());
+  for (std::size_t rank = 0U; rank < pack.merges_by_rank.size(); ++rank) {
+    const auto left = index.ids.find(pack.merges_by_rank[rank].first);
+    const auto right = index.ids.find(pack.merges_by_rank[rank].second);
+    if (left == index.ids.end() || right == index.ids.end()) continue;  // the loader refuses these
+    index.ranks.emplace((static_cast<std::uint64_t>(left->second) << 32U) | right->second, rank);  // lowest rank kept
+  }
+  return index;
+}
+
+// Literal scan: a CONTROL or USER_DEFINED literal in text is never encoded as ordinary text.
+std::optional<TokenizerPackError> refuse_special_literals(const TokenizerPack& pack, const std::string_view text) {
+  for (std::size_t id = 0U; id < pack.tokens_by_id.size() && id < pack.token_types.size(); ++id) {
+    if (is_special_type(pack.token_types[id]) && text.find(pack.tokens_by_id[id]) != std::string_view::npos) {
+      return error(TokenizerPackErrorCode::unsupported_special_token, "special token literals are not accepted as ordinary input");
+    }
+  }
+  return std::nullopt;
+}
+
+struct SpmSymbol final {
+  std::size_t offset;
+  std::size_t size;  // 0: merged into its left neighbour
+  std::ptrdiff_t prev;
+  std::ptrdiff_t next;
+};
+
+struct SpmBigram final {
+  std::size_t rank;
+  std::size_t left;
+  std::size_t right;
+  std::size_t left_size;   // the symbols' sizes when queued: a changed size means the pair is stale
+  std::size_t right_size;
+};
+
+// llama.cpp's llm_bigram_bpe::comparator: the lowest rank first, then the leftmost pair.
+struct SpmBigramOrder final {
+  bool operator()(const SpmBigram& l, const SpmBigram& r) const { return l.rank > r.rank || (l.rank == r.rank && l.left > r.left); }
+};
+
+// One pre-tokenized run ([^\n]+ or [\n]+) of the normalized text.
+std::optional<TokenizerPackError> spm_encode_run(const TokenizerPack& pack, const SpmIndex& index, const std::string_view run,
+                                                 std::vector<std::size_t>& output) {
+  std::vector<SpmSymbol> symbols;
+  // Gemma 4's rule (llama.cpp :637-644): a newline-only run that is a vocabulary token is that token.
+  if (run.find_first_not_of('\n') == std::string_view::npos && index.ids.contains(run)) {
+    symbols.push_back(SpmSymbol{0U, run.size(), -1, -1});
+  } else {
+    for (std::size_t offset = 0U; offset < run.size();) {
+      const std::size_t width = std::min(run.size() - offset, utf8_width(static_cast<unsigned char>(run[offset])));
+      symbols.push_back(SpmSymbol{offset, width, static_cast<std::ptrdiff_t>(symbols.size()) - 1, -1});
+      offset += width;
+    }
+    for (std::size_t i = 0U; i + 1U < symbols.size(); ++i) symbols[i].next = static_cast<std::ptrdiff_t>(i + 1U);
+  }
+  std::priority_queue<SpmBigram, std::vector<SpmBigram>, SpmBigramOrder> queue;
+  const auto add_bigram = [&](const std::ptrdiff_t left, const std::ptrdiff_t right) {
+    if (left < 0 || right < 0) return;
+    const auto& l = symbols[static_cast<std::size_t>(left)];
+    const auto& r = symbols[static_cast<std::size_t>(right)];
+    const auto left_id = index.ids.find(run.substr(l.offset, l.size));
+    const auto right_id = index.ids.find(run.substr(r.offset, r.size));
+    if (left_id == index.ids.end() || right_id == index.ids.end()) return;
+    const auto rank = index.ranks.find((static_cast<std::uint64_t>(left_id->second) << 32U) | right_id->second);
+    if (rank == index.ranks.end()) return;
+    queue.push(SpmBigram{rank->second, static_cast<std::size_t>(left), static_cast<std::size_t>(right), l.size, r.size});
+  };
+  for (std::size_t i = 1U; i < symbols.size(); ++i) add_bigram(static_cast<std::ptrdiff_t>(i - 1U), static_cast<std::ptrdiff_t>(i));
+  while (!queue.empty()) {
+    const SpmBigram bigram = queue.top();
+    queue.pop();
+    auto& left = symbols[bigram.left];
+    auto& right = symbols[bigram.right];
+    if (left.size == 0U || right.size == 0U || left.size != bigram.left_size || right.size != bigram.right_size) continue;
+    left.size += right.size;
+    right.size = 0U;
+    left.next = right.next;
+    if (right.next >= 0) symbols[static_cast<std::size_t>(right.next)].prev = static_cast<std::ptrdiff_t>(bigram.left);
+    add_bigram(left.prev, static_cast<std::ptrdiff_t>(bigram.left));
+    add_bigram(static_cast<std::ptrdiff_t>(bigram.left), left.next);
+  }
+  for (const auto& symbol : symbols) {
+    if (symbol.size == 0U) continue;
+    const std::string_view piece = run.substr(symbol.offset, symbol.size);
+    if (const auto found = index.ids.find(piece); found != index.ids.end()) {
+      if (is_special_type(pack.token_types[found->second])) {
+        return error(TokenizerPackErrorCode::unencodable_text, "text cannot be encoded by ordinary vocabulary tokens");
+      }
+      output.push_back(found->second);
+      continue;
+    }
+    // The <0xXX> fallback; llama.cpp drops a byte without a token, this encoder fails closed.
+    for (const char byte : piece) {
+      const auto& id = index.byte_ids[static_cast<unsigned char>(byte)];
+      if (!id.has_value()) return error(TokenizerPackErrorCode::unencodable_text, "text cannot be encoded by ordinary vocabulary tokens");
+      output.push_back(*id);
+    }
+  }
+  if (output.size() > kMaximumVocabularyEntries) {
+    return error(TokenizerPackErrorCode::input_text_too_large, "encoded token count exceeds fixed limit");
+  }
+  return std::nullopt;
+}
+
+// Every U+0020 becomes U+2581, then runs of [^\n]+ and [\n]+ are encoded in order. No BOS
+// (the renderer writes it) and no space prefix (add_space_prefix false in the Gemma 4 GGUF).
+std::optional<TokenizerPackError> spm_encode_text(const TokenizerPack& pack, const SpmIndex& index, const std::string_view text,
+                                                  std::vector<std::size_t>& output) {
+  std::string normalized;
+  normalized.reserve(text.size());
+  for (const char c : text) {
+    if (c == ' ') normalized += kSpmSpace;
+    else normalized.push_back(c);
+  }
+  const std::string_view all = normalized;
+  for (std::size_t begin = 0U; begin < all.size();) {
+    const bool newline = all[begin] == '\n';
+    std::size_t end = begin;
+    while (end < all.size() && (all[end] == '\n') == newline) ++end;
+    if (const auto failure = spm_encode_run(pack, index, all.substr(begin, end - begin), output)) return failure;
+    begin = end;
+  }
+  return std::nullopt;
 }
 
 // One extra entry so an oversized vocabulary still reaches the
@@ -308,6 +480,34 @@ TokenizerDecodeResult TokenByteDecoder::bytes_for(const std::size_t id) const {
     return error(TokenizerPackErrorCode::undecodable_token, "control and user-defined token types are not ordinary decoded output");
   }
   const std::string_view token = pack_.tokens_by_id[id];
+  // Gemma 4 plan 1 Task 5: spm_bpe output is NORMAL tokens (U+2581 is a space) and the
+  // <0xXX> BYTE tokens (one raw byte; Utf8StreamDecoder joins a split character); any other
+  // type fails closed. A byte_bpe pack never holds a BYTE token: one is refused there too.
+  if (pack_.mode == TokenizerMode::spm_bpe) {
+    if (pack_.token_types[id] == kTokenTypeByte) {
+      const auto value = byte_token_value(token);
+      if (!value.has_value()) return error(TokenizerPackErrorCode::undecodable_token, "a byte token must be spelled <0xXX>");
+      return std::string(1U, static_cast<char>(*value));
+    }
+    if (pack_.token_types[id] != kTokenTypeNormal) {
+      return error(TokenizerPackErrorCode::undecodable_token, "only normal and byte tokens are ordinary decoded output");
+    }
+    std::string text;
+    text.reserve(token.size());
+    for (std::size_t offset = 0U; offset < token.size();) {
+      if (token.substr(offset, kSpmSpace.size()) == kSpmSpace) {
+        text.push_back(' ');
+        offset += kSpmSpace.size();
+      } else {
+        text.push_back(token[offset]);
+        ++offset;
+      }
+    }
+    return text;
+  }
+  if (pack_.token_types[id] == kTokenTypeByte) {
+    return error(TokenizerPackErrorCode::undecodable_token, "byte tokens are not part of a byte-level pack");
+  }
   std::string bytes;
   for (std::size_t offset = 0U; offset < token.size();) {
     const auto lead = static_cast<unsigned char>(token[offset]);
@@ -338,6 +538,14 @@ TokenizerDecodeResult decode_token_ids(const TokenizerPack& pack, const std::vec
 TokenizerEncodeResult encode_text(const TokenizerPack& pack, const std::string_view text) {
   if (text.size() > kMaximumDecodedBytes) return error(TokenizerPackErrorCode::input_text_too_large, "input text exceeds fixed limit");
   if (!valid_utf8(text)) return error(TokenizerPackErrorCode::input_text_not_utf8, "input text must be valid UTF-8");
+  if (pack.mode == TokenizerMode::spm_bpe) {  // Gemma 4 plan 1 Task 5
+    auto index = build_spm_index(pack);
+    if (const auto* failure = std::get_if<TokenizerPackError>(&index)) return *failure;
+    if (const auto refused = refuse_special_literals(pack, text)) return *refused;
+    std::vector<std::size_t> output;
+    if (const auto failure = spm_encode_text(pack, std::get<SpmIndex>(index), text, output)) return *failure;
+    return output;
+  }
   std::map<std::string, std::size_t> ids;
   for (std::size_t id = 0U; id < pack.tokens_by_id.size(); ++id) {
     if (!ids.emplace(pack.tokens_by_id[id], id).second) return error(TokenizerPackErrorCode::invalid_vocabulary, "vocabulary tokens must be unique for encoding");

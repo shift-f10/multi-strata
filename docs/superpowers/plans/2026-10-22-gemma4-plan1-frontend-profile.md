@@ -230,7 +230,7 @@ type 6, a few merges, the Gemma markers as CONTROL/USER_DEFINED).
   `Utf8StreamDecoder` as today); CONTROL/USER_DEFINED fail closed as today. In `byte_bpe`
   mode a type-6 token stays refused (no GPT-2 pack has one).
 
-- [ ] **Step 1: RED**
+- [x] **Step 1: RED**
   ```cpp
   void spm_encodes_spaces_as_u2581_and_merges_by_rank();
   void spm_newline_runs_are_single_tokens_when_known();
@@ -239,8 +239,8 @@ type 6, a few merges, the Gemma markers as CONTROL/USER_DEFINED).
   void spm_decoder_maps_u2581_and_byte_tokens();
   ```
   FAIL.
-- [ ] **Step 2:** implement (a heap-ordered merge like the byte path; no regex).
-- [ ] **Step 3:** GREEN + gates; commit `tokenizer: spm_bpe encode/decode (Gemma 4)`.
+- [x] **Step 2:** implement (a heap-ordered merge like the byte path; no regex).
+- [x] **Step 3:** GREEN + gates; commit `tokenizer: spm_bpe encode/decode (Gemma 4)`.
 
 ---
 

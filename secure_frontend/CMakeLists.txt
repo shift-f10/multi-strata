@@ -1425,7 +1425,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         token_byte_decoder_returns_raw_token_bytes finds_qwen_think_tokens_only_when_unambiguous
         qwen_encoder_takes_think_markers_only_as_generation_tail finds_qwen_end_of_turn_tokens
         spm_pack_loads_merges_json_with_newline_and_tab_tokens mode_comes_from_the_profile_never_the_files
-        merges_json_is_bounded_and_validated)
+        merges_json_is_bounded_and_validated
+        spm_encodes_spaces_as_u2581_and_merges_by_rank spm_newline_runs_are_single_tokens_when_known
+        spm_unknown_characters_fall_back_to_byte_tokens spm_round_trips_the_upstream_corpus spm_decoder_maps_u2581_and_byte_tokens)
     if(WIN32)
         list(APPEND _tokenizer_cases cfg03_tokenizer_file_swapped_to_junction_rejected)
     else()
