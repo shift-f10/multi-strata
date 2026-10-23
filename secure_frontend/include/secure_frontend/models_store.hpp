@@ -74,6 +74,11 @@ class PartFile final {
   ~PartFile();
   [[nodiscard]] std::uint64_t size() const noexcept { return size_; }
   [[nodiscard]] std::optional<AcquireError> append(std::string_view bytes);
+  // Writes bytes at an absolute offset (parallel ranged downloads, spec
+  // docs/superpowers/specs/2026-10-23-parallel-downloader-design.md). Unlike append() it does
+  // not move a write cursor or change size(); the caller tracks completeness (the piece
+  // manifest) and serializes concurrent write_at calls to one PartFile.
+  [[nodiscard]] std::optional<AcquireError> write_at(std::uint64_t offset, std::string_view bytes);
   [[nodiscard]] std::optional<AcquireError> truncate_to_zero();
   // fallocate(FALLOC_FL_KEEP_SIZE) / FileAllocationInfo: never changes size(); unsupported = success.
   [[nodiscard]] std::optional<AcquireError> preallocate(std::uint64_t total_size);

@@ -81,6 +81,24 @@ void part_file_create_append_resume_truncate() {
 #endif
 }
 
+void part_file_write_at_fills_offsets() {
+  const auto root = scratch_root();
+  const secure_frontend::StoreEnvironment env;
+  expect(!secure_frontend::ensure_directory(root, must_rel(".staging/w/weights")), "dir");
+  const auto part = must_rel(".staging/w/weights/p.gguf.part");
+  {
+    auto created = secure_frontend::open_part_file(root, part, secure_frontend::PartOpen::create_new, env);
+    auto& file = std::get<secure_frontend::PartFile>(created);
+    expect(!file.preallocate(11), "preallocate");
+    expect(!file.write_at(6, "world"), "write the tail piece at its offset");
+    expect(!file.write_at(0, "hello "), "write the head piece at its offset");
+    expect(!file.sync(), "sync");
+  }
+  const auto got = secure_frontend::read_small_file(root, part, 100);
+  expect(std::holds_alternative<std::string>(got) && std::get<std::string>(got) == "hello world",
+         "the offsets assemble the whole file regardless of write order");
+}
+
 void rename_within_never_replaces() {
   const auto root = scratch_root();
   const secure_frontend::StoreEnvironment env;

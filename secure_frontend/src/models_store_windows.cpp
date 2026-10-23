@@ -222,6 +222,24 @@ std::optional<AcquireError> PartFile::append(const std::string_view bytes) {
   return std::nullopt;
 }
 
+std::optional<AcquireError> PartFile::write_at(const std::uint64_t offset, const std::string_view bytes) {
+  if (fail_after_ && offset + bytes.size() > *fail_after_) return AcquireError{AcquireReason::disk_space, path_};
+  std::size_t done = 0;
+  while (done < bytes.size()) {
+    const DWORD chunk = static_cast<DWORD>(std::min<std::size_t>(bytes.size() - done, std::size_t{1} << 30U));
+    const std::uint64_t at = offset + done;
+    OVERLAPPED ov{};
+    ov.Offset = static_cast<DWORD>(at & 0xFFFFFFFFULL);
+    ov.OffsetHigh = static_cast<DWORD>(at >> 32U);
+    DWORD written = 0;
+    if (!WriteFile(static_cast<HANDLE>(handle_), bytes.data() + done, chunk, &written, &ov) || written == 0) {
+      return win_error(GetLastError(), path_);
+    }
+    done += written;
+  }
+  return std::nullopt;
+}
+
 std::optional<AcquireError> PartFile::truncate_to_zero() {
   LARGE_INTEGER zero{};
   if (!SetFilePointerEx(static_cast<HANDLE>(handle_), zero, nullptr, FILE_BEGIN) || !SetEndOfFile(static_cast<HANDLE>(handle_))) {

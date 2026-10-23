@@ -1827,7 +1827,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     target_sources(secure_frontend_acquire_tests PRIVATE tests/acquire_store_test.cpp tests/acquire_store_windows_test.cpp)
     target_link_libraries(secure_frontend_acquire_tests PRIVATE secure_frontend_acquire)
     secure_frontend_add_cases(secure_frontend_acquire_tests concurrent_pull_same_manifest_second_is_models_busy
-        part_file_create_append_resume_truncate rename_within_never_replaces rename_fallback_never_replaces
+        part_file_create_append_resume_truncate part_file_write_at_fills_offsets rename_within_never_replaces rename_fallback_never_replaces
         remove_tree_removes_links_without_following hash_into_rejects_hard_links_and_counts_bytes
         hash_into_stops_when_interrupted
         store_environment_seams_report_space_and_fs_kind overlong_joined_paths_fail_closed_without_throwing

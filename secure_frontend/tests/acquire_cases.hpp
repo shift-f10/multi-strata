@@ -4,6 +4,7 @@ namespace acquire_cases {
 // acquire_store_test.cpp (Task 16)
 void concurrent_pull_same_manifest_second_is_models_busy();
 void part_file_create_append_resume_truncate();
+void part_file_write_at_fills_offsets();
 void rename_within_never_replaces();
 void rename_fallback_never_replaces();
 void remove_tree_removes_links_without_following();

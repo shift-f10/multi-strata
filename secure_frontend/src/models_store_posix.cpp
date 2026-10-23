@@ -147,6 +147,18 @@ std::optional<AcquireError> PartFile::append(const std::string_view bytes) {
   return std::nullopt;
 }
 
+std::optional<AcquireError> PartFile::write_at(const std::uint64_t offset, const std::string_view bytes) {
+  if (fail_after_ && offset + bytes.size() > *fail_after_) return error(AcquireReason::disk_space, path_);
+  std::size_t done = 0;
+  while (done < bytes.size()) {
+    const ssize_t n = ::pwrite(handle_, bytes.data() + done, bytes.size() - done, static_cast<off_t>(offset + done));
+    if (n < 0 && errno == EINTR) continue;
+    if (n <= 0) return io_error(errno, path_);
+    done += static_cast<std::size_t>(n);
+  }
+  return std::nullopt;
+}
+
 std::optional<AcquireError> PartFile::truncate_to_zero() {
   if (::ftruncate(handle_, 0) != 0) return io_error(errno, path_);
   size_ = 0;

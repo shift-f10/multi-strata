@@ -253,6 +253,7 @@ int main(int argc, char** argv) {
       {"update_diff_lists_changed_files_and_license", update_diff_lists_changed_files_and_license},
       {"concurrent_pull_same_manifest_second_is_models_busy", acquire_cases::concurrent_pull_same_manifest_second_is_models_busy},
       {"part_file_create_append_resume_truncate", acquire_cases::part_file_create_append_resume_truncate},
+      {"part_file_write_at_fills_offsets", acquire_cases::part_file_write_at_fills_offsets},
       {"rename_within_never_replaces", acquire_cases::rename_within_never_replaces},
       {"rename_fallback_never_replaces", acquire_cases::rename_fallback_never_replaces},
       {"remove_tree_removes_links_without_following", acquire_cases::remove_tree_removes_links_without_following},
