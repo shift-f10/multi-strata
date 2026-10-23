@@ -1689,7 +1689,8 @@ expose its own listener or run its network-facing service beside this server.
 
 Select `--profile gemma4` (`engine.profile = "gemma4"`) to serve a Gemma 4 26B-A4B GGUF with
 our own `strata-gemma4-engine` (spec `docs/superpowers/specs/2026-10-22-gemma4-engine-design.md`;
-the engine is a separate build and is not in this tree's frontend). It is text only (no
+the engine is a separate build, `engines/gemma4/` — see its README; it is not in this tree's
+frontend). It is text only (no
 images, D2), streamed or not, on the same private `strata_0143` stdio protocol as the
 default profile, with the strata family's closed child environment.
 
@@ -1719,6 +1720,9 @@ default profile, with the strata family's closed child environment.
   `medium` and `high` all mean thinking on (the template has no levels). A request without it
   takes `reasoning.effort` (`none` or unset: off; any level: on). The thought channel comes
   back as `reasoning_content`, the answer as `content`; `<turn|>` and `<eos>` end the reply.
+- **Sampling:** set `defaults.sampling` to the model card's values (temperature 1.0, top_p 0.95,
+  top_k 64; the GGUF's `general.sampling`). A request without a temperature is otherwise decoded
+  greedily, and the model's thinking then tends to run on for thousands of tokens.
 - **Not yet:** managed Gemma models (a `gemma4` manifest installs, but `run`/`serve` refuse it
   with "the Gemma 4 engine is not installed" until plan 4 opens the gate) and the
   per-family `engine.executables.gemma4` key (plan 4).

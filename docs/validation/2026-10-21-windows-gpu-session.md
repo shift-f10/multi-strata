@@ -1034,6 +1034,59 @@ that API key".
     clients that omit `reasoning_effort` get thinking off. If the owner wants Off on the page
     for Gemma, the page needs to know the profile (today it does not).
 
+### 18. Our own Gemma 4 engine: built, checked against llama.cpp, served on 8080 (owner request)
+
+Owner: "keep working on this until it is ready and can serve the model for testing". Plan 1 (the
+`gemma4` frontend profile) ran on branch `gemma4-plan1-frontend`; the engine of plans 2-3 was
+written beside it: `engines/gemma4/` (`strata-gemma4-engine`), plan
+`docs/superpowers/plans/2026-10-22-gemma4-plan2-3-engine.md`, results
+`docs/validation/gemma4/2026-10-22-engine-parity-and-speed.md`.
+
+48. **Plan reconciliations for the owner** (plan R1-R7):
+    - R1: nothing of `upstream/` is compiled; the engine has its own Q8_0/BF16/F32 kernels and
+      uses cuBLAS (from the CUDA toolkit) for prompt GEMMs.
+    - R2: cold experts are read by the GPU from pinned RAM over PCIe; the CPU expert pool of
+      D4 is not built (decode already runs at about twice llama.cpp's speed here). **Owner
+      ruling wanted.**
+    - R3: llama.cpp is the reference; no second, slow reference engine.
+    - R4: a 2,048-row sliding ring and longest-common-prefix reuse within its spare rows.
+    - R5: `--native <gguf>` (not `--model`). R6: `--kv f32` refused in v1. R7: no `cmake/` wrapper.
+49. **Found on the real file:** layer 29's experts mix Q8_0 (gate_up) and BF16 (down); the first
+    load stopped there, and the expert layout became per matrix.
+50. **Parity** (llama.cpp `3cf03257` through the test-only `g4_llama_dump`, experts on its CPU
+    backend): mean KL 0.040 against llama.cpp CUDA where llama.cpp's own CPU-vs-CUDA floor is
+    0.042; top-1 22/24 (floor 21/24); on a 4,911-token prompt mean KL 0.034, top-1 23/24 and the
+    same answer. The prompt and decode paths agree (KL 9e-5).
+51. **Speed:** load 11-30 s, 54-57 of 128 experts a layer in VRAM, 23.5 GiB pinned; decode 47-50
+    tok/s on chat answers, 77-81 tok/s after rebalancing; prompts 864-1,113 tok/s.
+52. **Test-only tools** (never shipped): `g4_llama_dump` links the static libraries of step 17's
+    llama.cpp build (`engines\gemma4\tools\build-g4-llama-dump.bat`); it compiles with `/W3 /WX` and
+    `_CRT_SECURE_NO_WARNINGS` (upstream's tool calls `fopen`/`getenv`); the link reports LNK4098
+    (LIBCMT against the /MD libraries), as the llama.cpp build itself does.
+53. **Served on `0.0.0.0:8080` behind our server and page** (2026-10-23; expert mode, the
+    no-hooks build of the branch `out/frontend-msvc-serve-gemma4`, config
+    `out/serve/config-gemma4-lan.json`, script `out/serve/serve-gemma4-lan.ps1`, terminal tab
+    "gemma4 secure server 8080"; none of it committed):
+    - `engine.profile` gemma4, the engine copied to `out/serve/engine-gemma4/` (owner-only),
+      `roots.models` `C:\Strata-data\models\gemma4_q8`, the pack `out/gemma4-pack/tokenizer`,
+      `--max-context 32768`, `engine.gpu` 0, the CUDA `bin\x64` folder as `engine.lib_dirs`;
+      `--check` passed. READY after the engine's load (about 30 s).
+    - API (loopback, the dev key): `/v1/models` lists `Gemma-4-26B-A4B-it`; "What is the capital
+      of France?" answers "The capital of France is Paris." (25 prompt + 8 completion tokens),
+      streamed with the first token at 0.5 s; with `reasoning_effort` medium the thought comes
+      apart in `reasoning_content` and the answer is right; a follow-up turn works.
+    - Page (built-in browser, signed in with the dev key): High thinks (the Thinking block streams,
+      then folds), Off answers directly (46 tokens), a follow-up after a thinking turn works, Stop
+      ends a long thought ("Stopped"), the Monitor shows the GPU, VRAM 15.4 of 16 GB, RAM 33.7 of
+      64 GB and the requests.
+    - Sampling: with no temperature the frontend sends none and the engine decodes greedily, and
+      the model then deliberated for minutes over a haiku's syllables. The config now sets the
+      model card's defaults (`defaults.sampling` temperature 1.0, top_p 0.95, top_k 64, the
+      GGUF's `general.sampling`); the same prompt then thought for 2,359 tokens and answered.
+    - Speed with sampling: 35.6-36.3 tok/s decode (the host sampler copies 1 MB of logits and
+      ranks them each token; greedy decodes at 47-60 tok/s). Prompt reading on short turns 39-116
+      tok/s. A thinking turn followed by an Off turn reuses nothing: the system turn differs.
+
 ### Not done in this session
 
 - Resume doc §8 item 3 (`qwen35moe` family behaviour): not applicable to these packs (no
