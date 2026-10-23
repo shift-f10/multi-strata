@@ -502,6 +502,14 @@ contains those rules word for word; its output `secure_frontend/catalog/download
 `tools/iq_pack.py` and `tools/strata_tokenizer.py` in place at run time (read only, from the
 operator's `models.prepare_tools`), and nothing of them is copied into this tree.
 
+The parallel ranged downloader (2026-10-23; `download_pieces`, the parallel path in
+`fetch_file.cpp`) is ours. Its design mirrors upstream Strata's downloader (`upstream/setup.py`
+0.2.0: ranged pieces over several connections, `DL_CONNECTIONS` 16, `DL_CHUNK` 32 MiB, a
+`.part.chunks`-style resume), which we read for the algorithm and the constants; no code was
+copied (upstream is Python/urllib, ours is the confined C++ curl path), and the SP4 security
+model — the host allowlist, per-connection pinning, the whole-file digest, confinement — is
+unchanged.
+
 ## Release evidence (SP7 M2 — placeholder)
 
 The SP7 offline release validation kit is `docs/validation/sp7-offline-kit.md`

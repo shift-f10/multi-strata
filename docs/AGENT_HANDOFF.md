@@ -207,6 +207,30 @@ Follow [`PROVENANCE.md`](PROVENANCE.md), "Updating the baseline" (the only copy 
 
 ## What has changed
 
+### Parallel ranged downloader (2026-10-23, local `main`, not pushed)
+
+Owner: "Why is the download so slow? ... much faster" directly; then "Build the parallel
+downloader and complete it". Spec
+[`superpowers/specs/2026-10-23-parallel-downloader-design.md`](superpowers/specs/2026-10-23-parallel-downloader-design.md).
+The confined SP4 downloader was one curl stream; Hugging Face's CDN limits each connection, so it
+was ~3 MB/s. Now, with `pull.connections` > 1 (1-32, default 1), a file >= 256 MiB is fetched as
+32 MiB pieces over several confined `curl` children (mirrors `upstream/setup.py`'s 16-connection
+downloader; no code copied).
+
+- **Code** (`1c271a09`, `2a982c22`, `807ecf40`, `73639063`): `PartFile::write_at` (offset writes);
+  `TransferRequest.range_to` (bounded `--range lo-hi`); `download_pieces` (the PieceMap +
+  `.part.chunks` sidecar); the parallel path in `fetch_file.cpp` (probe resolves the final URL +
+  ETag + total, N workers fetch missing pieces pinned per connection, each 206's Content-Range and
+  ETag checked, whole-file hash in one pass, one-stream fallback); `pull.connections` config wiring
+  the CLI pull and the model downloads. Threat model / PROVENANCE updated (same SP4 guarantees).
+- **Proof:** TDD per step (write_at, bounded range, piece map, 3 orchestrator cases incl. resume
+  and fallback; a test-resolver data race fixed). All 147 fetch+acquire cases pass. Box run: a real
+  429 MB download reassembled with the SHA-256 equal to HF's pin, bursting ~67 MB/s vs ~3 MB/s
+  single-stream (session log item 62).
+- **Open:** effective parallelism is ~file_pieces/4 (4-piece runs); the manager's `bytes` progress
+  is bursty (per run); the page's per-connection rate/ETA is not piece-aware. `pull.connections`
+  defaults to 1 — set it (e.g. 16) in a serving config for fast downloads.
+
 ### Model downloads on the Models tab, with pause and resume (2026-10-23, local `main`, not pushed)
 
 Owner requests: "for models supported by strata and project maya, create a card for each to

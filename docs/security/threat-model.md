@@ -235,7 +235,19 @@ Trust boundaries:
   accompanied by an SBOM. Verification failure leaves no accepted artifact.
 - Every file is SHA-256-pinned by a manifest that is compiled into the release
   or pinned by an operator-typed digest; redirects are followed only by the
-  frontend, only over HTTPS and only to hosts the manifest names. The
+  frontend, only over HTTPS and only to hosts the manifest names.
+- **Parallel ranged downloads (2026-10-23, `pull.connections` > 1).** A large file may be fetched
+  as 32 MiB pieces over several confined downloader children at once (Hugging Face's CDN limits
+  each connection). The trust boundary is unchanged: one probe follows the manifest's redirects to
+  the final URL (host in the manifest's hosts/redirect-hosts, DNS resolved and the address pinned,
+  as every hop); each piece is a bounded range request to that URL, `--max-redirs 0`, pinned per
+  connection, and its 206 must carry the exact Content-Range for the piece and the object's
+  unchanged ETag (a changed object fails closed). Bytes are bounded per piece; the manifest still
+  pins only the **whole-file** SHA-256, verified in one pass over the reassembled file, so a wrong
+  offset, a changed object or any corruption leaves no accepted file. Confinement is unchanged
+  (one `curl` child per connection, same Job/Low-integrity/Landlock); the signed CDN URL's query is
+  never logged; the `.part.chunks` resume sidecar holds only sizes, an ETag and a bitmap. A server
+  without range support, or a proxy, falls back to one stream. The
   downloader runs confined (on Linux with Landlock: no file writes and reads
   only below system directories; on Windows: Low integrity, which blocks writes
   but not reads of the user's files). Confinement limits but does not remove

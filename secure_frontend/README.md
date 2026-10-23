@@ -1656,6 +1656,14 @@ download pause and resume functionality". Spec
   `upstream_unavailable`).
 - **The store:** `models.downloads_root` is an SP4 store (`<id>/download/v<seq>-<hex>/`); the
   `strata` verbs (`list`, `verify`, `rm`, ...) read a `models.cards` config with it as the store.
+- **Speed (parallel ranged downloads):** Hugging Face's CDN limits throughput per connection, so a
+  single stream is slow. With `pull.connections` > 1 (1-32; 1 = one stream) a file of at least 256
+  MiB is fetched as 32 MiB pieces over that many confined `curl` children at once, each a bounded
+  `--range lo-hi` to the resolved CDN URL, written at its offset; a `.part.chunks` sidecar records
+  finished pieces so a pause resumes only what is missing, and the whole file is hashed in one pass
+  at the end. A server that does not honour ranges, or a proxy, falls back to one stream. The same
+  key is read by the CLI `strata pull`. Mirrors upstream Strata's downloader
+  (`upstream/setup.py`, `DL_CONNECTIONS` default 16).
 
 ### Long contexts and model names (owner requests, session log step 13)
 

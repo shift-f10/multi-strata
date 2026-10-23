@@ -1287,6 +1287,33 @@ written beside it: `engines/gemma4/` (`strata-gemma4-engine`), plan
       `experts:{expert_slots:3840,expert_slots_primary:870}` after a chat on the running (pre-fix)
       binary; the at-READY push lands when the serve binary is next rebuilt.
 
+62. **Parallel ranged downloader** (owner, 2026-10-23: "Why is the download so slow? When I am
+    downloading them it's much faster"; "What does the current upstreams use?"; "Do it"; "Build the
+    parallel downloader and complete it"). Spec
+    `docs/superpowers/specs/2026-10-23-parallel-downloader-design.md`.
+    - **Cause:** our confined SP4 downloader fetched each file over one curl stream; Hugging Face's
+      CDN limits throughput per connection, so a single stream is slow (~3 MB/s on the box). Both
+      upstreams use a 16-connection ranged downloader (`upstream/setup.py` 0.2.0, `DL_CONNECTIONS`
+      16, 32 MiB pieces, a `.part.chunks` resume; Maya reuses it via `import setup`).
+    - **Built** (commits `1c271a09`, `2a982c22`, `807ecf40`, `73639063`), TDD per step: PartFile
+      offset writes; a bounded `range_to`; the `download_pieces` sidecar (PieceMap serialize/parse,
+      resume); the parallel orchestrator in `fetch_file.cpp` (a one-byte probe resolves the final
+      CDN URL + ETag + total, N workers fetch the missing 32 MiB pieces as bounded `--range lo-hi`
+      to that URL — pinned per connection, the 206 Content-Range and ETag checked, the whole file
+      hashed in one pass and published, falling back to one stream without ranges or with a proxy);
+      `pull.connections` (1-32, default 1) wires both the CLI pull and the model downloads (which
+      run `strata pull` with the server config). A data race in the test resolver found via a
+      0xC0000374 crash under ctest and fixed. `rm --partials` already removes the sidecar (it is in
+      the staging tree).
+    - **Box** (8092, `pull.connections` = 16): a real 429 MB pasted-link download
+      (`qwen2.5-0.5b-instruct-q4_0.gguf`) over the parallel path completed and installed; the stored
+      file's SHA-256 `7671c0c304e6ce5a7fc577bcb12aba01e2c155cc2efd29b2213c95b18edaf6ed` equals
+      Hugging Face's pinned LFS oid (byte-correct reassembly). Throughput burst to ~67 MB/s per
+      sample vs the earlier single-stream ~3 MB/s; effective parallelism for this size is ~4
+      connections (14 pieces at 4 pieces/run), and sustained speed is bounded by the box's link.
+    - **Open:** the download manager's `bytes` progress updates per piece-run completion (bursty,
+      not smooth); per-connection ETA/rate on the page is not piece-aware.
+
 ### Not done in this session
 
 - Resume doc §8 item 3 (`qwen35moe` family behaviour): not applicable to these packs (no
