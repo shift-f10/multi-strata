@@ -352,6 +352,7 @@ struct PullSettings final {
   std::chrono::seconds max_duration;
   std::chrono::seconds stall_timeout;
   std::chrono::seconds connect_timeout;
+  std::uint32_t connections;  // parallel ranged downloads; 1 = one stream
 };
 
 // SP7 M2 Task 3 (spec D-10): release mirror URLs for `strata update`. The list

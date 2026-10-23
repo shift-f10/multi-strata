@@ -303,6 +303,7 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `pull.max_duration_s` | integer | `172800` | 60-604800 | - | Time budget for a whole pull run. |
 | `pull.stall_timeout_s` | integer | `120` | 10-3600 | - | Abort a transfer slower than 1024 B/s for this long. |
 | `pull.connect_timeout_s` | integer | `30` | 1-300 | - | TCP/TLS connect timeout per request. |
+| `pull.connections` | integer | `1` | 1-32 | - | Connections for a large download (parallel ranged, 32 MiB pieces; 1 = one stream). Hugging Face's CDN limits each connection, so several are much faster. |
 | `update.source` | string array | `[]` | - | - | HTTPS release-mirror URLs that 'strata update' fetches the signed release envelope from. |
 | `logging.requests` | boolean | `false` | - | - | One line per request to stderr: route, status, code, time, bytes, loopback or remote; never paths, headers, tokens or text. |
 | `defaults.sampling.temperature` | number | unset | 0-2 | - | Request default temperature (pin: 0..2); unset keeps the engine default. |

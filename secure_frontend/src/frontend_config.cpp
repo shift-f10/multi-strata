@@ -35,7 +35,7 @@ std::string decimal_text(const double value) {
   return ec == std::errc{} ? std::string{buffer, end} : std::string{"?"};
 }
 
-constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 + 1 + 2 + 1 + 1 + 2 + 4 + 5> kSchema{{
+constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 + 1 + 2 + 1 + 1 + 2 + 4 + 5 + 1> kSchema{{
     {"schema_version", T::integer, false, 1, 1, d::kSchemaVersion, false, "", "",
      "Config format version; must be 1. Required in a config file."},
     {"listener.host", T::string, false, 0, 0, 0, false, "127.0.0.1", "--host",
@@ -140,6 +140,8 @@ constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 
     {"pull.max_duration_s", T::integer, false, 60, 604800, 172800, false, "", "", "Time budget for a whole pull run."},
     {"pull.stall_timeout_s", T::integer, false, 10, 3600, 120, false, "", "", "Abort a transfer slower than 1024 B/s for this long."},
     {"pull.connect_timeout_s", T::integer, false, 1, 300, 30, false, "", "", "TCP/TLS connect timeout per request."},
+    {"pull.connections", T::integer, false, 1, 32, 1, false, "", "",
+     "Connections for a large download (parallel ranged, 32 MiB pieces; 1 = one stream). Hugging Face's CDN limits each connection, so several are much faster."},
     // SP7 M2 Task 3 (spec D-10): the release mirrors. Untrusted list; trust
     // comes from the pinned release key (D-2), never from these URLs.
     {"update.source", T::string_array, false, 0, 0, 0, false, "", "",
@@ -1281,6 +1283,7 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   const auto max_duration = read.integer("pull.max_duration_s");
   const auto stall = read.integer("pull.stall_timeout_s");
   const auto connect = read.integer("pull.connect_timeout_s");
+  const auto connections = read.integer("pull.connections");
 
   // Model launcher (plan 2026-10-23 Task 1): the card files and the control switches. The
   // launcher starts and stops engines itself, so the lifecycle rows and the vision family are
@@ -1400,7 +1403,7 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
       new FrontendConfig(std::move(listener), limits, std::move(roots), std::move(*token), std::move(engine),
                          PullSettings{std::move(downloader), std::move(proxy), allow_private,
                                       static_cast<std::uint64_t>(max_total), std::chrono::seconds(max_duration),
-                                      std::chrono::seconds(stall), std::chrono::seconds(connect)},
+                                      std::chrono::seconds(stall), std::chrono::seconds(connect), static_cast<std::uint32_t>(connections)},
                          LoggingConfig{log_requests}, std::move(sampling_defaults), reasoning, std::move(session),
                          replicas, vision, std::move(glm), UpdateSettings{std::move(update_source)},
                          std::move(models_config)));
@@ -1489,6 +1492,7 @@ std::string describe(const FrontendConfig& c) {
   line("pull.max_duration_s", std::to_string(c.pull.max_duration.count()));
   line("pull.stall_timeout_s", std::to_string(c.pull.stall_timeout.count()));
   line("pull.connect_timeout_s", std::to_string(c.pull.connect_timeout.count()));
+  line("pull.connections", std::to_string(c.pull.connections));
   line("logging.requests", c.logging.requests ? "true" : "false");
   // SP5 M1 Task 4: the defaults.sampling.* rows; an unset row stays unset and
   // is never sent (the engine keeps its own default).

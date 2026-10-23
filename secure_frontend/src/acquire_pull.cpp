@@ -317,6 +317,7 @@ FetchSettings fetch_settings_from(const PullSettings& settings) {
   fetch.allow_private_addresses = settings.allow_private_addresses;
   fetch.connect_timeout_s = static_cast<std::uint32_t>(settings.connect_timeout.count());
   fetch.stall_timeout_s = static_cast<std::uint32_t>(settings.stall_timeout.count());
+  fetch.connections = settings.connections;
   return fetch;
 }
 
