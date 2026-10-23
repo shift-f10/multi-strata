@@ -1267,6 +1267,26 @@ written beside it: `engines/gemma4/` (`strata-gemma4-engine`), plan
     - `out/serve/serve-launcher-lan.ps1` now runs a copy of the new no-hooks build
       (`out/serve/bin-lan`), so the restart brings the header fix too (downloads stay off there).
 
+61. **The Monitor shows experts loaded as soon as a model runs** (owner, 2026-10-23: "under
+    monitor it should show the number of experts not just the ram and vram"; "Every model should
+    be showing the number of experts loaded along with memory used").
+    - **Cause:** the page already renders "N experts loaded" on the VRAM and RAM cards, but the
+      Monitor's expert tier (`ServeMonitor::experts_`) was fed only by `on_engine_stats`, which
+      runs during a generation (`generation_run.cpp:210`). A freshly-started model therefore
+      showed RAM/VRAM but no experts until the first chat. The engine already prints its split in
+      the startup `INFO` (box, Gemma: `expert_slots=3840 expert_slots_primary=870`).
+    - **Fix:** `EngineSupervisor` captures the protocol's `engine_readings()` at `READY`
+      (`ready_readings()`); the launcher pushes them to the Monitor the moment the model is
+      running (`model_launcher.cpp` run_start), so experts show before any chat. The GLM engine's
+      live `STAT` cadence still updates them during generation.
+    - **Tests:** `supervisor_captures_startup_readings_at_ready` (a `FakeChild` emits `INFO ...
+      expert_slots=...`); `experts_show_as_soon_as_a_model_runs` (end to end: the supervision fake
+      engine's new `--ready-experts=P,T` emits the startup INFO, the card starts, `GET /metrics`
+      shows the experts with no chat). RED then GREEN. README Monitor section updated.
+    - **Box:** verified live on the LAN Gemma that `/metrics` carries
+      `experts:{expert_slots:3840,expert_slots_primary:870}` after a chat on the running (pre-fix)
+      binary; the at-READY push lands when the serve binary is next rebuilt.
+
 ### Not done in this session
 
 - Resume doc §8 item 3 (`qwen35moe` family behaviour): not applicable to these packs (no

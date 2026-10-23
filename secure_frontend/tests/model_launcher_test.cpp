@@ -429,6 +429,29 @@ void cards_can_be_added_while_serving() {
   launcher.shutdown();
 }
 
+
+// Owner 2026-10-23 ("Every model should be showing the number of experts loaded along with
+// memory used"): the Monitor's VRAM and RAM cards read the expert split from the engine's startup
+// INFO. A model shows its experts as soon as it is running, without a first chat.
+void experts_show_as_soon_as_a_model_runs() {
+  auto options = two_cards({"--ready-experts=212,384"}, {},
+                           {{"models.control", "true"}, {"listener.monitor", "true"}});
+  auto server = ServerProcess::start(options);
+  expect(server && server->wait_until_listening(std::chrono::seconds(20)), "the launcher boots with the Monitor on");
+  if (!server) return;
+  const auto started = call(*server, "POST", "/v1/strata/models/start", R"({"name":"Alpha"})");
+  expect(started && started->status == 202, "Alpha starts: " + shown(started));
+  expect(wait_for_card(*server, "Alpha", "running"), "Alpha runs: " + server->stderr_text());
+  // No chat has run; the experts must already be there from the startup INFO.
+  const auto metrics = call(*server, "GET", "/metrics");
+  expect(metrics && metrics->status == 200 && metrics->body.find("\"experts\"") != std::string::npos &&
+             metrics->body.find("\"expert_slots\":384") != std::string::npos &&
+             metrics->body.find("\"expert_slots_primary\":212") != std::string::npos,
+         "the experts are shown right after the start, before any chat: " + shown(metrics));
+  server->stop(ServerProcess::Stop::ctrl_break);
+  expect(server->wait_exit(std::chrono::seconds(20)) == std::optional<int>{0}, "a clean exit");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -439,6 +462,7 @@ int main(int argc, char** argv) {
       {"start_refusals_name_the_problem", start_refusals_name_the_problem},
       {"options_are_remembered", options_are_remembered},
       {"models_start_and_control_off", models_start_and_control_off},
+      {"experts_show_as_soon_as_a_model_runs", experts_show_as_soon_as_a_model_runs},
       {"downloads_serve_the_catalog_and_load_download_cards", downloads_serve_the_catalog_and_load_download_cards},
       {"cards_can_be_added_while_serving", cards_can_be_added_while_serving},
       {"bad_card_refused_at_boot_and_main_rows_refused", bad_card_refused_at_boot_and_main_rows_refused},

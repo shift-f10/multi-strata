@@ -13,6 +13,7 @@
 #include "secure_frontend/supervisor_wake.hpp"
 #include "secure_frontend/tokenizer_pack.hpp"
 
+#include <map>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -21,6 +22,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <vector>
@@ -231,6 +233,10 @@ class EngineSupervisor final {
   // Test seams.
   [[nodiscard]] bool wait_for_state(SupervisorState state, std::chrono::milliseconds timeout) const;
   [[nodiscard]] std::uint64_t generations_started() const noexcept { return generations_started_.load(); }
+  // The engine's own startup readings (INFO before READY), captured when it reached READY;
+  // the Monitor reads the expert tier from these so a just-started model shows experts loaded
+  // without a first generation. Empty before READY, or when the engine printed none.
+  [[nodiscard]] std::map<std::string, std::string> ready_readings() const;
 
  private:
   friend class Lease;
@@ -281,6 +287,7 @@ class EngineSupervisor final {
   std::vector<std::shared_ptr<EngineInstance>> retired_;
   std::vector<std::shared_ptr<EngineInstance>> abandoned_;
   std::atomic<std::uint64_t> generations_started_{0};
+  std::map<std::string, std::string> ready_readings_;  // guarded by mutex_; set at READY
   std::atomic<bool> shutdown_requested_{false};
   std::atomic<bool> engine_left_unreaped_{false};  // set by finish(): abandoned_ was not empty
   std::shared_ptr<LeaseLink> lease_link_;

@@ -89,6 +89,9 @@ struct Options final {
   std::string dialect;
   // Issue 27: with --dialect=maya, --maya-vram adds Maya v1.1.21's pre-READY startup records.
   bool maya_vram{false};
+  // The main engine prints its expert split in the startup INFO; "<primary>,<total>" makes the
+  // fake emit `INFO ... expert_slots_primary=<primary> expert_slots=<total>` before READY.
+  std::string ready_experts;
   int fail_first{0};
   std::string counter_file;
   std::string record_file;
@@ -155,6 +158,7 @@ Options parse_options(const std::vector<std::string>& arguments) {
     else if (argument == "--spew") options.spew = true;
     else if (argument == "--split-ready") options.split_ready = true;
     else if (argument == "--maya-vram") options.maya_vram = true;
+    else if (value_of(argument, "--ready-experts", value)) options.ready_experts = value;
     else if (argument == "--hang-before-ready") options.hang_before_ready = true;
     else if (argument == "--hang-in-gen") options.hang_in_gen = true;
     else if (argument == "--abort-in-gen") options.abort_in_gen = true;
@@ -639,6 +643,13 @@ int serve(const Options& options) {
                  "drafter=0 window=0 pool=2 tail=0 borrow=0 vision=0 slots=0 ctx="
               << options.ready_context << " layers=0-77\n"
               << std::flush;
+  }
+  if (!options.ready_experts.empty()) {
+    const auto comma = options.ready_experts.find(',');
+    std::cout << "INFO context=" << options.ready_context
+              << " expert_slots_primary=" << options.ready_experts.substr(0, comma)
+              << " expert_slots=" << (comma == std::string::npos ? std::string{} : options.ready_experts.substr(comma + 1U))
+              << "\n" << std::flush;
   }
   const std::string ready = "READY " + std::to_string(options.ready_context) + " stop\n";
   if (options.split_ready) {

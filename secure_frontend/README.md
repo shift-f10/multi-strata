@@ -1490,7 +1490,13 @@ the switch off it answers 404. It reports:
   no shell and a fixed environment (on Windows only `ProgramFiles`, which NVML needs to
   start, read from the machine registry — nothing is inherited from the server's
   environment), and stopped with the server. No NVIDIA library is
-  loaded into the server. Without `nvidia-smi` the GPU cards stay empty and say why.
+  loaded into the server. Without `nvidia-smi` the GPU cards stay empty and say why;
+- for an expert (MoE) model, the number of experts loaded, beside the memory on the VRAM and
+  RAM cards (the engine's `expert_slots` total, with `expert_slots_primary` the VRAM tier and
+  the rest the RAM tier). These come from the engine's own startup `INFO`, captured when the
+  model reaches `READY` (owner, 2026-10-23), so a just-started model shows them without a first
+  chat; the GLM engine's live `STAT` cadence updates them during generation. GB-only when the
+  engine reports no expert figures.
 
 `listener.loopback_without_key = true` answers the API and the page with no key
 at all. On the page, the login is skipped. It is accepted only with a loopback

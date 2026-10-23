@@ -443,9 +443,19 @@ std::shared_ptr<EngineInstance> EngineSupervisor::spawn_generation() {
   return instance;
 }
 
+std::map<std::string, std::string> EngineSupervisor::ready_readings() const {
+  std::lock_guard lock(mutex_);
+  return ready_readings_;
+}
+
 KillReason EngineSupervisor::supervise(EngineInstance& instance, std::chrono::milliseconds& healthy_for) {
   EngineReady ready{};
   if (const auto reason = await_ready(instance, ready); reason.has_value()) return *reason;
+  {
+    // The engine's startup INFO is complete at READY; the Monitor reads the expert tier from it.
+    std::lock_guard lock(mutex_);
+    ready_readings_ = instance.protocol->engine_readings();
+  }
   instance.chat = std::make_unique<ChatExecutionService>(*instance.protocol, config_.chat_limits, config_.profile);
   instance.chat->adopt_ready(ready);
   const auto ready_at = clock_->now();

@@ -322,6 +322,10 @@ moved to `out/retired-worktrees/` and pruned).
 - **Remote clients:** the owner's browser is on another machine, so the tab first stayed hidden
   (403 `control_not_allowed`, D2's default). The page now explains a 403 in the tab, and the
   owner's local LAN config sets `models.control_remote` (session log item 57).
+- **Monitor experts (owner, 2026-10-23):** the VRAM and RAM cards show "N experts loaded" as soon
+  as a model runs, not only after the first chat. `EngineSupervisor::ready_readings()` captures
+  the engine's startup `INFO` at `READY` and the launcher pushes it to the Monitor on start
+  (session log item 61).
 - **Open:** Gemma KV streaming (D8, its own engine plan); GLM cards (D10); vision with cards
   (refused for now); the `strata` CLI verbs (`serve`, `key`, ...) still read single-model
   configs only; the page's Sampling drawer does not yet take its defaults from the running card

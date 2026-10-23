@@ -323,6 +323,9 @@ void ModelLauncher::run_start(const Job& job) {
     std::lock_guard lock(mutex_);
     status_[job.card] = CardStatus{CardState::running, {}};
   }
+  // The Monitor shows "N experts loaded" on the VRAM and RAM cards; push the engine's startup
+  // readings now so a just-started model shows them before any chat (owner 2026-10-23).
+  if (settings_.monitor != nullptr) settings_.monitor->on_engine_stats(runtime->supervisor().ready_readings());
   log("[strata] models: " + card.name + " is running");
   remember(job.card, job.values);
 }

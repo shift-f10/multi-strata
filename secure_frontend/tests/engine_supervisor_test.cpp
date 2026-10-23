@@ -92,6 +92,25 @@ secure_frontend::EngineLaunchPlan fake_plan(std::vector<std::string> arguments) 
   return {.command = {.executable = test_support::fake_engine_path(), .arguments = std::move(arguments), .environment = {}}};
 }
 
+// The Monitor's expert tier (owner 2026-10-23: "Every model should be showing the number of
+// experts loaded along with memory used"). The engine prints its expert split in the startup
+// INFO; the supervisor captures those readings at READY so they are available before any chat.
+void supervisor_captures_startup_readings_at_ready() {
+  test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) {
+    child.push_line("INFO context=4096 kv=int8 expert_slots=384 expert_slots_primary=212");
+    child.push_line("READY 4096 stop");
+  });
+  auto clock = std::make_shared<test_support::ManualClock>();
+  secure_frontend::EngineSupervisor supervisor({}, fakes.factory(), clock);
+  expect(supervisor.start(), "the supervisor starts");
+  expect(test_support::wait_generation_ready(supervisor, 1U, 5s), "generation 1 ready");
+  const auto readings = supervisor.ready_readings();
+  expect(readings.count("expert_slots") == 1U && readings.at("expert_slots") == "384" &&
+             readings.count("expert_slots_primary") == 1U && readings.at("expert_slots_primary") == "212",
+         "the startup INFO's expert split is captured at READY");
+  supervisor.shutdown(5s);
+}
+
 void proc04_restart_backoff_then_circuit_open() {
   test_support::FakeFactory fakes([](test_support::FakeChild& child, std::uint64_t) { child.end({false, 1U}); });
   auto clock = std::make_shared<test_support::ManualClock>();
@@ -2146,6 +2165,7 @@ void fake_maya_vram_records_reach_ready_only_under_the_maya_dialect() {
 int main(int argc, char* argv[]) {
   return secure_frontend_test::run_cases(argc, argv, {{"supervisor_health_literals_per_state", supervisor_health_literals_per_state},
                                                 {"proc04_restart_backoff_then_circuit_open", proc04_restart_backoff_then_circuit_open},
+                                                {"supervisor_captures_startup_readings_at_ready", supervisor_captures_startup_readings_at_ready},
                                                 {"proc04_healthy_window_resets_failure_count", proc04_healthy_window_resets_failure_count},
                                                 {"proc04_recovers_after_transient_crash", proc04_recovers_after_transient_crash},
                                                 {"proc04_missing_engine_opens_circuit_without_spinning", proc04_missing_engine_opens_circuit_without_spinning},
