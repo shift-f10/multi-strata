@@ -1266,7 +1266,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         parallel_reaches_the_engine_within_one_child
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     # Pure parsing, no canonical root: runs under wine too.
-    secure_frontend_add_cases(secure_frontend_engine_arguments_tests gpu_list_rejects_malformed_values)
+    secure_frontend_add_cases(secure_frontend_engine_arguments_tests gpu_list_rejects_malformed_values
+        gemma4_user_arguments_follow_the_strata_gemma4_allowlist)
     # SP4 Task 24b (spec §2.3, §4.9 c): the managed launch over a scratch models store.
     target_link_libraries(secure_frontend_engine_arguments_tests PRIVATE secure_frontend_launch secure_frontend_strata_cli)
     secure_frontend_add_cases(secure_frontend_engine_arguments_tests launch_composed_from_manifest_qwen vision_compose_rules
@@ -1355,6 +1356,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         reasoning_rows_match_the_pinned_validator
         glm_keys_parse_with_mayas_kinds_and_defaults
         glm_keys_rejected_on_strata_profile_by_name
+        engine_profile_accepts_gemma4_and_describes_it
+        glm_keys_rejected_on_gemma4_profile_by_name
+        every_profile_selects_its_own_argument_profile
         thinking_budget_default_is_mayas_32768
         glm_environment_projection_moves_the_split_default
         glm_max_context_typed_and_glm53_args_refused
@@ -1506,7 +1510,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # Unit case (parse + validate in process, no child): unlabeled, so it also runs under wine.
     secure_frontend_add_cases(secure_frontend_server_cli_tests cli_sp2_flags_map_to_schema_keys TIMEOUT 120)
     # SP4 §4.9 d: pure argv parsing, so wine runs it too.
-    secure_frontend_add_cases(secure_frontend_server_cli_tests cli_expert_flag_parsing)
+    secure_frontend_add_cases(secure_frontend_server_cli_tests cli_expert_flag_parsing usage_names_the_three_profiles)
 
     # SP7 M1 Task 1: the hardened service unit (exact text) and the `current`
     # seam. The internal header lives in src/, like the SP2 launch seams.

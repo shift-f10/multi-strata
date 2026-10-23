@@ -15,7 +15,7 @@
 namespace secure_frontend {
 
 // Which engine CLI the argv tail is built for.
-enum class EngineArgumentsProfile { strata_0143, lighttransport_glm53 };
+enum class EngineArgumentsProfile { strata_0143, lighttransport_glm53, strata_gemma4 };
 
 enum class EngineArgumentsErrorCode { owned_flag, unsupported_mode, invalid_value, model_not_found, not_accepted, out_of_range };
 

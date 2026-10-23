@@ -377,10 +377,20 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
     principle: one UI (8080), engines behind it. Owner decision D12: no interim
     llama.cpp-backed engine; Gemma joins the 8080 UI when the Strata-style port is done.
     Plan 1 (the `gemma4` frontend profile, 12 tasks, TDD, fake engine only) is written:
-    `docs/superpowers/plans/2026-10-22-gemma4-plan1-frontend-profile.md`; not started. Its
+    `docs/superpowers/plans/2026-10-22-gemma4-plan1-frontend-profile.md`. Its
     survey found ~10 two-way profile ternaries a third profile would silently fall through,
     no `engine.executables.*` key (expert mode for now; the per-family key moves to plan 4),
     and an existing bug: the page always sends `reasoning_effort`, which glm53 refuses (400).
+    **Execution** (owner, 2026-10-22: "keep working on this until it is ready and can serve
+    the model for testing") on branch `gemma4-plan1-frontend`, never pushed:
+    - Task 1 done: `engine.profile = "gemma4"` (`EngineProfile::gemma4`, `--check` prints
+      it), `arguments_profile_for` (exhaustive switch: qwen → `strata_0143`, glm53 →
+      `lighttransport_glm53`, gemma4 → `strata_gemma4`), the `strata_gemma4` allowlist
+      (`--max-context` 1-262144, `--chunk` 1-8192, `--kv f16|f32`, `--no-graph`,
+      `--expert-vram` 0-1024 GiB, `--expert-slots` 0-128, `--hybrid-rows` 1-4096,
+      `--cpu-threads` 1-256; `--flag VALUE` only, once each; known foreign flags refused by
+      name, unknown ones never echoed), the `glm.*` guard now "every profile but glm53".
+      Gates: MSVC build clean; full suite 920 passed, 1 skipped (the symlink case).
 - The `windows-runtime`-labelled cases run under the MSVC preset on the owner's box; the
   supported Windows toolchains (MSYS2 clang, llvm-mingw) are still not installed (issue 3).
 

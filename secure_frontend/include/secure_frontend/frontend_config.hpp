@@ -102,7 +102,14 @@ struct ConfigIssue final {
 using ConfigErrors = std::vector<ConfigIssue>;
 [[nodiscard]] std::string format_issue(const ConfigIssue& issue);
 
-enum class EngineProfile { qwen, glm53 };
+enum class EngineProfile { qwen, glm53, gemma4 };
+
+enum class EngineArgumentsProfile;  // engine_arguments.hpp
+
+// The engine CLI each profile's argv is built for (qwen: strata_0143, glm53:
+// lighttransport_glm53, gemma4: strata_gemma4) — an exhaustive switch, so a new
+// profile cannot silently take another profile's arguments.
+[[nodiscard]] EngineArgumentsProfile arguments_profile_for(EngineProfile profile);
 
 class ModelId final {
  public:

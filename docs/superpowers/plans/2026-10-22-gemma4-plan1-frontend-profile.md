@@ -87,7 +87,7 @@ tests `typed_config_test.cpp`, `engine_arguments_test.cpp`, `server_cli_test.cpp
   `--expert-vram GiB`, `--expert-slots N`, `--hybrid-rows N`, `--cpu-threads N`; everything
   else refused by name.
 
-- [ ] **Step 1: RED**
+- [x] **Step 1: RED**
   ```cpp
   void engine_profile_accepts_gemma4_and_describes_it();          // parse + --check line "engine.profile = \"gemma4\""
   void glm_keys_rejected_on_gemma4_profile_by_name();             // the :1178 guard becomes != glm53
@@ -95,11 +95,11 @@ tests `typed_config_test.cpp`, `engine_arguments_test.cpp`, `server_cli_test.cpp
   void every_profile_selects_its_own_argument_profile();          // qwen→strata_0143, glm53→lighttransport_glm53, gemma4→strata_gemma4
   ```
   plus the `server_cli_tests` help text naming `qwen, glm53 or gemma4`. Run → FAIL.
-- [ ] **Step 2:** add the values; convert `frontend_config.cpp:942-947` and `:1339-1341` to
+- [x] **Step 2:** add the values; convert `frontend_config.cpp:942-947` and `:1339-1341` to
   exhaustive switches; implement the allowlist in `engine_arguments.cpp` beside
   `lighttransport_glm53`'s; update the `engine.profile` schema row text and regenerate the
   README table (`out/regen-readme-table.ps1` pattern; `readme_config_table_matches_schema`).
-- [ ] **Step 3:** GREEN + gates; commit `config: engine.profile gemma4 and the strata_gemma4 argument profile`.
+- [x] **Step 3:** GREEN + gates; commit `config: engine.profile gemma4 and the strata_gemma4 argument profile`.
 
 ---
 

@@ -288,7 +288,7 @@ Every key (generated from the schema; `readme_config_table_matches_schema` keeps
 | `roots.cache` | string | unset | - | - | Absolute cache directory (created 0700); when set, it holds the engine's CUDA cache in its cuda subdirectory. |
 | `roots.state` | string | unset | - | `--state-dir` | Absolute, existing owner-only directory for engine state: the engine's cwd, per-generation temp and (without roots.cache) the CUDA cache. Required to serve. |
 | `token.source` | string | `file:token` | - | `--token-file, --token-env` | file:<relative path below roots.secret> or env:<NAME>. Metadata only; the token is never in the config. |
-| `engine.profile` | string | unset | - | `--profile` | qwen or glm53; only with --expert (a managed model's manifest sets it). |
+| `engine.profile` | string | unset | - | `--profile` | qwen, glm53 or gemma4; only with --expert (a managed model's manifest sets it). |
 | `engine.executable` | string | required | - | `--engine` | Absolute path of the engine; a regular file not writable by group or others. |
 | `engine.model_id` | string | required | - | `--model-id` | Default model reference name[:tag] from the model index (or, with --expert, an inventory ID). |
 | `engine.args` | string array | `[]` | - | `--engine-arg (repeatable)` | Extra engine arguments; frontend-owned and unsupported flags are rejected. |

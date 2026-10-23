@@ -17,6 +17,7 @@ namespace {
 int failures = 0;
 constexpr auto kStrata = secure_frontend::EngineArgumentsProfile::strata_0143;
 constexpr auto kGlm = secure_frontend::EngineArgumentsProfile::lighttransport_glm53;
+constexpr auto kGemma4 = secure_frontend::EngineArgumentsProfile::strata_gemma4;
 void expect(bool c, const std::string& m) { if (!c) { ++failures; std::cerr << "FAILED: " << m << '\n'; } }
 
 secure_frontend::ModelManifest manifest() {
@@ -419,6 +420,97 @@ void glm_rejects_every_engine_argument() {
          "no engine.args with glm53 validates (the composition needs none)");
 }
 
+// Gemma 4 plan 1 Task 1 (spec §4.8): the strata_gemma4 profile admits only the Gemma
+// engine's own flags, each with its value bounded, in the `--flag VALUE` spelling; every
+// other argument is refused. A refused flag the frontend knows is named from its own
+// table; an unknown one is never echoed (messages are fixed strings).
+std::string joined(const std::vector<std::string>& args) {
+  std::string text;
+  for (const auto& a : args) text += (text.empty() ? "" : " ") + a;
+  return text;
+}
+
+void gemma4_user_arguments_follow_the_strata_gemma4_allowlist() {
+  using Code = secure_frontend::EngineArgumentsErrorCode;
+  const std::vector<std::vector<std::string>> accepted{
+      {},
+      {"--max-context", "1"}, {"--max-context", "262144"},
+      {"--chunk", "1"}, {"--chunk", "8192"},
+      {"--kv", "f16"}, {"--kv", "f32"},
+      {"--no-graph"},
+      {"--expert-vram", "0"}, {"--expert-vram", "10.5"}, {"--expert-vram", "9.25"}, {"--expert-vram", "1024"},
+      {"--expert-slots", "0"}, {"--expert-slots", "128"},
+      {"--hybrid-rows", "1"}, {"--hybrid-rows", "4096"},
+      {"--cpu-threads", "1"}, {"--cpu-threads", "256"},
+      {"--max-context", "32768", "--kv", "f16", "--no-graph", "--expert-vram", "9", "--expert-slots", "40",
+       "--hybrid-rows", "128", "--cpu-threads", "16", "--chunk", "512"}};
+  for (const auto& args : accepted) {
+    const auto rejected = secure_frontend::validate_engine_user_arguments(kGemma4, args);
+    expect(!rejected.has_value(), "strata_gemma4 accepts [" + joined(args) + "]" + (rejected ? ": " + rejected->message : ""));
+  }
+  struct Refusal {
+    std::vector<std::string> args;
+    Code code;
+    std::string named;  // the flag the message names ("" for an argument it must not echo)
+  };
+  const std::vector<Refusal> refused{
+      {{"--max-context", "0"}, Code::out_of_range, "--max-context"},
+      {{"--max-context", "262145"}, Code::out_of_range, "--max-context"},
+      {{"--max-context"}, Code::invalid_value, "--max-context"},
+      {{"--max-context", "--no-graph"}, Code::invalid_value, "--max-context"},
+      {{"--max-context", "+5"}, Code::invalid_value, "--max-context"},
+      {{"--max-context", "05"}, Code::invalid_value, "--max-context"},
+      {{"--max-context", "1e3"}, Code::invalid_value, "--max-context"},
+      {{"--max-context", "99999999999999999999"}, Code::out_of_range, "--max-context"},
+      {{"--max-context=8192"}, Code::not_accepted, "--max-context"},
+      {{"--max-context", "1", "--max-context", "2"}, Code::invalid_value, "--max-context"},
+      {{"--chunk", "0"}, Code::out_of_range, "--chunk"},
+      {{"--chunk", "8193"}, Code::out_of_range, "--chunk"},
+      {{"--kv", "q8_0"}, Code::invalid_value, "--kv"},
+      {{"--kv"}, Code::invalid_value, "--kv"},
+      {{"--expert-vram", "1025"}, Code::out_of_range, "--expert-vram"},
+      {{"--expert-vram", "-1"}, Code::invalid_value, "--expert-vram"},
+      {{"--expert-vram", "1.234"}, Code::invalid_value, "--expert-vram"},
+      {{"--expert-vram", "."}, Code::invalid_value, "--expert-vram"},
+      {{"--expert-vram", "1."}, Code::invalid_value, "--expert-vram"},
+      {{"--expert-vram", ".5"}, Code::invalid_value, "--expert-vram"},
+      {{"--expert-slots", "129"}, Code::out_of_range, "--expert-slots"},
+      {{"--hybrid-rows", "0"}, Code::out_of_range, "--hybrid-rows"},
+      {{"--hybrid-rows", "4097"}, Code::out_of_range, "--hybrid-rows"},
+      {{"--cpu-threads", "0"}, Code::out_of_range, "--cpu-threads"},
+      {{"--cpu-threads", "257"}, Code::out_of_range, "--cpu-threads"},
+      {{"--native", "x.gguf"}, Code::owned_flag, ""},
+      {{"--serve"}, Code::owned_flag, ""},
+      {{"--gpu", "0"}, Code::owned_flag, ""},
+      {{"--batch", "2"}, Code::unsupported_mode, ""},
+      {{"--slots", "2"}, Code::unsupported_mode, ""},
+      {{"--vision"}, Code::unsupported_mode, ""},
+      {{"--mtp", "3"}, Code::not_accepted, "--mtp"},
+      {{"--pack", "pack/full"}, Code::not_accepted, "--pack"},
+      {{"--model", "x.gguf"}, Code::not_accepted, "--model"},
+      {{"--tokens", "1,2"}, Code::not_accepted, "--tokens"},
+      {{"--dump-full-logits", "f"}, Code::not_accepted, "--dump-full-logits"},
+      {{"--dump-layers", "f"}, Code::not_accepted, "--dump-layers"},
+      {{"--bench-tg", "64"}, Code::not_accepted, "--bench-tg"},
+      {{"--tail-role-token", "9"}, Code::not_accepted, "--tail-role-token"},
+      {{"--no-graph", "1"}, Code::not_accepted, ""},
+      {{"--secret-flag-xyz"}, Code::not_accepted, ""},
+      {{"positional-xyz"}, Code::not_accepted, ""},
+      {{std::string("--kv f16", 8)}, Code::invalid_value, ""}};
+  for (const auto& r : refused) {
+    const auto rejected = secure_frontend::validate_engine_user_arguments(kGemma4, r.args);
+    expect(rejected.has_value() && rejected->code == r.code,
+           "strata_gemma4 refuses [" + joined(r.args) + "] with the expected code" + (rejected ? ": " + rejected->message : ""));
+    if (!rejected) continue;
+    if (!r.named.empty()) {
+      expect(rejected->message.find(r.named) != std::string::npos, "the refusal names " + r.named + ": " + rejected->message);
+    }
+    expect(rejected->message.find("xyz") == std::string::npos && rejected->message.find("x.gguf") == std::string::npos &&
+               rejected->message.find("pack/full") == std::string::npos,
+           "the refusal never echoes the operator's text: " + rejected->message);
+  }
+}
+
 // Ruling R-T3-a: the config accepts glm.* rows while engine.profile is absent because a
 // managed model's manifest decides the profile; the launch refuses the rows for a qwen
 // manifest by name (Task 7).
@@ -676,6 +768,7 @@ int main(int argc, char** argv) {
       {"glm_launch_argv_matches_mayas_launcher_form", glm_launch_argv_matches_mayas_launcher_form},
       {"glm_context_and_parallel_bounds_enforced", glm_context_and_parallel_bounds_enforced},
       {"glm_rejects_every_engine_argument", glm_rejects_every_engine_argument},
+      {"gemma4_user_arguments_follow_the_strata_gemma4_allowlist", gemma4_user_arguments_follow_the_strata_gemma4_allowlist},
       {"managed_glm_rows_refused_for_qwen_manifest", managed_glm_rows_refused_for_qwen_manifest},
       {"reasoning_config_reaches_engine_launch_and_env", reasoning_config_reaches_engine_launch_and_env},
       {"mtp_false_drops_the_mtp_arg", mtp_false_drops_the_mtp_arg},

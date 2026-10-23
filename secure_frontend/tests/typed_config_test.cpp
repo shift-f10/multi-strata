@@ -1,4 +1,5 @@
 #include "secure_frontend/config_file.hpp"
+#include "secure_frontend/engine_arguments.hpp"
 #include "secure_frontend/frontend_config.hpp"
 #include "secure_frontend/launch_composition.hpp"
 #include "secure_frontend/parity_table.hpp"
@@ -1083,6 +1084,54 @@ void glm_keys_rejected_on_strata_profile_by_name() {
          "without an explicit profile the rows validate (the manifest decides at launch): " + issues_of(managed));
 }
 
+// Gemma 4 plan 1 Task 1: engine.profile takes "gemma4"; --check prints it; its engine.args
+// follow the strata_gemma4 allowlist (engine_arguments_test has the full table).
+void engine_profile_accepts_gemma4_and_describes_it() {
+  ConfigFixture f;
+  const auto result = with_literals(f, {{"engine.profile", "\"gemma4\""}});
+  const auto* validated = std::get_if<secure_frontend::ValidatedConfig>(&result);
+  expect(validated != nullptr, "the bare gemma4 config validates: " + issues_of(result));
+  if (validated != nullptr) {
+    expect(validated->get().engine.profile == secure_frontend::EngineProfile::gemma4, "engine.profile parses as gemma4");
+    expect(describe_of(result).find("engine.profile = \"gemma4\"") != std::string::npos, "--check prints the gemma4 profile");
+  }
+  const auto args = with_literals(f, {{"engine.profile", "\"gemma4\""},
+                                      {"engine.args", "[\"--max-context\", \"32768\", \"--kv\", \"f16\"]"}});
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(args), "allowlisted gemma4 engine.args validate: " + issues_of(args));
+  for (const char* refused : {"[\"--mtp\", \"3\"]", "[\"--batch\", \"2\"]", "[\"--pack\", \"p\"]", "[\"--chunk\", \"0\"]"}) {
+    expect(has_issue(with_literals(f, {{"engine.profile", "\"gemma4\""}, {"engine.args", refused}}), "engine.args",
+                     ConfigIssueCode::invalid_value),
+           "gemma4 refuses engine.args " + std::string{refused});
+  }
+  const auto gpu = with_literals(f, {{"engine.profile", "\"gemma4\""}, {"engine.gpu", "\"0\""}});
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(gpu), "engine.gpu is accepted on gemma4, as on qwen: " + issues_of(gpu));
+  expect(has_issue(with_literals(f, {{"engine.profile", "\"gemma5\""}}), "engine.profile", ConfigIssueCode::invalid_value),
+         "an unknown profile is still refused");
+}
+
+// The glm.* guard is "every profile but glm53", so a third profile cannot take the rows.
+void glm_keys_rejected_on_gemma4_profile_by_name() {
+  ConfigFixture f;
+  const auto result = with_literals(f, {{"engine.profile", "\"gemma4\""}, {"glm.thinking_budget", "4096"},
+                                        {"glm.model_name", "\"glm\""}});
+  expect(has_issue(result, "glm.thinking_budget", ConfigIssueCode::conflicting_values),
+         "glm.thinking_budget is refused by name on the gemma4 profile: " + issues_of(result));
+  expect(has_issue(result, "glm.model_name", ConfigIssueCode::conflicting_values),
+         "glm.model_name is refused by name on the gemma4 profile: " + issues_of(result));
+}
+
+// Each profile selects its own argument profile (an exhaustive switch, no shared default).
+void every_profile_selects_its_own_argument_profile() {
+  using secure_frontend::EngineArgumentsProfile;
+  using secure_frontend::EngineProfile;
+  expect(secure_frontend::arguments_profile_for(EngineProfile::qwen) == EngineArgumentsProfile::strata_0143,
+         "qwen selects strata_0143");
+  expect(secure_frontend::arguments_profile_for(EngineProfile::glm53) == EngineArgumentsProfile::lighttransport_glm53,
+         "glm53 selects lighttransport_glm53");
+  expect(secure_frontend::arguments_profile_for(EngineProfile::gemma4) == EngineArgumentsProfile::strata_gemma4,
+         "gemma4 selects strata_gemma4");
+}
+
 void thinking_budget_default_is_mayas_32768() {
   ConfigFixture f;
   const auto result = with_literals(f, {{"engine.profile", "\"glm53\""}});
@@ -1916,6 +1965,9 @@ int main(int argc, char** argv) {
       {"reasoning_rows_match_the_pinned_validator", reasoning_rows_match_the_pinned_validator},
       {"glm_keys_parse_with_mayas_kinds_and_defaults", glm_keys_parse_with_mayas_kinds_and_defaults},
       {"glm_keys_rejected_on_strata_profile_by_name", glm_keys_rejected_on_strata_profile_by_name},
+      {"engine_profile_accepts_gemma4_and_describes_it", engine_profile_accepts_gemma4_and_describes_it},
+      {"glm_keys_rejected_on_gemma4_profile_by_name", glm_keys_rejected_on_gemma4_profile_by_name},
+      {"every_profile_selects_its_own_argument_profile", every_profile_selects_its_own_argument_profile},
       {"thinking_budget_default_is_mayas_32768", thinking_budget_default_is_mayas_32768},
       {"glm_environment_projection_moves_the_split_default", glm_environment_projection_moves_the_split_default},
       {"glm_max_context_typed_and_glm53_args_refused", glm_max_context_typed_and_glm53_args_refused},

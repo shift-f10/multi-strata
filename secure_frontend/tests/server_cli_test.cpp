@@ -431,6 +431,13 @@ void cli_expert_flag_parsing() {
   expect(invocation != nullptr && !invocation->expert, "--expert is off by default");
 }
 
+// Gemma 4 plan 1 Task 1: the help names every engine.profile value.
+void usage_names_the_three_profiles() {
+  const std::string usage = secure_frontend::server_usage();
+  expect(usage.find("engine.profile is qwen, glm53 or gemma4") != std::string::npos,
+         "the usage text names qwen, glm53 and gemma4");
+}
+
 // --- SP5 M1 Task 13: `strata serve` (foreground) -------------------------------------
 // The managed model m:t installed with the acquire fixtures (real byte-tokenizer trio,
 // Ruling T13-g) and managed config literals: roots.tokenizer_pack belongs to --expert,
@@ -521,6 +528,7 @@ int main(int argc, char** argv) {
       {"cli_check_unreadable_token_is_not_reported_valid", cli_check_unreadable_token_is_not_reported_valid},
       {"cli_check_has_no_side_effects", cli_check_has_no_side_effects},
       {"cli_expert_flag_parsing", cli_expert_flag_parsing},
+      {"usage_names_the_three_profiles", usage_names_the_three_profiles},
       {"cli_unknown_option_does_not_echo_value", cli_unknown_option_does_not_echo_value},
       {"init_writes_config_and_token_then_server_starts", init_writes_config_and_token_then_server_starts},
       {"init_refuses_to_overwrite_without_force", init_refuses_to_overwrite_without_force},
