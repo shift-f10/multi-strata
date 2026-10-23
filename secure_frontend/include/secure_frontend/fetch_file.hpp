@@ -3,6 +3,7 @@
 #include "secure_frontend/acquire_manifest.hpp"
 #include "secure_frontend/acquire_progress.hpp"
 #include "secure_frontend/address_policy.hpp"
+#include "secure_frontend/download_pieces.hpp"
 #include "secure_frontend/downloader_command.hpp"
 #include "secure_frontend/fetch_schedule.hpp"
 #include "secure_frontend/models_store.hpp"
@@ -51,6 +52,15 @@ struct FetchSettings final {
   std::uint32_t connect_timeout_s{30};
   std::uint32_t stall_timeout_s{120};
   std::string test_cacert;  // SECURE_FRONTEND_TEST_HOOKS builds only; ignored otherwise
+  // Parallel ranged downloads (spec 2026-10-23-parallel-downloader-design.md): 1 keeps one stream
+  // (the default — every caller is single-stream until it opts in). >1 fetches a large file as
+  // `piece_bytes` pieces over this many confined children; applies only without a proxy, when the
+  // file is at least `min_parallel_bytes` and splits into at least two pieces, and the server
+  // honours ranges with a stable ETag (else it falls back to one stream).
+  std::uint32_t connections{1};
+  std::uint64_t piece_bytes{kDownloadPieceBytes};
+  std::uint64_t min_parallel_bytes{std::uint64_t{256} << 20U};
+  std::uint64_t pieces_per_run{kDownloadRun};  // pieces one request asks for (tests use 1)
 };
 
 struct FetchContext final {

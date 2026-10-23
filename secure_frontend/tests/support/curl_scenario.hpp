@@ -221,10 +221,14 @@ inline std::optional<ParsedArgv> parse_curl_argv(const std::span<const std::stri
     return std::nullopt;
   }
   if (i + 1 < args.size() && args[i] == "--range") {
-    const auto& value = args[i + 1];
-    if (value.empty() || value.back() != '-') return std::nullopt;
-    parsed.range = to_u64(std::string_view{value}.substr(0, value.size() - 1));
+    // "lo-" (resume, open-ended) or "lo-hi" (a bounded parallel piece); `range` is lo either way.
+    const std::string_view value = args[i + 1];
+    const auto dash = value.find('-');
+    if (dash == std::string_view::npos) return std::nullopt;
+    parsed.range = to_u64(value.substr(0, dash));
     if (!parsed.range) return std::nullopt;
+    const std::string_view hi = value.substr(dash + 1);
+    if (!hi.empty() && !to_u64(hi)) return std::nullopt;  // a non-empty high must be a number
     i += 2;
   }
   if (i + 1 < args.size() && args[i] == "--cacert") {

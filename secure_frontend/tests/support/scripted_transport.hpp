@@ -8,6 +8,7 @@
 #include <deque>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -26,26 +27,38 @@ class ScriptedTransport final : public secure_frontend::HopTransport {
   std::function<void()> after_first_chunk;  // called once, after the first chunk is delivered (interrupt tests)
   secure_frontend::HopExit run(const secure_frontend::TransferRequest& request,
                                const std::function<bool(std::string_view)>& on_bytes) override {
-    argvs.push_back(secure_frontend::build_transfer_argv("/fake/curl", request));
-    configs.push_back(secure_frontend::build_config_stdin(request));
-    check_hop(argvs.back(), configs.back(), request);
-    if (!forced_exits.empty()) {
-      const int code = forced_exits.front();
-      forced_exits.pop_front();
-      return {code, std::nullopt, false};
+    // Parallel downloads call run() from several threads at once; the shared recording and the
+    // scenario/fixture lookup are guarded, then the response bytes stream outside the lock so the
+    // connections really overlap.
+    std::string bytes;
+    int exit_code = 0;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      argvs.push_back(secure_frontend::build_transfer_argv("/fake/curl", request));
+      configs.push_back(secure_frontend::build_config_stdin(request));
+      check_hop(argvs.back(), configs.back(), request);
+      if (!forced_exits.empty()) {
+        const int code = forced_exits.front();
+        forced_exits.pop_front();
+        return {code, std::nullopt, false};
+      }
+      const auto* response = curl::select(scenario_, request.url, request.range_from);
+      // F-49: an unscripted request is a test bug, never an implicit 404.
+      if (response == nullptr) {
+        throw std::logic_error("ScriptedTransport: no scripted response for request " + std::to_string(argvs.size()) +
+                               (request.range_from ? " (range " + std::to_string(*request.range_from) + ")" : std::string{}));
+      }
+      bytes = curl::render_head(*response) + curl::render_body(*response, fixtures_[response->body_file]);
+      exit_code = response->exit_code;
     }
-    const auto* response = curl::select(scenario_, request.url, request.range_from);
-    // F-49: an unscripted request is a test bug, never an implicit 404.
-    if (response == nullptr) {
-      throw std::logic_error("ScriptedTransport: no scripted response for request " + std::to_string(argvs.size()) +
-                             (request.range_from ? " (range " + std::to_string(*request.range_from) + ")" : std::string{}));
-    }
-    const std::string bytes = curl::render_head(*response) + curl::render_body(*response, fixtures_[response->body_file]);
     for (std::size_t i = 0; i < bytes.size(); i += 7) {
       if (!on_bytes(std::string_view{bytes}.substr(i, 7))) return {std::nullopt, std::nullopt, true};
-      if (after_first_chunk) std::exchange(after_first_chunk, nullptr)();
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (after_first_chunk) std::exchange(after_first_chunk, nullptr)();
+      }
     }
-    return {response->exit_code, std::nullopt, false};
+    return {exit_code, std::nullopt, false};
   }
 
  private:
@@ -68,18 +81,24 @@ class ScriptedTransport final : public secure_frontend::HopTransport {
 
   curl::Scenario scenario_;
   std::map<std::string, std::string> fixtures_;
+  std::mutex mutex_;
 };
 
 class ScriptedResolver final : public secure_frontend::Resolver {
  public:
   std::map<std::string, std::vector<secure_frontend::ResolvedAddress>, std::less<>> answers;
   std::vector<std::string> queries;
+  // Parallel downloads resolve from several threads at once; `answers` is set up before the run and
+  // only read here, but recording a query mutates `queries`, so guard it.
   std::optional<std::vector<secure_frontend::ResolvedAddress>> resolve(const std::string_view host) override {
-    queries.emplace_back(host);
+    { std::lock_guard<std::mutex> lock(mutex_); queries.emplace_back(host); }
     const auto it = answers.find(host);
     if (it == answers.end()) return std::nullopt;
     return it->second;
   }
+
+ private:
+  std::mutex mutex_;
 };
 
 class ManualClock final : public secure_frontend::AcquireClock {

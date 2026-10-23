@@ -3,6 +3,9 @@
 namespace fetch_cases {
 // fetch_file_test.cpp (Task 21)
 void dl03_truncated_body_rejected();
+void dl_parallel_assembles_pieces();
+void dl_parallel_falls_back_without_ranges();
+void dl_parallel_resumes_from_sidecar();
 void dl03_oversize_body_rejected_mid_stream();
 void dl03_redirect_to_http_rejected();
 void dl03_redirect_off_allowlist_rejected();

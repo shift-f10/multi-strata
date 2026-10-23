@@ -5,6 +5,7 @@
 #include "support/scripted_transport.hpp"
 #include "support/test_support.hpp"
 
+
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -91,6 +92,58 @@ const std::vector<std::chrono::seconds> kFourBackoffs{std::chrono::seconds{2}, s
                                                       std::chrono::seconds{16}};
 
 }  // namespace
+
+// Parallel ranged downloads (spec 2026-10-23-parallel-downloader-design.md). The 10-byte file over
+// 4-byte pieces is three pieces [0-3][4-7][8-9]; with connections > 1 they are fetched over several
+// confined children and written at their offsets, then the whole file is hashed and published.
+void dl_parallel_assembles_pieces() {
+  const std::string scenario =
+      "response " + kUrl + " range 0\nstatus 206 Partial\nheader ETag: \"v1\"\nheader Content-Range: bytes 0-3/10\nbody-text 0123\nend\n" +
+      "response " + kUrl + " range 4\nstatus 206 Partial\nheader ETag: \"v1\"\nheader Content-Range: bytes 4-7/10\nbody-text 4567\nend\n" +
+      "response " + kUrl + " range 8\nstatus 206 Partial\nheader ETag: \"v1\"\nheader Content-Range: bytes 8-9/10\nbody-text 89\nend\n";
+  Harness h(scenario);
+  h.settings.connections = 3;
+  h.settings.piece_bytes = 4;
+  h.settings.min_parallel_bytes = 0;
+  h.settings.pieces_per_run = 1;
+  expect(!h.run().has_value(), "the parallel download succeeds");
+  expect(h.final_bytes() == kBody, "the pieces assemble into the whole file: " + h.final_bytes());
+  expect(!h.part_exists(), "the .part is renamed to the final name");
+  expect(!secure_frontend::exists_within(h.root, must_rel("k/f.bin.part.chunks")), "the .part.chunks sidecar is removed on success");
+}
+
+// A server that answers the range probe with 200 (ignores ranges) falls back to one stream.
+void dl_parallel_falls_back_without_ranges() {
+  const std::string scenario =
+      "response " + kUrl + " range 0\nstatus 200 OK\nheader Content-Length: 10\nbody-file f.bin\nend\n" +
+      "response " + kUrl + "\nstatus 200 OK\nheader Content-Length: 10\nbody-file f.bin\nend\n";
+  Harness h(scenario);
+  h.settings.connections = 3;
+  h.settings.piece_bytes = 4;
+  h.settings.min_parallel_bytes = 0;
+  expect(!h.run().has_value(), "the download still succeeds over one stream");
+  expect(h.final_bytes() == kBody, "the whole file arrives over one stream");
+}
+
+// Resume: a sidecar marking piece 0 done, and the seeded bytes on disk, so piece 0 is not fetched
+// again (its scripted body is poison that would fail the hash if it were written).
+void dl_parallel_resumes_from_sidecar() {
+  const std::string scenario =
+      "response " + kUrl + " range 0\nstatus 206 Partial\nheader ETag: \"v1\"\nheader Content-Range: bytes 0-3/10\nbody-text XXXX\nend\n" +
+      "response " + kUrl + " range 4\nstatus 206 Partial\nheader ETag: \"v1\"\nheader Content-Range: bytes 4-7/10\nbody-text 4567\nend\n" +
+      "response " + kUrl + " range 8\nstatus 206 Partial\nheader ETag: \"v1\"\nheader Content-Range: bytes 8-9/10\nbody-text 89\nend\n";
+  Harness h(scenario);
+  h.settings.connections = 3;
+  h.settings.piece_bytes = 4;
+  h.settings.min_parallel_bytes = 0;
+  h.settings.pieces_per_run = 1;
+  secure_frontend::PieceMap map = secure_frontend::piece_map_new(10, "\"v1\"", 4);
+  map.done[0] = true;  // piece 0 ("0123") is already on disk
+  (void)secure_frontend::write_new_file(h.root, must_rel("k/f.bin.part.chunks"), secure_frontend::serialize_piece_map(map));
+  expect(!h.run("0123").has_value(), "the resumed parallel download succeeds");
+  expect(h.final_bytes() == kBody, "piece 0 was kept (not refetched as poison): " + h.final_bytes());
+}
+
 
 // F-49: every retry resumes at byte 3 and is truncated again, so the run really ends on
 // the truncation path (size_short), not on an unscripted request.

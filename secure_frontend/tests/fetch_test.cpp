@@ -637,6 +637,9 @@ int main(int argc, char** argv) {
       {"fake_curl_records_on_crt_entry_4_windows", fake_curl_records_on_crt_entry_4_windows},
 #endif
       {"dl03_truncated_body_rejected", fetch_cases::dl03_truncated_body_rejected},
+      {"dl_parallel_assembles_pieces", fetch_cases::dl_parallel_assembles_pieces},
+      {"dl_parallel_falls_back_without_ranges", fetch_cases::dl_parallel_falls_back_without_ranges},
+      {"dl_parallel_resumes_from_sidecar", fetch_cases::dl_parallel_resumes_from_sidecar},
       {"dl03_oversize_body_rejected_mid_stream", fetch_cases::dl03_oversize_body_rejected_mid_stream},
       {"dl03_redirect_to_http_rejected", fetch_cases::dl03_redirect_to_http_rejected},
       {"dl03_redirect_off_allowlist_rejected", fetch_cases::dl03_redirect_off_allowlist_rejected},

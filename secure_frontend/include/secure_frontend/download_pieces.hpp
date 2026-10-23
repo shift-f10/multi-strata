@@ -18,6 +18,9 @@ namespace secure_frontend {
 // 32 MiB per piece, matching upstream's DL_CHUNK (upstream/setup.py); the most a failed request
 // loses, and the unit the piece bitmap records.
 inline constexpr std::uint64_t kDownloadPieceBytes = std::uint64_t{32} << 20U;
+// Pieces one request asks for (128 MiB), and tries per run, matching upstream's DL_RUN/DL_CHUNK_TRIES.
+inline constexpr std::uint64_t kDownloadRun = 4;
+inline constexpr std::uint32_t kDownloadRunTries = 5;
 
 struct PieceSpan final {
   std::uint64_t offset;

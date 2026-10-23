@@ -2046,6 +2046,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         time_budget_exceeded_is_resumable tls_untrusted_moves_to_next_source digest_mismatch_after_resume_refetches_once
         free_space_rechecked_while_writing ipv6_only_hop_is_address_not_allowed
         range_ignored_twice_is_range_mismatch_then_restarts proxy_hop_skips_address_policy
+        dl_parallel_assembles_pieces dl_parallel_falls_back_without_ranges dl_parallel_resumes_from_sidecar
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     if(SECURE_FRONTEND_TEST_HOOKS)
         secure_frontend_add_cases(secure_frontend_fetch_tests test_cacert_reaches_argv_in_hook_builds
