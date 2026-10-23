@@ -13,6 +13,7 @@
 #include <random>
 #include <set>
 #include <string>
+#include <tuple>
 #include <variant>
 #include <vector>
 
@@ -595,6 +596,49 @@ void sampler_matches_the_q36_rules() {
   expect(same, "the same seed gives the same picks");
 }
 
+// The serve loop's GPU path (top-k on the device, the draw on the host) gives the same ids as
+// the host sampler for the same seed whenever no penalty applies.
+void sorted_candidates_sample_like_the_full_sampler() {
+  std::mt19937 gen(99);
+  std::uniform_real_distribution<float> d(-8.0f, 8.0f);
+  std::vector<float> logits(5000);
+  for (auto& v : logits) v = d(gen);
+  for (const auto& [t, p, mp, k] : std::vector<std::tuple<float, float, float, int>>{
+           {1.0f, 0.95f, 0.0f, 64}, {0.7f, 0.9f, 0.05f, 20}, {1.5f, 1.0f, 0.0f, 0}, {0.3f, 0.5f, 0.1f, 1}}) {
+    g4::Sampling s;
+    s.temperature = t;
+    s.top_p = p;
+    s.min_p = mp;
+    s.top_k = k;
+    expect(!g4::penalties_on(s), "no penalty set");
+    const int kk = g4::candidate_count(s, 5000);
+    expect(kk == (k > 0 ? k : 64), "candidate count: top_k, or 64 when unset");
+    std::vector<int> order(logits.size());
+    for (std::size_t i = 0; i < order.size(); ++i) order[i] = static_cast<int>(i);
+    std::sort(order.begin(), order.end(), [&](int a, int b) {
+      return logits[static_cast<std::size_t>(a)] > logits[static_cast<std::size_t>(b)] || (logits[static_cast<std::size_t>(a)] == logits[static_cast<std::size_t>(b)] && a < b);
+    });
+    std::vector<float> vals;
+    for (int j = 0; j < kk; ++j) vals.push_back(logits[static_cast<std::size_t>(order[static_cast<std::size_t>(j)])]);
+    std::mt19937_64 a(1234), b(1234);
+    bool same = true;
+    for (int i = 0; i < 200; ++i) {
+      auto copy = logits;
+      same = same && g4::sample(copy, s, {}, a) == g4::sample_sorted(vals.data(), order.data(), kk, s, b);
+    }
+    expect(same, "the same draws for temperature " + std::to_string(t) + ", top_k " + std::to_string(k));
+  }
+  g4::Sampling pen;
+  pen.repeat = 1.1f;
+  pen.last_n = 64;
+  expect(g4::penalties_on(pen), "a repeat penalty with a window is on");
+  pen.last_n = 0;
+  expect(!g4::penalties_on(pen), "a penalty without a window is off (the q36 sampler skips it)");
+  g4::Sampling big;
+  big.top_k = 100000;
+  expect(g4::candidate_count(big, 5000) == 5000, "the count never exceeds the vocabulary");
+}
+
 void reuse_keeps_exact_prefixes_within_the_ring() {
   const std::vector<std::int32_t> held{1, 2, 3, 4, 5, 6};
   expect(g4::reuse_length(held, {1, 2, 3, 4, 5, 6, 7, 8}, 1024) == 6, "a strict prefix is reused whole");
@@ -621,5 +665,6 @@ int main(int argc, char** argv) {
       {"gen_lines_follow_the_q36_grammar", gen_lines_follow_the_q36_grammar},
       {"sampler_matches_the_q36_rules", sampler_matches_the_q36_rules},
       {"reuse_keeps_exact_prefixes_within_the_ring", reuse_keeps_exact_prefixes_within_the_ring},
+      {"sorted_candidates_sample_like_the_full_sampler", sorted_candidates_sample_like_the_full_sampler},
   });
 }

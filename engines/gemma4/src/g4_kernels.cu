@@ -615,6 +615,58 @@ __global__ void k_to_half(const float* __restrict__ x, __half* __restrict__ out,
   if (i < n) out[i] = __float2half(x[i]);
 }
 
+// The sampler's candidates: each block ranks 1,024 entries in shared memory (bitonic sort,
+// highest first, ties by the lower id) and keeps its first `keep`; passes repeat until one
+// block is left. The first pass reads the logits (ids are positions) and raises *nonfinite
+// for a NaN or an infinity; a NaN ranks as -inf.
+constexpr int kTopkBlock = 1024;
+
+__device__ __forceinline__ bool ranks_before(float av, int ai, float bv, int bi) { return av > bv || (av == bv && ai < bi); }
+
+__global__ void __launch_bounds__(kTopkBlock) k_topk_pass(const float* __restrict__ in_v, const int* __restrict__ in_i, int count,
+                                                         float* __restrict__ out_v, int* __restrict__ out_i, int keep,
+                                                         int* __restrict__ nonfinite) {
+  __shared__ float sv[kTopkBlock];
+  __shared__ int si[kTopkBlock];
+  const int t = threadIdx.x;
+  const int g = blockIdx.x * kTopkBlock + t;
+  float v = neg_inf();
+  int id = 0x7fffffff;
+  if (g < count) {
+    v = in_v[g];
+    id = in_i ? in_i[g] : g;
+    if (in_i == nullptr && !isfinite(v)) {
+      if (nonfinite) *nonfinite = 1;
+      if (isnan(v)) v = neg_inf();
+    }
+  }
+  sv[t] = v;
+  si[t] = id;
+  __syncthreads();
+  for (int k = 2; k <= kTopkBlock; k <<= 1) {
+    for (int j = k >> 1; j > 0; j >>= 1) {
+      const int p = t ^ j;
+      if (p > t) {
+        const bool first_half = (t & k) == 0;  // this run ends highest first
+        const bool swap = first_half ? ranks_before(sv[p], si[p], sv[t], si[t]) : ranks_before(sv[t], si[t], sv[p], si[p]);
+        if (swap) {
+          const float tv = sv[t];
+          const int ti = si[t];
+          sv[t] = sv[p];
+          si[t] = si[p];
+          sv[p] = tv;
+          si[p] = ti;
+        }
+      }
+      __syncthreads();
+    }
+  }
+  if (t < keep) {
+    out_v[static_cast<std::size_t>(blockIdx.x) * keep + t] = sv[t];
+    out_i[static_cast<std::size_t>(blockIdx.x) * keep + t] = si[t];
+  }
+}
+
 unsigned blocks(long long n, int per) { return static_cast<unsigned>((n + per - 1) / per); }
 
 }  // namespace
@@ -752,5 +804,30 @@ void scatter_combine(const float* y, const int* inv, const float* weights, const
 }
 
 void to_half(const float* x, __half* out, long long n, cudaStream_t st) { k_to_half<<<blocks(n, 256), 256, 0, st>>>(x, out, n); }
+
+std::size_t topk_scratch_bytes(int n) {
+  const std::size_t first = blocks(n, kTopkBlock) * static_cast<std::size_t>(kTopkMax);
+  return 2 * first * (sizeof(float) + sizeof(int)) + 256;
+}
+
+void topk(const float* x, int n, int k, float* vals, int* ids, int* nonfinite, void* scratch, cudaStream_t st) {
+  if (n <= 0 || k <= 0 || k > kTopkMax) return;
+  const std::size_t first = blocks(n, kTopkBlock) * static_cast<std::size_t>(kTopkMax);
+  auto* base = static_cast<unsigned char*>(scratch);
+  float* v[2] = {reinterpret_cast<float*>(base), reinterpret_cast<float*>(base + first * sizeof(float))};
+  int* i[2] = {reinterpret_cast<int*>(base + 2 * first * sizeof(float)), reinterpret_cast<int*>(base + 2 * first * sizeof(float) + first * sizeof(int))};
+  int count = n;
+  unsigned nb = blocks(count, kTopkBlock);
+  k_topk_pass<<<nb, kTopkBlock, 0, st>>>(x, nullptr, count, v[0], i[0], kTopkMax, nonfinite);
+  int cur = 0;
+  while (nb > 1) {
+    count = static_cast<int>(nb) * kTopkMax;
+    nb = blocks(count, kTopkBlock);
+    k_topk_pass<<<nb, kTopkBlock, 0, st>>>(v[cur], i[cur], count, v[1 - cur], i[1 - cur], kTopkMax, nullptr);
+    cur = 1 - cur;
+  }
+  cudaMemcpyAsync(vals, v[cur], sizeof(float) * static_cast<std::size_t>(k), cudaMemcpyDeviceToDevice, st);
+  cudaMemcpyAsync(ids, i[cur], sizeof(int) * static_cast<std::size_t>(k), cudaMemcpyDeviceToDevice, st);
+}
 
 }  // namespace g4k

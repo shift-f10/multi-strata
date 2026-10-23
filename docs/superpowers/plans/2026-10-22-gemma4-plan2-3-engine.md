@@ -105,3 +105,11 @@ design, §5 kernels, §8 security, §9 testing, D1-D12).
   rounding (about pos x 2.4e-7 rad, 2 ulp); before, the reference was float with a different
   `pow` and the case failed at one value near position 2,047 on some random draws. The kernel
   now takes `theta_scale` from the host's `powf`, as ggml-cuda's RoPE launcher does.
+- 2026-10-23 (owner: "move sampling to the GPU and cache the Gemma encode index, test-first"):
+  `g4k::topk` ranks the sampler's 64 candidates on the GPU (`topk_matches_a_cpu_ranking`) and
+  `g4::sample_sorted` draws from them exactly as `sample` does
+  (`sorted_candidates_sample_like_the_full_sampler`); penalties keep the host path. Measured,
+  the sampler cost only about 1.9 ms a token; the decode rebalancing was the bottleneck and now
+  runs every 8 tokens with up to 32 swaps (`kDecodeRebalanceEvery`/`kDecodeRebalanceSwaps`),
+  reading all layers' routing counts in one copy: a sampled story went from 29-32 to 54-85
+  tok/s. Gates: 25/25 (13 host, 10 GPU kernel, 2 real-model).

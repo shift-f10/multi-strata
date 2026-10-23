@@ -112,8 +112,17 @@ struct Serve {
     const auto d0 = Clock::now();
     long long produced = 0;
     const char* finish = "length";
+    const int kk = g4::candidate_count(req.sampling, g4::kVocab);
+    const bool gpu_rank = !g4::penalties_on(req.sampling) && kk <= g4::kSampleCandidatesMax;
+    std::vector<float> cand_v(static_cast<std::size_t>(g4::kSampleCandidatesMax));
+    std::vector<int> cand_i(static_cast<std::size_t>(g4::kSampleCandidatesMax));
     auto pick = [&]() -> int {
       if (!req.sampling.needs_logits()) return E.greedy();
+      if (gpu_rank) {
+        const int got = E.top_candidates(kk, cand_v.data(), cand_i.data());
+        if (got < 0) return got;
+        return g4::sample_sorted(cand_v.data(), cand_i.data(), kk, req.sampling, rng);
+      }
       if (!E.logits(lg)) return -1;
       for (const float v : lg) {
         if (!std::isfinite(v)) return -2;
@@ -146,7 +155,7 @@ struct Serve {
         return false;
       }
       held.push_back(nx);
-      if (produced % 32 == 0) E.rebalance(8);
+      if (produced % g4::kDecodeRebalanceEvery == 0) E.rebalance(g4::kDecodeRebalanceSwaps);
       nx = pick();
     }
     const double decode_ms = ms_since(d0);
@@ -281,7 +290,7 @@ int run_bench(g4::Engine& E, const g4::EngineOptions& o) {
       if (a < 0) return 1;
       const std::int32_t t = a;
       if (E.process(&t, 1, {}) != 1) return 1;
-      if ((i + 1) % 32 == 0) E.rebalance(8);
+      if ((i + 1) % g4::kDecodeRebalanceEvery == 0) E.rebalance(g4::kDecodeRebalanceSwaps);
     }
     const double ms = ms_since(t0);
     std::printf("bench-tg %d tokens: %.0f ms, %.1f tok/s\n", o.bench_tg, ms, 1000.0 * o.bench_tg / ms);

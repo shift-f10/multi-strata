@@ -32,7 +32,8 @@ set(G4_HOST_CASES
     gguf_refuses_oversized_counts_and_strings gguf_refuses_bad_tensors tensor_bytes_follow_the_types
     model_guard_accepts_the_26b_a4b_shape model_guard_refuses_other_shapes
     cli_accepts_the_serve_flags cli_refuses_bad_and_test_only_flags_with_serve gen_lines_follow_the_q36_grammar
-    sampler_matches_the_q36_rules reuse_keeps_exact_prefixes_within_the_ring)
+    sampler_matches_the_q36_rules reuse_keeps_exact_prefixes_within_the_ring
+    sorted_candidates_sample_like_the_full_sampler)
 foreach(case IN LISTS G4_HOST_CASES)
     add_test(NAME g4_host_tests.${case} COMMAND g4_host_tests --case ${case})
 endforeach()
@@ -61,7 +62,8 @@ if(G4_ENABLE_CUDA)
     set(G4_KERNEL_CASES
         matvec_matches_cpu_for_each_kind expert_matvec_reads_the_table_in_vram_and_pinned_ram norms_match_cpu
         embedding_and_small_ops_match_cpu router_picks_the_top_eight qkv_post_matches_cpu_for_both_layer_kinds
-        decode_attention_matches_cpu prompt_softmax_masks_like_the_model dequant_and_gather_match_cpu)
+        decode_attention_matches_cpu prompt_softmax_masks_like_the_model dequant_and_gather_match_cpu
+        topk_matches_a_cpu_ranking)
     foreach(case IN LISTS G4_KERNEL_CASES)
         add_test(NAME g4_kernel_tests.${case} COMMAND g4_kernel_tests --case ${case})
         set_tests_properties(g4_kernel_tests.${case} PROPERTIES LABELS gpu)

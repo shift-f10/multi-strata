@@ -73,6 +73,16 @@ QUIT → exit 0. All checks passed (`2026-10-22-serve-smoke.txt`).
   77.1 tok/s decode (`--bench-pp 30000 --bench-tg 64`).
 - Thinking on (system turn `<|think|>`): the answer starts `<|channel>thought\n`, the thought
   ends `<channel|>`, the answer ends `<turn|>` — the shape plan 1's split expects.
+- 2026-10-23, after the serve run (owner: "move sampling to the GPU and cache the Gemma encode
+  index"): the same 27-token story prompt, 225 tokens, seed 5, through `--serve`:
+  - The sampler's top-k now runs on the GPU (`g4k::topk`, 64 candidates; the host draws from
+    them); a no-op penalty forces the old host path (1 MB of logits a token, ranked on the
+    host): the same 225 ids on both paths, 30.2 tok/s host against 29.2-32.1 tok/s GPU. The
+    sampler was not the bottleneck: about 1.9 ms a token.
+  - The bottleneck was the expert placement adapting too slowly in decode (8 slot swaps every
+    32 tokens). With 32 swaps every 8 tokens (one batched read of all layers' routing counts):
+    54.1 tok/s from a cold start, then 77.0 and 84.5 tok/s on the repeats (29.2, 30.2 and 32.1
+    before). Logs: `out\g4-sampler-speed.log`, `out\g4-rebalance-speed.log`.
 - Plan R2 (the CPU expert pool, spec D4): not built. Cold experts are read by the GPU from pinned
   RAM over PCIe and decode already runs at about twice llama.cpp's speed on this box; the pool is
   an owner decision, not needed to serve the model.

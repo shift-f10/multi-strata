@@ -528,9 +528,12 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
       chat with Gemma (thinking Off and High, streamed and not, follow-ups, Stop, the Monitor);
       the serve config (`out/serve/config-gemma4-lan.json`, not committed) sets the model
       card's sampling defaults (temperature 1.0, top_p 0.95, top_k 64): greedy decoding made the
-      model deliberate for minutes. Open: the sampler runs on the host (1 MB of logits a token,
-      36 tok/s vs 47-60 greedy); the encode index is rebuilt per request (about 0.2 s); the
-      `/apply-template` cross-check; the CPU pool ruling; plan 4.
+      model deliberate for minutes. 2026-10-23 (session log item 54): the frontend builds the
+      spm_bpe encode tables once at pack load (`TokenizerPack::spm_index`; about 0.2 s a request
+      saved; full suite 955 passed, 1 skipped); the engine ranks the sampler's candidates on the
+      GPU and rebalances its VRAM expert slots every 8 decoded tokens (up to 32 swaps): a sampled
+      story went from 29-32 to 54 (cold) and 77-85 tok/s (settled); engine ctest 25/25. Open:
+      the `/apply-template` cross-check; the CPU pool ruling; plan 4.
 - The `windows-runtime`-labelled cases run under the MSVC preset on the owner's box; the
   supported Windows toolchains (MSYS2 clang, llvm-mingw) are still not installed (issue 3).
 

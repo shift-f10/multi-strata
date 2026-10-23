@@ -1086,6 +1086,17 @@ written beside it: `engines/gemma4/` (`strata-gemma4-engine`), plan
     - Speed with sampling: 35.6-36.3 tok/s decode (the host sampler copies 1 MB of logits and
       ranks them each token; greedy decodes at 47-60 tok/s). Prompt reading on short turns 39-116
       tok/s. A thinking turn followed by an Off turn reuses nothing: the system turn differs.
+54. **Faster encoding and decoding** (owner: "move sampling to the GPU and cache the Gemma
+    encode index, test-first, then restart the server"; 2026-10-23):
+    - The frontend's spm_bpe encode tables are built once when the pack loads
+      (`TokenizerPack::spm_index`, a private copy of the pack's data, shared by copies; a pack
+      whose counts changed falls back to per-call tables). The real-vocabulary fixture case
+      went from 21.2 s to 1.9 s for the same encodes (about 0.2 s a request saved). Full suite
+      955 passed, 1 skipped.
+    - The engine ranks the sampler's 64 candidates on the GPU. Measured honestly, that saved
+      only about 1.9 ms a token: the 36 tok/s seen on the page came from slow expert
+      rebalancing, not the sampler. Rebalancing every 8 tokens with up to 32 swaps took a
+      sampled 225-token story from 29-32 tok/s to 54 (cold) and 77-85 tok/s (settled).
 
 ### Not done in this session
 

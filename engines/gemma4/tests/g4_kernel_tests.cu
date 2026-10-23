@@ -593,6 +593,53 @@ void dequant_and_gather_match_cpu() {
   close(host(moe, std::size_t(T) * n), wm, 1e-5f, 1e-6f, "scatter_combine");
 }
 
+// The GPU's top-k (the sampler's candidates) against a CPU ranking: highest first, ties by
+// the lower index, for k 1, 20 and 64, over the vocabulary's size and over a short row; a
+// non-finite value raises the flag.
+void topk_matches_a_cpu_ranking() {
+  for (const int n : {262144, 1000, 64, 70}) {
+    auto x = randv(std::size_t(n), -30, 30);
+    if (n > 100) {
+      x[std::size_t(n) - 1] = 29.9999f;
+      x[17] = 29.9999f;  // a tie: id 17 before id n-1
+      x[std::size_t(n) / 2] = 31.0f;
+    }
+    auto* dx = dev(x);
+    float* vals = nullptr;
+    int* ids = nullptr;
+    int* flag = nullptr;
+    void* scratch = nullptr;
+    cudaMalloc(&vals, 64 * 4);
+    cudaMalloc(&ids, 64 * 4);
+    cudaMalloc(&flag, 4);
+    cudaMemset(flag, 0, 4);
+    cudaMalloc(&scratch, std::max<std::size_t>(16, g4k::topk_scratch_bytes(n)));
+    std::vector<int> order(static_cast<std::size_t>(n));
+    for (int i = 0; i < n; ++i) order[std::size_t(i)] = i;
+    std::sort(order.begin(), order.end(), [&](int a, int b) {
+      return x[std::size_t(a)] > x[std::size_t(b)] || (x[std::size_t(a)] == x[std::size_t(b)] && a < b);
+    });
+    for (const int k : {1, 20, 64}) {
+      g4k::topk(dx, n, k, vals, ids, flag, scratch, nullptr);
+      const auto hv = host(vals, std::size_t(k));
+      const auto hi = host(ids, std::size_t(k));
+      bool same = true;
+      for (int j = 0; j < k; ++j) same = same && hi[std::size_t(j)] == order[std::size_t(j)] && hv[std::size_t(j)] == x[std::size_t(order[std::size_t(j)])];
+      expect(same, "top-" + std::to_string(k) + " of " + std::to_string(n) + " equals the CPU ranking");
+    }
+    expect(host(flag, 1)[0] == 0, "finite logits leave the flag clear");
+    x[std::size_t(n) / 3] = std::nanf("");
+    cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice);
+    g4k::topk(dx, n, 8, vals, ids, flag, scratch, nullptr);
+    expect(host(flag, 1)[0] == 1, "a NaN raises the non-finite flag (n " + std::to_string(n) + ")");
+    cudaFree(dx);
+    cudaFree(vals);
+    cudaFree(ids);
+    cudaFree(flag);
+    cudaFree(scratch);
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -611,5 +658,6 @@ int main(int argc, char** argv) {
       {"decode_attention_matches_cpu", decode_attention_matches_cpu},
       {"prompt_softmax_masks_like_the_model", prompt_softmax_masks_like_the_model},
       {"dequant_and_gather_match_cpu", dequant_and_gather_match_cpu},
+      {"topk_matches_a_cpu_ranking", topk_matches_a_cpu_ranking},
   });
 }

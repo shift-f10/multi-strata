@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
 #include <queue>
 #include <set>
@@ -186,12 +187,25 @@ std::optional<unsigned char> byte_token_value(const std::string_view token) {
   return static_cast<unsigned char>(high * 16 + low);
 }
 
-// Built once per encode call (never cached in the pack, so a pack can never carry a stale index).
+}  // namespace
+
+// The spm_bpe encoder's lookup tables over one pack's data. Outside the anonymous namespace
+// because SpmEncodeIndex (named in the header) holds one.
 struct SpmIndex final {
-  std::unordered_map<std::string_view, std::size_t> ids;  // views into the pack's own strings
+  std::unordered_map<std::string_view, std::size_t> ids;  // views into the indexed pack's own strings
   std::unordered_map<std::uint64_t, std::size_t> ranks;   // (left id << 32) | right id -> rank
   std::array<std::optional<std::size_t>, 256U> byte_ids{};
 };
+
+// TokenizerPack::spm_index: built by the loader for an spm_bpe pack, over a private copy of the
+// pack's data (so a copy of the pack, or one outliving the loaded pack, never reads freed
+// strings), and immutable afterwards.
+struct SpmEncodeIndex final {
+  TokenizerPack source;  // the pack as loaded (without an index of its own)
+  SpmIndex index;        // views into source's strings
+};
+
+namespace {
 
 std::variant<SpmIndex, TokenizerPackError> build_spm_index(const TokenizerPack& pack) {
   if (pack.tokens_by_id.size() != pack.token_types.size() || pack.tokens_by_id.size() > 0xFFFFFFFFU) {
@@ -215,6 +229,19 @@ std::variant<SpmIndex, TokenizerPackError> build_spm_index(const TokenizerPack& 
     index.ranks.emplace((static_cast<std::uint64_t>(left->second) << 32U) | right->second, rank);  // lowest rank kept
   }
   return index;
+}
+
+// The loader's prepared tables when they still describe `pack` (the same vocabulary, merge and
+// type counts: a pack is not modified after load, and one that was is not encoded with stale
+// tables); null otherwise, and the caller builds tables for that call.
+const SpmIndex* prepared_spm_index(const TokenizerPack& pack) {
+  const auto& prepared = pack.spm_index;
+  if (!prepared || prepared->source.tokens_by_id.size() != pack.tokens_by_id.size() ||
+      prepared->source.merges_by_rank.size() != pack.merges_by_rank.size() ||
+      prepared->source.token_types.size() != pack.token_types.size()) {
+    return nullptr;
+  }
+  return &prepared->index;
 }
 
 // Literal scan: a CONTROL or USER_DEFINED literal in text is never encoded as ordinary text.
@@ -466,6 +493,15 @@ TokenizerPackLoadResult load_local_tokenizer_pack(const CanonicalRoot& root, con
   const auto merge_error = spm ? merges_from_json(std::get<std::string>(merges_text), known, pack)
                                : merges_from_text(std::get<std::string>(merges_text), known, pack);
   if (merge_error) return *merge_error;
+  if (spm) {
+    // The encoder's tables once, here, instead of per request (about 0.2 s for Gemma 4's vocabulary).
+    auto prepared = std::make_shared<SpmEncodeIndex>();
+    prepared->source = pack;
+    auto built = build_spm_index(prepared->source);
+    if (const auto* failure = std::get_if<TokenizerPackError>(&built)) return *failure;
+    prepared->index = std::move(std::get<SpmIndex>(built));
+    pack.spm_index = std::move(prepared);
+  }
   return pack;
 }
 
@@ -539,11 +575,17 @@ TokenizerEncodeResult encode_text(const TokenizerPack& pack, const std::string_v
   if (text.size() > kMaximumDecodedBytes) return error(TokenizerPackErrorCode::input_text_too_large, "input text exceeds fixed limit");
   if (!valid_utf8(text)) return error(TokenizerPackErrorCode::input_text_not_utf8, "input text must be valid UTF-8");
   if (pack.mode == TokenizerMode::spm_bpe) {  // Gemma 4 plan 1 Task 5
-    auto index = build_spm_index(pack);
-    if (const auto* failure = std::get_if<TokenizerPackError>(&index)) return *failure;
+    std::optional<SpmIndex> local;
+    const SpmIndex* index = prepared_spm_index(pack);
+    if (index == nullptr) {
+      auto built = build_spm_index(pack);
+      if (const auto* failure = std::get_if<TokenizerPackError>(&built)) return *failure;
+      local.emplace(std::move(std::get<SpmIndex>(built)));
+      index = &*local;
+    }
     if (const auto refused = refuse_special_literals(pack, text)) return *refused;
     std::vector<std::size_t> output;
-    if (const auto failure = spm_encode_text(pack, std::get<SpmIndex>(index), text, output)) return *failure;
+    if (const auto failure = spm_encode_text(pack, *index, text, output)) return *failure;
     return output;
   }
   std::map<std::string, std::size_t> ids;
@@ -853,9 +895,15 @@ TokenizerEncodeResult encode_gemma4_prompt(const TokenizerPack& pack, const std:
     return error(TokenizerPackErrorCode::unsupported_special_token,
                  "Gemma 4 markers must be exactly one token each, of the expected type");
   }
-  auto built = build_spm_index(pack);
-  if (const auto* failure = std::get_if<TokenizerPackError>(&built)) return *failure;
-  const SpmIndex& index = std::get<SpmIndex>(built);
+  std::optional<SpmIndex> local;
+  const SpmIndex* prepared = prepared_spm_index(pack);
+  if (prepared == nullptr) {
+    auto built = build_spm_index(pack);
+    if (const auto* failure = std::get_if<TokenizerPackError>(&built)) return *failure;
+    local.emplace(std::move(std::get<SpmIndex>(built)));
+    prepared = &*local;
+  }
+  const SpmIndex& index = *prepared;
   // The vocabulary's CONTROL and USER_DEFINED literals, collected once for every span.
   std::vector<std::string_view> specials;
   for (std::size_t id = 0U; id < pack.tokens_by_id.size(); ++id) {

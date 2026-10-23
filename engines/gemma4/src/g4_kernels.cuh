@@ -1,4 +1,4 @@
-// strata-gemma4-engine: the CUDA kernels (plan Task 5) and their host-side launchers.
+﻿// strata-gemma4-engine: the CUDA kernels (plan Task 5) and their host-side launchers.
 // Weights are Q8_0 repacked into an int8 plane and an fp16 scale plane (one scale per 32
 // values of a row), BF16 or F32. Activations are f32; the KV caches are f16, laid out
 // [kv_head][slot][head_dim]. Every launcher runs on the given stream and never synchronises.
@@ -8,6 +8,7 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
+#include <cstddef>
 #include <cstdint>
 
 namespace g4k {
@@ -48,7 +49,7 @@ void rmsnorm(const float* x, const float* w, const float* w2, float scale, float
 // out[r] = x[r] + rms(y[r]) * w (the sandwich norm after attention).
 void add_rmsnorm(const float* x, const float* y, const float* w, float* out, int rows, int n, float eps, cudaStream_t st);
 
-// The layer's end (spec §2.3): d = rms(dense)*w1, m = rms(moe)*w2, f = rms(d+m)*w3,
+// The layer's end (spec Â§2.3): d = rms(dense)*w1, m = rms(moe)*w2, f = rms(d+m)*w3,
 // x_out = (x1 + f) * (*layer_scale, or 1 when null).
 void ffn_end(const float* x1, const float* dense, const float* moe, const float* w1, const float* w2, const float* w3,
              const float* layer_scale, float* x_out, int rows, int n, float eps, cudaStream_t st);
@@ -113,6 +114,13 @@ void softcap(float* x, int n, float cap, cudaStream_t st);
 // out[0] = argmax(x[0..n)) (ties: the lowest index), or -2 when the maximum is not finite.
 // scratch: 2 * 1024 ints/floats.
 void argmax(const float* x, int n, int* out, void* scratch, cudaStream_t st);
+
+// The k highest of x[0..n) (k <= 64), highest first, ties by the lower index: vals[0..k),
+// ids[0..k). *nonfinite = 1 when any x is NaN or infinite (else left as is). scratch: at least
+// topk_scratch_bytes(n) bytes.
+void topk(const float* x, int n, int k, float* vals, int* ids, int* nonfinite, void* scratch, cudaStream_t st);
+[[nodiscard]] std::size_t topk_scratch_bytes(int n);
+inline constexpr int kTopkMax = 64;
 
 // out = dequantised W (f32 [rows][cols]).
 void dequant(const Mat& m, float* out, cudaStream_t st);

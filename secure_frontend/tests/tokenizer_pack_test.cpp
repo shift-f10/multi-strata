@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <tuple>
@@ -354,6 +355,46 @@ void spm_pack_loads_merges_json_with_newline_and_tab_tokens() {
   std::filesystem::remove_all(root);
 }
 
+// The spm_bpe encoder's tables are built once at load (the Gemma 4 route encodes every request)
+// and give the same ids as tables built per call; copies share them; a byte_bpe pack has none.
+void spm_pack_load_prepares_the_encode_index_once() {
+  const auto root = temporary_pack();
+  test_support::write_spm_tokenizer_pack(root);
+  const auto loaded = secure_frontend::load_local_tokenizer_pack(root, kSpm);
+  const auto* pack = std::get_if<secure_frontend::TokenizerPack>(&loaded);
+  expect(pack != nullptr, "the synthetic spm pack loads");
+  if (pack == nullptr) return;
+  expect(pack->spm_index != nullptr, "the loader prepares the spm encode index");
+  auto plain = *pack;
+  plain.spm_index.reset();
+  const std::vector<std::string> texts{"Hi world", "  x", "x   ", "abc", "thought", "a\n\nb", "\t\t", "\r\n", "Hi\n world", ""};
+  for (const auto& text : texts) {
+    expect(ids_of(secure_frontend::encode_text(*pack, text)) == ids_of(secure_frontend::encode_text(plain, text)),
+           "the prepared index encodes as the per-call one");
+  }
+  std::optional<secure_frontend::TokenizerPack> copy;
+  {
+    auto scoped = std::get<secure_frontend::TokenizerPack>(secure_frontend::load_local_tokenizer_pack(root, kSpm));
+    copy = scoped;  // the original goes out of scope: the shared tables own their data
+  }
+  expect(copy->spm_index != nullptr && ids_of(secure_frontend::encode_text(*copy, "Hi world")) ==
+                                           ids_of(secure_frontend::encode_text(plain, "Hi world")),
+         "a copy outliving the loaded pack encodes the same");
+  auto grown = *pack;
+  grown.merges_by_rank.pop_back();
+  auto grown_plain = grown;
+  grown_plain.spm_index.reset();
+  expect(ids_of(secure_frontend::encode_text(grown, "abc thought")) == ids_of(secure_frontend::encode_text(grown_plain, "abc thought")),
+         "a pack whose merges changed after load is not encoded with the stale tables");
+  test_support::write_tokenizer_pack(root);
+  std::filesystem::remove(root / "merges.json");
+  const auto byte_pack = secure_frontend::load_local_tokenizer_pack(root, kByte);
+  expect(std::holds_alternative<secure_frontend::TokenizerPack>(byte_pack) &&
+             std::get<secure_frontend::TokenizerPack>(byte_pack).spm_index == nullptr,
+         "a byte_bpe pack carries no spm index");
+  std::filesystem::remove_all(root);
+}
+
 // Review Focus 2: the profile picks the mode; a pack holding the other mode's merges file fails at load.
 void mode_comes_from_the_profile_never_the_files() {
   const auto spm = temporary_pack();
@@ -636,6 +677,7 @@ int main(int argc, char** argv) {
       {"spm_round_trips_the_upstream_corpus", spm_round_trips_the_upstream_corpus},
       {"spm_decoder_maps_u2581_and_byte_tokens", spm_decoder_maps_u2581_and_byte_tokens},
       {"gemma4_real_pack_matches_the_fixture", gemma4_real_pack_matches_the_fixture},
+      {"spm_pack_load_prepares_the_encode_index_once", spm_pack_load_prepares_the_encode_index_once},
 #ifndef _WIN32
       {"rejects_symlinked_assets", rejects_symlinked_assets},
       {"cfg03_tokenizer_file_swapped_to_symlink_rejected", cfg03_tokenizer_file_swapped_to_symlink_rejected},

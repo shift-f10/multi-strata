@@ -13,6 +13,15 @@
 
 namespace g4 {
 
+inline constexpr int kSampleCandidatesMax = 64;
+
+// Decode rebalancing: every kDecodeRebalanceEvery tokens, at most kDecodeRebalanceSwaps expert
+// copies into VRAM slots (each about 6.3 MB). Measured on the owner's box (validation file,
+// 2026-10-23): 8/32 lifted a 225-token sampled story from 29 to 54 tok/s from a cold start
+// and to 77-84 tok/s once the slots had settled, against 32/8 before.
+inline constexpr int kDecodeRebalanceEvery = 8;
+inline constexpr int kDecodeRebalanceSwaps = 32;
+
 struct EngineConfig final {
   std::string model;
   int max_context{32768};
@@ -51,6 +60,10 @@ class Engine {
   // The last read position's logits (soft-capped).
   virtual bool logits(std::vector<float>& out) = 0;
   virtual int greedy() = 0;  // argmax of those logits; -1 on failure, -2 when they are not finite
+  // The k highest of those logits (k <= kSampleCandidatesMax), highest first, ties by the lower id,
+  // ranked on the GPU (1 MB of logits never crosses PCIe). Returns k; -1 on failure; -2 when any
+  // logit is not finite.
+  virtual int top_candidates(int k, float* vals, int* ids) = 0;
   // Moves VRAM expert slots toward the most-routed experts (at most `max_swaps` copies).
   virtual void rebalance(int max_swaps) = 0;
   // Test hook: every read position's layer outputs land in sink[(pos*30 + layer)*2816 ...].

@@ -3,6 +3,7 @@
 #include "secure_frontend/canonical_path.hpp"
 
 #include <cstddef>
+#include <memory>
 #include <filesystem>
 #include <map>
 #include <optional>
@@ -24,11 +25,19 @@ enum class TokenizerMode { byte_bpe, spm_bpe };
 // (through our wrapper tools/secure/secure_tokenizer.py for GLM and Gemma 4 packs).  This
 // type intentionally owns all input: loading a pack never keeps a file handle,
 // invokes a subprocess, or contacts a network service.
+struct SpmEncodeIndex;  // tokenizer_pack.cpp: the spm_bpe encoder's lookup tables
+
 struct TokenizerPack final {
   std::vector<std::string> tokens_by_id;
   std::vector<std::pair<std::string, std::string>> merges_by_rank;
   std::vector<int> token_types;
   TokenizerMode mode{TokenizerMode::byte_bpe};  // the mode it was loaded in (the profile's)
+  // spm_bpe packs from load_local_tokenizer_pack: the encoder's lookup tables, built once at
+  // load (about 0.2 s for Gemma 4's 262,144 tokens and 514,906 merges) and shared by copies.
+  // They own their data. A pack is not modified after load; one whose vocabulary, merge or type
+  // counts no longer match is encoded with tables built for that call, as a pack built in
+  // memory (no tables) always is.
+  std::shared_ptr<const SpmEncodeIndex> spm_index;
 };
 
 enum class TokenizerPackErrorCode {

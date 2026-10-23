@@ -62,6 +62,17 @@ struct GenRequest final {
 [[nodiscard]] int sample(std::vector<float>& logits, const Sampling& s, const std::vector<std::int32_t>& history,
                          std::mt19937_64& rng);
 
+// The q36 sampler's last step on candidates already ranked highest first (top-k done):
+// temperature, min-p, top-p, then one draw. sample() calls it after its own ranking; the serve
+// loop calls it on the GPU's top-k when no penalty is set (g4k::topk).
+[[nodiscard]] int sample_sorted(const float* vals, const int* ids, int kk, const Sampling& s, std::mt19937_64& rng);
+
+// True when sample() would apply a penalty (they change logits before the ranking).
+[[nodiscard]] bool penalties_on(const Sampling& s);
+
+// The q36 sampler's candidate count: top_k when set (> 0), else 64, at most `vocab`.
+[[nodiscard]] int candidate_count(const Sampling& s, int vocab);
+
 // Prefix reuse (plan R4): the held tokens' longest common prefix with the prompt, kept
 // only when the held tail past it fits the sliding ring's spare rows (`spare` = ring -
 // window) and at least one prompt token is left to read. 0 means start over.

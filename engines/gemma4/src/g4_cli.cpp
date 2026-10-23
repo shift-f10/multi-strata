@@ -178,8 +178,36 @@ std::variant<GenRequest, std::string> parse_gen(std::string_view line, int vocab
   return r;
 }
 
+bool penalties_on(const Sampling& s) { return s.last_n != 0 && (s.repeat != 1.0f || s.freq != 0.0f || s.present != 0.0f); }
+
+int candidate_count(const Sampling& s, const int vocab) { return std::max(1, std::min(s.top_k > 0 ? s.top_k : 64, vocab)); }
+
+int sample_sorted(const float* vals, const int* ids, const int kk, const Sampling& s, std::mt19937_64& rng) {
+  const std::size_t n = static_cast<std::size_t>(std::max(kk, 1));
+  std::vector<double> p(n);
+  const double mx = vals[0];
+  double sum = 0;
+  for (std::size_t i = 0; i < n; ++i) sum += (p[i] = std::exp((vals[i] - mx) / s.temperature));
+  std::size_t keep = n;
+  double cum = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (p[i] / sum < s.min_p * (p[0] / sum)) { keep = i; break; }
+    cum += p[i] / sum;
+    if (cum >= s.top_p) { keep = i + 1; break; }
+  }
+  keep = std::max<std::size_t>(1, keep);
+  double tot = 0;
+  for (std::size_t i = 0; i < keep; ++i) tot += p[i];
+  std::uniform_real_distribution<double> u(0.0, tot);
+  double r = u(rng);
+  for (std::size_t i = 0; i < keep; ++i) {
+    if ((r -= p[i]) <= 0) return ids[i];
+  }
+  return ids[keep - 1];
+}
+
 int sample(std::vector<float>& lg, const Sampling& s, const std::vector<std::int32_t>& hist, std::mt19937_64& rng) {
-  if (s.last_n != 0 && (s.repeat != 1.0f || s.freq != 0.0f || s.present != 0.0f)) {
+  if (penalties_on(s)) {
     std::map<int, int> cnt;
     const std::size_t from = s.last_n < 0 || static_cast<std::size_t>(s.last_n) >= hist.size() ? 0 : hist.size() - static_cast<std::size_t>(s.last_n);
     for (std::size_t i = from; i < hist.size(); ++i) ++cnt[hist[i]];
@@ -191,32 +219,17 @@ int sample(std::vector<float>& lg, const Sampling& s, const std::vector<std::int
     }
   }
   if (s.temperature <= 0.0f) return static_cast<int>(std::max_element(lg.begin(), lg.end()) - lg.begin());
-  const int kk = std::max(1, std::min(s.top_k > 0 ? s.top_k : 64, static_cast<int>(lg.size())));
+  const int kk = candidate_count(s, static_cast<int>(lg.size()));
   std::vector<int> idx(lg.size());
   for (std::size_t i = 0; i < idx.size(); ++i) idx[i] = static_cast<int>(i);
-  std::partial_sort(idx.begin(), idx.begin() + kk, idx.end(),
-                    [&](int a, int b) { return lg[static_cast<std::size_t>(a)] > lg[static_cast<std::size_t>(b)]; });
-  idx.resize(static_cast<std::size_t>(kk));
-  std::vector<double> p(idx.size());
-  const double mx = lg[static_cast<std::size_t>(idx[0])];
-  double sum = 0;
-  for (std::size_t i = 0; i < idx.size(); ++i) sum += (p[i] = std::exp((lg[static_cast<std::size_t>(idx[i])] - mx) / s.temperature));
-  std::size_t keep = idx.size();
-  double cum = 0;
-  for (std::size_t i = 0; i < idx.size(); ++i) {
-    if (p[i] / sum < s.min_p * (p[0] / sum)) { keep = i; break; }
-    cum += p[i] / sum;
-    if (cum >= s.top_p) { keep = i + 1; break; }
-  }
-  keep = std::max<std::size_t>(1, keep);
-  double tot = 0;
-  for (std::size_t i = 0; i < keep; ++i) tot += p[i];
-  std::uniform_real_distribution<double> u(0.0, tot);
-  double r = u(rng);
-  for (std::size_t i = 0; i < keep; ++i) {
-    if ((r -= p[i]) <= 0) return idx[i];
-  }
-  return idx[keep - 1];
+  // Highest first, ties by the lower id (the GPU's top-k ranks the same way).
+  std::partial_sort(idx.begin(), idx.begin() + kk, idx.end(), [&](int a, int b) {
+    const float la = lg[static_cast<std::size_t>(a)], lb = lg[static_cast<std::size_t>(b)];
+    return la > lb || (la == lb && a < b);
+  });
+  std::vector<float> vals(static_cast<std::size_t>(kk));
+  for (std::size_t i = 0; i < vals.size(); ++i) vals[i] = lg[static_cast<std::size_t>(idx[i])];
+  return sample_sorted(vals.data(), idx.data(), kk, s, rng);
 }
 
 std::size_t reuse_length(const std::vector<std::int32_t>& held, const std::vector<std::int32_t>& prompt, std::size_t spare) {

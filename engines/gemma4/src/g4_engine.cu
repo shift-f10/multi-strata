@@ -84,7 +84,7 @@ struct DevLayer {
   std::vector<int> expert_in;     // slot -> expert
   std::vector<g4k::ExpertPtr> table_host;
   g4k::ExpertPtr* table{};        // device [128]
-  int* counts{};                  // device [128] routing counts since the last rebalance
+  int* counts{};                  // device [128] routing counts since the last rebalance (in counts_all_)
   std::vector<double> score;      // decayed routing counts
   __half* kc{};
   __half* vc{};
@@ -104,6 +104,7 @@ class Gemma4Engine final : public Engine {
   int process(const std::int32_t* ids, int n, const std::function<bool(int)>& progress) override;
   bool logits(std::vector<float>& out) override;
   int greedy() override;
+  int top_candidates(int k, float* vals, int* ids) override;
   void rebalance(int max_swaps) override;
   void set_layer_sink(std::vector<float>* sink) override { sink_ = sink; }
   LoadReport report() const override { return report_; }
@@ -167,6 +168,12 @@ class Gemma4Engine final : public Engine {
   float* logits_{};
   float* xn_{};
   float* argmax_scratch_{};
+  int* counts_all_{};  // device [30][128]: every layer's routing counts, read with one copy
+  unsigned char* topk_scratch_{};
+  float* cand_v_{};
+  int* cand_i_{};
+  int* cand_flag_{};
+  int* cand_h_{};  // pinned: flag, then k ids, then k values
   int* argmax_out_{};
   int* argmax_h_{};  // pinned
 
@@ -318,6 +325,12 @@ bool Gemma4Engine::place_experts(double vram_gib, int forced_slots, std::string&
     }
     S = static_cast<int>((free_b > (std::size_t(128) << 20) ? free_b - (std::size_t(128) << 20) : 0) / per_slot);
   }
+  if (!alloc(counts_all_, static_cast<std::size_t>(kLayers) * kExperts) ||
+      !cuda_ok(cudaMemset(counts_all_, 0, sizeof(int) * kLayers * kExperts), "counts")) {
+    error = "cannot allocate the routing counts";
+    return false;
+  }
+  for (std::size_t l = 0; l < layers_.size(); ++l) layers_[l].counts = counts_all_ + l * kExperts;
   for (auto& L : layers_) {
     L.n_slots = S;
     L.slot_of.assign(kExperts, -1);
@@ -343,9 +356,8 @@ bool Gemma4Engine::place_experts(double vram_gib, int forced_slots, std::string&
         L.table_host[static_cast<std::size_t>(e)] = expert_ptr(L.ex, L.host_alias + L.ex.bytes * static_cast<std::size_t>(e));
       }
     }
-    if (!alloc(L.table, kExperts) || !alloc(L.counts, kExperts)) return false;
-    if (!cuda_ok(cudaMemcpy(L.table, L.table_host.data(), sizeof(g4k::ExpertPtr) * kExperts, cudaMemcpyHostToDevice), "table") ||
-        !cuda_ok(cudaMemset(L.counts, 0, sizeof(int) * kExperts), "counts")) {
+    if (!alloc(L.table, kExperts)) return false;
+    if (!cuda_ok(cudaMemcpy(L.table, L.table_host.data(), sizeof(g4k::ExpertPtr) * kExperts, cudaMemcpyHostToDevice), "table")) {
       return false;
     }
   }
@@ -425,7 +437,9 @@ bool Gemma4Engine::load(const EngineConfig& cfg, const ModelDesc& m, std::string
       alloc(mx_, C * 8 * kFfExp) && alloc(yg_, C * 8 * kEmbd) && alloc(wdq_, std::size_t(kHeads) * kHeadFull * kEmbd) &&
       alloc(w1_, std::size_t(kGuRows) * kEmbd) && alloc(w2_, std::size_t(kEmbd) * kFfExp) && alloc(s_buf_, s_floats_) &&
       alloc(p_buf_, s_floats_) && alloc(dscratch_, std::size_t(kHeads) * max_splits_ * (kHeadFull + 2)) &&
-      alloc(logits_, kVocab) && alloc(xn_, kEmbd) && alloc(argmax_out_, 1) && alloc(argmax_scratch_, 4096);
+      alloc(logits_, kVocab) && alloc(xn_, kEmbd) && alloc(argmax_out_, 1) && alloc(argmax_scratch_, 4096) &&
+      alloc(topk_scratch_, g4k::topk_scratch_bytes(kVocab)) &&
+      alloc(cand_v_, g4k::kTopkMax) && alloc(cand_i_, g4k::kTopkMax) && alloc(cand_flag_, 1);
   if (!scratch_ok) {
     error = "cannot allocate the scratch buffers (lower --chunk or --max-context)";
     return false;
@@ -440,6 +454,13 @@ bool Gemma4Engine::load(const EngineConfig& cfg, const ModelDesc& m, std::string
   picks_h_ = ids_h_ + 2 * C;
   order_h_ = picks_h_ + 8 * C;
   argmax_h_ = order_h_ + 16 * C;  // order (8C) then inv (8C)
+  void* cand_pin = nullptr;
+  if (!cuda_ok(cudaHostAlloc(&cand_pin, sizeof(int) * (1 + 2 * g4k::kTopkMax), cudaHostAllocDefault), "cudaHostAlloc")) {
+    error = "cannot pin the transfer buffers";
+    return false;
+  }
+  pinned_.push_back(cand_pin);
+  cand_h_ = static_cast<int*>(cand_pin);
   if (!place_experts(cfg.expert_vram_gib, cfg.expert_slots, error)) return false;
   std::size_t free_b = 0, total_b = 0;
   cudaMemGetInfo(&free_b, &total_b);
@@ -682,17 +703,37 @@ int Gemma4Engine::greedy() {
   return argmax_h_[0];
 }
 
+int Gemma4Engine::top_candidates(int k, float* vals, int* ids) {
+  if (k <= 0 || k > g4k::kTopkMax) return -1;
+  cudaMemsetAsync(cand_flag_, 0, sizeof(int), st_);
+  g4k::topk(logits_, kVocab, k, cand_v_, cand_i_, cand_flag_, topk_scratch_, st_);
+  float* hv = reinterpret_cast<float*>(cand_h_ + 1 + g4k::kTopkMax);
+  if (!cuda_ok(cudaMemcpyAsync(cand_h_, cand_flag_, sizeof(int), cudaMemcpyDeviceToHost, st_), "candidates") ||
+      !cuda_ok(cudaMemcpyAsync(cand_h_ + 1, cand_i_, sizeof(int) * static_cast<std::size_t>(k), cudaMemcpyDeviceToHost, st_), "candidates") ||
+      !cuda_ok(cudaMemcpyAsync(hv, cand_v_, sizeof(float) * static_cast<std::size_t>(k), cudaMemcpyDeviceToHost, st_), "candidates") ||
+      !cuda_ok(cudaStreamSynchronize(st_), "candidates")) {
+    return -1;
+  }
+  if (cand_h_[0] != 0) return -2;
+  std::memcpy(ids, cand_h_ + 1, sizeof(int) * static_cast<std::size_t>(k));
+  std::memcpy(vals, hv, sizeof(float) * static_cast<std::size_t>(k));
+  return k;
+}
+
 void Gemma4Engine::rebalance(int max_swaps) {
   if (broken_ || layers_.empty() || layers_[0].n_slots == 0 || layers_[0].n_slots >= kExperts) return;
-  std::vector<int> counts(kExperts);
+  std::vector<int> counts(static_cast<std::size_t>(kLayers) * kExperts);
   int swaps = 0;
-  for (auto& L : layers_) {
-    if (cudaMemcpyAsync(counts.data(), L.counts, sizeof(int) * kExperts, cudaMemcpyDeviceToHost, st_) != cudaSuccess ||
-        cudaMemsetAsync(L.counts, 0, sizeof(int) * kExperts, st_) != cudaSuccess || cudaStreamSynchronize(st_) != cudaSuccess) {
-      broken_ = true;
-      return;
+  if (cudaMemcpyAsync(counts.data(), counts_all_, sizeof(int) * counts.size(), cudaMemcpyDeviceToHost, st_) != cudaSuccess ||
+      cudaMemsetAsync(counts_all_, 0, sizeof(int) * counts.size(), st_) != cudaSuccess || cudaStreamSynchronize(st_) != cudaSuccess) {
+    broken_ = true;
+    return;
+  }
+  for (std::size_t l = 0; l < layers_.size(); ++l) {
+    auto& score = layers_[l].score;
+    for (int e = 0; e < kExperts; ++e) {
+      score[static_cast<std::size_t>(e)] = score[static_cast<std::size_t>(e)] * 0.85 + counts[l * kExperts + static_cast<std::size_t>(e)];
     }
-    for (int e = 0; e < kExperts; ++e) L.score[static_cast<std::size_t>(e)] = L.score[static_cast<std::size_t>(e)] * 0.85 + counts[static_cast<std::size_t>(e)];
   }
   for (std::size_t round = 0; swaps < max_swaps; ++round) {
     bool any = false;
