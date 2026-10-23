@@ -468,6 +468,14 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
       never output); tool and media markers in output still fail closed. Wired through both
       route paths. Gates: MSVC build clean; 94/94 targeted; **batch full suite after Tasks 7-9:
       946 passed, 1 skipped (cfg03), 947 cases, real-pack case included.**
+    - Task 10 done: `select_chat_generation_plan` (chat_route) is the route's one plan switch
+      for text and image paths (gemma4: its own plan, text only). gemma4 thinking: the
+      request's `reasoning_effort` wins (`none` off, `low`/`medium`/`high` on), else
+      `reasoning.effort` (unset or `none`: off, D10). `chat_schema_limits` derives the
+      per-request flag from the profile; the vision gate opens only for qwen. Note: the page
+      always sends a level (High by default), so page chats with Gemma think unless Off is
+      picked; API clients that omit it get thinking off. Gates: MSVC build clean; 124/124 in
+      the touched binaries; full suite in the Task 10-11 batch.
 - The `windows-runtime`-labelled cases run under the MSVC preset on the owner's box; the
   supported Windows toolchains (MSYS2 clang, llvm-mingw) are still not installed (issue 3).
 

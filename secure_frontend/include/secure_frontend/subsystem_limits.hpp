@@ -32,5 +32,9 @@ namespace secure_frontend {
 // Gemma 4 plan 1 Task 4 (spec §6.2): the tokenizer mode the pack is loaded in (gemma4:
 // spm_bpe, every other profile byte_bpe); never inferred from the pack's files.
 [[nodiscard]] TokenizerMode tokenizer_mode_for(EngineProfile profile);
+// Gemma 4 plan 1 Task 10 (spec §6.6, D10): whether a gemma4 request that names no
+// reasoning_effort thinks: reasoning.effort low/medium/high yes; none or unset no (the
+// template's default is thinking off).
+[[nodiscard]] bool gemma4_thinking_default(const FrontendConfig& config);
 
 }  // namespace secure_frontend

@@ -1,10 +1,21 @@
 #include "secure_frontend/api_errors.hpp"
+#include "secure_frontend/chat_route.hpp"
 #include "secure_frontend/chat_schema.hpp"
+#include "secure_frontend/config_file.hpp"
+#include "secure_frontend/subsystem_limits.hpp"
+#include "support/config_json.hpp"
 #include "support/test_support.hpp"
+#include "support/test_tokenizer.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
+#include <map>
+#include <memory>
+#include <optional>
 #include <string>
+#include <variant>
+#include <vector>
 
 namespace {
 int failures = 0;
@@ -239,8 +250,127 @@ void remote_looking_text_is_text() {
          "the model field keeps its remote-scheme guard");
 }
 
+// ---- Gemma 4 plan 1 Task 10 (spec §6.6, D10): route plan selection and the thinking default ----
+
+std::shared_ptr<const secure_frontend::FrontendConfig> config_with(const std::map<std::string, std::string>& extra) {
+  secure_frontend_test::ConfigFixture f;
+  auto literals = f.literals;
+  for (const auto& [k, v] : extra) literals[k] = v;
+  auto draft = secure_frontend::parse_config_text(secure_frontend_test::render_config_json(literals), f.dir);
+  auto result = secure_frontend::validate(std::get<secure_frontend::FrontendConfigDraft>(draft));
+  return std::get<secure_frontend::ValidatedConfig>(result).shared();
+}
+
+const std::string kEffortBody = R"({"model":"local","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"low"})";
+
+// The schema limits a gemma4 config derives admit reasoning_effort per request (none = off,
+// low/medium/high = on); glm53's still refuse it by name (unchanged).
+void reasoning_effort_per_request_on_gemma4() {
+  const auto gemma = secure_frontend::chat_schema_limits(*config_with({{"engine.profile", "\"gemma4\""}}));
+  expect(gemma.per_request_reasoning_effort, "a gemma4 config's schema limits admit reasoning_effort");
+  for (const char* word : {"none", "low", "medium", "high"}) {
+    const auto result = secure_frontend::parse_chat_request(
+        R"({"model":"local","messages":[{"role":"user","content":"hi"}],"reasoning_effort":")" + std::string{word} + "\"}", gemma);
+    expect(std::holds_alternative<secure_frontend::ChatCompletionRequest>(result), std::string{"gemma4 admits "} + word);
+  }
+  const auto glm = secure_frontend::chat_schema_limits(*config_with({{"engine.profile", "\"glm53\""}}));
+  const auto refused = secure_frontend::parse_chat_request(kEffortBody, glm);
+  const auto* error = std::get_if<secure_frontend::ChatRequestError>(&refused);
+  expect(error != nullptr && error->error == secure_frontend::ApiError::unsupported_parameter && error->param == "reasoning_effort",
+         "glm53 still refuses reasoning_effort by name");
+  expect(secure_frontend::chat_schema_limits(*config_with({{"engine.profile", "\"qwen\""}})).per_request_reasoning_effort,
+         "qwen keeps it");
+}
+
+std::vector<std::size_t> encoded(const secure_frontend::TokenizerPack& pack, const std::string_view text) {
+  const auto result = secure_frontend::encode_text(pack, text);
+  const auto* ids = std::get_if<std::vector<std::size_t>>(&result);
+  return ids != nullptr ? *ids : std::vector<std::size_t>{};
+}
+
+bool ends_with(const std::vector<std::size_t>& ids, const std::vector<std::size_t>& tail) {
+  return ids.size() >= tail.size() && std::equal(tail.begin(), tail.end(), ids.end() - static_cast<std::ptrdiff_t>(tail.size()));
+}
+
+secure_frontend::ChatGenerationPlanResult route_plan(const secure_frontend::NativeChatProfile profile,
+                                                      const secure_frontend::ChatCompletionRequest& request,
+                                                      const secure_frontend::TokenizerPack& pack, const bool thinking) {
+  return secure_frontend::select_chat_generation_plan(profile, request, pack, 4096U, secure_frontend::SamplingDefaults{}, {},
+                                                      thinking, secure_frontend::QwenEffortPlacement{secure_frontend::QwenEffort::high, false});
+}
+
+// D10: with neither the request's reasoning_effort nor reasoning.effort, Gemma does not think,
+// and the GEN prompt ends in the closed thought channel; none is off, low/medium/high are on.
+void gemma4_thinking_defaults_to_off() {
+  expect(!secure_frontend::gemma4_thinking_default(*config_with({{"engine.profile", "\"gemma4\""}})),
+         "unset reasoning.effort: thinking off (the template's default)");
+  expect(!secure_frontend::gemma4_thinking_default(*config_with({{"engine.profile", "\"gemma4\""}, {"reasoning.effort", "\"none\""}})),
+         "reasoning.effort none: off");
+  for (const char* level : {"low", "medium", "high"}) {
+    expect(secure_frontend::gemma4_thinking_default(
+               *config_with({{"engine.profile", "\"gemma4\""}, {"reasoning.effort", "\"" + std::string{level} + "\""}})),
+           std::string{"reasoning.effort "} + level + ": on");
+  }
+  expect(!secure_frontend::gemma4_request_thinks(std::nullopt, false), "neither set: off");
+  expect(secure_frontend::gemma4_request_thinks(std::nullopt, true), "the server's level applies when the request names none");
+  expect(!secure_frontend::gemma4_request_thinks(std::string{"none"}, true), "the request's none wins: off");
+  for (const char* level : {"low", "medium", "high"}) {
+    expect(secure_frontend::gemma4_request_thinks(std::string{level}, false), std::string{"the request's "} + level + " wins: on");
+  }
+  const auto pack = test_support::spm_tokenizer();
+  const secure_frontend::ChatCompletionRequest request{"local", {{"user", "Hi"}}, 2U};
+  const auto off = route_plan(secure_frontend::NativeChatProfile::gemma4, request, pack, false);
+  const auto* off_plan = std::get_if<secure_frontend::ChatGenerationPlan>(&off);
+  std::vector<std::size_t> closed{test_support::token_id(pack, "<|channel>")};
+  for (const auto id : encoded(pack, "thought\n")) closed.push_back(id);
+  closed.push_back(test_support::token_id(pack, "<channel|>"));
+  expect(off_plan != nullptr && ends_with(off_plan->prompt_token_ids, closed),
+         "thinking off: the GEN prompt ends <|channel>thought\\n<channel|>");
+  const auto on = route_plan(secure_frontend::NativeChatProfile::gemma4, request, pack, true);
+  const auto* on_plan = std::get_if<secure_frontend::ChatGenerationPlan>(&on);
+  const auto think = test_support::token_id(pack, "<|think|>");
+  expect(on_plan != nullptr && !ends_with(on_plan->prompt_token_ids, closed) &&
+             std::find(on_plan->prompt_token_ids.begin(), on_plan->prompt_token_ids.end(), think) != on_plan->prompt_token_ids.end(),
+         "thinking on: <|think|> in the system turn, the channel left to the model");
+}
+
+// The route's plan is chosen by an exhaustive switch: a gemma4 route never plans with the
+// GLM or qwen renderer, and never takes images.
+void gemma4_route_never_takes_another_profiles_plan() {
+  using secure_frontend::NativeChatProfile;
+  auto glm = test_support::byte_tokenizer();
+  for (const char* marker : {"[gMASK]", "<sop>", "<|system|>", "<|user|>", "<|assistant|>", "<think>"}) {
+    glm.tokens_by_id.emplace_back(marker);
+    glm.token_types.push_back(3);
+  }
+  const secure_frontend::ChatCompletionRequest request{"local", {{"user", "Hi"}}, 2U};
+  expect(std::holds_alternative<secure_frontend::ChatGenerationPlan>(route_plan(NativeChatProfile::glm53, request, glm, false)),
+         "control: the GLM pack plans under glm53");
+  expect(std::holds_alternative<secure_frontend::ChatGenerationPlan>(
+             route_plan(NativeChatProfile::qwen, request, test_support::byte_tokenizer(), true)),
+         "control: the ChatML pack plans under qwen");
+  expect(std::holds_alternative<secure_frontend::ChatGenerationPlanError>(route_plan(NativeChatProfile::gemma4, request, glm, false)),
+         "gemma4 with a GLM pack: no plan (never the GLM renderer)");
+  expect(std::holds_alternative<secure_frontend::ChatGenerationPlanError>(
+             route_plan(NativeChatProfile::gemma4, request, test_support::byte_tokenizer(), true)),
+         "gemma4 with a ChatML pack: no plan (never the qwen renderer)");
+  const auto pack = test_support::spm_tokenizer();
+  const auto gemma = route_plan(NativeChatProfile::gemma4, request, pack, false);
+  const auto* plan = std::get_if<secure_frontend::ChatGenerationPlan>(&gemma);
+  expect(plan != nullptr && !plan->prompt_token_ids.empty() && plan->prompt_token_ids.front() == test_support::token_id(pack, "<bos>"),
+         "gemma4 with its own pack: the Gemma plan (starts with <bos>)");
+  const std::vector<std::size_t> one_image{4U};
+  const auto images = secure_frontend::select_chat_generation_plan(NativeChatProfile::gemma4, request, pack, 4096U,
+                                                                   secure_frontend::SamplingDefaults{}, one_image, false,
+                                                                   secure_frontend::QwenEffortPlacement{secure_frontend::QwenEffort::high, false});
+  expect(std::holds_alternative<secure_frontend::ChatGenerationPlanError>(images), "gemma4 never takes image answers (D2)");
+}
+
 int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
+      {"reasoning_effort_per_request_on_gemma4", reasoning_effort_per_request_on_gemma4},
+      {"gemma4_thinking_defaults_to_off", gemma4_thinking_defaults_to_off},
+      {"gemma4_route_never_takes_another_profiles_plan", gemma4_route_never_takes_another_profiles_plan},
       {"remote_looking_text_is_text", remote_looking_text_is_text},
       {"reasoning_effort_per_request", reasoning_effort_per_request},
       {"parses_minimal_text_request", parses_minimal_text_request},

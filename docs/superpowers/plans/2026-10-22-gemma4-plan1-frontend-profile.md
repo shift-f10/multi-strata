@@ -59,6 +59,13 @@ Rulings taken during execution (2026-10-22; each also in its task's commit messa
 - **Task 3:** `chat_route.cpp`'s plan ternary became a switch here (not in Task 10) — why: once
   `NativeChatProfile::gemma4` exists the ternary would send gemma4 requests to the GLM plan —
   cost if wrong: none.
+- **Task 10:** the route's plan selection is a public `select_chat_generation_plan` (both plan
+  sites) — why: the RED cases need it at unit level — cost if wrong: none. `chat_schema_limits`
+  derives the per-request `reasoning_effort` flag from the configured profile (the bootstrap
+  still re-derives it from the launch) — cost if wrong: none at serve time.
+- **Execution note (2026-10-22):** Tasks 8, 9 and 11 were written by parallel workers in
+  detached worktrees and integrated here in plan order (`git apply --3way`); the full suite ran
+  per batch (after 7-9, after 10-11, after 12) by the controller's gate change.
 
 ## Global Constraints
 
@@ -371,15 +378,15 @@ library `secure_frontend_gemma4_prompt_renderer`; tests new `gemma4_profile_test
   → on; with neither the request nor `reasoning.effort` set, thinking is **off** (D10);
   `ChatRouteConfig` gains `gemma4_thinking_default`.
 
-- [ ] **Step 1: RED**
+- [x] **Step 1: RED**
   ```cpp
   void reasoning_effort_per_request_on_gemma4();      // schema admits it; glm53 still refuses (unchanged)
   void gemma4_thinking_defaults_to_off();              // GEN prompt ends in the closed channel
   void gemma4_route_never_takes_another_profiles_plan();
   ```
   FAIL.
-- [ ] **Step 2:** implement.
-- [ ] **Step 3:** GREEN + gates; commit `route: gemma4 plan selection and thinking default`.
+- [x] **Step 2:** implement.
+- [x] **Step 3:** GREEN + gates; commit `route: gemma4 plan selection and thinking default`.
 
 ---
 

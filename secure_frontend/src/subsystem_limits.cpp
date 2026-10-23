@@ -25,6 +25,9 @@ ChatSchemaLimits chat_schema_limits(const FrontendConfig& c) {
   // stays false HERE — only the composed launch (vision.enabled AND launch.mmproj)
   // can open the content-array gate (Ruling T12-b), and secure_server_main sets it.
   limits.max_images = static_cast<std::size_t>(c.vision.max_n);
+  // Gemma 4 plan 1 Task 10: per-request reasoning_effort follows the configured profile (an
+  // unset one is a managed model's: the bootstrap re-derives it from the composed launch).
+  limits.per_request_reasoning_effort = per_request_reasoning_effort_for(c.engine.profile.value_or(EngineProfile::qwen));
   limits.max_image_b64_chars = (kVisionImageUrlMaxBytes + 2U) / 3U * 4U;
   return limits;
 }
@@ -100,6 +103,10 @@ bool per_request_reasoning_effort_for(const EngineProfile profile) {
     case EngineProfile::gemma4: return true;
   }
   return false;  // unreachable
+}
+
+bool gemma4_thinking_default(const FrontendConfig& config) {
+  return config.reasoning.effort.has_value() && *config.reasoning.effort != ReasoningEffort::none;
 }
 
 TokenizerMode tokenizer_mode_for(const EngineProfile profile) {

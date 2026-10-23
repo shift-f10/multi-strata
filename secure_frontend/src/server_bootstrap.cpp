@@ -186,7 +186,10 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
   // it opens only when vision.enabled AND the installed manifest declares launch.mmproj
   // (compose refuses that pairing for glm53, so the gate implies the qwen renderer).
   // The request itself can never open it.
-  if (config.vision.enabled && launch.vision_mmproj.has_value()) schema_limits.vision_capable = true;
+  // Gemma 4 plan 1 Task 10: only the qwen profile reads images (gemma4 is text only, D2).
+  if (config.vision.enabled && launch.vision_mmproj.has_value() && launch.profile == EngineProfile::qwen) {
+    schema_limits.vision_capable = true;
+  }
   // Session log step 14: per-request reasoning_effort reaches the qwen renderer; Gemma 4
   // plan 1 Task 3 (spec §6.6): and the gemma4 one (none = thinking off, else on). glm53 refuses it.
   schema_limits.per_request_reasoning_effort = secure_frontend::per_request_reasoning_effort_for(launch.profile);
@@ -379,6 +382,7 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
                                        .qwen_thinking = config.reasoning.effort != secure_frontend::ReasoningEffort::none,
                                        .qwen_effort = qwen_effort,
                                        .effort_at_end = effort_at_end,
+                                       .gemma4_thinking_default = secure_frontend::gemma4_thinking_default(config),
                                        .minimum_output_tokens = config.engine.min_tokens.value_or(0U),
                                        .maximum_output_tokens = config.engine.max_tokens.value_or(0U),
                                        .model_aliases = model_aliases,

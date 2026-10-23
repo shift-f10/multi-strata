@@ -1300,6 +1300,11 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         rejects_unsupported_and_unsafe_features rejects_duplicate_and_malformed_json
         renders_escaped_minimal_response
         renders_openai_completion_shape renders_reasoning_content_beside_the_answer)
+    # Gemma 4 plan 1 Task 10 (spec §6.6, D10): the route's plan selection and thinking default,
+    # unit-level (the route's own selection function and the config-derived schema limits).
+    target_link_libraries(secure_frontend_chat_schema_tests PRIVATE secure_frontend_chat_route secure_frontend_subsystem_limits)
+    secure_frontend_add_cases(secure_frontend_chat_schema_tests reasoning_effort_per_request_on_gemma4
+        gemma4_thinking_defaults_to_off gemma4_route_never_takes_another_profiles_plan)
 
     # SP5 M1 Task 12: the image_url payload gate — data URL, strict base64, byte caps and
     # the four pass-through formats' dimensions, checked before ANY write (0600 staging).
