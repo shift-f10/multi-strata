@@ -77,9 +77,18 @@ ChatExecutionOutcome ChatExecutionService::execute(const ChatCompletionRequest& 
                  "native chat execution limits or engine state are invalid");
   }
 
-  const auto plan_result = profile_ == NativeChatProfile::qwen
-      ? make_qwen_chat_generation_plan(request, tokenizer, limits_.maximum_prompt_tokens, limits_.default_max_tokens)
-      : make_glm53_chat_generation_plan(request, tokenizer, limits_.maximum_prompt_tokens, limits_.default_max_tokens);
+  // Gemma 4 plan 1 Task 3: an exhaustive switch, so a profile never takes another's plan.
+  const auto plan_result = [&]() -> ChatGenerationPlanResult {
+    switch (profile_) {
+      case NativeChatProfile::qwen:
+        return make_qwen_chat_generation_plan(request, tokenizer, limits_.maximum_prompt_tokens, limits_.default_max_tokens);
+      case NativeChatProfile::glm53:
+        return make_glm53_chat_generation_plan(request, tokenizer, limits_.maximum_prompt_tokens, limits_.default_max_tokens);
+      case NativeChatProfile::gemma4:  // the template's default: thinking off (D10)
+        return make_gemma4_chat_generation_plan(request, tokenizer, limits_.maximum_prompt_tokens, limits_.default_max_tokens);
+    }
+    return ChatGenerationPlanError{ChatGenerationPlanErrorCode::invalid_request, "unknown chat profile"};
+  }();
   const auto* plan = std::get_if<ChatGenerationPlan>(&plan_result);
   if (plan == nullptr) {
     return error(ChatExecutionErrorCode::planning_failed,
@@ -229,6 +238,7 @@ GenerationOutcome ChatExecutionService::run_generation(const std::vector<std::ui
   limits.think_tokens = settings.think_tokens;
   limits.starts_in_reasoning = settings.starts_in_reasoning;
   limits.stop_tokens = settings.stop_tokens;
+  limits.channel_name = settings.channel_name;  // Gemma 4 plan 1 Task 9
   limits.meter = settings.meter;
   const GenerationRunResult run = drive_generation(protocol_, decoder, limits, observer);
   const bool shutting = (control.shutting_down != nullptr && control.shutting_down->load()) ||

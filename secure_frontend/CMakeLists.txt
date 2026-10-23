@@ -201,6 +201,11 @@ add_library(secure_frontend_glm_prompt_renderer
     src/glm_prompt_renderer.cpp
 )
 
+# Gemma 4 plan 1 Task 8 (spec §6.3): the fixed Gemma 4 text template.
+add_library(secure_frontend_gemma4_prompt_renderer
+    src/gemma4_prompt_renderer.cpp
+)
+
 add_library(secure_frontend_chat_generation_plan
     src/chat_generation_plan.cpp
 )
@@ -392,6 +397,13 @@ target_include_directories(secure_frontend_glm_prompt_renderer
         $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(secure_frontend_glm_prompt_renderer PUBLIC secure_frontend_chat_schema)
+target_compile_features(secure_frontend_gemma4_prompt_renderer PUBLIC cxx_std_20)
+target_include_directories(secure_frontend_gemma4_prompt_renderer
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(secure_frontend_gemma4_prompt_renderer PUBLIC secure_frontend_chat_schema)
 target_compile_features(secure_frontend_chat_generation_plan PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_chat_generation_plan
     PUBLIC
@@ -399,7 +411,8 @@ target_include_directories(secure_frontend_chat_generation_plan
         $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(secure_frontend_chat_generation_plan
-    PUBLIC secure_frontend_chat_schema secure_frontend_qwen_prompt_renderer secure_frontend_glm_prompt_renderer secure_frontend_tokenizer_pack)
+    PUBLIC secure_frontend_chat_schema secure_frontend_qwen_prompt_renderer secure_frontend_glm_prompt_renderer
+           secure_frontend_gemma4_prompt_renderer secure_frontend_tokenizer_pack)
 target_compile_features(secure_frontend_chat_execution PUBLIC cxx_std_20)
 target_include_directories(secure_frontend_chat_execution
     PUBLIC
@@ -497,6 +510,7 @@ foreach(_target IN ITEMS
         secure_frontend_http_socket_server secure_frontend_model_inventory secure_frontend_engine_arguments
         secure_frontend_json secure_frontend_typed_config secure_frontend_server_cli secure_frontend_chat_schema
         secure_frontend_tokenizer_pack secure_frontend_qwen_prompt_renderer secure_frontend_glm_prompt_renderer
+        secure_frontend_gemma4_prompt_renderer
         secure_frontend_chat_generation_plan secure_frontend_chat_execution secure_frontend_engine_supervisor
         secure_frontend_subsystem_limits secure_frontend_secrets secure_frontend_token_store
         secure-frontend-smoke strata-secure-smoke-server strata-secure-server)
@@ -907,7 +921,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_test_paths(secure_frontend_fake_engine_tests)
     # Crash exit codes are Windows runtime semantics: MSYS2 only.
     secure_frontend_add_cases(secure_frontend_fake_engine_tests fake_engine_modes_selftest fake_engine_dump_is_parseable
-        fake_engine_stream_modes_selftest
+        fake_engine_stream_modes_selftest fake_engine_reads_options_beside_itself
         TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     # F3: start/stop the real server with the fake engine; process-tree helpers.
@@ -1025,6 +1039,10 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         engine_error_carries_should_retry_false dos02_shutdown_during_stream_ends_with_error_event)
     secure_frontend_add_cases(secure_frontend_api_server_tests ${SECURE_FRONTEND_API_SERVER_M2_CASES}
         TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # Gemma 4 plan 1 Task 11: the gemma4 profile end to end on the fake engine (real sockets,
+    # ServerProcess with --profile gemma4 and the spm_bpe pack): windows-runtime like its neighbours.
+    secure_frontend_add_cases(secure_frontend_api_server_tests gemma4_profile_chats_end_to_end gemma4_thinking_round_trip
+        gemma4_monitor_and_page_unchanged TIMEOUT 120 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     secure_frontend_add_test_executable(secure_frontend_deadline_tests tests/deadline_test.cpp secure_frontend_engine_stdio_process)
     secure_frontend_test_paths(secure_frontend_deadline_tests)
@@ -1266,13 +1284,15 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         parallel_reaches_the_engine_within_one_child
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     # Pure parsing, no canonical root: runs under wine too.
-    secure_frontend_add_cases(secure_frontend_engine_arguments_tests gpu_list_rejects_malformed_values)
+    secure_frontend_add_cases(secure_frontend_engine_arguments_tests gpu_list_rejects_malformed_values
+        gemma4_user_arguments_follow_the_strata_gemma4_allowlist)
     # SP4 Task 24b (spec §2.3, §4.9 c): the managed launch over a scratch models store.
     target_link_libraries(secure_frontend_engine_arguments_tests PRIVATE secure_frontend_launch secure_frontend_strata_cli)
     secure_frontend_add_cases(secure_frontend_engine_arguments_tests launch_composed_from_manifest_qwen vision_compose_rules
         managed_launch_argv_is_utf8_for_non_ascii_models_root launch_refuses_model_not_installed
         engine_args_reject_weight_flags_for_managed_model managed_launch_renders_typed_gpu_list
-        managed_glm_rows_refused_for_qwen_manifest LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+        managed_glm_rows_refused_for_qwen_manifest gemma4_expert_launch_composes_only_allowlisted_flags
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     # Pure in-memory (F-63): wine runs it too.
     secure_frontend_add_cases(secure_frontend_engine_arguments_tests launch_refuses_engine_too_old)
 
@@ -1284,6 +1304,11 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         rejects_unsupported_and_unsafe_features rejects_duplicate_and_malformed_json
         renders_escaped_minimal_response
         renders_openai_completion_shape renders_reasoning_content_beside_the_answer)
+    # Gemma 4 plan 1 Task 10 (spec §6.6, D10): the route's plan selection and thinking default,
+    # unit-level (the route's own selection function and the config-derived schema limits).
+    target_link_libraries(secure_frontend_chat_schema_tests PRIVATE secure_frontend_chat_route secure_frontend_subsystem_limits)
+    secure_frontend_add_cases(secure_frontend_chat_schema_tests reasoning_effort_per_request_on_gemma4
+        gemma4_thinking_defaults_to_off gemma4_route_never_takes_another_profiles_plan)
 
     # SP5 M1 Task 12: the image_url payload gate — data URL, strict base64, byte caps and
     # the four pass-through formats' dimensions, checked before ANY write (0600 staging).
@@ -1355,6 +1380,10 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         reasoning_rows_match_the_pinned_validator
         glm_keys_parse_with_mayas_kinds_and_defaults
         glm_keys_rejected_on_strata_profile_by_name
+        engine_profile_accepts_gemma4_and_describes_it
+        glm_keys_rejected_on_gemma4_profile_by_name
+        qwen_launch_rows_rejected_on_gemma4_profile_by_name
+        every_profile_selects_its_own_argument_profile
         thinking_budget_default_is_mayas_32768
         glm_environment_projection_moves_the_split_default
         glm_max_context_typed_and_glm53_args_refused
@@ -1417,7 +1446,12 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     set(_tokenizer_cases loads_validates_and_decodes_offline_pack rejects_ambiguous_or_incompatible_pack_assets
         rejects_malformed_json_and_special_literals_for_decode encoding_fails_closed_for_special_invalid_and_missing_tokens
         token_byte_decoder_returns_raw_token_bytes finds_qwen_think_tokens_only_when_unambiguous
-        qwen_encoder_takes_think_markers_only_as_generation_tail finds_qwen_end_of_turn_tokens)
+        qwen_encoder_takes_think_markers_only_as_generation_tail finds_qwen_end_of_turn_tokens
+        spm_pack_loads_merges_json_with_newline_and_tab_tokens mode_comes_from_the_profile_never_the_files
+        merges_json_is_bounded_and_validated
+        spm_encodes_spaces_as_u2581_and_merges_by_rank spm_newline_runs_are_single_tokens_when_known
+        spm_unknown_characters_fall_back_to_byte_tokens spm_round_trips_the_upstream_corpus spm_decoder_maps_u2581_and_byte_tokens
+        spm_pack_load_prepares_the_encode_index_once)
     if(WIN32)
         list(APPEND _tokenizer_cases cfg03_tokenizer_file_swapped_to_junction_rejected)
     else()
@@ -1425,6 +1459,13 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     endif()
     secure_frontend_add_cases(secure_frontend_tokenizer_pack_tests ${_tokenizer_cases}
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # Gemma 4 plan 1 Task 7: the real vocabulary against llama.cpp's ids (the fixture holds texts
+    # and ids only). The pack is never committed: SECURE_FRONTEND_GEMMA4_PACK names it; unset, the
+    # case prints its reason and is reported skipped.
+    secure_frontend_add_cases(secure_frontend_tokenizer_pack_tests gemma4_real_pack_matches_the_fixture
+        ARGS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/gemma4_tokenizer_texts.json LABELS gemma4-real-pack)
+    set_tests_properties(secure_frontend_tokenizer_pack_tests.gemma4_real_pack_matches_the_fixture PROPERTIES
+        SKIP_REGULAR_EXPRESSION "SKIPPED:")
 
     secure_frontend_add_test_executable(secure_frontend_qwen_prompt_renderer_tests tests/qwen_prompt_renderer_test.cpp
         secure_frontend_qwen_prompt_renderer)
@@ -1438,6 +1479,13 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_glm_profile_tests
         renders_exact_fixed_profile rejects_boundary_injection_and_invalid_order creates_plan_only_with_control_tokens
         renders_long_conversations_past_the_old_caps)
+
+    # Gemma 4 plan 1 Task 8 (spec §2.5, §6.3)
+    secure_frontend_add_test_executable(secure_frontend_gemma4_profile_tests tests/gemma4_profile_test.cpp
+        secure_frontend_chat_generation_plan)
+    secure_frontend_add_cases(secure_frontend_gemma4_profile_tests
+        renders_the_template_bytes_thinking_off renders_the_template_bytes_thinking_on trims_like_jinja
+        refuses_markers_order_and_empty_text plan_encodes_markers_as_single_ids_and_text_as_spm)
 
     secure_frontend_add_test_executable(secure_frontend_chat_generation_plan_tests tests/chat_generation_plan_test.cpp
         secure_frontend_chat_generation_plan)
@@ -1453,6 +1501,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_chat_execution_tests
         executes_a_bounded_non_streaming_completion rejects_context_and_output_limits_before_generation
         fails_closed_on_invalid_engine_output executes_glm53_only_when_explicitly_selected
+        executes_gemma4_only_when_explicitly_selected
         glm_profile_generation_completes_over_maya_dialect maya_dialect_cancellation_round_trips
         chat_recovers_after_generation_timeout chat_gen_write_bounded_by_generation_deadline chat_marks_engine_failed_when_drain_fails
         chat_rejects_nonfinite_done_and_stays_ready health_reflects_protocol_state
@@ -1471,13 +1520,16 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         drive_generation_caps_reasoning_and_answer_together drive_generation_ends_a_split_character_at_the_tag
         drive_generation_keeps_other_special_tokens_fail_closed run_generation_returns_reasoning_beside_the_answer
         drive_generation_end_of_turn_ends_the_reply_as_stop run_generation_ends_at_the_end_of_turn
-        drive_generation_feeds_the_monitor_meter)
+        drive_generation_feeds_the_monitor_meter
+        gemma4_thought_channel_goes_to_reasoning gemma4_wrong_channel_name_fails_closed
+        gemma4_turn_close_ends_the_reply_as_stop gemma4_tool_markers_in_output_fail_closed)
 
     secure_frontend_add_test_executable(secure_frontend_subsystem_limits_tests tests/subsystem_limits_test.cpp
         secure_frontend_subsystem_limits)
     secure_frontend_add_cases(secure_frontend_subsystem_limits_tests
         ready_timeout_defaults_to_900_seconds subsystem_limits_follow_config supervisor_policy_follows_config
-        supervisor_flavor_is_the_maya_dialect_for_glm53
+        supervisor_flavor_is_the_maya_dialect_for_glm53 supervisor_profile_and_flavor_for_gemma4
+        tokenizer_mode_follows_the_profile
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     add_executable(secure_frontend_fake_engine tests/fake_engine_main.cpp)
@@ -1506,7 +1558,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # Unit case (parse + validate in process, no child): unlabeled, so it also runs under wine.
     secure_frontend_add_cases(secure_frontend_server_cli_tests cli_sp2_flags_map_to_schema_keys TIMEOUT 120)
     # SP4 §4.9 d: pure argv parsing, so wine runs it too.
-    secure_frontend_add_cases(secure_frontend_server_cli_tests cli_expert_flag_parsing)
+    secure_frontend_add_cases(secure_frontend_server_cli_tests cli_expert_flag_parsing usage_names_the_three_profiles)
 
     # SP7 M1 Task 1: the hardened service unit (exact text) and the `current`
     # seam. The internal header lives in src/, like the SP2 launch seams.
@@ -1696,6 +1748,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_acquire_tests dl04_publish_uses_noreplace_and_never_overwrites
         publish_falls_back_when_noreplace_unsupported dl04_orphan_adopted_after_rehash_by_digest
         replace_loaded_model_retires_old_version layout_check_requires_pack_files_and_valid_tokenizer
+        gemma4_layout_check_requires_an_spm_tokenizer_pack
         staged_tree_must_be_exactly_the_manifest publish_requires_staging_key_of_manifest
         overlong_staging_tree_is_publish_failed retire_removes_read_only_published_version
         downgrade_adopts_retired_version_keeping_one_live rm_refuses_held_version_and_removes_read_only_tree
@@ -1750,7 +1803,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     # SP4 Task 27 (spec §1.3, §6.1, §8.3, D6): the network verbs through CliServices seams.
     target_sources(secure_frontend_acquire_tests PRIVATE tests/acquire_network_cli_test.cpp)
     secure_frontend_add_cases(secure_frontend_acquire_tests pull_cli_prints_summary_and_installs run_installed_model_needs_no_network
-        run_refuses_glm53_without_engine LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+        run_refuses_glm53_without_engine engine_gate_refuses_gemma4_until_the_engine_exists
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     if(SECURE_FRONTEND_TEST_HOOKS)
         secure_frontend_add_cases(secure_frontend_acquire_tests run_missing_model_prompts_and_decline_exits_2
             run_missing_model_non_interactive_exits_2 LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
@@ -1834,6 +1888,9 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         file_and_directory_prefix_collision_rejected shard_set_must_be_complete_in_one_directory
         launch_keys_follow_profile manifest_accepts_mmproj_role_and_rejects_duplicates wildcard_redirect_hosts_validated total_size_above_budget_is_total_budget_exceeded
         engine_version_parsed_with_fourth_component)
+    # Gemma 4 plan 1 Task 2 (spec §6.1, §7): the gemma4 profile and family, text-only launch keys.
+    secure_frontend_add_cases(secure_frontend_manifest_tests manifest_accepts_gemma4_profile_with_gemma4_family
+        gemma4_launch_keys_are_text_only)
     secure_frontend_add_cases(secure_frontend_manifest_tests raw_profile_rejected_in_release_build LABELS release-only)
     if(SECURE_FRONTEND_TEST_HOOKS)
         secure_frontend_add_cases(secure_frontend_manifest_tests raw_profile_accepted_with_test_hooks

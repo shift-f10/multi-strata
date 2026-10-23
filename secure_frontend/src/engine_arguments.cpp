@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cstdint>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -20,6 +22,125 @@ constexpr std::array<std::string_view, 3> kUnsupportedModes{"--batch", "--slots"
 std::string_view flag_name(const std::string_view argument) {
   const auto equals = argument.find('=');
   return equals == std::string_view::npos ? argument : argument.substr(0, equals);
+}
+
+// Gemma 4 plan 1 Task 1 (spec §4.8): the strata-gemma4-engine's own serve flags, each at
+// most once, in the `--flag VALUE` spelling only. Bounds: --max-context up to the trained
+// context (262,144, spec §2.1); --expert-slots up to the 128 experts of a layer; --kv the two
+// cache precisions (D3); --expert-vram GiB with at most two decimal places.
+enum class Gemma4Value { none, integer, kv_precision, gibibytes };
+struct Gemma4Flag final {
+  std::string_view name;
+  Gemma4Value kind;
+  std::int64_t minimum;
+  std::int64_t maximum;
+};
+constexpr std::array<Gemma4Flag, 8> kGemma4Flags{{{"--max-context", Gemma4Value::integer, 1, 262144},
+                                                  {"--chunk", Gemma4Value::integer, 1, 8192},
+                                                  {"--kv", Gemma4Value::kv_precision, 0, 0},
+                                                  {"--no-graph", Gemma4Value::none, 0, 0},
+                                                  {"--expert-vram", Gemma4Value::gibibytes, 0, 1024},
+                                                  {"--expert-slots", Gemma4Value::integer, 0, 128},
+                                                  {"--hybrid-rows", Gemma4Value::integer, 1, 4096},
+                                                  {"--cpu-threads", Gemma4Value::integer, 1, 256}}};
+
+// Flags an operator may carry over from the strata engine, or the Gemma engine's own
+// test-only ones (refused with --serve): refused by name. Any other argument is refused
+// without being echoed (EngineArgumentsError::message is a fixed string).
+constexpr std::array<std::string_view, 31> kGemma4RefusedByName{
+    "--model",          "--tokens",          "--force",           "--dump-full-logits", "--dump-layers",
+    "--bench-pp",       "--bench-tg",        "--mtp",             "--spec",             "--spec-min-p",
+    "--batch-mtp",      "--draft-vocab",     "--pack",            "--ple-gguf",         "--embd-gguf",
+    "--native-head-gguf", "--native-dense-gguf", "--tail-role-token", "--emb",          "--ctx",
+    "--prefill",        "--pool-workers",    "--no-token-graph",  "--no-warmup",        "--greedy",
+    "--max-new",        "--n",               "--vram-reserve-mib", "--vram-elastic",    "--layer-split",
+    "--expert-profile-save"};
+
+EngineArgumentsError gemma4_refusal(const EngineArgumentsErrorCode code, const std::string_view flag,
+                                    const std::string_view what) {
+  return EngineArgumentsError{code, "engine.profile gemma4: " + std::string{flag} + " " + std::string{what}};
+}
+
+bool all_digits(const std::string_view text) {
+  return std::all_of(text.begin(), text.end(), [](const char c) { return c >= '0' && c <= '9'; });
+}
+
+// Digits only: no sign, no leading zero (but "0"), at most 19 of them.
+std::optional<EngineArgumentsError> gemma4_integer(const Gemma4Flag& flag, const std::string_view value) {
+  const std::string range = "must be " + std::to_string(flag.minimum) + "-" + std::to_string(flag.maximum);
+  if (value.empty() || !all_digits(value) || (value.size() > 1 && value.front() == '0')) {
+    return gemma4_refusal(EngineArgumentsErrorCode::invalid_value, flag.name, "takes a decimal integer");
+  }
+  std::int64_t parsed = 0;
+  const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+  if (error != std::errc{} || end != value.data() + value.size() || parsed < flag.minimum || parsed > flag.maximum) {
+    return gemma4_refusal(EngineArgumentsErrorCode::out_of_range, flag.name, range);
+  }
+  return std::nullopt;
+}
+
+// GiB as `0|[1-9][0-9]{0,3}`, then optionally `.` and one or two digits; at most the maximum.
+std::optional<EngineArgumentsError> gemma4_gibibytes(const Gemma4Flag& flag, const std::string_view value) {
+  const auto dot = value.find('.');
+  const std::string_view whole = value.substr(0, dot);
+  const std::string_view fraction = dot == std::string_view::npos ? std::string_view{} : value.substr(dot + 1);
+  const bool shaped = !whole.empty() && whole.size() <= 4 && all_digits(whole) && (whole.size() == 1 || whole.front() != '0') &&
+                      (dot == std::string_view::npos || (!fraction.empty() && fraction.size() <= 2 && all_digits(fraction)));
+  if (!shaped) {
+    return gemma4_refusal(EngineArgumentsErrorCode::invalid_value, flag.name, "takes GiB with at most two decimal places");
+  }
+  std::int64_t hundredths = 0;
+  for (const char c : whole) hundredths = hundredths * 10 + (c - '0');
+  hundredths *= 100;
+  if (!fraction.empty()) hundredths += (fraction[0] - '0') * 10 + (fraction.size() == 2 ? fraction[1] - '0' : 0);
+  if (hundredths < flag.minimum * 100 || hundredths > flag.maximum * 100) {
+    return gemma4_refusal(EngineArgumentsErrorCode::out_of_range, flag.name,
+                          "must be " + std::to_string(flag.minimum) + "-" + std::to_string(flag.maximum) + " GiB");
+  }
+  return std::nullopt;
+}
+
+std::optional<EngineArgumentsError> validate_gemma4_arguments(const std::vector<std::string>& user_arguments) {
+  std::vector<std::string_view> seen;
+  for (std::size_t i = 0; i < user_arguments.size(); ++i) {
+    const std::string_view argument = user_arguments[i];
+    const auto name = flag_name(argument);
+    const auto flag = std::find_if(kGemma4Flags.begin(), kGemma4Flags.end(),
+                                   [name](const Gemma4Flag& entry) { return entry.name == name; });
+    if (flag == kGemma4Flags.end()) {
+      const auto known = std::find(kGemma4RefusedByName.begin(), kGemma4RefusedByName.end(), name);
+      if (known != kGemma4RefusedByName.end()) {
+        return gemma4_refusal(EngineArgumentsErrorCode::not_accepted, *known, "is not one of the Gemma engine's flags");
+      }
+      return EngineArgumentsError{EngineArgumentsErrorCode::not_accepted,
+                                  "engine.profile gemma4: the engine argument is not one of the Gemma engine's flags"};
+    }
+    if (name.size() != argument.size()) {
+      return gemma4_refusal(EngineArgumentsErrorCode::not_accepted, flag->name, "takes its value as the next argument");
+    }
+    if (std::find(seen.begin(), seen.end(), flag->name) != seen.end()) {
+      return gemma4_refusal(EngineArgumentsErrorCode::invalid_value, flag->name, "is given more than once");
+    }
+    seen.push_back(flag->name);
+    if (flag->kind == Gemma4Value::none) continue;
+    if (i + 1 >= user_arguments.size() || user_arguments[i + 1].rfind("--", 0) == 0) {
+      return gemma4_refusal(EngineArgumentsErrorCode::invalid_value, flag->name, "needs a value");
+    }
+    const std::string_view value = user_arguments[++i];
+    std::optional<EngineArgumentsError> refused;
+    switch (flag->kind) {
+      case Gemma4Value::none: break;
+      case Gemma4Value::integer: refused = gemma4_integer(*flag, value); break;
+      case Gemma4Value::gibibytes: refused = gemma4_gibibytes(*flag, value); break;
+      case Gemma4Value::kv_precision:
+        if (value != "f16" && value != "f32") {
+          refused = gemma4_refusal(EngineArgumentsErrorCode::invalid_value, flag->name, "must be f16 or f32");
+        }
+        break;
+    }
+    if (refused) return refused;
+  }
+  return std::nullopt;
 }
 }  // namespace
 
@@ -50,6 +171,7 @@ std::optional<EngineArgumentsError> validate_engine_user_arguments(const EngineA
       }
     }
   }
+  if (profile == EngineArgumentsProfile::strata_gemma4) return validate_gemma4_arguments(user_arguments);
   return std::nullopt;
 }
 
@@ -126,8 +248,10 @@ EngineArgumentsResult build_engine_arguments(const EngineArgumentsProfile profil
   const auto parsed = parse_relative_path(selected.relative_artifact_path);
   // SP5 M1 Task 6 (parity row mtp, runconfig.py:36 + draft_layer.is_off): an explicit
   // false strips the draft layer's own options at every start, before anything else is
-  // composed. The GLM profile returns above: its runner does not speak these flags.
-  if (!mtp_on) strip_mtp_flags(arguments, nullptr);
+  // composed. The GLM profile returns above: its runner does not speak these flags. The
+  // Gemma engine has no draft layer (spec D5) and its allowlist refuses those flags, so
+  // nothing is stripped for strata_gemma4 (Gemma 4 plan 1 Task 3).
+  if (!mtp_on && profile == EngineArgumentsProfile::strata_0143) strip_mtp_flags(arguments, nullptr);
   const auto* relative = std::get_if<RelativePath>(&parsed);
   if (relative == nullptr) {
     return EngineArgumentsError{EngineArgumentsErrorCode::invalid_value, "selected model has an invalid artifact path"};

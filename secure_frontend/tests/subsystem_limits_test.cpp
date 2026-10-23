@@ -85,6 +85,40 @@ void supervisor_flavor_is_the_maya_dialect_for_glm53() {
   const secure_frontend::SupervisorConfig plain = secure_frontend::supervisor_config(*config_with({}));
   expect(plain.flavor == secure_frontend::EngineProtocolFlavor::strata_0143, "the qwen profile keeps the strata dialect");
 }
+
+// Gemma 4 plan 1 Task 3 (spec §6.1): gemma4 is its own chat profile on the strata_0143
+// wire and the strata environment family; the selection functions are exhaustive switches
+// that the bootstrap shares (server_bootstrap.cpp), so a third profile never takes glm's.
+void supervisor_profile_and_flavor_for_gemma4() {
+  using secure_frontend::EngineProfile;
+  const secure_frontend::SupervisorConfig gemma = secure_frontend::supervisor_config(*config_with({{"engine.profile", "\"gemma4\""}}));
+  expect(gemma.profile == secure_frontend::NativeChatProfile::gemma4, "gemma4 selects NativeChatProfile::gemma4");
+  expect(gemma.flavor == secure_frontend::EngineProtocolFlavor::strata_0143, "gemma4 speaks strata_0143 (spec §4.7)");
+  expect(secure_frontend::native_chat_profile_for(EngineProfile::qwen) == secure_frontend::NativeChatProfile::qwen &&
+             secure_frontend::native_chat_profile_for(EngineProfile::glm53) == secure_frontend::NativeChatProfile::glm53 &&
+             secure_frontend::native_chat_profile_for(EngineProfile::gemma4) == secure_frontend::NativeChatProfile::gemma4,
+         "each profile selects its own chat profile");
+  expect(secure_frontend::protocol_flavor_for(EngineProfile::qwen) == secure_frontend::EngineProtocolFlavor::strata_0143 &&
+             secure_frontend::protocol_flavor_for(EngineProfile::glm53) == secure_frontend::EngineProtocolFlavor::maya_118 &&
+             secure_frontend::protocol_flavor_for(EngineProfile::gemma4) == secure_frontend::EngineProtocolFlavor::strata_0143,
+         "the wire flavor per profile");
+  expect(secure_frontend::engine_family_for(EngineProfile::qwen) == secure_frontend::EngineFamily::strata &&
+             secure_frontend::engine_family_for(EngineProfile::glm53) == secure_frontend::EngineFamily::glm &&
+             secure_frontend::engine_family_for(EngineProfile::gemma4) == secure_frontend::EngineFamily::strata,
+         "the environment family per profile (gemma4: the strata allowlist)");
+  expect(secure_frontend::per_request_reasoning_effort_for(EngineProfile::qwen) &&
+             !secure_frontend::per_request_reasoning_effort_for(EngineProfile::glm53) &&
+             secure_frontend::per_request_reasoning_effort_for(EngineProfile::gemma4),
+         "reasoning_effort per request: qwen and gemma4, never glm53 (spec §6.6)");
+}
+// Gemma 4 plan 1 Task 4 (Review Focus 2): the bootstrap loads the pack in the profile's mode.
+void tokenizer_mode_follows_the_profile() {
+  using secure_frontend::EngineProfile;
+  using secure_frontend::TokenizerMode;
+  expect(secure_frontend::tokenizer_mode_for(EngineProfile::qwen) == TokenizerMode::byte_bpe, "qwen packs are byte_bpe");
+  expect(secure_frontend::tokenizer_mode_for(EngineProfile::glm53) == TokenizerMode::byte_bpe, "glm53 packs are byte_bpe");
+  expect(secure_frontend::tokenizer_mode_for(EngineProfile::gemma4) == TokenizerMode::spm_bpe, "gemma4 packs are spm_bpe");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -93,5 +127,7 @@ int main(int argc, char** argv) {
       {"subsystem_limits_follow_config", subsystem_limits_follow_config},
       {"supervisor_policy_follows_config", supervisor_policy_follows_config},
       {"supervisor_flavor_is_the_maya_dialect_for_glm53", supervisor_flavor_is_the_maya_dialect_for_glm53},
+      {"supervisor_profile_and_flavor_for_gemma4", supervisor_profile_and_flavor_for_gemma4},
+      {"tokenizer_mode_follows_the_profile", tokenizer_mode_follows_the_profile},
   }, failures);
 }

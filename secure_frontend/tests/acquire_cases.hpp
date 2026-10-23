@@ -20,6 +20,7 @@ void dl04_crash_between_publish_and_index_is_not_loaded();
 void dl04_orphan_adopted_after_rehash_by_digest();
 void replace_loaded_model_retires_old_version();
 void layout_check_requires_pack_files_and_valid_tokenizer();
+void gemma4_layout_check_requires_an_spm_tokenizer_pack();  // Gemma 4 plan 1 Task 4
 void staged_tree_must_be_exactly_the_manifest();
 void install_decisions_follow_sequence_rules();
 void publish_requires_staging_key_of_manifest();
@@ -93,6 +94,7 @@ void list_outdated_uses_catalog_sequence();
 void pull_cli_prints_summary_and_installs();
 void run_installed_model_needs_no_network();
 void run_refuses_glm53_without_engine();
+void engine_gate_refuses_gemma4_until_the_engine_exists();  // Gemma 4 plan 1 Task 2
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
 void run_missing_model_non_interactive_exits_2();
 void run_missing_model_prompts_and_decline_exits_2();

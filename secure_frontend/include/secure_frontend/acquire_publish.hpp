@@ -32,7 +32,9 @@ class NoServerDiscovery final : public LoadedVersions {
 // §4.4: (2) the regular files under `dir` are exactly the manifest's files plus
 // `manifest_file_name`, which holds the exact manifest bytes; no link, junction,
 // hard link, device or FIFO; (1) when hash_files, every file's size and SHA-256;
-// (3) qwen layout + SP1's load_local_tokenizer_pack on <pack>/tokenizer.
+// (3) qwen layout + SP1's load_local_tokenizer_pack (byte_bpe) on <pack>/tokenizer; a gemma4
+// manifest's launch.tokenizer_pack must hold vocab.json, merges.json, token_type.json and
+// tokenizer.json and load in spm_bpe mode (Gemma 4 plan 1 Task 4).
 // A tree that cannot be listed (or exceeds the portable path limits) is publish_failed.
 // `interrupted` (§8.3, final fix F1) stops the re-hash between chunks with AcquireError interrupted.
 [[nodiscard]] std::optional<AcquireError> verify_tree(const CanonicalRoot& root, const RelativePath& dir,

@@ -82,6 +82,73 @@ inline secure_frontend::TokenizerPack vision_byte_tokenizer() {
   return pack;
 }
 
+// ---- Gemma 4 plan 1 Task 5: a small spm_bpe pack shaped like Gemma 4's (spec §2.5) ----
+// ids 0-23: the 24 Gemma special tokens with the GGUF's types (17 CONTROL, 7 USER_DEFINED);
+// 24-279: the 256 byte tokens <0x00>..<0xFF> (BYTE, type 6); then "\n", "\n\n", U+2581, "\t",
+// every printable ASCII character, two CJK characters, and the merge results below
+// (NORMAL, type 1). Characters outside it (é, emoji, combining marks, C0 controls) fall back to
+// byte tokens. Merges are listed in rank order.
+inline constexpr std::string_view kSpmSpace = "\xE2\x96\x81";  // U+2581
+inline constexpr std::size_t kSpmByteBase = 24U;               // <0x00> is id 24
+
+inline const std::vector<std::pair<std::string, int>>& gemma4_special_tokens() {
+  static const std::vector<std::pair<std::string, int>> tokens{
+      {"<pad>", 3},          {"<eos>", 3},          {"<bos>", 3},            {"<unk>", 3},
+      {"<mask>", 3},         {"<|tool>", 3},        {"<tool|>", 3},          {"<|tool_call>", 4},
+      {"<tool_call|>", 4},   {"<|tool_response>", 4}, {"<tool_response|>", 4}, {"<|\"|>", 4},
+      {"<|think|>", 3},      {"<|channel>", 4},     {"<channel|>", 4},       {"<|turn>", 3},
+      {"<turn|>", 3},        {"<|image>", 3},       {"<|audio>", 3},         {"<|image|>", 3},
+      {"<|audio|>", 3},      {"<image|>", 3},       {"<audio|>", 3},         {"<|video|>", 3}};
+  return tokens;
+}
+
+inline std::vector<std::pair<std::string, std::string>> spm_merges() {
+  const std::string s{kSpmSpace};
+  return {{s, s},           {"H", "i"},      {"o", "r"},       {s, "w"},          {s + "w", "or"},     {"l", "d"},
+          {s + "wor", "ld"}, {"b", "c"},     {"a", "b"},       {"a", "a"},        {"\n", "\n"},        {"\t", "\t"},
+          {"t", "h"},       {"o", "u"},      {"g", "h"},       {"th", "ou"},      {"thou", "gh"},      {"though", "t"},
+          {"\xE4\xBD\xA0", "\xE5\xA5\xBD"}};  // 你 好
+}
+
+inline secure_frontend::TokenizerPack spm_tokenizer() {
+  secure_frontend::TokenizerPack pack;
+  pack.mode = secure_frontend::TokenizerMode::spm_bpe;
+  for (const auto& [literal, type] : gemma4_special_tokens()) {
+    pack.tokens_by_id.push_back(literal);
+    pack.token_types.push_back(type);
+  }
+  static constexpr char kHex[] = "0123456789ABCDEF";
+  for (unsigned int byte = 0U; byte < 256U; ++byte) {
+    pack.tokens_by_id.push_back(std::string{"<0x"} + kHex[byte >> 4U] + kHex[byte & 15U] + ">");
+    pack.token_types.push_back(6);
+  }
+  const auto ordinary = [&pack](const std::string& token) {
+    for (const auto& existing : pack.tokens_by_id) {
+      if (existing == token) return;
+    }
+    pack.tokens_by_id.push_back(token);
+    pack.token_types.push_back(1);
+  };
+  for (const char* token : {"\n", "\n\n", "\t"}) ordinary(token);
+  ordinary(std::string{kSpmSpace});
+  for (char c = 0x21; c <= 0x7e; ++c) ordinary(std::string(1U, c));
+  ordinary("\xE4\xBD\xA0");  // 你
+  ordinary("\xE5\xA5\xBD");  // 好
+  for (const auto& [left, right] : spm_merges()) {
+    ordinary(left + right);
+    pack.merges_by_rank.emplace_back(left, right);
+  }
+  return pack;
+}
+
+// The id of `literal` in `pack` (tokens_by_id.size() when absent).
+inline std::size_t token_id(const secure_frontend::TokenizerPack& pack, const std::string_view literal) {
+  for (std::size_t id = 0; id < pack.tokens_by_id.size(); ++id) {
+    if (pack.tokens_by_id[id] == literal) return id;
+  }
+  return pack.tokens_by_id.size();
+}
+
 // The same pack as the three files load_local_tokenizer_pack() reads, each
 // written 0600 (SP1's fixture rule) into an existing 0700 directory.
 inline std::vector<std::pair<std::string, std::string>> tokenizer_pack_files(const secure_frontend::TokenizerPack& pack) {
@@ -107,6 +174,68 @@ inline std::vector<std::pair<std::string, std::string>> tokenizer_pack_files(con
 
 inline void write_tokenizer_pack(const std::filesystem::path& directory) {
   for (const auto& [name, bytes] : tokenizer_pack_files(byte_tokenizer())) {
+    secure_frontend_test::write_file(directory / name, bytes, 0600);
+  }
+}
+
+// ---- Gemma 4 plan 1 Task 11: the spm_bpe pack as the files the loader reads (spec §6.2) ----
+// A JSON string literal for `text`: '"' and '\' escaped, C0 controls as \n, \t, \r or \u00XX
+// (the pack holds "\n", "\n\n" and "\t"), every other byte (UTF-8, U+2581 included) as it is.
+inline std::string json_string_literal(const std::string_view text) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out = "\"";
+  for (const char character : text) {
+    const auto byte = static_cast<unsigned char>(character);
+    if (character == '"' || character == '\\') {
+      out += '\\';
+      out += character;
+    } else if (character == '\n') {
+      out += "\\n";
+    } else if (character == '\t') {
+      out += "\\t";
+    } else if (character == '\r') {
+      out += "\\r";
+    } else if (byte < 0x20U) {
+      out += "\\u00";
+      out += kHex[byte >> 4U];
+      out += kHex[byte & 15U];
+    } else {
+      out += character;
+    }
+  }
+  out += '"';
+  return out;
+}
+
+// vocab.json, merges.json (a JSON array of [left, right] pairs in rank order) and token_type.json
+// for `pack`: the spm_bpe layout, with no merges.txt (spm_bpe refuses a pack that has one).
+inline std::vector<std::pair<std::string, std::string>> spm_tokenizer_pack_files(const secure_frontend::TokenizerPack& pack) {
+  std::string vocab = "{";
+  for (std::size_t id = 0; id < pack.tokens_by_id.size(); ++id) {
+    if (id != 0U) vocab += ',';
+    vocab += json_string_literal(pack.tokens_by_id[id]) + ":" + std::to_string(id);
+  }
+  vocab += '}';
+  std::string merges = "[";
+  for (std::size_t rank = 0; rank < pack.merges_by_rank.size(); ++rank) {
+    if (rank != 0U) merges += ',';
+    merges += "[" + json_string_literal(pack.merges_by_rank[rank].first) + "," +
+              json_string_literal(pack.merges_by_rank[rank].second) + "]";
+  }
+  merges += ']';
+  std::string types = "[";
+  for (std::size_t index = 0; index < pack.token_types.size(); ++index) {
+    if (index != 0U) types += ',';
+    types += std::to_string(pack.token_types[index]);
+  }
+  types += ']';
+  return {{"vocab.json", vocab}, {"merges.json", merges}, {"token_type.json", types}};
+}
+
+// spm_tokenizer() (the synthetic Gemma-style pack above) as those three files, each written 0600
+// into an existing 0700 directory: the gemma4 profile's roots.tokenizer_pack in the harness.
+inline void write_spm_tokenizer_pack(const std::filesystem::path& directory) {
+  for (const auto& [name, bytes] : spm_tokenizer_pack_files(spm_tokenizer())) {
     secure_frontend_test::write_file(directory / name, bytes, 0600);
   }
 }

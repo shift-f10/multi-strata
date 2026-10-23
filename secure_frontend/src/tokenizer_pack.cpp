@@ -8,9 +8,12 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
+#include <queue>
 #include <set>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -160,6 +163,202 @@ TokenizerEncodeResult encode_piece(const TokenizerPack& pack, const std::string_
   return encoded;
 }
 
+// ---- Gemma 4 plan 1 Task 5: spm_bpe (spec §2.5, §6.2; llama.cpp 3cf03257 llama-vocab.cpp
+// :528-537 the pre-tokenizer, :619-738 the BPE session with the Gemma 4 newline rule at
+// :637-644 and the <0xXX> fallback at :718-730, :3186-3200 and :3713-3730 the byte tokens) ----
+
+constexpr std::string_view kSpmSpace = "\xE2\x96\x81";  // U+2581, SentencePiece's escaped space
+constexpr int kTokenTypeNormal = 1;
+constexpr int kTokenTypeByte = 6;
+
+bool is_special_type(const int type) { return type == 3 || type == 4; }
+
+// <0xXX> with two uppercase hex digits, exactly as the GGUF spells its 256 byte tokens.
+std::optional<unsigned char> byte_token_value(const std::string_view token) {
+  if (token.size() != 6U || token.substr(0U, 3U) != "<0x" || token[5] != '>') return std::nullopt;
+  const auto hex = [](const char c) -> int {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+  };
+  const int high = hex(token[3]);
+  const int low = hex(token[4]);
+  if (high < 0 || low < 0) return std::nullopt;
+  return static_cast<unsigned char>(high * 16 + low);
+}
+
+}  // namespace
+
+// The spm_bpe encoder's lookup tables over one pack's data. Outside the anonymous namespace
+// because SpmEncodeIndex (named in the header) holds one.
+struct SpmIndex final {
+  std::unordered_map<std::string_view, std::size_t> ids;  // views into the indexed pack's own strings
+  std::unordered_map<std::uint64_t, std::size_t> ranks;   // (left id << 32) | right id -> rank
+  std::array<std::optional<std::size_t>, 256U> byte_ids{};
+};
+
+// TokenizerPack::spm_index: built by the loader for an spm_bpe pack, over a private copy of the
+// pack's data (so a copy of the pack, or one outliving the loaded pack, never reads freed
+// strings), and immutable afterwards.
+struct SpmEncodeIndex final {
+  TokenizerPack source;  // the pack as loaded (without an index of its own)
+  SpmIndex index;        // views into source's strings
+};
+
+namespace {
+
+std::variant<SpmIndex, TokenizerPackError> build_spm_index(const TokenizerPack& pack) {
+  if (pack.tokens_by_id.size() != pack.token_types.size() || pack.tokens_by_id.size() > 0xFFFFFFFFU) {
+    return error(TokenizerPackErrorCode::invalid_token_types, "token type entries must match vocabulary entries");
+  }
+  SpmIndex index;
+  index.ids.reserve(pack.tokens_by_id.size());
+  for (std::size_t id = 0U; id < pack.tokens_by_id.size(); ++id) {
+    if (!index.ids.emplace(pack.tokens_by_id[id], id).second) {
+      return error(TokenizerPackErrorCode::invalid_vocabulary, "vocabulary tokens must be unique for encoding");
+    }
+    if (pack.token_types[id] == kTokenTypeByte) {
+      if (const auto value = byte_token_value(pack.tokens_by_id[id])) index.byte_ids[*value] = id;
+    }
+  }
+  index.ranks.reserve(pack.merges_by_rank.size());
+  for (std::size_t rank = 0U; rank < pack.merges_by_rank.size(); ++rank) {
+    const auto left = index.ids.find(pack.merges_by_rank[rank].first);
+    const auto right = index.ids.find(pack.merges_by_rank[rank].second);
+    if (left == index.ids.end() || right == index.ids.end()) continue;  // the loader refuses these
+    index.ranks.emplace((static_cast<std::uint64_t>(left->second) << 32U) | right->second, rank);  // lowest rank kept
+  }
+  return index;
+}
+
+// The loader's prepared tables when they still describe `pack` (the same vocabulary, merge and
+// type counts: a pack is not modified after load, and one that was is not encoded with stale
+// tables); null otherwise, and the caller builds tables for that call.
+const SpmIndex* prepared_spm_index(const TokenizerPack& pack) {
+  const auto& prepared = pack.spm_index;
+  if (!prepared || prepared->source.tokens_by_id.size() != pack.tokens_by_id.size() ||
+      prepared->source.merges_by_rank.size() != pack.merges_by_rank.size() ||
+      prepared->source.token_types.size() != pack.token_types.size()) {
+    return nullptr;
+  }
+  return &prepared->index;
+}
+
+// Literal scan: a CONTROL or USER_DEFINED literal in text is never encoded as ordinary text.
+std::optional<TokenizerPackError> refuse_special_literals(const TokenizerPack& pack, const std::string_view text) {
+  for (std::size_t id = 0U; id < pack.tokens_by_id.size() && id < pack.token_types.size(); ++id) {
+    if (is_special_type(pack.token_types[id]) && text.find(pack.tokens_by_id[id]) != std::string_view::npos) {
+      return error(TokenizerPackErrorCode::unsupported_special_token, "special token literals are not accepted as ordinary input");
+    }
+  }
+  return std::nullopt;
+}
+
+struct SpmSymbol final {
+  std::size_t offset;
+  std::size_t size;  // 0: merged into its left neighbour
+  std::ptrdiff_t prev;
+  std::ptrdiff_t next;
+};
+
+struct SpmBigram final {
+  std::size_t rank;
+  std::size_t left;
+  std::size_t right;
+  std::size_t left_size;   // the symbols' sizes when queued: a changed size means the pair is stale
+  std::size_t right_size;
+};
+
+// llama.cpp's llm_bigram_bpe::comparator: the lowest rank first, then the leftmost pair.
+struct SpmBigramOrder final {
+  bool operator()(const SpmBigram& l, const SpmBigram& r) const { return l.rank > r.rank || (l.rank == r.rank && l.left > r.left); }
+};
+
+// One pre-tokenized run ([^\n]+ or [\n]+) of the normalized text.
+std::optional<TokenizerPackError> spm_encode_run(const TokenizerPack& pack, const SpmIndex& index, const std::string_view run,
+                                                 std::vector<std::size_t>& output) {
+  std::vector<SpmSymbol> symbols;
+  // Gemma 4's rule (llama.cpp :637-644): a newline-only run that is a vocabulary token is that token.
+  if (run.find_first_not_of('\n') == std::string_view::npos && index.ids.contains(run)) {
+    symbols.push_back(SpmSymbol{0U, run.size(), -1, -1});
+  } else {
+    for (std::size_t offset = 0U; offset < run.size();) {
+      const std::size_t width = std::min(run.size() - offset, utf8_width(static_cast<unsigned char>(run[offset])));
+      symbols.push_back(SpmSymbol{offset, width, static_cast<std::ptrdiff_t>(symbols.size()) - 1, -1});
+      offset += width;
+    }
+    for (std::size_t i = 0U; i + 1U < symbols.size(); ++i) symbols[i].next = static_cast<std::ptrdiff_t>(i + 1U);
+  }
+  std::priority_queue<SpmBigram, std::vector<SpmBigram>, SpmBigramOrder> queue;
+  const auto add_bigram = [&](const std::ptrdiff_t left, const std::ptrdiff_t right) {
+    if (left < 0 || right < 0) return;
+    const auto& l = symbols[static_cast<std::size_t>(left)];
+    const auto& r = symbols[static_cast<std::size_t>(right)];
+    const auto left_id = index.ids.find(run.substr(l.offset, l.size));
+    const auto right_id = index.ids.find(run.substr(r.offset, r.size));
+    if (left_id == index.ids.end() || right_id == index.ids.end()) return;
+    const auto rank = index.ranks.find((static_cast<std::uint64_t>(left_id->second) << 32U) | right_id->second);
+    if (rank == index.ranks.end()) return;
+    queue.push(SpmBigram{rank->second, static_cast<std::size_t>(left), static_cast<std::size_t>(right), l.size, r.size});
+  };
+  for (std::size_t i = 1U; i < symbols.size(); ++i) add_bigram(static_cast<std::ptrdiff_t>(i - 1U), static_cast<std::ptrdiff_t>(i));
+  while (!queue.empty()) {
+    const SpmBigram bigram = queue.top();
+    queue.pop();
+    auto& left = symbols[bigram.left];
+    auto& right = symbols[bigram.right];
+    if (left.size == 0U || right.size == 0U || left.size != bigram.left_size || right.size != bigram.right_size) continue;
+    left.size += right.size;
+    right.size = 0U;
+    left.next = right.next;
+    if (right.next >= 0) symbols[static_cast<std::size_t>(right.next)].prev = static_cast<std::ptrdiff_t>(bigram.left);
+    add_bigram(left.prev, static_cast<std::ptrdiff_t>(bigram.left));
+    add_bigram(static_cast<std::ptrdiff_t>(bigram.left), left.next);
+  }
+  for (const auto& symbol : symbols) {
+    if (symbol.size == 0U) continue;
+    const std::string_view piece = run.substr(symbol.offset, symbol.size);
+    if (const auto found = index.ids.find(piece); found != index.ids.end()) {
+      if (is_special_type(pack.token_types[found->second])) {
+        return error(TokenizerPackErrorCode::unencodable_text, "text cannot be encoded by ordinary vocabulary tokens");
+      }
+      output.push_back(found->second);
+      continue;
+    }
+    // The <0xXX> fallback; llama.cpp drops a byte without a token, this encoder fails closed.
+    for (const char byte : piece) {
+      const auto& id = index.byte_ids[static_cast<unsigned char>(byte)];
+      if (!id.has_value()) return error(TokenizerPackErrorCode::unencodable_text, "text cannot be encoded by ordinary vocabulary tokens");
+      output.push_back(*id);
+    }
+  }
+  if (output.size() > kMaximumVocabularyEntries) {
+    return error(TokenizerPackErrorCode::input_text_too_large, "encoded token count exceeds fixed limit");
+  }
+  return std::nullopt;
+}
+
+// Every U+0020 becomes U+2581, then runs of [^\n]+ and [\n]+ are encoded in order. No BOS
+// (the renderer writes it) and no space prefix (add_space_prefix false in the Gemma 4 GGUF).
+std::optional<TokenizerPackError> spm_encode_text(const TokenizerPack& pack, const SpmIndex& index, const std::string_view text,
+                                                  std::vector<std::size_t>& output) {
+  std::string normalized;
+  normalized.reserve(text.size());
+  for (const char c : text) {
+    if (c == ' ') normalized += kSpmSpace;
+    else normalized.push_back(c);
+  }
+  const std::string_view all = normalized;
+  for (std::size_t begin = 0U; begin < all.size();) {
+    const bool newline = all[begin] == '\n';
+    std::size_t end = begin;
+    while (end < all.size() && (all[end] == '\n') == newline) ++end;
+    if (const auto failure = spm_encode_run(pack, index, all.substr(begin, end - begin), output)) return failure;
+    begin = end;
+  }
+  return std::nullopt;
+}
+
 // One extra entry so an oversized vocabulary still reaches the
 // invalid_vocabulary check below with its own error code.
 constexpr JsonLimits kPackJsonLimits{.max_bytes = kMaximumFileBytes, .max_depth = 1U,
@@ -177,6 +376,65 @@ std::optional<std::map<std::string, std::size_t>> vocabulary_from(const JsonPars
     result.emplace(member.key, static_cast<std::size_t>(*id));
   }
   return result;
+}
+
+// Gemma 4 plan 1 Task 4: merges.json is one array of [left, right] pairs (depth 2), each
+// string bounded like a vocabulary token, at most the vocabulary cap of entries (+1 so an
+// oversized list reaches its own invalid_merge check).
+constexpr JsonLimits kMergesJsonLimits{.max_bytes = kMaximumFileBytes, .max_depth = 2U,
+                                       .max_container_entries = kMaximumVocabularyEntries + 1U,
+                                       .max_string_bytes = kMaximumTokenBytes};
+
+// Present means anything but "not found": a link or a directory named like the other mode's
+// merges file also makes the pack ambiguous, so it fails closed too.
+bool pack_file_present(const CanonicalRoot& root, const std::string_view name) {
+  const auto relative = std::get<RelativePath>(parse_relative_path(name));
+  const auto opened = open_beneath(root, relative, OpenOptions{.kind = OpenKind::regular_file});
+  const auto* failure = std::get_if<PathError>(&opened);
+  return failure == nullptr || failure->code != PathErrorCode::not_found;
+}
+
+// merges.txt (byte_bpe): one "left right" pair per line, a trailing \r stripped, blank lines skipped.
+std::optional<TokenizerPackError> merges_from_text(const std::string_view remaining, const std::set<std::string>& known,
+                                                   TokenizerPack& pack) {
+  std::set<std::pair<std::string, std::string>> seen;
+  std::size_t start = 0U;
+  while (start <= remaining.size()) {
+    const auto end = remaining.find('\n', start); std::string_view line = remaining.substr(start, end == std::string_view::npos ? remaining.size() - start : end - start);
+    if (!line.empty() && line.back() == '\r') line.remove_suffix(1U);
+    if (!line.empty()) {
+      const auto split = line.find(' ');
+      if (split == std::string_view::npos || split == 0U || split + 1U >= line.size() || line.find(' ', split + 1U) != std::string_view::npos) return error(TokenizerPackErrorCode::invalid_merge, "each merge must be exactly two tokens separated by one space");
+      std::pair<std::string, std::string> merge{line.substr(0U, split), line.substr(split + 1U)};
+      if (!known.contains(merge.first) || !known.contains(merge.second) || !seen.insert(merge).second || pack.merges_by_rank.size() >= kMaximumVocabularyEntries) return error(TokenizerPackErrorCode::invalid_merge, "merges must be unique bounded pairs of vocabulary tokens");
+      pack.merges_by_rank.push_back(std::move(merge));
+    }
+    if (end == std::string_view::npos) break;
+    start = end + 1U;
+  }
+  return std::nullopt;
+}
+
+// merges.json (spm_bpe): [["left","right"], ...] in rank order; each side a vocabulary token.
+std::optional<TokenizerPackError> merges_from_json(const std::string_view text, const std::set<std::string>& known,
+                                                   TokenizerPack& pack) {
+  const auto parsed = parse_json(text, kMergesJsonLimits);
+  const auto* root = std::get_if<JsonValue>(&parsed);
+  const auto* items = root != nullptr ? root->if_array() : nullptr;
+  if (items == nullptr) return error(TokenizerPackErrorCode::invalid_json, "merges.json must be a JSON array of two-string arrays");
+  if (items->size() > kMaximumVocabularyEntries) return error(TokenizerPackErrorCode::invalid_merge, "merges must be unique bounded pairs of vocabulary tokens");
+  std::set<std::pair<std::string, std::string>> seen;
+  pack.merges_by_rank.reserve(items->size());
+  for (const auto& item : *items) {
+    const auto* pair = item.if_array();
+    const auto* left = pair != nullptr && pair->size() == 2U ? (*pair)[0].if_string() : nullptr;
+    const auto* right = pair != nullptr && pair->size() == 2U ? (*pair)[1].if_string() : nullptr;
+    if (left == nullptr || right == nullptr) return error(TokenizerPackErrorCode::invalid_json, "merges.json must be a JSON array of two-string arrays");
+    std::pair<std::string, std::string> merge{*left, *right};
+    if (!known.contains(merge.first) || !known.contains(merge.second) || !seen.insert(merge).second) return error(TokenizerPackErrorCode::invalid_merge, "merges must be unique bounded pairs of vocabulary tokens");
+    pack.merges_by_rank.push_back(std::move(merge));
+  }
+  return std::nullopt;
 }
 
 std::optional<std::vector<int>> token_types_from(const JsonParseResult& parsed) {
@@ -197,18 +455,25 @@ std::optional<std::vector<int>> token_types_from(const JsonParseResult& parsed) 
 
 }  // namespace
 
-TokenizerPackLoadResult load_local_tokenizer_pack(const std::filesystem::path& pack_root) {
+TokenizerPackLoadResult load_local_tokenizer_pack(const std::filesystem::path& pack_root, const TokenizerMode mode) {
   auto root = open_root(pack_root);
   if (const auto* failure = std::get_if<PathError>(&root)) {
     return error(failure->code == PathErrorCode::not_directory ? TokenizerPackErrorCode::pack_root_not_directory
                                                                : TokenizerPackErrorCode::pack_root_unavailable,
                  "tokenizer pack root must be an existing private directory");
   }
-  return load_local_tokenizer_pack(std::get<CanonicalRoot>(root));
+  return load_local_tokenizer_pack(std::get<CanonicalRoot>(root), mode);
 }
 
-TokenizerPackLoadResult load_local_tokenizer_pack(const CanonicalRoot& root) {
-  const auto vocab_text = read_required(root, "vocab.json"); const auto merges_text = read_required(root, "merges.txt"); const auto types_text = read_required(root, "token_type.json");
+TokenizerPackLoadResult load_local_tokenizer_pack(const CanonicalRoot& root, const TokenizerMode mode) {
+  // Gemma 4 plan 1 Task 4 (Review Focus 2): the mode is the profile's; a pack that also holds
+  // the other mode's merges file is ambiguous and refused before anything is read.
+  const bool spm = mode == TokenizerMode::spm_bpe;
+  if (pack_file_present(root, spm ? "merges.txt" : "merges.json")) {
+    return error(TokenizerPackErrorCode::invalid_merge, spm ? "an spm_bpe tokenizer pack keeps its merges in merges.json, never merges.txt"
+                                                            : "a byte_bpe tokenizer pack keeps its merges in merges.txt, never merges.json");
+  }
+  const auto vocab_text = read_required(root, "vocab.json"); const auto merges_text = read_required(root, spm ? "merges.json" : "merges.txt"); const auto types_text = read_required(root, "token_type.json");
   if (const auto* e = std::get_if<TokenizerPackError>(&vocab_text)) return *e;
   if (const auto* e = std::get_if<TokenizerPackError>(&merges_text)) return *e;
   if (const auto* e = std::get_if<TokenizerPackError>(&types_text)) return *e;
@@ -218,26 +483,24 @@ TokenizerPackLoadResult load_local_tokenizer_pack(const CanonicalRoot& root) {
   if (!types) return error(TokenizerPackErrorCode::invalid_json, "token_type.json must be a JSON array of integers");
   if (vocabulary->empty() || vocabulary->size() > kMaximumVocabularyEntries) return error(TokenizerPackErrorCode::invalid_vocabulary, "vocabulary size is outside fixed bounds");
   if (types->size() != vocabulary->size()) return error(TokenizerPackErrorCode::invalid_token_types, "token types must have exactly one value per vocabulary ID");
-  TokenizerPack pack; pack.tokens_by_id.resize(vocabulary->size()); pack.token_types = *types;
+  TokenizerPack pack; pack.tokens_by_id.resize(vocabulary->size()); pack.token_types = *types; pack.mode = mode;
   for (const auto& [token, id] : *vocabulary) {
     if (token.empty() || token.size() > kMaximumTokenBytes || id >= pack.tokens_by_id.size() || !pack.tokens_by_id[id].empty()) return error(TokenizerPackErrorCode::invalid_vocabulary, "vocabulary IDs must be contiguous, unique, and token strings bounded");
     pack.tokens_by_id[id] = token;
   }
   if (std::any_of(pack.tokens_by_id.begin(), pack.tokens_by_id.end(), [](const std::string& token) { return token.empty(); })) return error(TokenizerPackErrorCode::invalid_vocabulary, "vocabulary IDs must start at zero and be contiguous");
-  std::set<std::string> known(pack.tokens_by_id.begin(), pack.tokens_by_id.end()); std::set<std::pair<std::string, std::string>> seen;
-  std::string_view remaining = std::get<std::string>(merges_text); std::size_t start = 0U;
-  while (start <= remaining.size()) {
-    const auto end = remaining.find('\n', start); std::string_view line = remaining.substr(start, end == std::string_view::npos ? remaining.size() - start : end - start);
-    if (!line.empty() && line.back() == '\r') line.remove_suffix(1U);
-    if (!line.empty()) {
-      const auto split = line.find(' ');
-      if (split == std::string_view::npos || split == 0U || split + 1U >= line.size() || line.find(' ', split + 1U) != std::string_view::npos) return error(TokenizerPackErrorCode::invalid_merge, "each merge must be exactly two tokens separated by one space");
-      std::pair<std::string, std::string> merge{line.substr(0U, split), line.substr(split + 1U)};
-      if (!known.contains(merge.first) || !known.contains(merge.second) || !seen.insert(merge).second || pack.merges_by_rank.size() >= kMaximumVocabularyEntries) return error(TokenizerPackErrorCode::invalid_merge, "merges must be unique bounded pairs of vocabulary tokens");
-      pack.merges_by_rank.push_back(std::move(merge));
-    }
-    if (end == std::string_view::npos) break;
-    start = end + 1U;
+  const std::set<std::string> known(pack.tokens_by_id.begin(), pack.tokens_by_id.end());
+  const auto merge_error = spm ? merges_from_json(std::get<std::string>(merges_text), known, pack)
+                               : merges_from_text(std::get<std::string>(merges_text), known, pack);
+  if (merge_error) return *merge_error;
+  if (spm) {
+    // The encoder's tables once, here, instead of per request (about 0.2 s for Gemma 4's vocabulary).
+    auto prepared = std::make_shared<SpmEncodeIndex>();
+    prepared->source = pack;
+    auto built = build_spm_index(prepared->source);
+    if (const auto* failure = std::get_if<TokenizerPackError>(&built)) return *failure;
+    prepared->index = std::move(std::get<SpmIndex>(built));
+    pack.spm_index = std::move(prepared);
   }
   return pack;
 }
@@ -253,6 +516,34 @@ TokenizerDecodeResult TokenByteDecoder::bytes_for(const std::size_t id) const {
     return error(TokenizerPackErrorCode::undecodable_token, "control and user-defined token types are not ordinary decoded output");
   }
   const std::string_view token = pack_.tokens_by_id[id];
+  // Gemma 4 plan 1 Task 5: spm_bpe output is NORMAL tokens (U+2581 is a space) and the
+  // <0xXX> BYTE tokens (one raw byte; Utf8StreamDecoder joins a split character); any other
+  // type fails closed. A byte_bpe pack never holds a BYTE token: one is refused there too.
+  if (pack_.mode == TokenizerMode::spm_bpe) {
+    if (pack_.token_types[id] == kTokenTypeByte) {
+      const auto value = byte_token_value(token);
+      if (!value.has_value()) return error(TokenizerPackErrorCode::undecodable_token, "a byte token must be spelled <0xXX>");
+      return std::string(1U, static_cast<char>(*value));
+    }
+    if (pack_.token_types[id] != kTokenTypeNormal) {
+      return error(TokenizerPackErrorCode::undecodable_token, "only normal and byte tokens are ordinary decoded output");
+    }
+    std::string text;
+    text.reserve(token.size());
+    for (std::size_t offset = 0U; offset < token.size();) {
+      if (token.substr(offset, kSpmSpace.size()) == kSpmSpace) {
+        text.push_back(' ');
+        offset += kSpmSpace.size();
+      } else {
+        text.push_back(token[offset]);
+        ++offset;
+      }
+    }
+    return text;
+  }
+  if (pack_.token_types[id] == kTokenTypeByte) {
+    return error(TokenizerPackErrorCode::undecodable_token, "byte tokens are not part of a byte-level pack");
+  }
   std::string bytes;
   for (std::size_t offset = 0U; offset < token.size();) {
     const auto lead = static_cast<unsigned char>(token[offset]);
@@ -283,6 +574,20 @@ TokenizerDecodeResult decode_token_ids(const TokenizerPack& pack, const std::vec
 TokenizerEncodeResult encode_text(const TokenizerPack& pack, const std::string_view text) {
   if (text.size() > kMaximumDecodedBytes) return error(TokenizerPackErrorCode::input_text_too_large, "input text exceeds fixed limit");
   if (!valid_utf8(text)) return error(TokenizerPackErrorCode::input_text_not_utf8, "input text must be valid UTF-8");
+  if (pack.mode == TokenizerMode::spm_bpe) {  // Gemma 4 plan 1 Task 5
+    std::optional<SpmIndex> local;
+    const SpmIndex* index = prepared_spm_index(pack);
+    if (index == nullptr) {
+      auto built = build_spm_index(pack);
+      if (const auto* failure = std::get_if<TokenizerPackError>(&built)) return *failure;
+      local.emplace(std::move(std::get<SpmIndex>(built)));
+      index = &*local;
+    }
+    if (const auto refused = refuse_special_literals(pack, text)) return *refused;
+    std::vector<std::size_t> output;
+    if (const auto failure = spm_encode_text(pack, *index, text, output)) return *failure;
+    return output;
+  }
   std::map<std::string, std::size_t> ids;
   for (std::size_t id = 0U; id < pack.tokens_by_id.size(); ++id) {
     if (!ids.emplace(pack.tokens_by_id[id], id).second) return error(TokenizerPackErrorCode::invalid_vocabulary, "vocabulary tokens must be unique for encoding");
@@ -530,6 +835,131 @@ TokenizerEncodeResult encode_glm53_prompt(const TokenizerPack& pack,
     output.insert(output.end(), ids.begin(), ids.end());
     output.push_back(marker_ids[marker_index]);
     offset = marker_at + kMarkers[marker_index].size();
+  }
+  return output;
+}
+
+
+namespace {
+
+constexpr int kTokenTypeControl = 3;
+constexpr int kTokenTypeUserDefined = 4;
+
+// Gemma 4 plan 1 Task 8: the id of `literal` when it occurs exactly once, typed `type`.
+std::optional<std::size_t> unique_token_of_type(const TokenizerPack& pack, const std::string_view literal, const int type) {
+  std::optional<std::size_t> found;
+  for (std::size_t id = 0U; id < pack.tokens_by_id.size(); ++id) {
+    if (pack.tokens_by_id[id] != literal) continue;
+    if (found.has_value() || id >= pack.token_types.size() || pack.token_types[id] != type) return std::nullopt;
+    found = id;
+  }
+  return found;
+}
+
+}  // namespace
+
+std::optional<Gemma4Markers> find_gemma4_markers(const TokenizerPack& pack) {
+  if (pack.mode != TokenizerMode::spm_bpe || pack.tokens_by_id.size() != pack.token_types.size()) return std::nullopt;
+  const auto bos = unique_token_of_type(pack, "<bos>", kTokenTypeControl);
+  const auto eos = unique_token_of_type(pack, "<eos>", kTokenTypeControl);
+  const auto turn_open = unique_token_of_type(pack, "<|turn>", kTokenTypeControl);
+  const auto turn_close = unique_token_of_type(pack, "<turn|>", kTokenTypeControl);
+  const auto think = unique_token_of_type(pack, "<|think|>", kTokenTypeControl);
+  const auto channel_open = unique_token_of_type(pack, "<|channel>", kTokenTypeUserDefined);
+  const auto channel_close = unique_token_of_type(pack, "<channel|>", kTokenTypeUserDefined);
+  if (!bos || !eos || !turn_open || !turn_close || !think || !channel_open || !channel_close) return std::nullopt;
+  return Gemma4Markers{*bos, *eos, *turn_open, *turn_close, *think, *channel_open, *channel_close};
+}
+
+std::vector<std::size_t> find_gemma4_end_of_turn_tokens(const TokenizerPack& pack) {
+  std::vector<std::size_t> found;
+  if (pack.mode != TokenizerMode::spm_bpe) return found;
+  for (const std::string_view literal : {"<turn|>", "<eos>"}) {
+    if (const auto id = unique_token_of_type(pack, literal, kTokenTypeControl)) found.push_back(*id);
+  }
+  return found;
+}
+
+TokenizerEncodeResult encode_gemma4_prompt(const TokenizerPack& pack, const std::string_view prompt) {
+  constexpr std::string_view kBos = "<bos>";
+  constexpr std::string_view kTurnOpen = "<|turn>";
+  constexpr std::string_view kTurnClose = "<turn|>";
+  constexpr std::string_view kThinkingSystemHead = "<|turn>system\n<|think|>";
+  constexpr std::string_view kGenerationHeader = "<|turn>model\n";
+  constexpr std::string_view kClosedChannelTail = "<|turn>model\n<|channel>thought\n<channel|>";
+  if (pack.mode != TokenizerMode::spm_bpe) {
+    return error(TokenizerPackErrorCode::unsupported_special_token, "a Gemma 4 prompt needs an spm_bpe tokenizer pack");
+  }
+  const auto markers = find_gemma4_markers(pack);
+  if (!markers.has_value()) {
+    return error(TokenizerPackErrorCode::unsupported_special_token,
+                 "Gemma 4 markers must be exactly one token each, of the expected type");
+  }
+  std::optional<SpmIndex> local;
+  const SpmIndex* prepared = prepared_spm_index(pack);
+  if (prepared == nullptr) {
+    auto built = build_spm_index(pack);
+    if (const auto* failure = std::get_if<TokenizerPackError>(&built)) return *failure;
+    local.emplace(std::move(std::get<SpmIndex>(built)));
+    prepared = &*local;
+  }
+  const SpmIndex& index = *prepared;
+  // The vocabulary's CONTROL and USER_DEFINED literals, collected once for every span.
+  std::vector<std::string_view> specials;
+  for (std::size_t id = 0U; id < pack.tokens_by_id.size(); ++id) {
+    if (is_special_type(pack.token_types[id])) specials.emplace_back(pack.tokens_by_id[id]);
+  }
+
+  std::vector<std::size_t> output;
+  const auto marker = [&output](const std::size_t id) -> std::optional<TokenizerPackError> {
+    if (output.size() >= kMaximumVocabularyEntries) {
+      return error(TokenizerPackErrorCode::input_text_too_large, "encoded token count exceeds fixed limit");
+    }
+    output.push_back(id);
+    return std::nullopt;
+  };
+  // Ordinary text: encode_text's rules (bounded, UTF-8, no special literal), one shared index.
+  const auto text = [&](const std::string_view span) -> std::optional<TokenizerPackError> {
+    if (span.size() > kMaximumDecodedBytes) return error(TokenizerPackErrorCode::input_text_too_large, "input text exceeds fixed limit");
+    if (!valid_utf8(span)) return error(TokenizerPackErrorCode::input_text_not_utf8, "input text must be valid UTF-8");
+    for (const std::string_view literal : specials) {
+      if (span.find(literal) != std::string_view::npos) {
+        return error(TokenizerPackErrorCode::unsupported_special_token, "special token literals are not accepted as ordinary input");
+      }
+    }
+    return spm_encode_text(pack, index, span, output);
+  };
+
+  std::string_view rest = prompt;
+  if (!rest.starts_with(kBos)) {
+    return error(TokenizerPackErrorCode::unsupported_special_token, "a Gemma 4 prompt begins with exactly one <bos>");
+  }
+  if (const auto failure = marker(markers->bos)) return *failure;
+  rest.remove_prefix(kBos.size());
+  if (rest.starts_with(kThinkingSystemHead)) {  // <|think|> only first in the leading system turn
+    if (const auto failure = marker(markers->turn_open)) return *failure;
+    if (const auto failure = text("system\n")) return *failure;
+    if (const auto failure = marker(markers->think)) return *failure;
+    rest.remove_prefix(kThinkingSystemHead.size());
+  }
+  // The closed thought channel only as the whole tail after the final generation header.
+  const bool closed_channel = rest.ends_with(kClosedChannelTail);
+  if (closed_channel) rest.remove_suffix(kClosedChannelTail.size() - kGenerationHeader.size());
+
+  while (!rest.empty()) {
+    const std::size_t open_at = rest.find(kTurnOpen);
+    const std::size_t close_at = rest.find(kTurnClose);
+    const std::size_t at = std::min(open_at, close_at);
+    if (const auto failure = text(rest.substr(0U, at))) return *failure;
+    if (at == std::string_view::npos) break;
+    const bool open = at == open_at;
+    if (const auto failure = marker(open ? markers->turn_open : markers->turn_close)) return *failure;
+    rest.remove_prefix(at + (open ? kTurnOpen.size() : kTurnClose.size()));
+  }
+  if (closed_channel) {
+    if (const auto failure = marker(markers->channel_open)) return *failure;
+    if (const auto failure = text("thought\n")) return *failure;
+    if (const auto failure = marker(markers->channel_close)) return *failure;
   }
   return output;
 }

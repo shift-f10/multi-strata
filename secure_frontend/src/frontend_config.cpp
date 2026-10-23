@@ -115,7 +115,7 @@ constexpr std::array<ConfigKey, 43 + 7 + 3 + 9 + 7 + 3 + 13 + 6 + 8 + 1 + 9 + 9 
     {"token.source", T::string, false, 0, 0, 0, false, "file:token", "--token-file, --token-env",
      "file:<relative path below roots.secret> or env:<NAME>. Metadata only; the token is never in the config."},
     {"engine.profile", T::string, false, 0, 0, 0, false, "", "--profile",
-     "qwen or glm53; only with --expert (a managed model's manifest sets it)."},
+     "qwen, glm53 or gemma4; only with --expert (a managed model's manifest sets it)."},
     {"engine.executable", T::string, true, 0, 0, 0, false, "", "--engine",
      "Absolute path of the engine; a regular file not writable by group or others."},
     {"engine.model_id", T::string, true, 0, 0, 0, false, "", "--model-id",
@@ -713,6 +713,26 @@ std::string render_config_schema_markdown() {
   return out;
 }
 
+namespace {
+std::string_view profile_text(const EngineProfile profile) {
+  switch (profile) {
+    case EngineProfile::qwen: return "qwen";
+    case EngineProfile::glm53: return "glm53";
+    case EngineProfile::gemma4: return "gemma4";
+  }
+  return "qwen";  // unreachable: every value is a case above
+}
+}  // namespace
+
+EngineArgumentsProfile arguments_profile_for(const EngineProfile profile) {
+  switch (profile) {
+    case EngineProfile::qwen: return EngineArgumentsProfile::strata_0143;
+    case EngineProfile::glm53: return EngineArgumentsProfile::lighttransport_glm53;
+    case EngineProfile::gemma4: return EngineArgumentsProfile::strata_gemma4;
+  }
+  return EngineArgumentsProfile::strata_0143;  // unreachable: every value is a case above
+}
+
 std::string format_issue(const ConfigIssue& issue) { return issue.key_path + ": " + issue.reason; }
 
 std::optional<ModelId> make_model_id(const std::string_view text) {
@@ -921,7 +941,8 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
   if (const auto text = read.string("engine.profile")) {
     if (*text == "qwen") profile = EngineProfile::qwen;
     else if (*text == "glm53") profile = EngineProfile::glm53;
-    else add(errors, "engine.profile", ConfigIssueCode::invalid_value, "must be qwen or glm53");
+    else if (*text == "gemma4") profile = EngineProfile::gemma4;
+    else add(errors, "engine.profile", ConfigIssueCode::invalid_value, "must be qwen, glm53 or gemma4");
   }
   std::optional<CanonicalFile> executable;
   if (const auto text = read.string("engine.executable")) {
@@ -939,9 +960,7 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
         "must be name or name:tag, each 1-128 characters of [A-Za-z0-9._-], starting with a letter or digit");
   }
   const auto args = read.strings("engine.args");
-  const auto arguments_profile = profile.value_or(EngineProfile::qwen) == EngineProfile::glm53
-                                     ? EngineArgumentsProfile::lighttransport_glm53
-                                     : EngineArgumentsProfile::strata_0143;
+  const auto arguments_profile = arguments_profile_for(profile.value_or(EngineProfile::qwen));
   if (const auto rejected = validate_engine_user_arguments(arguments_profile, args)) {
     add(errors, "engine.args", ConfigIssueCode::invalid_value, rejected->message);
   }
@@ -1175,12 +1194,33 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
       glm.model_name = *text;
     }
   }
-  if (any_glm_row && profile == EngineProfile::qwen) {
+  if (any_glm_row && profile.has_value() && *profile != EngineProfile::glm53) {
     for (const auto& [path, entry] : draft.entries) {
       static_cast<void>(entry);
       if (path.rfind("glm.", 0) == 0) {
         add(errors, path, ConfigIssueCode::conflicting_values, "is only supported with engine.profile glm53");
       }
+    }
+  }
+  // Gemma 4 plan 1 Task 3 (ruling): the rows the qwen launch turns into engine flags (VRAM and
+  // split, the learned-profile save, --batch, the MTP strip, the effort-end tail) have no Gemma
+  // engine counterpart, so on an explicit gemma4 profile each is refused by name rather than
+  // silently ignored. A managed model's manifest decides its profile at launch (and the engine
+  // gate refuses gemma4 manifests until plan 4).
+  if (profile == EngineProfile::gemma4) {
+    static constexpr std::array<std::string_view, 9> kQwenLaunchRows{
+        "engine.vram_reserve_mib",   "engine.vram_elastic",         "engine.vram_segment_mib",
+        "engine.layer_split",        "engine.split_skip_if_fits",   "session.expert_profile_save",
+        "session.expert_profile_save_every", "replicas.parallel",   "engine.mtp"};
+    for (const auto row : kQwenLaunchRows) {
+      if (draft.entries.contains(row)) {
+        add(errors, std::string{row}, ConfigIssueCode::conflicting_values,
+            "is not supported with engine.profile gemma4 (the Gemma engine has no such option)");
+      }
+    }
+    if (draft.entries.contains("reasoning.effort_position")) {
+      add(errors, "reasoning.effort_position", ConfigIssueCode::conflicting_values,
+          "is not supported with engine.profile gemma4 (Gemma's template has no effort sentence)");
     }
   }
 
@@ -1336,9 +1376,7 @@ std::string describe(const FrontendConfig& c) {
   line("roots.state", path_or_unset(c.roots.state));
   line("token.source", json_quoted((c.token.kind() == SecretSourceKind::environment_variable ? "env:" : "file:") +
                               c.token.location()));
-  line("engine.profile", !c.engine.profile                              ? std::string{"(unset)"}
-                         : *c.engine.profile == EngineProfile::glm53 ? std::string{"\"glm53\""}
-                                                                     : std::string{"\"qwen\""});
+  line("engine.profile", c.engine.profile ? json_quoted(profile_text(*c.engine.profile)) : std::string{"(unset)"});
   line("engine.executable", json_quoted(path_to_utf8(c.engine.executable.path())));
   line("engine.model_id", json_quoted(c.engine.model_id.value()));
   std::string args = "[";

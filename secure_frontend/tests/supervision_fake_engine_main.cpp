@@ -5,7 +5,9 @@
 // Task 6 adds --dialect=maya: the same payloads with Project Maya v1.1.21's
 // engine cadence (NOTE after GEN, 5-field PP, STAT every few tokens).
 // Unknown arguments (--serve, --native PATH, --pack DIR, --gpu LIST, ...) are
-// accepted and ignored, as the real engine accepts them.
+// accepted and ignored, as the real engine accepts them. Gemma 4 plan 1 Task 11:
+// more options may come from fake-engine.options beside the executable
+// (option_arguments below).
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -112,11 +114,43 @@ bool value_of(const std::string_view argument, const std::string_view name, std:
   return true;
 }
 
-Options parse_options(const int argc, char** argv) {
+// Gemma 4 plan 1 Task 11: the directory holding this executable (empty when unknown).
+std::filesystem::path own_directory([[maybe_unused]] char** argv) {
+#if defined(_WIN32)
+  std::vector<wchar_t> buffer(32768);
+  const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+  if (length == 0 || length >= buffer.size()) return {};
+  return std::filesystem::path(std::wstring(buffer.data(), length)).parent_path();
+#else
+  std::error_code error;
+  const auto self = std::filesystem::read_symlink("/proc/self/exe", error);
+  if (!error) return self.parent_path();
+  return argv[0] != nullptr ? std::filesystem::path(argv[0]).parent_path() : std::filesystem::path{};
+#endif
+}
+
+// The command line's options, then (Gemma 4 plan 1 Task 11) one more per line of
+// fake-engine.options beside this executable, when present: a trailing \r is dropped and
+// blank lines are skipped. The test harness writes it when the frontend's engine-argument
+// allowlist (engine.profile gemma4: strata_gemma4) would refuse these flags as engine.args.
+std::vector<std::string> option_arguments(const int argc, char** argv) {
+  std::vector<std::string> arguments;
+  for (int index = 1; index < argc; ++index) arguments.emplace_back(argv[index]);
+  const auto directory = own_directory(argv);
+  if (directory.empty()) return arguments;
+  std::ifstream file(directory / "fake-engine.options", std::ios::binary);
+  for (std::string line; std::getline(file, line);) {
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (!line.empty()) arguments.push_back(std::move(line));
+  }
+  return arguments;
+}
+
+Options parse_options(const std::vector<std::string>& arguments) {
   Options options;
   std::string value;
-  for (int index = 1; index < argc; ++index) {
-    const std::string_view argument{argv[index]};
+  for (const std::string& text : arguments) {
+    const std::string_view argument{text};
     if (argument == "--ignore-term") options.ignore_term = true;
     else if (argument == "--spew") options.spew = true;
     else if (argument == "--split-ready") options.split_ready = true;
@@ -706,7 +740,7 @@ int main(int argc, char* argv[]) {
   // explicit flush + _Exit is the "return/_Exit" exit the detached thread's
   // comment promises: protocol lines are flushed at emit time, dump output
   // here, and record-file appends are flushed at each close.
-  const int rc = serve(parse_options(argc, argv));
+  const int rc = serve(parse_options(option_arguments(argc, argv)));
   std::cout.flush();
   std::cerr.flush();
   std::_Exit(rc);

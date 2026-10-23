@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <deque>
+#include <initializer_list>
 #include <iostream>
 #include <mutex>
 #include <optional>
@@ -194,6 +195,29 @@ void executes_glm53_only_when_explicitly_selected() {
   expect(completion != nullptr && completion->text == "OK" &&
              transport.writes.size() == 1U && transport.writes.front().rfind("GEN 2 ", 0) == 0,
          "the explicit GLM profile must use the same bounded private engine protocol");
+}
+
+// Gemma 4 plan 1 Task 3: the plan selection is an exhaustive switch, so a gemma4 service never
+// takes the GLM (or qwen) plan: with a GLM or Qwen pack, which those plans accept, a gemma4
+// request fails at planning and nothing reaches the engine (its own plan needs Gemma's markers).
+void executes_gemma4_only_when_explicitly_selected() {
+  const std::string glm_prompt = "[gMASK]<sop><|user|>Hi<|assistant|><think>";
+  for (const auto& tokenizer : {glm_tokenizer_for(glm_prompt + "OK"), tokenizer_for("<|im_start|>user\nHi<|im_end|>\nOK")}) {
+    FakeTransport transport;
+    transport.reads = {line("READY 512"), line("T 0"), line("DONE 1")};
+    secure_frontend::EngineProtocolClient protocol(transport, {}, secure_frontend::EngineProtocolFlavor::strata_0143);
+    secure_frontend::ChatExecutionService service(protocol, {}, secure_frontend::NativeChatProfile::gemma4);
+    const auto result = service.execute({"gemma-local", {{"user", "Hi"}}, 2U}, tokenizer);
+    const auto* failure = std::get_if<secure_frontend::ChatExecutionError>(&result);
+    expect(failure != nullptr && failure->code == secure_frontend::ChatExecutionErrorCode::planning_failed,
+           "a gemma4 request on a non-Gemma pack fails at planning");
+    expect(transport.writes.empty(), "nothing reaches the engine (no GEN from another profile's plan)");
+  }
+  // The same GLM pack through the glm53 profile does plan (the control above is meaningful).
+  const auto glm = glm_tokenizer_for(glm_prompt + "OK");
+  expect(std::holds_alternative<secure_frontend::ChatGenerationPlan>(
+             secure_frontend::make_glm53_chat_generation_plan({"glm-local", {{"user", "Hi"}}, 2U}, glm)),
+         "the GLM pack plans under glm53");
 }
 
 // SP5 M2 Task 6 (D-8): the GLM profile end to end over the maya_118 wire dialect.
@@ -967,6 +991,213 @@ void run_generation_returns_reasoning_beside_the_answer() {
          "answer and reasoning come back apart: [" + result->text + "] [" + result->reasoning + "]");
 }
 
+// Gemma 4 plan 1 Task 9 (spec §6.4, §6.5): the thought channel <|channel>thought\n…<channel|> and
+// the end-of-turn ids <turn|> and <eos>, on the synthetic Gemma pack (test_support::spm_tokenizer)
+// with the limits the gemma4 plan composes.
+struct Gemma4Run final {
+  secure_frontend::TokenizerPack pack = test_support::spm_tokenizer();
+  secure_frontend::GenerationRunLimits limits{};
+  std::size_t channel_open{0};
+  std::size_t channel_close{0};
+  std::size_t turn_close{0};
+  std::size_t eos{0};
+  Gemma4Run() {
+    const auto result = secure_frontend::make_gemma4_chat_generation_plan({"gemma-local", {{"user", "Hi"}}, 16U}, pack, 4096U, 16U, {}, true);
+    const auto* plan = std::get_if<secure_frontend::ChatGenerationPlan>(&result);
+    expect(plan != nullptr, "the gemma4 plan composes on the Gemma pack");
+    if (plan != nullptr) {
+      limits.max_tokens = 256U;
+      limits.think_tokens = plan->think_tokens;
+      limits.starts_in_reasoning = plan->starts_in_reasoning;
+      limits.stop_tokens = plan->stop_tokens;
+      limits.channel_name = plan->channel_name;
+    }
+    channel_open = test_support::token_id(pack, "<|channel>");
+    channel_close = test_support::token_id(pack, "<channel|>");
+    turn_close = test_support::token_id(pack, "<turn|>");
+    eos = test_support::token_id(pack, "<eos>");
+  }
+  // The T records of `text` in this pack (spm_bpe, so "thought" is one merged token).
+  [[nodiscard]] std::vector<std::string> text(const std::string_view value) const {
+    const auto encoded = secure_frontend::encode_text(pack, value);
+    std::vector<std::string> records;
+    if (const auto* ids = std::get_if<std::vector<std::size_t>>(&encoded)) {
+      for (const std::size_t id : *ids) records.push_back(id_line(id));
+    }
+    expect(!records.empty() || value.empty(), "test text encodes in the Gemma pack");
+    return records;
+  }
+};
+
+std::vector<std::string> joined(std::initializer_list<std::vector<std::string>> parts) {
+  std::vector<std::string> all;
+  for (const auto& part : parts) all.insert(all.end(), part.begin(), part.end());
+  return all;
+}
+
+void gemma4_thought_channel_goes_to_reasoning() {
+  const Gemma4Run g;
+  expect(g.limits.channel_name == std::optional<std::string>{"thought"}, "the gemma4 plan names its channel thought");
+  expect(g.limits.think_tokens.has_value() && g.limits.think_tokens->open == g.channel_open && g.limits.think_tokens->close == g.channel_close &&
+             !g.limits.starts_in_reasoning,
+         "the split tags are <|channel> and <channel|>; the reply starts outside the channel");
+  const secure_frontend::TokenByteDecoder decoder(g.pack);
+  const auto records = joined({{id_line(g.channel_open)}, g.text("thought\n"), g.text("Think hard."), {id_line(g.channel_close)},
+                               g.text("Paris."), {id_line(g.turn_close), "DONE 9 1 0 0 stop"}});
+  Running run(records);
+  ReasoningCollector collector;
+  const auto result = secure_frontend::drive_generation(run.protocol, decoder, g.limits, collector);
+  expect(result.end == secure_frontend::RunEnd::stop, "the turn close ends the reply as stop");
+  expect(collector.reasoning == "Think hard.", "the channel-name line is dropped, the rest is reasoning: [" + collector.reasoning + "]");
+  expect(collector.text == "Paris.", "the answer follows the channel: [" + collector.text + "]");
+  expect(run.transport.stops() == 0U && run.protocol.idle(), "no STOP: the engine ended its own turn");
+
+  // The name line may arrive with reasoning in the same token, or split over several tokens.
+  const auto split = joined({{id_line(g.channel_open)}, g.text("tho"), g.text("ught"), g.text("\nr"), {id_line(g.channel_close)},
+                             g.text("a"), {id_line(g.eos), "DONE 8 1 0 0 stop"}});
+  Running pieces(split);
+  ReasoningCollector pieced;
+  const auto pieced_result = secure_frontend::drive_generation(pieces.protocol, decoder, g.limits, pieced);
+  expect(pieced_result.end == secure_frontend::RunEnd::stop && pieced.reasoning == "r" && pieced.text == "a",
+         "a name split over tokens is still the name line: [" + pieced.reasoning + "] [" + pieced.text + "]");
+
+  // Thinking off: the prompt closed the channel, the reply is the answer from its first token.
+  Running direct(joined({g.text("Paris."), {id_line(g.turn_close), "DONE 3 1 0 0 stop"}}));
+  ReasoningCollector answered;
+  (void)secure_frontend::drive_generation(direct.protocol, decoder, g.limits, answered);
+  expect(answered.text == "Paris." && answered.reasoning.empty(), "an answer with no channel is all text");
+
+  // Through run_generation (the complete path), the plan's channel name rides GenerationSettings.
+  ReadyService f;
+  for (const auto& record : records) f.transport.reads.push_back(record);
+  const auto outcome = f.service.run_generation(
+      {1U, 2U, 3U},
+      {.max_tokens = 64U, .think_tokens = g.limits.think_tokens, .starts_in_reasoning = false, .stop_tokens = g.limits.stop_tokens,
+       .channel_name = g.limits.channel_name},
+      {}, g.pack);
+  const auto* complete = std::get_if<secure_frontend::GenerationResult>(&outcome);
+  expect(complete != nullptr && complete->reasoning == "Think hard." && complete->text == "Paris." &&
+             complete->finish == secure_frontend::FinishReason::stop,
+         "run_generation returns the reasoning and the answer apart");
+}
+
+void gemma4_wrong_channel_name_fails_closed() {
+  const Gemma4Run g;
+  const secure_frontend::TokenByteDecoder decoder(g.pack);
+  const std::vector<std::vector<std::string>> broken{
+      joined({{id_line(g.channel_open)}, g.text("analysis\nr"), {id_line(g.channel_close)}, g.text("a")}),  // another name
+      joined({{id_line(g.channel_open)}, g.text("thoughts\nr"), {id_line(g.channel_close)}, g.text("a")}),  // a longer name
+      joined({{id_line(g.channel_open)}, g.text("though\nr"), {id_line(g.channel_close)}, g.text("a")}),    // a shorter name
+      joined({{id_line(g.channel_open)}, g.text("\nr"), {id_line(g.channel_close)}, g.text("a")}),          // no name
+      joined({{id_line(g.channel_open)}, g.text(" thought\nr"), {id_line(g.channel_close)}, g.text("a")}),  // a leading space
+      joined({{id_line(g.channel_open)}, g.text("thought"), {id_line(g.channel_close)}, g.text("a")}),      // closed before the newline
+      joined({{id_line(g.channel_open)}, {id_line(g.channel_close)}, g.text("a")}),                         // an empty channel
+      joined({{id_line(g.channel_open)}, {id_line(g.channel_open)}, g.text("thought\nr")}),                 // opened twice
+      joined({{id_line(g.channel_open)}, g.text("thought"), {id_line(g.turn_close)}}),                      // the turn ends in the name
+      joined({{id_line(g.channel_open)}, g.text(std::string(80U, 'b') + "\nr")}),                           // no line in 64 bytes
+      joined({g.text("a"), {id_line(g.channel_open)}, g.text("analysis\nr"), {id_line(g.channel_close)}}),  // reopened while answering
+  };
+  for (const auto& tokens : broken) {
+    auto records = tokens;
+    records.push_back("DONE " + std::to_string(tokens.size()) + " 1 0 0 cancel");
+    Running run(records);
+    ReasoningCollector collector;
+    const auto result = secure_frontend::drive_generation(run.protocol, decoder, g.limits, collector);
+    expect(result.end == secure_frontend::RunEnd::undecodable, "a channel not named exactly thought ends the reply as undecodable");
+    expect(run.transport.stops() == 1U && run.protocol.idle(), "one STOP and a drain to DONE");
+    expect(collector.reasoning.empty() && collector.text.find("analysis") == std::string::npos && collector.text.find('r') == std::string::npos,
+           "nothing of the channel is output: [" + collector.reasoning + "] [" + collector.text + "]");
+  }
+  // The engine ends its turn on its own inside the name line (DONE stop): still undecodable.
+  Running ended(joined({{id_line(g.channel_open)}, g.text("tho"), {"DONE 2 1 0 0 stop"}}));
+  ReasoningCollector cut;
+  expect(secure_frontend::drive_generation(ended.protocol, decoder, g.limits, cut).end == secure_frontend::RunEnd::undecodable &&
+             cut.reasoning.empty() && cut.text.empty(),
+         "a reply may not stop inside the channel-name line");
+  // A token budget ending inside the name line is a length end with nothing output.
+  Running budget(joined({{id_line(g.channel_open)}, g.text("tho"), {"DONE 2 1 0 0 length"}}));
+  ReasoningCollector capped;
+  expect(secure_frontend::drive_generation(budget.protocol, decoder, g.limits, capped).end == secure_frontend::RunEnd::length &&
+             capped.reasoning.empty() && capped.text.empty(),
+         "a length end inside the name line outputs nothing of it");
+  // Without a channel name (qwen, glm53) the open tag starts reasoning at once, as before.
+  auto unnamed = g.limits;
+  unnamed.channel_name.reset();
+  Running plain(joined({{id_line(g.channel_open)}, g.text("analysis\nr"), {id_line(g.channel_close)}, g.text("a"), {"DONE 5 1 0 0 stop"}}));
+  ReasoningCollector qwen_like;
+  expect(secure_frontend::drive_generation(plain.protocol, decoder, unnamed, qwen_like).end == secure_frontend::RunEnd::stop &&
+             qwen_like.reasoning == "analysis\nr" && qwen_like.text == "a",
+         "channel_name unset: the split is the qwen split, unchanged");
+}
+
+void gemma4_turn_close_ends_the_reply_as_stop() {
+  const Gemma4Run g;
+  expect(secure_frontend::find_gemma4_end_of_turn_tokens(g.pack) == std::vector<std::size_t>{g.turn_close, g.eos},
+         "the end-of-turn ids are <turn|> then <eos>, found by literal");
+  expect(g.limits.stop_tokens == std::vector<std::size_t>{g.turn_close, g.eos}, "the gemma4 plan stops on exactly those");
+  const secure_frontend::TokenByteDecoder decoder(g.pack);
+  for (const std::size_t stop : {g.turn_close, g.eos}) {
+    Running run(joined({g.text("Paris."), {id_line(stop)}, g.text("x"), {"DONE 4 1 0 0 stop"}}));
+    ReasoningCollector collector;
+    const auto result = secure_frontend::drive_generation(run.protocol, decoder, g.limits, collector);
+    expect(result.end == secure_frontend::RunEnd::stop && collector.text == "Paris." && run.transport.stops() == 0U,
+           "an end-of-turn id ends the reply as stop, is never output, and nothing after it is: [" + collector.text + "]");
+  }
+  Running thinking(joined({{id_line(g.channel_open)}, g.text("thought\nr"), {id_line(g.turn_close), "DONE 3 1 0 0 stop"}}));
+  ReasoningCollector unanswered;
+  expect(secure_frontend::drive_generation(thinking.protocol, decoder, g.limits, unanswered).end == secure_frontend::RunEnd::stop &&
+             unanswered.reasoning == "r" && unanswered.text.empty(),
+         "a turn may end inside the reasoning, after the name line");
+
+  // Each literal counts only as exactly one CONTROL token.
+  for (const std::string_view literal : {"<turn|>", "<eos>"}) {
+    auto twice = g.pack;
+    twice.tokens_by_id.emplace_back(literal);
+    twice.token_types.push_back(3);
+    auto user_defined = g.pack;
+    user_defined.token_types[test_support::token_id(user_defined, literal)] = 4;
+    for (const auto* pack : {&twice, &user_defined}) {
+      const auto found = secure_frontend::find_gemma4_end_of_turn_tokens(*pack);
+      expect(found.size() == 1U, "an ambiguous or mistyped end-of-turn literal is not a stop id: " + std::string{literal});
+    }
+  }
+  auto byte_mode = g.pack;
+  byte_mode.mode = secure_frontend::TokenizerMode::byte_bpe;
+  expect(secure_frontend::find_gemma4_end_of_turn_tokens(byte_mode).empty(), "a byte_bpe pack has no Gemma end-of-turn ids");
+}
+
+void gemma4_tool_markers_in_output_fail_closed() {
+  const Gemma4Run g;
+  const secure_frontend::TokenByteDecoder decoder(g.pack);
+  // The limits under test are the whole gemma4 set: its two stop ids and its channel name.
+  expect(g.limits.stop_tokens == std::vector<std::size_t>{g.turn_close, g.eos} && g.limits.channel_name.has_value(),
+         "the gemma4 plan's stop ids and channel name are in force");
+  Running control(joined({{id_line(g.channel_open)}, g.text("thought\nr"), {id_line(g.turn_close)}, g.text("x"), {"DONE 4 1 0 0 stop"}}));
+  ReasoningCollector controlled;
+  expect(secure_frontend::drive_generation(control.protocol, decoder, g.limits, controlled).end == secure_frontend::RunEnd::stop &&
+             controlled.reasoning == "r",
+         "control: the same reply ended by <turn|> is a stop with the reasoning r");
+  for (const std::string_view literal : {"<|tool_call>", "<tool_call|>", "<|tool_response>", "<tool_response|>", "<|tool>", "<|\"|>",
+                                         "<|image|>", "<|image>", "<|audio|>", "<|video|>", "<|turn>", "<|think|>", "<bos>", "<pad>"}) {
+    const auto id = test_support::token_id(g.pack, literal);
+    expect(std::find(g.limits.stop_tokens.begin(), g.limits.stop_tokens.end(), id) == g.limits.stop_tokens.end(),
+           "a marker is never a stop id: " + std::string{literal});
+    for (const bool in_reasoning : {false, true}) {
+      const auto records = in_reasoning ? joined({{id_line(g.channel_open)}, g.text("thought\nr"), {id_line(id)}, g.text("x"), {"DONE 4 1 0 0 cancel"}})
+                                        : joined({g.text("a"), {id_line(id)}, g.text("x"), {"DONE 3 1 0 0 cancel"}});
+      Running run(records);
+      ReasoningCollector collector;
+      const auto result = secure_frontend::drive_generation(run.protocol, decoder, g.limits, collector);
+      expect(result.end == secure_frontend::RunEnd::undecodable && run.transport.stops() == 1U,
+             "a tool, media or framing marker in the output fails closed: " + std::string{literal});
+      expect(collector.text.find('x') == std::string::npos && collector.reasoning.find('x') == std::string::npos,
+             "nothing after the marker is output");
+      expect(in_reasoning ? collector.reasoning == "r" && collector.text.empty() : collector.text == "a" && collector.reasoning.empty(),
+             "only what came before the marker is output, the name line dropped: [" + collector.reasoning + "] [" + collector.text + "]");
+    }
+  }
+}
+
 // Session log step 16 (listener.monitor): the meter hears every counted token and the
 // engine's DONE figures, on both paths, and never any text; without one nothing changes.
 struct CountingMeter final : secure_frontend::GenerationMeter {
@@ -1009,6 +1240,7 @@ int main(int argc, char** argv) {
       {"rejects_context_and_output_limits_before_generation", rejects_context_and_output_limits_before_generation},
       {"fails_closed_on_invalid_engine_output", fails_closed_on_invalid_engine_output},
       {"executes_glm53_only_when_explicitly_selected", executes_glm53_only_when_explicitly_selected},
+      {"executes_gemma4_only_when_explicitly_selected", executes_gemma4_only_when_explicitly_selected},
       {"glm_profile_generation_completes_over_maya_dialect", glm_profile_generation_completes_over_maya_dialect},
       {"maya_dialect_cancellation_round_trips", maya_dialect_cancellation_round_trips},
       {"chat_recovers_after_generation_timeout", chat_recovers_after_generation_timeout},
@@ -1044,5 +1276,9 @@ int main(int argc, char** argv) {
       {"drive_generation_feeds_the_monitor_meter", drive_generation_feeds_the_monitor_meter},
       {"run_generation_ends_at_the_end_of_turn", run_generation_ends_at_the_end_of_turn},
       {"run_generation_maps_engine_errors", run_generation_maps_engine_errors},
+      {"gemma4_thought_channel_goes_to_reasoning", gemma4_thought_channel_goes_to_reasoning},
+      {"gemma4_wrong_channel_name_fails_closed", gemma4_wrong_channel_name_fails_closed},
+      {"gemma4_turn_close_ends_the_reply_as_stop", gemma4_turn_close_ends_the_reply_as_stop},
+      {"gemma4_tool_markers_in_output_fail_closed", gemma4_tool_markers_in_output_fail_closed},
   }, failures);
 }

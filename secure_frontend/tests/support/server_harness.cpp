@@ -300,7 +300,12 @@ std::unique_ptr<ServerProcess> ServerProcess::start(const ServerOptions& options
     }
   } else {
     secure_frontend_test::write_file(models / "fake-model.gguf", "GGUF", 0600);
-    write_tokenizer_pack(tokenizer);  // 0600 files
+    // Gemma 4 plan 1 Task 11: the gemma4 profile loads its pack in spm_bpe mode (merges.json).
+    if (options.profile == std::optional<std::string>{"gemma4"}) {
+      write_spm_tokenizer_pack(tokenizer);  // 0600 files
+    } else {
+      write_tokenizer_pack(tokenizer);  // 0600 files
+    }
   }
   // SP1's open_executable refuses an engine file or folder writable by group or
   // others; the build tree is 0775 under umask 0002. Copy the engine into a
@@ -325,6 +330,18 @@ std::unique_ptr<ServerProcess> ServerProcess::start(const ServerOptions& options
   // SP1 hands the engine its canonical path as argv[0].
   server->engine_path_ = std::filesystem::canonical(server->engine_path_);
 #endif
+  // Gemma 4 plan 1 Task 11: the fake's options file beside its copy (one option per line).
+  if (!options.fake_engine_options.empty()) {
+    std::string lines;
+    for (const auto& option : options.fake_engine_options) {
+      if (option.empty() || option.find_first_of("\r\n") != std::string::npos) {
+        std::cerr << "harness: a fake engine option must be one non-empty line\n";
+        return nullptr;
+      }
+      lines += option + "\n";
+    }
+    secure_frontend_test::write_file(bin / kFakeEngineOptionsFile, lines, 0600);
+  }
   server->port_ = secure_frontend_test::pick_free_port();  // SP1's helper (support/http_client.hpp)
   if (options.managed_vision) {
     // Ruling T11-y: the encoder exe is OUR distribution's — maya-vision beside the
@@ -356,6 +373,11 @@ std::unique_ptr<ServerProcess> ServerProcess::start(const ServerOptions& options
   if (!options.state_dir) secure_frontend_test::make_owner_private_directory(state_dir);  // 0700; Windows owner = the user
   std::vector<std::string> arguments{utf8_path(server_path())};
   if (!options.managed_vision) arguments.emplace_back("--expert");  // the managed path launches from the manifest
+  // Gemma 4 plan 1 Task 11: engine.profile (an --expert key; the managed path refuses it).
+  if (options.profile) {
+    arguments.emplace_back("--profile");
+    arguments.push_back(*options.profile);
+  }
   arguments.push_back("--models-root");
   arguments.push_back(utf8_path(models));
   if (!options.managed_vision) {

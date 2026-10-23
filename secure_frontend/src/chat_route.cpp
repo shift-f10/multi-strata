@@ -57,6 +57,35 @@ std::optional<std::string> make_completion_id() {
   return id;
 }
 
+// Gemma 4 plan 1 Task 10 (spec §6.6, D10): none is off, low/medium/high are on, and a request
+// that names no level takes the server's default (reasoning.effort; unset = off).
+bool gemma4_request_thinks(const std::optional<std::string>& reasoning_effort, const bool thinking_default) {
+  return reasoning_effort.has_value() ? *reasoning_effort != "none" : thinking_default;
+}
+
+ChatGenerationPlanResult select_chat_generation_plan(const NativeChatProfile profile, const ChatCompletionRequest& request,
+                                                     const TokenizerPack& tokenizer, const std::size_t maximum_prompt_tokens,
+                                                     const SamplingDefaults& defaults,
+                                                     const std::span<const std::size_t> image_token_counts, const bool thinking,
+                                                     const QwenEffortPlacement qwen_effort) {
+  // The route resolves the output budget itself (resolve_max_tokens), so the plans get 1.
+  switch (profile) {
+    case NativeChatProfile::qwen:
+      return make_qwen_chat_generation_plan(request, tokenizer, maximum_prompt_tokens, 1U, defaults, image_token_counts, thinking,
+                                            qwen_effort);
+    case NativeChatProfile::glm53:
+      return make_glm53_chat_generation_plan(request, tokenizer, maximum_prompt_tokens, 1U, defaults, image_token_counts);
+    case NativeChatProfile::gemma4:
+      // D2: text only. The schema's vision gate never opens for gemma4 (server_bootstrap), and
+      // an image answer reaching here is a wiring bug, closed.
+      if (!image_token_counts.empty()) {
+        return ChatGenerationPlanError{ChatGenerationPlanErrorCode::invalid_request, "the Gemma 4 profile serves text only"};
+      }
+      return make_gemma4_chat_generation_plan(request, tokenizer, maximum_prompt_tokens, 1U, defaults, thinking);
+  }
+  return ChatGenerationPlanError{ChatGenerationPlanErrorCode::invalid_request, "unknown chat profile"};
+}
+
 ChatRoute::ChatRoute(ChatRouteConfig config, SupervisorPort& port, GenerationGate& gate, const TokenizerPack& tokenizer)
     : config_(std::move(config)), port_(port), gate_(gate), tokenizer_(tokenizer) {}
 
@@ -98,8 +127,17 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
       std::find(config_.model_aliases.begin(), config_.model_aliases.end(), request.model) == config_.model_aliases.end())
     return make_error_response(ApiError::model_not_found);
   // Session log step 14: a request's own reasoning_effort (none closes the think block)
-  // wins over the server's reasoning.effort; the schema admits it on the qwen profile only.
-  const bool thinking = request.reasoning_effort.has_value() ? *request.reasoning_effort != "none" : config_.qwen_thinking;
+  // wins over the server's reasoning.effort; the schema admits it on the qwen and gemma4
+  // profiles (Gemma 4 plan 1 Task 10: gemma4's default is off, D10; glm53 refuses it).
+  const bool thinking = [&] {
+    switch (config_.profile) {
+      case NativeChatProfile::qwen:
+        return request.reasoning_effort.has_value() ? *request.reasoning_effort != "none" : config_.qwen_thinking;
+      case NativeChatProfile::gemma4: return gemma4_request_thinks(request.reasoning_effort, config_.gemma4_thinking_default);
+      case NativeChatProfile::glm53: return false;  // the GLM profile has no thinking switch
+    }
+    return false;
+  }();
   // Session log step 16: and its level writes the template's sentence (low, medium, high).
   QwenEffort level = config_.qwen_effort;
   if (request.reasoning_effort == "low") level = QwenEffort::low;
@@ -149,11 +187,9 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
   std::optional<ChatGenerationPlan> plan;
   std::vector<std::uint32_t> prompt_ids;
   if (!vision_request) {
-    const auto plan_result = config_.profile == NativeChatProfile::qwen
-                                 ? make_qwen_chat_generation_plan(request, tokenizer_, config_.max_prompt_tokens, 1U,
-                                                                  config_.sampling_default, {}, thinking, effort)
-                                 : make_glm53_chat_generation_plan(request, tokenizer_, config_.max_prompt_tokens, 1U,
-                                                                  config_.sampling_default);
+    // Gemma 4 plan 1 Tasks 3 and 10: an exhaustive switch, so a profile never takes another's plan.
+    const auto plan_result = select_chat_generation_plan(config_.profile, request, tokenizer_, config_.max_prompt_tokens,
+                                                         config_.sampling_default, {}, thinking, effort);
     if (const auto* plan_error = std::get_if<ChatGenerationPlanError>(&plan_result)) {
       return make_error_response(plan_error->code == ChatGenerationPlanErrorCode::prompt_too_large ? ApiError::context_length_exceeded
                                                                                                    : ApiError::invalid_request);
@@ -210,8 +246,9 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
     std::vector<std::size_t> image_counts;
     image_counts.reserve(encoded.size());
     for (const auto& entry : encoded) image_counts.push_back(entry.image_tokens);
-    const auto plan_result = make_qwen_chat_generation_plan(request, tokenizer_, config_.max_prompt_tokens, 1U,
-                                                            config_.sampling_default, image_counts, thinking, effort);
+    // Gemma 4 plan 1 Task 10: the image path selects through the same switch (only qwen takes images).
+    const auto plan_result = select_chat_generation_plan(config_.profile, request, tokenizer_, config_.max_prompt_tokens,
+                                                         config_.sampling_default, image_counts, thinking, effort);
     if (const auto* plan_error = std::get_if<ChatGenerationPlanError>(&plan_result)) {
       config_.vision->discard(*combined_file);
       lease.reset();
@@ -250,7 +287,8 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
     outcome = lease->chat().run_generation(
         prompt_ids,
         {.max_tokens = *budget, .sampling = plan->sampling, .embeddings = embeddings, .think_tokens = plan->think_tokens,
-         .starts_in_reasoning = plan->starts_in_reasoning, .stop_tokens = plan->stop_tokens, .meter = config_.monitor},
+         .starts_in_reasoning = plan->starts_in_reasoning, .stop_tokens = plan->stop_tokens,
+         .channel_name = plan->channel_name, .meter = config_.monitor},
         {.cancelled = context.client_gone, .shutting_down = context.shutting_down,
          .shutdown_requested = [] { return shutdown_signalled(); }},
         tokenizer_);
@@ -322,6 +360,7 @@ RouteResult ChatRoute::stream_response(std::optional<Lease>& lease, const std::v
   settings.run.think_tokens = plan.think_tokens;
   settings.run.starts_in_reasoning = plan.starts_in_reasoning;
   settings.run.stop_tokens = plan.stop_tokens;
+  settings.run.channel_name = plan.channel_name;  // Gemma 4 plan 1 Task 9
   settings.run.meter = config_.monitor;
   settings.write_stall = config_.write_stall;
   settings.tail_deadline = config_.response_write_deadline;

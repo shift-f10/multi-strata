@@ -40,8 +40,8 @@ std::optional<int> exit_code_of(const std::vector<std::string>& arguments) {
 
 struct Child final {
   secure_frontend::EngineStdioProcess transport;
-  explicit Child(const std::vector<std::string>& arguments) {
-    expect(!transport.start({.executable = test_support::fake_engine_path(), .arguments = arguments, .environment = {}}).has_value(),
+  explicit Child(const std::vector<std::string>& arguments, const std::filesystem::path& executable = test_support::fake_engine_path()) {
+    expect(!transport.start({.executable = executable, .arguments = arguments, .environment = {}}).has_value(),
            "fake engine must start");
   }
   ~Child() { (void)transport.terminate(std::chrono::milliseconds(250)); }
@@ -310,12 +310,45 @@ void fake_engine_stream_modes_selftest() {
   }
 }
 
+// Gemma 4 plan 1 Task 11: options in fake-engine.options beside the executable join the
+// command line's (ServerOptions::fake_engine_options writes the file for the gemma4 profile,
+// whose engine-argument allowlist refuses the fake's own flags). A copy of the fake in a scratch
+// directory reads the file there; CRLF and blank lines are tolerated.
+void fake_engine_reads_options_beside_itself() {
+  const auto directory = secure_frontend_test::make_scratch_directory();
+  const auto copy = directory / test_support::fake_engine_path().filename();
+  std::error_code error;
+  std::filesystem::copy_file(test_support::fake_engine_path(), copy, error);
+  expect(!error, "the fake is copied into a scratch directory: " + error.message());
+  if (error) return;
+  const auto record = directory / "record.txt";
+  secure_frontend_test::write_file(directory / test_support::kFakeEngineOptionsFile,
+                                   "--token-ids=5,6\r\n\n--record-file=" + test_support::utf8_path(record) + "\n", 0600);
+  {
+    Child child({"--ready-context=512"}, copy);
+    expect(child.line() == "READY 512 stop", "the command line's own options still apply");
+    child.send("GEN 10 1,2,3");
+    const std::string first = child.line(), second = child.line(), done = child.line();
+    expect(first == "T 5" && second == "T 6" && done == "DONE 2 3 0 0 stop",
+           "the file's --token-ids apply (stream mode, full DONE): " + first + " | " + second + " | " + done);
+  }
+  expect(secure_frontend_test::read_file(record).find("GEN 10 1,2,3\n") != std::string::npos,
+         "the file's --record-file applies (its \\r dropped): the GEN line is recorded");
+  {
+    Child plain({});
+    (void)plain.line();
+    plain.send("GEN 5 1");
+    expect(plain.line() == "T 7" && plain.line() == "DONE stop", "the build-tree fake has no options file: SP2 short form");
+  }
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
   return secure_frontend_test::run_cases(argc, argv,
                                          {{"fake_engine_modes_selftest", fake_engine_modes_selftest},
                                           {"fake_engine_dump_is_parseable", fake_engine_dump_is_parseable},
-                                          {"fake_engine_stream_modes_selftest", fake_engine_stream_modes_selftest}},
+                                          {"fake_engine_stream_modes_selftest", fake_engine_stream_modes_selftest},
+                                          {"fake_engine_reads_options_beside_itself", fake_engine_reads_options_beside_itself}},
                                          failures);
 }

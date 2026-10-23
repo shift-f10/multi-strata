@@ -15,11 +15,40 @@ namespace {
 
 constexpr std::array<std::string_view, 4> kPackRequired{"index.txt", "dense.bin", "native_experts.txt", "conversions.json"};
 constexpr std::array<std::string_view, 4> kTokenizerRequired{"vocab.json", "merges.txt", "token_type.json", "tokenizer.json"};
+// Gemma 4 plan 1 Task 4 (spec §6.2): an spm_bpe pack keeps its merges in merges.json.
+constexpr std::array<std::string_view, 4> kGemma4TokenizerRequired{"vocab.json", "merges.json", "token_type.json",
+                                                                   "tokenizer.json"};
 
 std::string where(const AcquireManifest& m) { return model_ref_text(m.name, m.tag); }
 
+// Gemma 4 plan 1 Task 4: launch.tokenizer_pack holds the four spm_bpe files and loads in that mode.
+std::optional<AcquireError> check_gemma4_layout(const CanonicalRoot& root, const RelativePath& dir, const AcquireManifest& m) {
+  if (!m.launch.tokenizer_pack) return AcquireError{AcquireReason::pack_layout_invalid, where(m) + ": launch.tokenizer_pack"};
+  std::set<std::string> listed;
+  for (const auto& f : m.files) listed.insert(f.path);
+  const std::string tokenizer = *m.launch.tokenizer_pack;
+  for (const auto name : kGemma4TokenizerRequired) {
+    if (!listed.contains(tokenizer + "/" + std::string{name})) {
+      return AcquireError{AcquireReason::pack_layout_invalid, tokenizer + "/" + std::string{name}};
+    }
+  }
+  // As below: every file is under `dir` and validate_manifest bounds the stored form.
+  auto opened = open_root(root.join(join_rel(dir, tokenizer)));
+  if (std::holds_alternative<PathError>(opened)) return AcquireError{AcquireReason::pack_layout_invalid, tokenizer};
+  if (!std::holds_alternative<TokenizerPack>(load_local_tokenizer_pack(std::get<CanonicalRoot>(opened), TokenizerMode::spm_bpe))) {
+    return AcquireError{AcquireReason::pack_layout_invalid, tokenizer + ": tokenizer pack does not load"};
+  }
+  return std::nullopt;
+}
+
 std::optional<AcquireError> check_layout(const CanonicalRoot& root, const RelativePath& dir, const AcquireManifest& m) {
-  if (m.profile != ManifestProfile::qwen) return std::nullopt;  // glm53: shard-set rule only, until SP6
+  switch (m.profile) {
+    case ManifestProfile::qwen: break;
+    case ManifestProfile::gemma4: return check_gemma4_layout(root, dir, m);
+    // glm53: shard-set rule only, until SP6.
+    case ManifestProfile::glm53:
+    case ManifestProfile::raw: return std::nullopt;
+  }
   if (!m.launch.pack || !m.launch.tokenizer_pack) return AcquireError{AcquireReason::pack_layout_invalid, where(m) + ": launch.pack"};
   std::set<std::string> listed;
   for (const auto& f : m.files) listed.insert(f.path);
@@ -36,7 +65,7 @@ std::optional<AcquireError> check_layout(const CanonicalRoot& root, const Relati
   // Every file is under `dir` and validate_manifest bounds the stored form (Task 18 ruling), so this join is P1-valid.
   auto opened = open_root(root.join(join_rel(dir, tokenizer)));
   if (std::holds_alternative<PathError>(opened)) return AcquireError{AcquireReason::pack_layout_invalid, tokenizer};
-  if (!std::holds_alternative<TokenizerPack>(load_local_tokenizer_pack(std::get<CanonicalRoot>(opened)))) {
+  if (!std::holds_alternative<TokenizerPack>(load_local_tokenizer_pack(std::get<CanonicalRoot>(opened), TokenizerMode::byte_bpe))) {
     return AcquireError{AcquireReason::pack_layout_invalid, tokenizer + ": tokenizer pack does not load"};
   }
   return std::nullopt;

@@ -940,6 +940,181 @@ thinking off, low, medium and high".
   - The table and totals show the four requests; the context reads "117 / 128K"; no CSP
     violation or script error.
 
+### 17. Gemma 4 on llama.cpp's own server, test-only (owner decision)
+
+Gemma 4 cannot run on our server: upstream's engine accepts only `qwen4exp`/`qwen35moe`, and
+our own Gemma 4 engine exists only as a spec
+(`docs/superpowers/specs/2026-10-22-gemma4-engine-design.md`). The owner asked to test the
+model anyway. On my question, "Yes: build llama.cpp's llama-server from the pinned 3cf03257
+checkout (test-only, outside our secure server), run the Q8 Gemma file on 0.0.0.0:8081 with
+that API key".
+
+44. **Built and ran code that the supply-chain contract has not reviewed**, by the owner's
+    explicit decision. llama.cpp's `libllama`, `common` and server (about 100,000 lines) were
+    never in our compiled surface. C3/C4 were not run; C1 was (checkout at `3cf03257`, clean
+    before and after). It is a test tool, not part of the product: nothing of it is committed,
+    shipped or started by our server.
+    - **Build** (`out/build-llama-server.bat` → `out/llama-server-3cf03257/bin/llama-server.exe`,
+      60.9 MB, static):
+      - CUDA 13.0, `sm_89`, Ninja + MSVC v143, built out of tree.
+      - Every build-time fetch was off: the web UI (no npm build, no Hugging Face bundle, so
+        the server has no page), OpenSSL (no HTTPS model downloads), CCCL, the OpenMP
+        installer, llguidance. Tests and examples were off too.
+      - The log shows no download; the UI step reports "embedded 0 assets".
+    - **Run** (`out/serve/serve-gemma4-llamacpp.ps1`, log `out/serve-gemma4-llamacpp.log`,
+      terminal tab "gemma4 llama-server 8081"):
+      - Listens on `0.0.0.0:8081`, context 32768, one slot, flash attention.
+      - Experts: layers 0-18 in RAM (memory-mapped), layers 19-29 and every non-expert
+        tensor on the GPU (`-ngl 99 --n-cpu-moe 19`).
+      - The key is our dev token, passed as `LLAMA_API_KEY` (not on the command line).
+      - Off: `--no-agent` (no tools, no MCP/CORS proxy), `--no-slots`, `--no-webui`. Any
+        `LLAMA_ARG_*` variable is cleared first.
+      - It is **not** behind our frontend: no Host/Origin checks, no request limits, and
+        `/health` answers without a key (llama.cpp's design).
+    - **Firewall:** an inbound Allow rule for `llama-server` (Public profile; this network
+      is Public) exists from Windows' first-run prompt. I neither created nor changed it.
+    - **Checked:**
+      - Loaded in 8 s; VRAM 14.97 of 16.4 GB.
+      - Without the key: 401. `/v1/models`: `gemma-4-26b-a4b-it`.
+      - Thinking off (`chat_template_kwargs: {"enable_thinking": false}`): a correct
+        one-sentence answer, 59 tokens, 30.6 tok/s decode.
+      - Thinking on: reasoning returned apart in `reasoning_content`, 24.2 tok/s.
+      - A request that names neither thinks (it is llama.cpp's `--reasoning auto`).
+      - `http://192.168.1.96:8081/health` answers.
+    - **llama.cpp's own warnings:** "detected an outdated gemma4 chat template, applying
+      compatibility workarounds"; `<|tool_response>` and `</s>` retyped as control tokens.
+      Neither is our concern for this test.
+    - **To stop it:** Ctrl+C in its tab.
+    - **What comes after it:** `/` on 8081 is a 404 (no UI was built). The owner wants one UI: the
+      8080 server and its page, with engines behind it, not a page served by llama-server. Asked
+      whether a thin llama.cpp-backed engine should carry Gemma behind 8080 in the meantime,
+      the owner ruled it out ("Keep to the Strata-style port in the spec; Gemma joins the
+      8080 UI when that engine is done"; spec D12). This llama-server remains a test tool only.
+
+45. **The frontend's Gemma 4 tokenizer agrees with llama.cpp's on the real vocabulary**
+    (Gemma 4 plan 1 Task 7, 2026-10-22). Nothing from the model is committed: the fixture
+    `secure_frontend/tests/fixtures/gemma4_tokenizer_texts.json` holds texts and token ids only.
+    - **Pack:** `tools/secure/secure_tokenizer.py --profile gemma4 --gguf
+      C:\Strata-data\models\gemma4_q8\gemma-4-26B-A4B-it-UD-Q8_K_XL.gguf --out out/gemma4-pack`
+      read the metadata only (15,777,400 header bytes, SHA-256 `9f281a1e…f1143b`; no tensor
+      data) and wrote `out/gemma4-pack/tokenizer/` (262,144 tokens, 514,906 merges; 17 CONTROL,
+      7 USER_DEFINED, 256 BYTE tokens) in under 2 s.
+    - **Folder permission:** like `out/serve/` (issue 18), `out/gemma4-pack` was made
+      owner-only (`icacls … /inheritance:r /grant:r <user>:(OI)(CI)F`, children reset to
+      inherit); with the inherited `Authenticated Users: Modify` the loader refuses it ("must
+      be an existing private directory"), as designed. Only that folder was changed.
+    - **Reference ids:** `llama-tokenize` built test-only in the same out-of-tree build as step
+      17 (`cmake --build out/llama-server-3cf03257 --target llama-tokenize`, 2 of 2 steps; no
+      download), run as `llama-tokenize -m <gguf> -f <text file> --no-escape --ids --no-bos
+      --log-disable` with `CUDA_VISIBLE_DEVICES=-1` (it loads the vocabulary only; with no
+      device visible it never touched the GPU: "no CUDA-capable device is detected").
+    - **Result:** 64 texts (ASCII prose, leading/trailing/double spaces, `\n`/`\n\n`/`\n\n\n`
+      runs, `\r\n`, tabs, code, numbers, CJK, Korean, emoji with ZWJ and skin tone, combining
+      marks, Arabic and Hebrew, NUL/C0/DEL, NBSP, U+2028/2029, U+3000, U+200B, long words,
+      5,000 `x`, the template's own `system\n`/`user\n`/`model\n`/`thought\n`): llama.cpp's
+      ids equal `tools/secure/spm_bpe.py`'s for every one (no disagreement); 27 texts holding
+      a Gemma control literal (all 24 markers, and three injection attempts) are refused by our
+      encoders. The C++ case `tokenizer_pack_tests.gemma4_real_pack_matches_the_fixture`
+      (`SECURE_FRONTEND_GEMMA4_PACK=out\gemma4-pack\tokenizer`, label `gemma4-real-pack`)
+      failed against the pre-spm_bpe tokenizer (`out/ctest-g4-t7-red.log`) and passes now
+      (`out/ctest-g4-t7-green.log`, 21 s: the per-call index over 262,144 tokens and 514,906
+      merges costs about 0.2 s an encode).
+
+46. **The built-in page cannot chat with a GLM model** — open (found by the Gemma 4 plan 1
+    survey, 2026-10-22; owner's call). The page always sends `reasoning_effort`
+    (`secure_frontend/web/app.js`, `reasoning_effort: LEVELS[s.thinking] ? s.thinking : "high"`),
+    and the glm53 schema refuses the field by name (400 `unsupported_parameter`). Plan 1 did not
+    change glm53 (no GLM engine runs on this box yet). Options: the page omits the field for a
+    profile without levels, or glm53 maps it to `glm.reasoning_effort`.
+
+47. **Page chats with a Gemma model think by default** — note (Gemma 4 plan 1 Task 12). D10
+    makes thinking off the default for a request that names no level, but the page always names
+    one and its default is High, so a page chat thinks unless Off is picked; the drawer now says
+    "Gemma models think or answer directly; Low, Medium and High all mean thinking on". API
+    clients that omit `reasoning_effort` get thinking off. If the owner wants Off on the page
+    for Gemma, the page needs to know the profile (today it does not).
+
+### 18. Our own Gemma 4 engine: built, checked against llama.cpp, served on 8080 (owner request)
+
+Owner: "keep working on this until it is ready and can serve the model for testing". Plan 1 (the
+`gemma4` frontend profile) ran on branch `gemma4-plan1-frontend`; the engine of plans 2-3 was
+written beside it: `engines/gemma4/` (`strata-gemma4-engine`), plan
+`docs/superpowers/plans/2026-10-22-gemma4-plan2-3-engine.md`, results
+`docs/validation/gemma4/2026-10-22-engine-parity-and-speed.md`.
+
+48. **Plan reconciliations for the owner** (plan R1-R7):
+    - R1: nothing of `upstream/` is compiled; the engine has its own Q8_0/BF16/F32 kernels and
+      uses cuBLAS (from the CUDA toolkit) for prompt GEMMs.
+    - R2: cold experts are read by the GPU from pinned RAM over PCIe; the CPU expert pool of
+      D4 is not built (decode already runs at about twice llama.cpp's speed here). **Owner
+      ruling wanted.**
+    - R3: llama.cpp is the reference; no second, slow reference engine.
+    - R4: a 2,048-row sliding ring and longest-common-prefix reuse within its spare rows.
+    - R5: `--native <gguf>` (not `--model`). R6: `--kv f32` refused in v1. R7: no `cmake/` wrapper.
+49. **Found on the real file:** layer 29's experts mix Q8_0 (gate_up) and BF16 (down); the first
+    load stopped there, and the expert layout became per matrix.
+50. **Parity** (llama.cpp `3cf03257` through the test-only `g4_llama_dump`, experts on its CPU
+    backend): mean KL 0.040 against llama.cpp CUDA where llama.cpp's own CPU-vs-CUDA floor is
+    0.042; top-1 22/24 (floor 21/24); on a 4,911-token prompt mean KL 0.034, top-1 23/24 and the
+    same answer. The prompt and decode paths agree (KL 9e-5).
+51. **Speed:** load 11-30 s, 54-57 of 128 experts a layer in VRAM, 23.5 GiB pinned; decode 47-50
+    tok/s on chat answers, 77-81 tok/s after rebalancing; prompts 864-1,113 tok/s.
+52. **Test-only tools** (never shipped): `g4_llama_dump` links the static libraries of step 17's
+    llama.cpp build (`engines\gemma4\tools\build-g4-llama-dump.bat`); it compiles with `/W3 /WX` and
+    `_CRT_SECURE_NO_WARNINGS` (upstream's tool calls `fopen`/`getenv`); the link reports LNK4098
+    (LIBCMT against the /MD libraries), as the llama.cpp build itself does.
+53. **Served on `0.0.0.0:8080` behind our server and page** (2026-10-23; expert mode, the
+    no-hooks build of the branch `out/frontend-msvc-serve-gemma4`, config
+    `out/serve/config-gemma4-lan.json`, script `out/serve/serve-gemma4-lan.ps1`, terminal tab
+    "gemma4 secure server 8080"; none of it committed):
+    - `engine.profile` gemma4, the engine copied to `out/serve/engine-gemma4/` (owner-only),
+      `roots.models` `C:\Strata-data\models\gemma4_q8`, the pack `out/gemma4-pack/tokenizer`,
+      `--max-context 32768`, `engine.gpu` 0, the CUDA `bin\x64` folder as `engine.lib_dirs`;
+      `--check` passed. READY after the engine's load (about 30 s).
+    - API (loopback, the dev key): `/v1/models` lists `Gemma-4-26B-A4B-it`; "What is the capital
+      of France?" answers "The capital of France is Paris." (25 prompt + 8 completion tokens),
+      streamed with the first token at 0.5 s; with `reasoning_effort` medium the thought comes
+      apart in `reasoning_content` and the answer is right; a follow-up turn works.
+    - Page (built-in browser, signed in with the dev key): High thinks (the Thinking block streams,
+      then folds), Off answers directly (46 tokens), a follow-up after a thinking turn works, Stop
+      ends a long thought ("Stopped"), the Monitor shows the GPU, VRAM 15.4 of 16 GB, RAM 33.7 of
+      64 GB and the requests.
+    - Sampling: with no temperature the frontend sends none and the engine decodes greedily, and
+      the model then deliberated for minutes over a haiku's syllables. The config now sets the
+      model card's defaults (`defaults.sampling` temperature 1.0, top_p 0.95, top_k 64, the
+      GGUF's `general.sampling`); the same prompt then thought for 2,359 tokens and answered.
+    - Speed with sampling: 35.6-36.3 tok/s decode (the host sampler copies 1 MB of logits and
+      ranks them each token; greedy decodes at 47-60 tok/s). Prompt reading on short turns 39-116
+      tok/s. A thinking turn followed by an Off turn reuses nothing: the system turn differs.
+54. **Faster encoding and decoding** (owner: "move sampling to the GPU and cache the Gemma
+    encode index, test-first, then restart the server"; 2026-10-23):
+    - The frontend's spm_bpe encode tables are built once when the pack loads
+      (`TokenizerPack::spm_index`, a private copy of the pack's data, shared by copies; a pack
+      whose counts changed falls back to per-call tables). The real-vocabulary fixture case
+      went from 21.2 s to 1.9 s for the same encodes (about 0.2 s a request saved). Full suite
+      955 passed, 1 skipped.
+    - The engine ranks the sampler's 64 candidates on the GPU. Measured honestly, that saved
+      only about 1.9 ms a token: the 36 tok/s seen on the page came from slow expert
+      rebalancing, not the sampler. Rebalancing every 8 tokens with up to 32 swaps took a
+      sampled 225-token story from 29-32 tok/s to 54 (cold) and 77-85 tok/s (settled).
+55. **A repetition loop on the page, and every retry repeating it** (owner report 2026-10-23:
+    "what MITRE attack code is process injection" with thinking on looped "sometimes even
+    sometimes even ...", twice, the same text both times):
+    - Not the engine: the looping text teacher-forced through llama.cpp `3cf03257` gives the same
+      distributions (mean KL 0.006 over 300 steps, the same top choice at 290), and the loop
+      reproduces identically with the GPU and the host sampler and with decode rebalancing on or
+      off (expert placement changes no token). It is this abliterated model sampled at
+      temperature 1.0: over 32 runs each (two thinking prompts, 600 tokens), the model card's
+      values looped once, llama-server's defaults (T 0.8, top_k 40, min_p 0.05) once, the model
+      card's values with `min_p` 0.05 never (a repeat penalty of 1.1: 0 of 8).
+    - Why the retry repeated it: a GEN without a seed used seed 0 in our engine (the q36 engine's
+      rule), so the same prompt drew the same sample every time. Fixed as upstream's
+      generate.cpp does (:13784): an unseeded request gets a seed from the clock
+      (`g4::request_seed`, case `unseeded_requests_draw_fresh_seeds`, RED then GREEN); an explicit
+      seed still reproduces. The same question asked twice now gives two different, correct
+      answers (T1055 and its sub-techniques).
+    - The serve config adds `min_p` 0.05 to the model card's defaults; the README recommends it.
+
 ### Not done in this session
 
 - Resume doc §8 item 3 (`qwen35moe` family behaviour): not applicable to these packs (no

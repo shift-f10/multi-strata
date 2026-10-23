@@ -388,6 +388,24 @@ Our root `CMakeLists.txt` seeds `STRATA_NATIVE_EXPERTS=OFF` and our CI
 `-DSTRATA_NATIVE_EXPERTS=OFF`, so the llama.cpp checkout is never fetched by
 default or in CI.
 
+## Gemma 4 engine (ours, 2026-10-22) and its test-only reference tool
+
+- `engines/gemma4/` (`strata-gemma4-engine`, Gemma 4 plans 2-3) is our own code under this
+  repository's licence, written for the owner's Gemma 4 26B-A4B file (spec
+  `docs/superpowers/specs/2026-10-22-gemma4-engine-design.md`). It compiles nothing from
+  `upstream/` and vendors no third-party source. At build and run time it uses NVIDIA's CUDA 13.0
+  toolkit from the box (the static CUDA runtime and `cublas64_13.dll`, the toolkit's own licence),
+  as upstream's CUDA engine does.
+- The model weights it loads are the owner's choice (spec §7); nothing from the GGUF is committed
+  (the validation files under `docs/validation/gemma4/` hold token ids, statistics and timings).
+- `engines/gemma4/tools/g4_llama_dump.cpp` is a TEST-ONLY tool, never built by default and never
+  shipped: a copy of upstream's `tools/qwen35/q36_llama_dump.cpp` (at `v0.2.2`; MIT, "Copyright
+  (c) 2026 Niko1221 and the Strata contributors", `upstream/LICENSE`) with the changes marked
+  `gemma4:`. It links the static libraries of the test-only llama.cpp build at
+  `3cf03257` (session log step 17; MIT, see the ggml / llama.cpp section) through
+  `engines/gemma4/tools/build-g4-llama-dump.bat`. Spec D7: built at the existing pin, run only
+  on the box for parity.
+
 ## llvm-mingw (build tool only)
 
 [mstorsjo/llvm-mingw][llvmmingw] release `20261006` is the open-source

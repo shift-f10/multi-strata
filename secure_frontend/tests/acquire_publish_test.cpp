@@ -181,6 +181,62 @@ void layout_check_requires_pack_files_and_valid_tokenizer() {
   expect(std::get<secure_frontend::AcquireError>(refused).reason == AcquireReason::pack_layout_invalid, "required pack files");
 }
 
+// Gemma 4 plan 1 Task 4 (spec §6.2, §7): a gemma4 manifest's tokenizer_pack must hold the
+// spm_bpe files (vocab.json, merges.json, token_type.json, tokenizer.json) and load in that
+// mode; a byte-level pack (merges.txt) is pack_layout_invalid.
+void gemma4_layout_check_requires_an_spm_tokenizer_pack() {
+  using secure_frontend::FileRole;
+  const auto path = secure_frontend_test::make_scratch_directory();
+  const auto root = fx::models_root(path);
+  const auto manifest_for = [](const std::string& name, const std::vector<fx::PayloadFile>& files) {
+    std::string out = "{\"format\":\"strata-model-manifest\",\"schema_version\":1,\"name\":\"" + name +
+                      "\",\"tag\":\"t\",\"version\":\"2026.10.22.1\",\"sequence\":1,\"profile\":\"gemma4\","
+                      "\"engine\":{\"family\":\"gemma4\",\"min_version\":\"0.0.1\"},"
+                      "\"license\":{\"id\":\"Apache-2.0\",\"url\":\"https://fixture.example/l\",\"bundle_allowed\":true},"
+                      "\"hosts\":[\"fixture.example\"],\"files\":[";
+    for (std::size_t i = 0; i < files.size(); ++i) {
+      const auto& f = files[i];
+      out += (i ? "," : "") + std::string{"{\"path\":\""} + f.path + "\",\"role\":\"" +
+             std::string{secure_frontend::role_name(f.role)} + "\",\"size\":" + std::to_string(f.bytes.size()) +
+             ",\"sha256\":\"" + secure_frontend::to_hex(secure_frontend::sha256(f.bytes)) + "\",\"sources\":[]}";
+    }
+    return out + "],\"launch\":{\"native\":\"weights/g.gguf\",\"tokenizer_pack\":\"tokenizer\"}}\n";
+  };
+  const std::vector<fx::PayloadFile> spm{{"weights/g.gguf", FileRole::weights, "gguf"},
+                                         {"tokenizer/vocab.json", FileRole::tokenizer, "{\"a\":0,\"b\":1,\"ab\":2}"},
+                                         {"tokenizer/merges.json", FileRole::tokenizer, "[[\"a\",\"b\"]]"},
+                                         {"tokenizer/token_type.json", FileRole::tokenizer, "[1,1,1]"},
+                                         {"tokenizer/tokenizer.json", FileRole::tokenizer, "{}\n"}};
+  fx::FakeLoaded loaded;
+  const secure_frontend::StoreEnvironment env;
+  const auto try_publish = [&](const std::string& name, const std::vector<fx::PayloadFile>& files) {
+    const auto manifest = fx::trusted(manifest_for(name, files), secure_frontend::ModelOrigin::third_party);
+    fx::stage(root, manifest, files);
+    return secure_frontend::publish_staged(root, secure_frontend::staging_key(manifest.parsed.sha256), manifest, loaded, env, true);
+  };
+  const auto good = try_publish("g", spm);
+  expect(std::holds_alternative<secure_frontend::PublishResult>(good), "an spm_bpe tokenizer pack publishes");
+  auto byte_level = spm;
+  byte_level[2] = {"tokenizer/merges.txt", FileRole::tokenizer, "a b\n"};
+  const auto refused = try_publish("h", byte_level);
+  expect(std::holds_alternative<secure_frontend::AcquireError>(refused) &&
+             std::get<secure_frontend::AcquireError>(refused).reason == AcquireReason::pack_layout_invalid &&
+             std::get<secure_frontend::AcquireError>(refused).detail == "tokenizer/merges.json",
+         "a byte-level (merges.txt) pack on gemma4 is pack_layout_invalid, naming merges.json");
+  auto both = spm;
+  both.push_back({"tokenizer/merges.txt", FileRole::tokenizer, "a b\n"});
+  const auto mixed = try_publish("i", both);
+  expect(std::holds_alternative<secure_frontend::AcquireError>(mixed) &&
+             std::get<secure_frontend::AcquireError>(mixed).reason == AcquireReason::pack_layout_invalid,
+         "an spm pack that also carries merges.txt does not load in spm_bpe mode");
+  auto broken = spm;
+  broken[2].bytes = "[[\"a\",\"c\"]]";
+  const auto unknown = try_publish("j", broken);
+  expect(std::holds_alternative<secure_frontend::AcquireError>(unknown) &&
+             std::get<secure_frontend::AcquireError>(unknown).reason == AcquireReason::pack_layout_invalid,
+         "a merge naming an unknown token does not load");
+}
+
 void staged_tree_must_be_exactly_the_manifest() {
   const auto path = secure_frontend_test::make_scratch_directory();
   const auto root = fx::models_root(path);

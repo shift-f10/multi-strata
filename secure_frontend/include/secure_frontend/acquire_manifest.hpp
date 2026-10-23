@@ -14,8 +14,8 @@
 
 namespace secure_frontend {
 
-enum class ManifestProfile { qwen, glm53, raw };  // raw: SECURE_FRONTEND_TEST_HOOKS builds only
-enum class ManifestFamily { strata, glm, none };
+enum class ManifestProfile { qwen, glm53, gemma4, raw };  // raw: SECURE_FRONTEND_TEST_HOOKS builds only
+enum class ManifestFamily { strata, glm, gemma4, none };
 // SP5 M1 Task 11 (D-9): FileRole gains mmproj — the vision encoder artifact, listed like
 // any other file, AT MOST ONE entry, named by the optional launch.mmproj (Ruling T11-bb).
 enum class FileRole { weights, pack, tokenizer, mmproj };

@@ -75,6 +75,17 @@ struct ServerOptions final {
   std::map<std::string, std::string> config_literals{};
   // listener.loopback_without_key cases: no --token-env (a keyless server refuses a key source).
   bool no_token{false};
+  // Gemma 4 plan 1 Task 11: engine.profile for the expert launch, passed as --profile <name>;
+  // absent, no flag (today's behaviour: the qwen default). "gemma4" also writes the spm_bpe
+  // pack (write_spm_tokenizer_pack: vocab.json, merges.json, token_type.json) as
+  // roots.tokenizer_pack instead of the byte pack, since that profile loads it in spm_bpe mode.
+  std::optional<std::string> profile{};
+  // Gemma 4 plan 1 Task 11: options for the supervision fake engine, written one per line to
+  // <root>/bin/fake-engine.options beside the engine copy; the fake reads them after its
+  // command line. engine.profile gemma4 lets only the strata_gemma4 allowlist through
+  // engine.args, so the fake's own flags (--token-ids=..., --record-file=...) travel here.
+  // Empty: no file.
+  std::vector<std::string> fake_engine_options{};
 };
 
 // strata-secure-server as a test child: fixture models (fake-model.gguf, 0600)

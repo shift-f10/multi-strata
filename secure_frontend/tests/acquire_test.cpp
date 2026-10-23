@@ -268,6 +268,7 @@ int main(int argc, char** argv) {
       {"dl04_orphan_adopted_after_rehash_by_digest", acquire_cases::dl04_orphan_adopted_after_rehash_by_digest},
       {"replace_loaded_model_retires_old_version", acquire_cases::replace_loaded_model_retires_old_version},
       {"layout_check_requires_pack_files_and_valid_tokenizer", acquire_cases::layout_check_requires_pack_files_and_valid_tokenizer},
+      {"gemma4_layout_check_requires_an_spm_tokenizer_pack", acquire_cases::gemma4_layout_check_requires_an_spm_tokenizer_pack},
       {"staged_tree_must_be_exactly_the_manifest", acquire_cases::staged_tree_must_be_exactly_the_manifest},
       {"install_decisions_follow_sequence_rules", acquire_cases::install_decisions_follow_sequence_rules},
       {"publish_requires_staging_key_of_manifest", acquire_cases::publish_requires_staging_key_of_manifest},
@@ -316,6 +317,7 @@ int main(int argc, char** argv) {
       {"pull_cli_prints_summary_and_installs", acquire_cases::pull_cli_prints_summary_and_installs},
       {"run_installed_model_needs_no_network", acquire_cases::run_installed_model_needs_no_network},
       {"run_refuses_glm53_without_engine", acquire_cases::run_refuses_glm53_without_engine},
+      {"engine_gate_refuses_gemma4_until_the_engine_exists", acquire_cases::engine_gate_refuses_gemma4_until_the_engine_exists},
 #if defined(SECURE_FRONTEND_TEST_HOOKS)
       {"run_missing_model_non_interactive_exits_2", acquire_cases::run_missing_model_non_interactive_exits_2},
       {"run_missing_model_prompts_and_decline_exits_2", acquire_cases::run_missing_model_prompts_and_decline_exits_2},

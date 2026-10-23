@@ -360,6 +360,185 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
     the template's effort sentence (`QwenEffortPlacement`; high is the default, low has
     its own sentence, medium none, `effort_position` "end" as upstream #458). Before, every
     thinking prompt lacked the template's xhigh sentence. The page offers the four levels.
+  - **Gemma 4 (owner request 2026-10-22): plan 1 (the frontend `gemma4` profile) and plans
+    2-3 (our engine, `engines/gemma4/`) done on branch `gemma4-plan1-frontend` (not pushed, not
+    merged); the engine matches llama.cpp at its own CPU-vs-CUDA floor and the owner's Q8 file
+    is served behind the 8080 page in expert mode on the owner's box (RTX 4080 SUPER, Windows 11,
+    2026-10-23). Plan 4 (managed launch, the engine gate, the full §9.4 battery) not done.** Upstream cannot
+    load `gemma4` (only `qwen4exp`/`qwen35moe`; the Qwen3.6 driver takes head 256 only).
+    Owner chose a Strata-style port and accepted decisions D1-D11 (2026-10-22): spec
+    `docs/superpowers/specs/2026-10-22-gemma4-engine-design.md` (our `engines/gemma4/`
+    tree building upstream unmodified, `strata-gemma4-engine` on the `strata_0143`
+    protocol, frontend `gemma4` profile with an `spm_bpe` tokenizer mode, the reference
+    being llama.cpp `3cf03257`'s `gemma4.cpp`). The owner's UD-Q8_K_XL download
+    (`C:\Strata-data\models\gemma4_q8`) confirmed the model facts header-only (§2.6); it
+    is the v1 target by the owner's choice ("no use the q8", D8). That reverses D4: experts
+    split VRAM/RAM with Q36's hybrid placement and a GELU/BF16 CPU pool, plus BF16 kernels
+    for its 11 BF16 matrices (2.15 GB). (At the spec's writing no plan existed; see the
+    Execution list below for what plan 1 built.) Meanwhile, by the
+    owner's decision, a TEST-ONLY llama.cpp `llama-server` (pinned `3cf03257`, offline
+    build, not reviewed under the supply-chain contract, not our server) serves that file
+    on `0.0.0.0:8081` (session log step 17, issue 44); nothing of it is committed. Owner
+    principle: one UI (8080), engines behind it. Owner decision D12: no interim
+    llama.cpp-backed engine; Gemma joins the 8080 UI when the Strata-style port is done.
+    Plan 1 (the `gemma4` frontend profile, 12 tasks, TDD, fake engine only) is written:
+    `docs/superpowers/plans/2026-10-22-gemma4-plan1-frontend-profile.md`. Its
+    survey found ~10 two-way profile ternaries a third profile would silently fall through,
+    no `engine.executables.*` key (expert mode for now; the per-family key moves to plan 4),
+    and an existing bug: the page always sends `reasoning_effort`, which glm53 refuses (400).
+    **Execution** (owner, 2026-10-22: "keep working on this until it is ready and can serve
+    the model for testing") on branch `gemma4-plan1-frontend`, never pushed:
+    - Task 1 done: `engine.profile = "gemma4"` (`EngineProfile::gemma4`, `--check` prints
+      it), `arguments_profile_for` (exhaustive switch: qwen → `strata_0143`, glm53 →
+      `lighttransport_glm53`, gemma4 → `strata_gemma4`), the `strata_gemma4` allowlist
+      (`--max-context` 1-262144, `--chunk` 1-8192, `--kv f16|f32`, `--no-graph`,
+      `--expert-vram` 0-1024 GiB, `--expert-slots` 0-128, `--hybrid-rows` 1-4096,
+      `--cpu-threads` 1-256; `--flag VALUE` only, once each; known foreign flags refused by
+      name, unknown ones never echoed), the `glm.*` guard now "every profile but glm53".
+      Gates: MSVC build clean; full suite 920 passed, 1 skipped (the symlink case).
+    - Task 2 done: manifests take `"profile": "gemma4"` with `"engine": {"family": "gemma4"}`
+      (`ManifestProfile::gemma4`, `ManifestFamily::gemma4`; the family per profile is an
+      exhaustive switch). gemma4 launch keys are `native` (a listed weights file, shard 00001)
+      and `tokenizer_pack` (a directory of listed files); `ple_gguf`, `pack` and `mmproj` are
+      refused (D2 text only). `engine_gate` refuses gemma4 as `engine_profile_unavailable`
+      with the fixed reason "the Gemma 4 engine is not installed" (plan 4 opens it); `list`
+      and `show` print "engine not available (…)", `run` exits 11. Gates: MSVC build clean;
+      full suite 922 passed, 1 skipped.
+    - Task 3 done: `NativeChatProfile::gemma4`; the profile → chat profile / wire flavor /
+      environment family / per-request `reasoning_effort` selections are exhaustive switches
+      shared by `supervisor_config` and the bootstrap (gemma4 → its own chat profile,
+      `strata_0143`, the strata env allowlist, `reasoning_effort` accepted). An expert gemma4
+      launch is the allowlisted `engine.args`, then `--gpu` from `engine.gpu` (as qwen), then
+      `--native <models_root/file>` last (controller ruling: the Gemma engine takes
+      `--native`, spec §4.8's `--model` is amended in Task 12); no VRAM/split,
+      expert-profile-save, `--batch`, MTP strip or effort-end tail. On an explicit gemma4
+      profile the config refuses those qwen-only rows by name (`conflicting_values`). The
+      chat plan is chosen by switch in `chat_execution` and `chat_route`; the gemma4 plan is a
+      stub refusing every request until Task 8. Gates: MSVC build clean; full suite 926
+      passed, 1 skipped.
+    - Task 4 done: `TokenizerMode { byte_bpe, spm_bpe }`, a required argument of
+      `load_local_tokenizer_pack` and recorded in the pack; `tokenizer_mode_for` (gemma4 →
+      `spm_bpe`, else `byte_bpe`) picks it at boot — never inferred from the files. `spm_bpe`
+      reads `merges.json` (array of two-string arrays in rank order, own JSON limits: depth 2,
+      ≤ 1,048,576 entries, 64 MiB) and refuses a pack that also has `merges.txt`; `byte_bpe`
+      is unchanged and refuses `merges.json`. Publishing a gemma4 manifest requires
+      `vocab.json`, `merges.json`, `token_type.json`, `tokenizer.json` under
+      `launch.tokenizer_pack`, loading in `spm_bpe`. Gates: MSVC build clean; full suite 931
+      passed, 1 skipped.
+    - Task 5 done: `spm_bpe` encode/decode as llama.cpp `3cf03257`'s gemma4 tokenizer
+      (spaces → U+2581; `[^\n]+`/`[\n]+` runs; a known newline run is one token; code points
+      merged by a priority queue, lowest rank then leftmost; `<0xXX>` byte fallback; no BOS,
+      no space prefix). Fail-closed where llama.cpp is lenient: a missing byte token or a
+      merge landing on a special token is `unencodable_text`. Decode: NORMAL (U+2581 → space)
+      and BYTE (one raw byte) only; byte_bpe now refuses BYTE tokens too. Test pack
+      `spm_tokenizer()` in `tests/support/test_tokenizer.hpp`. Gates: MSVC build clean; full
+      suite 936 passed, 1 skipped.
+    - Task 6 done: `tools/secure/secure_tokenizer.py --profile gemma4 --gguf F --out D`
+      writes `D/tokenizer/{vocab.json, merges.json, token_type.json, tokenizer.json}` through
+      our own header-only GGUF reader (metadata only, bounded; tensor data never read); it
+      accepts only `tokenizer.ggml.model == "gemma4"`, refuses a gemma4 GGUF without the flag,
+      refuses duplicate tokens, mismatched types, merges that are not two vocabulary tokens,
+      and `add_space_prefix` true, and records model, `add_bos`, the special ids and the
+      SHA-256 of the header bytes it read. `tools/secure/spm_bpe.py` (`Encoder`) is the
+      pure-Python reference encoder for Task 7. Gates: pytest 62 passed, 4 skipped, 7 failed —
+      all 7 in `test_build_release.py`, which runs `bash` (on this box WSL's launcher with no
+      distro installed); environmental, not touched here.
+    - Task 7 done: the real Gemma 4 vocabulary (the owner's UD-Q8_K_XL GGUF, header only) →
+      `out/gemma4-pack/tokenizer` (never committed; folder made owner-only like `out/serve/`).
+      64 texts tokenized by llama.cpp's `llama-tokenize` at `3cf03257` (test-only build, GPU
+      hidden) equal `tools/secure/spm_bpe.py`'s ids, and the C++ encoder's
+      (`tokenizer_pack_tests.gemma4_real_pack_matches_the_fixture`, label `gemma4-real-pack`,
+      skipped with its reason unless `SECURE_FRONTEND_GEMMA4_PACK` names the pack); 27 marker
+      texts refused. Fixture: `secure_frontend/tests/fixtures/gemma4_tokenizer_texts.json`
+      (texts + ids). Session log step 17, item 45. Gates: MSVC build clean; tokenizer cases 18/18
+      with the real pack; the full suite runs once after Tasks 8-9 (controller's batch gate).
+    - Task 8 done (written by a parallel worker in a detached worktree, integrated by the lane):
+      `render_gemma4_text_prompt` (new `gemma4_prompt_renderer`) renders the GGUF template's
+      text path byte for byte (`<bos>`; a system turn only for a leading system message or
+      thinking on, `<|think|>` first; `<|turn>user\n…<turn|>\n`; earlier answers as
+      `<|turn>model\n…<turn|>\n`; the generation prompt plus `<|channel>thought\n<channel|>`
+      when thinking is off); `gemma4_trim` is Python's `str.strip()` (a fixed 29-point table);
+      strict user/assistant order, any of the 24 special literals, an empty text, C0 controls
+      or the parts form fail closed. `find_gemma4_markers` (each literal once, the GGUF's own
+      types), `encode_gemma4_prompt` (markers by position, one spm index per prompt) and
+      `make_gemma4_chat_generation_plan` (think tokens `<|channel>`/`<channel|>`, never starting
+      in reasoning). Not done: the one-time cross-check against llama-server's
+      `/apply-template` (needs a running server on the box). Gates: MSVC build clean; 90/90
+      targeted; full suite with Task 9.
+    - Task 9 done (parallel worker, integrated by the lane): `GenerationRunLimits::channel_name`
+      ("thought" for gemma4, unset for qwen/glm53): after `<|channel>` the decoded line must be
+      exactly `thought\n` (within 64 bytes) and is dropped, the rest is `reasoning_content`;
+      any other line, a tag or end-of-turn inside it, or no newline in the bound ends the reply
+      `undecodable` (STOP + drain). Stop ids `<turn|>` then `<eos>` (each one CONTROL token,
+      never output); tool and media markers in output still fail closed. Wired through both
+      route paths. Gates: MSVC build clean; 94/94 targeted; **batch full suite after Tasks 7-9:
+      946 passed, 1 skipped (cfg03), 947 cases, real-pack case included.**
+    - Task 10 done: `select_chat_generation_plan` (chat_route) is the route's one plan switch
+      for text and image paths (gemma4: its own plan, text only). gemma4 thinking: the
+      request's `reasoning_effort` wins (`none` off, `low`/`medium`/`high` on), else
+      `reasoning.effort` (unset or `none`: off, D10). `chat_schema_limits` derives the
+      per-request flag from the profile; the vision gate opens only for qwen. Note: the page
+      always sends a level (High by default), so page chats with Gemma think unless Off is
+      picked; API clients that omit it get thinking off. Gates: MSVC build clean; 124/124 in
+      the touched binaries; full suite in the Task 10-11 batch.
+    - Task 11 done (parallel worker, integrated by the lane): the gemma4 profile end to end on
+      the fake engine through the real server: `ServerOptions.profile` → `--profile`, the
+      synthetic spm pack written as `roots.tokenizer_pack` (`write_spm_tokenizer_pack`), and
+      `ServerOptions.fake_engine_options` in `<root>/bin/fake-engine.options` (the
+      `strata_gemma4` allowlist refuses the fake's own flags as `engine.args`). Proven: thinking
+      off by default (complete and streamed; GEN ids equal the template bytes written by hand),
+      `none` off, `low`/`high` on with `<|think|>` in the system turn, the thought channel as
+      `reasoning_content` (its name line dropped, tags never output, thought streamed first),
+      `<turn|>` ends the reply as stop, the page and `/metrics` unchanged. One test-only fix
+      (the role chunk's empty `content` was taken as the first answer delta). Gates: 4/4;
+      **batch full suite after Tasks 10-11: 953 passed, 1 skipped (cfg03), 954 cases.**
+    - Task 12 done (docs truth pass): the page's Thinking control notes "Gemma models think or
+      answer directly; Low, Medium and High all mean thinking on" (router test pins it); the
+      README gains a Gemma 4 profile section (launch, the `spm_bpe` pack, prompt, thinking,
+      what is not yet there); the threat model one line (a third profile, same controls); the
+      spec's §4.8 now says `--native` (Task 3's ruling) and §6.1 records that the per-family
+      executable key and the gate opening move to plan 4; session log items 46 (the page cannot
+      chat with a GLM model: it always sends `reasoning_effort`, glm53 refuses it) and 47 (page
+      chats with Gemma think by default; API default off). Gates: MSVC build clean; **final
+      full suite 953 passed, 1 skipped (cfg03), 954 cases** (`SECURE_FRONTEND_GEMMA4_PACK` set,
+      so the real-vocabulary case ran); pytest 62 passed, 4 skipped, 7 failed (all
+      `test_build_release.py`, `bash` → WSL without a distro on this box, environmental).
+    - **To serve the model for testing** (expert mode, once `strata-gemma4-engine` is built):
+      `engine.profile = "gemma4"`, `engine.executable` = the Gemma engine (absolute, owner-only
+      folder), `roots.models = C:\Strata-data\models\gemma4_q8` with `engine.model_id =
+      "gemma-4-26B-A4B-it-UD-Q8_K_XL"` (the `.gguf` stem), `roots.tokenizer_pack =
+      C:\multi-strata\out\gemma4-pack\tokenizer` (owner-only), `engine.args` from the
+      `strata_gemma4` allowlist (e.g. `["--max-context","32768","--kv","f16"]`),
+      `engine.gpu = "0"`, served with `--expert`.
+    - **Plans 2-3 (the engine), by the controller:** `strata-gemma4-engine`
+      (`engines/gemma4/`, build `engines/gemma4/build-windows.bat` → `out/gemma4-engine`), plan
+      `docs/superpowers/plans/2026-10-22-gemma4-plan2-3-engine.md` with reconciliations R1-R7
+      (nothing of `upstream/` compiled; own Q8_0/BF16/F32 kernels + cuBLAS; cold experts read by
+      the GPU from 23.5 GiB of pinned RAM over PCIe — the CPU pool of D4 not built, **owner
+      ruling wanted**; llama.cpp the only reference; a 2,048-row sliding ring with
+      common-prefix reuse; `--native`; `--kv f32` refused). Results
+      `docs/validation/gemma4/2026-10-22-engine-parity-and-speed.md`: against llama.cpp
+      `3cf03257` (test-only `engines/gemma4/tools/g4_llama_dump.cpp`) mean KL 0.040 where
+      llama.cpp's own CPU-vs-CUDA floor is 0.042 (top-1 22/24 vs 21/24); 4,911-token prompt KL
+      0.034, same answer; decode 47-60 tok/s greedy (llama.cpp: 24-30 here), 36 tok/s with
+      sampling; prompts 860-1,110 tok/s; load 11-30 s, 54-57 of 128 experts a layer in VRAM.
+      Gates: `ctest --test-dir out/gemma4-engine` 23/23 (12 host, 9 GPU kernel cases, 2
+      real-model cases), MSVC `/W4 /WX` and nvcc `-Werror=all-warnings` clean.
+    - **Serving for testing (2026-10-23):** session log step 18 item 53 — the API and the page
+      chat with Gemma (thinking Off and High, streamed and not, follow-ups, Stop, the Monitor);
+      the serve config (`out/serve/config-gemma4-lan.json`, not committed) sets the model
+      card's sampling defaults (temperature 1.0, top_p 0.95, top_k 64): greedy decoding made the
+      model deliberate for minutes. 2026-10-23 (session log item 54): the frontend builds the
+      spm_bpe encode tables once at pack load (`TokenizerPack::spm_index`; about 0.2 s a request
+      saved; full suite 955 passed, 1 skipped); the engine ranks the sampler's candidates on the
+      GPU and rebalances its VRAM expert slots every 8 decoded tokens (up to 32 swaps): a sampled
+      story went from 29-32 to 54 (cold) and 77-85 tok/s (settled); engine ctest 25/25. Item
+      55: a repetition loop the owner hit is the model's own (llama.cpp gives the same
+      distributions along it; about 1 sampled answer in 30 at the model card's values, none of 32
+      with `min_p` 0.05, now in the serve config), and retries repeated it because an unseeded
+      GEN used seed 0; unseeded requests now get a clock seed as upstream's generate.cpp does
+      (engine ctest 26/26). Open:
+      the `/apply-template` cross-check; the CPU pool ruling; plan 4.
 - The `windows-runtime`-labelled cases run under the MSVC preset on the owner's box; the
   supported Windows toolchains (MSYS2 clang, llvm-mingw) are still not installed (issue 3).
 

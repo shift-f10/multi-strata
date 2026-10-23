@@ -3,6 +3,7 @@
 #include "secure_frontend/canonical_path.hpp"
 
 #include <cstddef>
+#include <memory>
 #include <filesystem>
 #include <map>
 #include <optional>
@@ -14,14 +15,29 @@
 
 namespace secure_frontend {
 
+// Gemma 4 plan 1 Task 4 (spec §6.2): how a pack's merges are stored and applied. The mode
+// is chosen by the engine profile (gemma4 -> spm_bpe, every other -> byte_bpe), never
+// inferred from the pack's files: byte_bpe is GPT-2's byte alphabet with merges.txt;
+// spm_bpe is SentencePiece-style BPE over raw UTF-8 characters with merges.json.
+enum class TokenizerMode { byte_bpe, spm_bpe };
+
 // The offline tokenizer assets extracted by upstream/tools/strata_tokenizer.py
-// (through our wrapper tools/secure/secure_tokenizer.py for GLM packs).  This
+// (through our wrapper tools/secure/secure_tokenizer.py for GLM and Gemma 4 packs).  This
 // type intentionally owns all input: loading a pack never keeps a file handle,
 // invokes a subprocess, or contacts a network service.
+struct SpmEncodeIndex;  // tokenizer_pack.cpp: the spm_bpe encoder's lookup tables
+
 struct TokenizerPack final {
   std::vector<std::string> tokens_by_id;
   std::vector<std::pair<std::string, std::string>> merges_by_rank;
   std::vector<int> token_types;
+  TokenizerMode mode{TokenizerMode::byte_bpe};  // the mode it was loaded in (the profile's)
+  // spm_bpe packs from load_local_tokenizer_pack: the encoder's lookup tables, built once at
+  // load (about 0.2 s for Gemma 4's 262,144 tokens and 514,906 merges) and shared by copies.
+  // They own their data. A pack is not modified after load; one whose vocabulary, merge or type
+  // counts no longer match is encoded with tables built for that call, as a pack built in
+  // memory (no tables) always is.
+  std::shared_ptr<const SpmEncodeIndex> spm_index;
 };
 
 enum class TokenizerPackErrorCode {
@@ -54,18 +70,23 @@ using TokenizerPackLoadResult = std::variant<TokenizerPack, TokenizerPackError>;
 using TokenizerDecodeResult = std::variant<std::string, TokenizerPackError>;
 using TokenizerEncodeResult = std::variant<std::vector<std::size_t>, TokenizerPackError>;
 
-// Loads only the fixed local files vocab.json, merges.txt, and token_type.json
-// beneath pack_root, each opened by handle with open_beneath (no link is
-// followed). All files must be regular, non-symlink files. Vocabulary
-// IDs must be unique, contiguous, and zero-based; merges must name vocabulary
-// tokens and be unique; token types must have exactly one value per ID.
-[[nodiscard]] TokenizerPackLoadResult load_local_tokenizer_pack(const CanonicalRoot& pack_root);
+// Loads only the fixed local files vocab.json, token_type.json and the mode's merges file
+// beneath pack_root, each opened by handle with open_beneath (no link is followed). All
+// files must be regular, non-symlink files. Vocabulary IDs must be unique, contiguous, and
+// zero-based; merges must name vocabulary tokens and be unique; token types must have
+// exactly one value per ID. byte_bpe reads merges.txt (one "left right" per line) and
+// refuses a pack that also has merges.json; spm_bpe reads merges.json (a JSON array of
+// two-string arrays in rank order, so merges holding newlines, tabs or spaces round-trip) and
+// refuses a pack that also has merges.txt (invalid_merge either way).
+[[nodiscard]] TokenizerPackLoadResult load_local_tokenizer_pack(const CanonicalRoot& pack_root, TokenizerMode mode);
 // Opens the root first (open_root: canonical, private, existing).
-[[nodiscard]] TokenizerPackLoadResult load_local_tokenizer_pack(const std::filesystem::path& pack_root);
+[[nodiscard]] TokenizerPackLoadResult load_local_tokenizer_pack(const std::filesystem::path& pack_root, TokenizerMode mode);
 
-// Decodes byte-level-BPE token IDs using GPT-2's reversible byte alphabet.
-// CONTROL (3) and USER_DEFINED (4)
-// token types fail closed rather than being silently rendered as plain output.
+// Decodes token IDs: byte_bpe through GPT-2's reversible byte alphabet; spm_bpe (Gemma 4
+// plan 1 Task 5) as NORMAL tokens with U+2581 for a space and <0xXX> BYTE tokens as their byte.
+// CONTROL (3) and USER_DEFINED (4) token types fail closed rather than being silently rendered
+// as plain output; so does a BYTE token in a byte_bpe pack, and any type but NORMAL or BYTE in
+// an spm_bpe pack.
 [[nodiscard]] TokenizerDecodeResult decode_token_ids(const TokenizerPack& pack,
                                                       const std::vector<std::size_t>& ids);
 
@@ -90,6 +111,10 @@ class TokenByteDecoder final {
 // a replacement for model-specific (for example Qwen) regex pre-tokenizers or
 // Jinja chat templates. Input containing a CONTROL or USER_DEFINED vocabulary
 // literal fails closed, as does text which cannot be expressed by this pack.
+// An spm_bpe pack (Gemma 4 plan 1 Task 5) encodes as llama.cpp's gemma4 tokenizer at
+// 3cf03257: spaces become U+2581, runs of non-newlines and runs of newlines are encoded apart, a newline-only
+// run that is a token is that token, code points merge by the lowest rank (then leftmost), and
+// a symbol that is no token becomes its bytes' <0xXX> tokens; no BOS, no space prefix.
 [[nodiscard]] TokenizerEncodeResult encode_text(const TokenizerPack& pack,
                                                  std::string_view text);
 
@@ -130,5 +155,36 @@ struct ThinkTokens final {
 // special-token rejection. This is not a general GLM special-token parser.
 [[nodiscard]] TokenizerEncodeResult encode_glm53_prompt(
     const TokenizerPack& pack, std::string_view rendered_prompt);
+
+// Gemma 4 plan 1 Task 8 (spec §2.5, §6.3): the seven Gemma 4 markers the renderer and the
+// reasoning split use, each found by its literal, never by number. Found only in an spm_bpe pack
+// and only when every literal occurs exactly once with the type the GGUF gives it: <bos>, <eos>,
+// <|turn>, <turn|> and <|think|> CONTROL (3); <|channel> and <channel|> USER_DEFINED (4). nullopt
+// otherwise (a pack that is not Gemma's cannot serve the gemma4 profile).
+struct Gemma4Markers final {
+  std::size_t bos;
+  std::size_t eos;
+  std::size_t turn_open;      // <|turn>
+  std::size_t turn_close;     // <turn|>
+  std::size_t think;          // <|think|>
+  std::size_t channel_open;   // <|channel>
+  std::size_t channel_close;  // <channel|>
+};
+[[nodiscard]] std::optional<Gemma4Markers> find_gemma4_markers(const TokenizerPack& pack);
+
+// Encodes a prompt produced by render_gemma4_text_prompt (spm_bpe packs only). It recognizes the
+// renderer's own markers by position, never by a scan of client text: <bos> exactly once, first;
+// <|think|> only right after a leading "<|turn>system\n"; <|channel> and <channel|> only as the
+// closed thought channel "<|channel>thought\n<channel|>" that ends the prompt right after its
+// final "<|turn>model\n"; <|turn> and <turn|> as the turn framing. Each maps to its single id
+// (find_gemma4_markers); every other span is ordinary text through the spm_bpe encoder, so any
+// CONTROL or USER_DEFINED literal anywhere else is refused (unsupported_special_token).
+[[nodiscard]] TokenizerEncodeResult encode_gemma4_prompt(const TokenizerPack& pack, std::string_view prompt);
+
+// Gemma 4 plan 1 Task 9 (spec §6.5): the end-of-turn ids <turn|> and <eos>, in that order, each
+// listed only when it occurs exactly once as a CONTROL (3) token of an spm_bpe pack (empty: none).
+// The engine prints the one it stopped on as a T record before DONE ... stop; it ends the reply
+// and is never output.
+[[nodiscard]] std::vector<std::size_t> find_gemma4_end_of_turn_tokens(const TokenizerPack& pack);
 
 }  // namespace secure_frontend

@@ -168,15 +168,17 @@ ManifestParseResult parse_manifest(const std::string_view bytes, const ManifestR
   const auto profile = r.text(*top, "profile", "", 16).value_or("");
   if (profile == "qwen") m.profile = ManifestProfile::qwen;
   else if (profile == "glm53") m.profile = ManifestProfile::glm53;
+  else if (profile == "gemma4") m.profile = ManifestProfile::gemma4;
   else if (profile == "raw") m.profile = ManifestProfile::raw;
-  else r.fail("profile", "must be qwen or glm53");
+  else r.fail("profile", "must be qwen, glm53 or gemma4");
   if (const auto* engine = r.object(Reader::find(*top, "engine"), "engine")) {
     r.only(*engine, {"family", "min_version"}, "engine");
     const auto family = r.text(*engine, "family", "engine", 16).value_or("");
     if (family == "strata") m.family = ManifestFamily::strata;
     else if (family == "glm") m.family = ManifestFamily::glm;
+    else if (family == "gemma4") m.family = ManifestFamily::gemma4;
     else if (family == "none") m.family = ManifestFamily::none;
-    else r.fail("engine.family", "must be strata, glm or none");
+    else r.fail("engine.family", "must be strata, glm, gemma4 or none");
     const auto version = parse_engine_version(r.text(*engine, "min_version", "engine", 32).value_or(""));
     if (!version) r.fail("engine.min_version", "must be MAJOR.MINOR.PATCH[.N]");
     else m.min_version = *version;

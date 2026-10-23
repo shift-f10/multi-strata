@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -38,6 +39,9 @@ struct ChatRouteConfig final {
   // "end" (the template's sentence for a non-default level right before the answer).
   QwenEffort qwen_effort = QwenEffort::high;
   bool effort_at_end = false;
+  // Gemma 4 plan 1 Task 10 (spec §6.6, D10): whether a gemma4 request that names no
+  // reasoning_effort thinks (reasoning.effort low/medium/high); unset or none: off.
+  bool gemma4_thinking_default = false;
   // SP5 M1 Task 8: engine.min_tokens / engine.max_tokens — added frontend bounds on the
   // request output budget (0: unset; Ruling T8-e) — and model.aliases: extra exact model
   // names the chat route answers to (set_aliases :3764-3777; §4: never empty or partial).
@@ -58,6 +62,21 @@ struct ChatRouteConfig final {
 };
 
 [[nodiscard]] std::optional<std::string> make_completion_id();
+
+// Gemma 4 plan 1 Task 10 (spec §6.6, D10): a gemma4 request thinks when its reasoning_effort
+// is low, medium or high, not when it is none; a request that names none takes the server's
+// default (gemma4_thinking_default: reasoning.effort, unset = off).
+[[nodiscard]] bool gemma4_request_thinks(const std::optional<std::string>& reasoning_effort, bool thinking_default);
+
+// The route's plan for a request, chosen by an exhaustive switch on the profile (Gemma 4 plan 1
+// Tasks 3 and 10): qwen renders ChatML (images allowed, thinking and its effort sentence);
+// glm53 the GLM profile; gemma4 the Gemma 4 template (text only: any image answer is
+// invalid_request). `thinking` is the profile's own decision, made by the caller.
+[[nodiscard]] ChatGenerationPlanResult select_chat_generation_plan(NativeChatProfile profile, const ChatCompletionRequest& request,
+                                                                   const TokenizerPack& tokenizer, std::size_t maximum_prompt_tokens,
+                                                                   const SamplingDefaults& defaults,
+                                                                   std::span<const std::size_t> image_token_counts, bool thinking,
+                                                                   QwenEffortPlacement qwen_effort);
 
 // POST /v1/chat/completions, non-streaming (spec §2.2 P4-P6, §2.5, §3.1, §3.5).
 class ChatRoute final {

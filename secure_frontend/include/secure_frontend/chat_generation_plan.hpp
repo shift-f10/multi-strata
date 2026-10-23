@@ -32,6 +32,9 @@ struct ChatGenerationPlan final {
   bool starts_in_reasoning{false};
   // Issue 26: the end-of-turn ids that end the reply as stop (find_qwen_end_of_turn_tokens).
   std::vector<std::size_t> stop_tokens{};
+  // Gemma 4 plan 1 Task 9: the reasoning channel's name line (GenerationRunLimits::channel_name),
+  // "thought" for gemma4; nullopt for qwen and glm53.
+  std::optional<std::string> channel_name{};
 };
 
 enum class ChatGenerationPlanErrorCode {
@@ -77,5 +80,17 @@ using ChatGenerationPlanResult = std::variant<ChatGenerationPlan, ChatGeneration
     std::size_t maximum_prompt_tokens = static_cast<std::size_t>(config_defaults::kChatMaxPromptTokens),
     std::size_t default_max_tokens = static_cast<std::size_t>(config_defaults::kChatDefaultMaxTokens),
     const SamplingDefaults& defaults = {}, std::span<const std::size_t> image_token_counts = {});
+
+// Gemma 4 plan 1 (spec §2.5, §6.3-§6.5): a schema-validated text request through the fixed
+// Gemma 4 template (render_gemma4_text_prompt, encode_gemma4_prompt). thinking writes <|think|>
+// in the system turn; off closes the thought channel in the generation prompt. The pack must
+// carry the Gemma 4 markers (find_gemma4_markers), else tokenization_failed; an image part is
+// invalid_request (text only). The reasoning split is the thought channel, <|channel> and
+// <channel|>, and the reply never starts inside it (starts_in_reasoning false in both modes).
+[[nodiscard]] ChatGenerationPlanResult make_gemma4_chat_generation_plan(
+    const ChatCompletionRequest& request, const TokenizerPack& tokenizer,
+    std::size_t maximum_prompt_tokens = static_cast<std::size_t>(config_defaults::kChatMaxPromptTokens),
+    std::size_t default_max_tokens = static_cast<std::size_t>(config_defaults::kChatDefaultMaxTokens),
+    const SamplingDefaults& defaults = {}, bool thinking = false);
 
 }  // namespace secure_frontend
