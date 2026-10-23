@@ -1273,7 +1273,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_engine_arguments_tests launch_composed_from_manifest_qwen vision_compose_rules
         managed_launch_argv_is_utf8_for_non_ascii_models_root launch_refuses_model_not_installed
         engine_args_reject_weight_flags_for_managed_model managed_launch_renders_typed_gpu_list
-        managed_glm_rows_refused_for_qwen_manifest LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+        managed_glm_rows_refused_for_qwen_manifest gemma4_expert_launch_composes_only_allowlisted_flags
+        LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     # Pure in-memory (F-63): wine runs it too.
     secure_frontend_add_cases(secure_frontend_engine_arguments_tests launch_refuses_engine_too_old)
 
@@ -1358,6 +1359,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         glm_keys_rejected_on_strata_profile_by_name
         engine_profile_accepts_gemma4_and_describes_it
         glm_keys_rejected_on_gemma4_profile_by_name
+        qwen_launch_rows_rejected_on_gemma4_profile_by_name
         every_profile_selects_its_own_argument_profile
         thinking_budget_default_is_mayas_32768
         glm_environment_projection_moves_the_split_default
@@ -1457,6 +1459,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_chat_execution_tests
         executes_a_bounded_non_streaming_completion rejects_context_and_output_limits_before_generation
         fails_closed_on_invalid_engine_output executes_glm53_only_when_explicitly_selected
+        executes_gemma4_only_when_explicitly_selected
         glm_profile_generation_completes_over_maya_dialect maya_dialect_cancellation_round_trips
         chat_recovers_after_generation_timeout chat_gen_write_bounded_by_generation_deadline chat_marks_engine_failed_when_drain_fails
         chat_rejects_nonfinite_done_and_stays_ready health_reflects_protocol_state
@@ -1481,7 +1484,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         secure_frontend_subsystem_limits)
     secure_frontend_add_cases(secure_frontend_subsystem_limits_tests
         ready_timeout_defaults_to_900_seconds subsystem_limits_follow_config supervisor_policy_follows_config
-        supervisor_flavor_is_the_maya_dialect_for_glm53
+        supervisor_flavor_is_the_maya_dialect_for_glm53 supervisor_profile_and_flavor_for_gemma4
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     add_executable(secure_frontend_fake_engine tests/fake_engine_main.cpp)

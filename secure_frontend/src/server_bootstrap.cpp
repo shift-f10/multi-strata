@@ -187,8 +187,9 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
   // (compose refuses that pairing for glm53, so the gate implies the qwen renderer).
   // The request itself can never open it.
   if (config.vision.enabled && launch.vision_mmproj.has_value()) schema_limits.vision_capable = true;
-  // Session log step 14: per-request reasoning_effort reaches the qwen renderer only.
-  schema_limits.per_request_reasoning_effort = launch.profile == secure_frontend::EngineProfile::qwen;
+  // Session log step 14: per-request reasoning_effort reaches the qwen renderer; Gemma 4
+  // plan 1 Task 3 (spec §6.6): and the gemma4 one (none = thinking off, else on). glm53 refuses it.
+  schema_limits.per_request_reasoning_effort = secure_frontend::per_request_reasoning_effort_for(launch.profile);
   const auto tokenizer_result = secure_frontend::load_local_tokenizer_pack(*launch.tokenizer_root);
   const auto* tokenizer = std::get_if<secure_frontend::TokenizerPack>(&tokenizer_result);
   if (tokenizer == nullptr) {
@@ -207,14 +208,16 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
         std::find(model_aliases.begin(), model_aliases.end(), alias) == model_aliases.end())
       model_aliases.push_back(alias);
   }
-  const bool glm = launch.profile == EngineProfile::glm53;
+  const bool glm = secure_frontend::engine_family_for(launch.profile) == secure_frontend::EngineFamily::glm;
   auto* engine_arguments = &launch.engine_args;
   // SP5 M1 Task 5 (parity row effort_position, serve/server.py:2836-2856): reasoning.effort_position
   // "end" composes the engine's --tail-role-token checkpoint flag (probe rules in the composer).
   // Session log step 16: the prompt puts a non-default level's sentence right before the
   // answer only when the engine took the flag; otherwise it stays at the top (the notice says so).
+  // Gemma 4 plan 1 Task 3: the tail is the qwen engine's only (the config refuses
+  // reasoning.effort_position on an explicit gemma4 profile; glm53's runner has no such flag).
   bool effort_at_end = false;
-  if (config.reasoning.effort_position == secure_frontend::EffortPosition::end) {
+  if (launch.profile == EngineProfile::qwen && config.reasoning.effort_position == secure_frontend::EffortPosition::end) {
     const auto tail = secure_frontend::compose_effort_end_arguments(config.engine.executable.path(), *tokenizer);
     std::cerr << "[strata] " << tail.notice << '\n';
     engine_arguments->insert(engine_arguments->end(), tail.arguments.begin(), tail.arguments.end());
@@ -229,11 +232,10 @@ int server_run_impl(const FrontendConfig& config, const bool expert) {
   secure_frontend::SupervisorConfig supervisor_config = secure_frontend::supervisor_config(config);
   // SP4 §4.9 c: the profile is the composed launch's (a managed model's
   // manifest sets it; engine.profile is --expert only), not the config key.
-  supervisor_config.profile = glm ? secure_frontend::NativeChatProfile::glm53 : secure_frontend::NativeChatProfile::qwen;
+  supervisor_config.profile = secure_frontend::native_chat_profile_for(launch.profile);
   // SP5 M2 Task 7 (R-T5-b): maya_118 is the glm53 dialect (Task 5), same selection as
-  // supervisor_config in subsystem_limits.cpp (pinned by its test).
-  supervisor_config.flavor =
-      glm ? secure_frontend::EngineProtocolFlavor::maya_118 : secure_frontend::EngineProtocolFlavor::strata_0143;
+  // supervisor_config in subsystem_limits.cpp (the same function, pinned by its test).
+  supervisor_config.flavor = secure_frontend::protocol_flavor_for(launch.profile);
   const std::filesystem::path& state_dir = *config.roots.state;
   std::vector<std::filesystem::path> lib_dirs = config.engine.lib_dirs;
   if (lib_dirs.empty()) lib_dirs.push_back(config.engine.executable.path().parent_path());

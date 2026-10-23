@@ -1120,6 +1120,32 @@ void glm_keys_rejected_on_gemma4_profile_by_name() {
          "glm.model_name is refused by name on the gemma4 profile: " + issues_of(result));
 }
 
+// Gemma 4 plan 1 Task 3 (ruling): the rows the qwen launch turns into engine flags (VRAM and
+// split, the learned-profile save, --batch, the MTP strip, the effort-end tail) have no Gemma
+// counterpart; on an explicit gemma4 profile each is refused by name instead of being ignored.
+void qwen_launch_rows_rejected_on_gemma4_profile_by_name() {
+  ConfigFixture f;
+  const std::vector<std::pair<std::string, std::string>> rows{
+      {"engine.vram_reserve_mib", "700"},       {"engine.vram_elastic", "true"},
+      {"engine.vram_segment_mib", "512"},       {"engine.layer_split", "\"24\""},
+      {"engine.split_skip_if_fits", "true"},    {"session.expert_profile_save_every", "5"},
+      {"replicas.parallel", "2"},               {"engine.mtp", "false"},
+      {"reasoning.effort_position", "\"end\""}};
+  for (const auto& [key, literal] : rows) {
+    const auto gemma = with_literals(f, {{"engine.profile", "\"gemma4\""}, {key, literal}});
+    expect(has_issue(gemma, key, ConfigIssueCode::conflicting_values), key + " is refused by name on gemma4: " + issues_of(gemma));
+    const auto qwen = with_literals(f, {{"engine.profile", "\"qwen\""}, {key, literal}});
+    expect(std::holds_alternative<secure_frontend::ValidatedConfig>(qwen), key + " still validates on qwen: " + issues_of(qwen));
+  }
+  const auto managed = with_literals(f, {{"replicas.parallel", "2"}});
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(managed),
+         "without an explicit profile the rows validate (the manifest decides at launch): " + issues_of(managed));
+  const auto plain = with_literals(f, {{"engine.profile", "\"gemma4\""}, {"reasoning.effort", "\"low\""},
+                                       {"engine.lazy_load", "true"}, {"engine.gpu", "\"0\""}});
+  expect(std::holds_alternative<secure_frontend::ValidatedConfig>(plain),
+         "reasoning.effort, lifecycle rows and engine.gpu stay accepted on gemma4: " + issues_of(plain));
+}
+
 // Each profile selects its own argument profile (an exhaustive switch, no shared default).
 void every_profile_selects_its_own_argument_profile() {
   using secure_frontend::EngineArgumentsProfile;
@@ -1967,6 +1993,7 @@ int main(int argc, char** argv) {
       {"glm_keys_rejected_on_strata_profile_by_name", glm_keys_rejected_on_strata_profile_by_name},
       {"engine_profile_accepts_gemma4_and_describes_it", engine_profile_accepts_gemma4_and_describes_it},
       {"glm_keys_rejected_on_gemma4_profile_by_name", glm_keys_rejected_on_gemma4_profile_by_name},
+      {"qwen_launch_rows_rejected_on_gemma4_profile_by_name", qwen_launch_rows_rejected_on_gemma4_profile_by_name},
       {"every_profile_selects_its_own_argument_profile", every_profile_selects_its_own_argument_profile},
       {"thinking_budget_default_is_mayas_32768", thinking_budget_default_is_mayas_32768},
       {"glm_environment_projection_moves_the_split_default", glm_environment_projection_moves_the_split_default},

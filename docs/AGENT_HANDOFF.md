@@ -399,6 +399,18 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
       with the fixed reason "the Gemma 4 engine is not installed" (plan 4 opens it); `list`
       and `show` print "engine not available (…)", `run` exits 11. Gates: MSVC build clean;
       full suite 922 passed, 1 skipped.
+    - Task 3 done: `NativeChatProfile::gemma4`; the profile → chat profile / wire flavor /
+      environment family / per-request `reasoning_effort` selections are exhaustive switches
+      shared by `supervisor_config` and the bootstrap (gemma4 → its own chat profile,
+      `strata_0143`, the strata env allowlist, `reasoning_effort` accepted). An expert gemma4
+      launch is the allowlisted `engine.args`, then `--gpu` from `engine.gpu` (as qwen), then
+      `--native <models_root/file>` last (controller ruling: the Gemma engine takes
+      `--native`, spec §4.8's `--model` is amended in Task 12); no VRAM/split,
+      expert-profile-save, `--batch`, MTP strip or effort-end tail. On an explicit gemma4
+      profile the config refuses those qwen-only rows by name (`conflicting_values`). The
+      chat plan is chosen by switch in `chat_execution` and `chat_route`; the gemma4 plan is a
+      stub refusing every request until Task 8. Gates: MSVC build clean; full suite 926
+      passed, 1 skipped.
 - The `windows-runtime`-labelled cases run under the MSVC preset on the owner's box; the
   supported Windows toolchains (MSYS2 clang, llvm-mingw) are still not installed (issue 3).
 

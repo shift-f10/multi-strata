@@ -78,4 +78,14 @@ using ChatGenerationPlanResult = std::variant<ChatGenerationPlan, ChatGeneration
     std::size_t default_max_tokens = static_cast<std::size_t>(config_defaults::kChatDefaultMaxTokens),
     const SamplingDefaults& defaults = {}, std::span<const std::size_t> image_token_counts = {});
 
+// Gemma 4 plan 1 (spec §2.5, §6.3-§6.5): a schema-validated text request through the fixed
+// Gemma 4 template. thinking writes <|think|> in the system turn; off closes the thought
+// channel in the generation prompt. Gemma 4 plan 1 Task 3: a stub refusing every request
+// (invalid_request) until Task 8 writes the renderer.
+[[nodiscard]] ChatGenerationPlanResult make_gemma4_chat_generation_plan(
+    const ChatCompletionRequest& request, const TokenizerPack& tokenizer,
+    std::size_t maximum_prompt_tokens = static_cast<std::size_t>(config_defaults::kChatMaxPromptTokens),
+    std::size_t default_max_tokens = static_cast<std::size_t>(config_defaults::kChatDefaultMaxTokens),
+    const SamplingDefaults& defaults = {}, bool thinking = false);
+
 }  // namespace secure_frontend

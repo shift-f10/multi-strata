@@ -46,6 +46,19 @@ Rulings taken during execution (2026-10-22; each also in its task's commit messa
   the only launch directory — cost if wrong: a manifest could name a non-tokenizer directory; the
   publish layout check (Task 4) and the loader refuse it. The publish-time gemma4 layout check
   waits for Task 4's `spm_bpe` mode (the engine gate refuses gemma4 meanwhile).
+- **Task 3 (controller):** the Gemma engine takes the model as `--native <gguf>` like the strata
+  engine (spec §4.8 says `--model`; amended in Task 12) — why: upstream's q36 engine and the
+  engine being written accept it, and `--native` stays frontend-owned — cost if wrong: one flag
+  spelling in `build_engine_arguments`.
+- **Task 3:** on an explicit gemma4 profile the config refuses by name the rows the qwen launch
+  turns into engine flags (`engine.vram_reserve_mib`, `engine.vram_elastic`,
+  `engine.vram_segment_mib`, `engine.layer_split`, `engine.split_skip_if_fits`,
+  `session.expert_profile_save(_every)`, `replicas.parallel`, `engine.mtp`,
+  `reasoning.effort_position`) — why: fail closed instead of silently ignoring them — cost if
+  wrong: an operator deletes a row that had no effect.
+- **Task 3:** `chat_route.cpp`'s plan ternary became a switch here (not in Task 10) — why: once
+  `NativeChatProfile::gemma4` exists the ternary would send gemma4 requests to the GLM plan —
+  cost if wrong: none.
 
 ## Global Constraints
 
@@ -151,18 +164,18 @@ tests `typed_config_test.cpp`, `engine_arguments_test.cpp`, `server_cli_test.cpp
   `flavor = strata_0143`; environment family `strata`; the effort-end tail (`:217-222`) only
   for qwen; `per_request_reasoning_effort` true for qwen **and** gemma4.
 
-- [ ] **Step 1: RED**
+- [x] **Step 1: RED**
   ```cpp
   void gemma4_expert_launch_composes_only_allowlisted_flags();  // no --expert-vram unless given; no MTP strip, no effort tail
   void supervisor_profile_and_flavor_for_gemma4();               // gemma4 → NativeChatProfile::gemma4 + strata_0143
   void executes_gemma4_only_when_explicitly_selected();          // chat_execution:80-82 switch; a gemma4 request never takes the glm53 plan
   ```
   FAIL.
-- [ ] **Step 2:** convert `launch_composition.cpp:36-37, 41-42, 49, 70`,
+- [x] **Step 2:** convert `launch_composition.cpp:36-37, 41-42, 49, 70`,
   `subsystem_limits.cpp:52, 55-56`, `server_bootstrap.cpp:191, 210, 217-222, 232, 235-236`
   and `chat_execution.cpp:80-82` to exhaustive switches; add the gemma4 cases (the plan
   call is a stub returning `invalid_request` until Task 8).
-- [ ] **Step 3:** GREEN + gates; commit `launch: gemma4 expert launch, supervisor profile and strata_0143 flavor`.
+- [x] **Step 3:** GREEN + gates; commit `launch: gemma4 expert launch, supervisor profile and strata_0143 flavor`.
 
 ---
 

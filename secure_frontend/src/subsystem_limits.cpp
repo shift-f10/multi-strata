@@ -49,16 +49,57 @@ SupervisorConfig supervisor_config(const FrontendConfig& config) {
   SupervisorConfig supervisor;
   supervisor.chat_limits = chat_execution_limits(config);
   supervisor.policy.ready_timeout = std::chrono::duration_cast<std::chrono::milliseconds>(config.limits.engine.ready_timeout);
-  supervisor.profile = config.engine.profile == EngineProfile::glm53 ? NativeChatProfile::glm53 : NativeChatProfile::qwen;
+  // An unset engine.profile (a managed model: its manifest decides) keeps qwen here; the
+  // bootstrap re-selects from the composed launch through the same functions.
+  const EngineProfile profile = config.engine.profile.value_or(EngineProfile::qwen);
+  supervisor.profile = native_chat_profile_for(profile);
   // SP5 M2 Task 7 (R-T5-b): the glm53 profile speaks Project Maya v1.1.21's wire dialect
   // (Task 5); the selection is pinned by supervisor_flavor_is_the_maya_dialect_for_glm53.
-  supervisor.flavor =
-      config.engine.profile == EngineProfile::glm53 ? EngineProtocolFlavor::maya_118 : EngineProtocolFlavor::strata_0143;
+  supervisor.flavor = protocol_flavor_for(profile);
   // SP5 M1 Task 6 (parity rows lazy_load / idle_unload_s, runconfig.py:35-38): the
   // supervisor's lifecycle knobs come straight from the typed launch family.
   supervisor.lazy_start = config.engine.lazy_load;
   supervisor.idle_unload = config.engine.idle_unload;
   return supervisor;
+}
+
+NativeChatProfile native_chat_profile_for(const EngineProfile profile) {
+  switch (profile) {
+    case EngineProfile::qwen: return NativeChatProfile::qwen;
+    case EngineProfile::glm53: return NativeChatProfile::glm53;
+    case EngineProfile::gemma4: return NativeChatProfile::gemma4;
+  }
+  return NativeChatProfile::qwen;  // unreachable: every value is a case above
+}
+
+// Gemma 4 spec §4.7: strata-gemma4-engine speaks upstream's strata_0143 serve protocol.
+EngineProtocolFlavor protocol_flavor_for(const EngineProfile profile) {
+  switch (profile) {
+    case EngineProfile::qwen: return EngineProtocolFlavor::strata_0143;
+    case EngineProfile::glm53: return EngineProtocolFlavor::maya_118;
+    case EngineProfile::gemma4: return EngineProtocolFlavor::strata_0143;
+  }
+  return EngineProtocolFlavor::strata_0143;  // unreachable
+}
+
+// Gemma 4 spec §6.1, §8: the Gemma engine gets the strata family's closed allowlist.
+EngineFamily engine_family_for(const EngineProfile profile) {
+  switch (profile) {
+    case EngineProfile::qwen: return EngineFamily::strata;
+    case EngineProfile::glm53: return EngineFamily::glm;
+    case EngineProfile::gemma4: return EngineFamily::strata;
+  }
+  return EngineFamily::strata;  // unreachable
+}
+
+// Gemma 4 spec §6.6: none is thinking off, low/medium/high thinking on; glm53 refuses the field.
+bool per_request_reasoning_effort_for(const EngineProfile profile) {
+  switch (profile) {
+    case EngineProfile::qwen: return true;
+    case EngineProfile::glm53: return false;
+    case EngineProfile::gemma4: return true;
+  }
+  return false;  // unreachable
 }
 
 }  // namespace secure_frontend

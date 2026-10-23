@@ -33,20 +33,35 @@ std::variant<ComposedLaunch, LaunchFailure> expert_launch(const FrontendConfig& 
   const std::string& id = config.engine.model_id.value();
   const auto selected = std::find_if(list.begin(), list.end(), [&](const ModelManifest& m) { return m.id == id; });
   if (selected == list.end()) return config_failure({"Selected model is not present in roots.models."});
-  const auto arguments_profile =
-      profile == EngineProfile::glm53 ? EngineArgumentsProfile::lighttransport_glm53 : EngineArgumentsProfile::strata_0143;
+  const auto arguments_profile = arguments_profile_for(profile);
   // SP5 M1 Task 7 (engine.hip_ordinal, serve/server.py:3023-3029): the recorded HIP number
-  // wins over a single (or absent) card — for the strata profile; the GLM runner takes no
-  // --gpu at all. Same rule at the managed path.
-  const std::vector<unsigned> gpus =
-      profile == EngineProfile::glm53 ? config.engine.gpus : effective_gpu_list(config.engine.gpus, config.engine.hip_ordinal);
+  // wins over a single (or absent) card — for the strata profile and the Gemma engine (Gemma
+  // 4 plan 1 Task 3: --gpu as qwen); the GLM runner takes no --gpu at all. Same rule at the
+  // managed path.
+  std::vector<unsigned> gpus;
+  switch (profile) {
+    case EngineProfile::qwen:
+    case EngineProfile::gemma4: gpus = effective_gpu_list(config.engine.gpus, config.engine.hip_ordinal); break;
+    case EngineProfile::glm53: gpus = config.engine.gpus; break;
+  }
   auto args = build_engine_arguments(arguments_profile, *selected, config.roots.models, config.engine.args, gpus,
                                      config.engine.mtp, Glm53LaunchArgs{config.glm.max_context, config.replicas.parallel});
   if (const auto* failure = std::get_if<EngineArgumentsError>(&args)) {
     return config_failure({"Engine arguments rejected: " + failure->message});
   }
   auto argv = std::get<std::vector<std::string>>(std::move(args));
-  if (profile != EngineProfile::glm53) {  // Ruling T7-a: this family reaches the engine through argv only
+  // Gemma 4 plan 1 Task 3: the qwen engine's composed tails are qwen's only. The Gemma
+  // engine's argv is its allowlisted engine.args, --gpu and --native (build_engine_arguments);
+  // the config refuses the typed rows that would compose these tails on gemma4 by name.
+  const bool qwen_tails = [profile] {
+    switch (profile) {
+      case EngineProfile::qwen: return true;
+      case EngineProfile::glm53:
+      case EngineProfile::gemma4: return false;
+    }
+    return false;
+  }();
+  if (qwen_tails) {  // Ruling T7-a: this family reaches the engine through argv only
     const VramGpuElasticArgs vram{.vram_reserve_mib = config.engine.vram_reserve_mib,
                                   .vram_elastic = config.engine.vram_elastic,
                                   .vram_segment_mib = config.engine.vram_segment_mib,
@@ -67,7 +82,7 @@ std::variant<ComposedLaunch, LaunchFailure> expert_launch(const FrontendConfig& 
   // SP5 M1 Task 6 (parity row mtp): the removals can only come from the operator args.
   // The GLM profile keeps its arguments verbatim (its runner does not speak these flags).
   std::vector<std::string> mtp_removed;
-  if (!config.engine.mtp && profile != EngineProfile::glm53) mtp_removed = draft_layer_removed(config.engine.args);
+  if (!config.engine.mtp && qwen_tails) mtp_removed = draft_layer_removed(config.engine.args);
   return ComposedLaunch{profile, std::move(argv), *config.roots.tokenizer_pack, id, std::move(served), false,
                         std::move(mtp_removed), std::nullopt, std::nullopt};
 }

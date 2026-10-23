@@ -1202,6 +1202,27 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
       }
     }
   }
+  // Gemma 4 plan 1 Task 3 (ruling): the rows the qwen launch turns into engine flags (VRAM and
+  // split, the learned-profile save, --batch, the MTP strip, the effort-end tail) have no Gemma
+  // engine counterpart, so on an explicit gemma4 profile each is refused by name rather than
+  // silently ignored. A managed model's manifest decides its profile at launch (and the engine
+  // gate refuses gemma4 manifests until plan 4).
+  if (profile == EngineProfile::gemma4) {
+    static constexpr std::array<std::string_view, 9> kQwenLaunchRows{
+        "engine.vram_reserve_mib",   "engine.vram_elastic",         "engine.vram_segment_mib",
+        "engine.layer_split",        "engine.split_skip_if_fits",   "session.expert_profile_save",
+        "session.expert_profile_save_every", "replicas.parallel",   "engine.mtp"};
+    for (const auto row : kQwenLaunchRows) {
+      if (draft.entries.contains(row)) {
+        add(errors, std::string{row}, ConfigIssueCode::conflicting_values,
+            "is not supported with engine.profile gemma4 (the Gemma engine has no such option)");
+      }
+    }
+    if (draft.entries.contains("reasoning.effort_position")) {
+      add(errors, "reasoning.effort_position", ConfigIssueCode::conflicting_values,
+          "is not supported with engine.profile gemma4 (Gemma's template has no effort sentence)");
+    }
+  }
 
   // pull (SP4 §3.9)
   std::filesystem::path downloader = default_downloader_path();

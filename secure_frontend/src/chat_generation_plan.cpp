@@ -130,4 +130,17 @@ ChatGenerationPlanResult make_glm53_chat_generation_plan(
                             std::vector<std::size_t>{}};
 }
 
+ChatGenerationPlanResult make_gemma4_chat_generation_plan(const ChatCompletionRequest& request, const TokenizerPack& tokenizer,
+                                                          const std::size_t maximum_prompt_tokens,
+                                                          const std::size_t default_max_tokens, const SamplingDefaults& defaults,
+                                                          const bool thinking) {
+  static_cast<void>(request);
+  static_cast<void>(tokenizer);
+  static_cast<void>(maximum_prompt_tokens);
+  static_cast<void>(default_max_tokens);
+  static_cast<void>(defaults);
+  static_cast<void>(thinking);
+  return ChatGenerationPlanError{ChatGenerationPlanErrorCode::invalid_request, "the Gemma 4 renderer is not built yet"};
+}
+
 }  // namespace secure_frontend

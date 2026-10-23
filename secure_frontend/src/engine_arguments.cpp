@@ -248,8 +248,10 @@ EngineArgumentsResult build_engine_arguments(const EngineArgumentsProfile profil
   const auto parsed = parse_relative_path(selected.relative_artifact_path);
   // SP5 M1 Task 6 (parity row mtp, runconfig.py:36 + draft_layer.is_off): an explicit
   // false strips the draft layer's own options at every start, before anything else is
-  // composed. The GLM profile returns above: its runner does not speak these flags.
-  if (!mtp_on) strip_mtp_flags(arguments, nullptr);
+  // composed. The GLM profile returns above: its runner does not speak these flags. The
+  // Gemma engine has no draft layer (spec D5) and its allowlist refuses those flags, so
+  // nothing is stripped for strata_gemma4 (Gemma 4 plan 1 Task 3).
+  if (!mtp_on && profile == EngineArgumentsProfile::strata_0143) strip_mtp_flags(arguments, nullptr);
   const auto* relative = std::get_if<RelativePath>(&parsed);
   if (relative == nullptr) {
     return EngineArgumentsError{EngineArgumentsErrorCode::invalid_value, "selected model has an invalid artifact path"};

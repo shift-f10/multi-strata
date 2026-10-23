@@ -527,6 +527,66 @@ void managed_glm_rows_refused_for_qwen_manifest() {
          "glm.* rows with a qwen-managed model fail closed by name");
 }
 
+// Gemma 4 plan 1 Task 3 (spec §4.8; the controller's ruling: the Gemma engine takes the model
+// as --native, like the strata engine): an expert gemma4 launch is the operator's
+// allowlisted engine.args, then --gpu from engine.gpu, then --native <models_root/file> last.
+// No VRAM, expert-profile-save or --batch composition, no MTP strip; the qwen-only rows that
+// would have composed them are refused by name at load (typed_config_tests).
+void gemma4_expert_launch_composes_only_allowlisted_flags() {
+  secure_frontend_test::cli::CliHarness h;
+  secure_frontend_test::make_private_directory(h.models_path / "gemma4");
+  secure_frontend_test::write_file(h.models_path / "gemma4" / "g.gguf", "GGUF");
+  const auto with_engine = [&](const std::string& engine_members) {
+    h.write_config("");
+    std::string text = secure_frontend_test::read_file(h.config);
+    const std::string from = "\"model_id\": \"m\"";
+    text.replace(text.find(from), from.size(), "\"model_id\": \"g\", \"profile\": \"gemma4\"" + engine_members);
+    secure_frontend_test::write_file(h.config, text);
+    return h.validated_config();
+  };
+  const auto config =
+      with_engine(", \"args\": [\"--max-context\", \"32768\", \"--kv\", \"f16\", \"--expert-vram\", \"9.5\"], \"gpu\": \"0\"");
+  const auto composed = secure_frontend::compose_engine_launch(config.get(), true);
+  const auto* launch = std::get_if<secure_frontend::ComposedLaunch>(&composed);
+  expect(launch != nullptr, "the expert gemma4 launch composes");
+  if (launch == nullptr) {
+    for (const auto& m : std::get<secure_frontend::LaunchFailure>(composed).messages) std::cerr << "  " << m << '\n';
+    return;
+  }
+  const std::string native =
+      secure_frontend::path_to_utf8((config.get().roots.models.path() / "gemma4" / "g.gguf").make_preferred());
+  const std::vector<std::string> expected{"--max-context", "32768", "--kv", "f16", "--expert-vram", "9.5",
+                                          "--gpu", "0", "--native", native};
+  expect(launch->engine_args == expected, "allowlisted args, then --gpu, then --native last; nothing else");
+  expect(launch->profile == secure_frontend::EngineProfile::gemma4, "the launch carries the gemma4 profile");
+  expect(launch->mtp_removed.empty() && !launch->managed && launch->model_id == "g", "no MTP strip; expert; the inventory id");
+  for (const std::string flag : {"--serve", "--vram-reserve-mib", "--vram-elastic", "--layer-split", "--split-skip-if-fits",
+                                 "--expert-profile-save", "--expert-profile-save-every", "--batch", "--pack", "--mtp",
+                                 "--tail-role-token"}) {
+    expect(std::find(launch->engine_args.begin(), launch->engine_args.end(), flag) == launch->engine_args.end(),
+           "no qwen composition on gemma4: " + flag);
+  }
+  // Several GPUs: one --gpu list (as qwen) and no --layer-split; hip_ordinal still wins over one card.
+  const auto two = secure_frontend::compose_engine_launch(with_engine(", \"gpu\": \"0,1\"").get(), true);
+  const auto* two_launch = std::get_if<secure_frontend::ComposedLaunch>(&two);
+  expect(two_launch != nullptr && two_launch->engine_args == std::vector<std::string>{"--gpu", "0,1", "--native", native},
+         "two GPUs: --gpu 0,1 then --native, no --layer-split");
+  const auto hip = secure_frontend::compose_engine_launch(with_engine(", \"gpu\": \"0\", \"hip_ordinal\": 1").get(), true);
+  const auto* hip_launch = std::get_if<secure_frontend::ComposedLaunch>(&hip);
+  expect(hip_launch != nullptr && hip_launch->engine_args == std::vector<std::string>{"--gpu", "1", "--native", native},
+         "engine.hip_ordinal wins over one card, as on qwen");
+  const auto bare = secure_frontend::compose_engine_launch(with_engine("").get(), true);
+  const auto* bare_launch = std::get_if<secure_frontend::ComposedLaunch>(&bare);
+  expect(bare_launch != nullptr && bare_launch->engine_args == std::vector<std::string>{"--native", native},
+         "no args and no GPU: --native alone");
+  // build_engine_arguments itself: the strata_gemma4 profile never strips (mtp false is a no-op).
+  const auto root = models_root();
+  const auto off = secure_frontend::build_engine_arguments(kGemma4, manifest(), root, {"--chunk", "512"}, {}, false);
+  expect(std::holds_alternative<std::vector<std::string>>(off) &&
+             std::get<std::vector<std::string>>(off) == std::vector<std::string>{"--chunk", "512", "--native", native_path(root)},
+         "strata_gemma4 builds the allowlisted args and --native");
+}
+
 // SP5 M1 Task 5 (parity rows reasoning_* / fit_max_tokens). Only ONE of the pin's reasoning values
 // reaches the engine launch: effort_position "end" composes --tail-role-token with the tokenizer's
 // single "system" token id (effort_end_args serve/server.py:2836-2856, appended to the engine argv at
@@ -770,6 +830,7 @@ int main(int argc, char** argv) {
       {"glm_rejects_every_engine_argument", glm_rejects_every_engine_argument},
       {"gemma4_user_arguments_follow_the_strata_gemma4_allowlist", gemma4_user_arguments_follow_the_strata_gemma4_allowlist},
       {"managed_glm_rows_refused_for_qwen_manifest", managed_glm_rows_refused_for_qwen_manifest},
+      {"gemma4_expert_launch_composes_only_allowlisted_flags", gemma4_expert_launch_composes_only_allowlisted_flags},
       {"reasoning_config_reaches_engine_launch_and_env", reasoning_config_reaches_engine_launch_and_env},
       {"mtp_false_drops_the_mtp_arg", mtp_false_drops_the_mtp_arg},
       {"vram_reserve_mib_becomes_the_pinned_flag", vram_reserve_mib_becomes_the_pinned_flag},

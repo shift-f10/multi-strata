@@ -196,6 +196,29 @@ void executes_glm53_only_when_explicitly_selected() {
          "the explicit GLM profile must use the same bounded private engine protocol");
 }
 
+// Gemma 4 plan 1 Task 3: the plan selection is an exhaustive switch, so a gemma4 service never
+// takes the GLM (or qwen) plan: with a GLM or Qwen pack, which those plans accept, a gemma4
+// request fails at planning and nothing reaches the engine (its own plan needs Gemma's markers).
+void executes_gemma4_only_when_explicitly_selected() {
+  const std::string glm_prompt = "[gMASK]<sop><|user|>Hi<|assistant|><think>";
+  for (const auto& tokenizer : {glm_tokenizer_for(glm_prompt + "OK"), tokenizer_for("<|im_start|>user\nHi<|im_end|>\nOK")}) {
+    FakeTransport transport;
+    transport.reads = {line("READY 512"), line("T 0"), line("DONE 1")};
+    secure_frontend::EngineProtocolClient protocol(transport, {}, secure_frontend::EngineProtocolFlavor::strata_0143);
+    secure_frontend::ChatExecutionService service(protocol, {}, secure_frontend::NativeChatProfile::gemma4);
+    const auto result = service.execute({"gemma-local", {{"user", "Hi"}}, 2U}, tokenizer);
+    const auto* failure = std::get_if<secure_frontend::ChatExecutionError>(&result);
+    expect(failure != nullptr && failure->code == secure_frontend::ChatExecutionErrorCode::planning_failed,
+           "a gemma4 request on a non-Gemma pack fails at planning");
+    expect(transport.writes.empty(), "nothing reaches the engine (no GEN from another profile's plan)");
+  }
+  // The same GLM pack through the glm53 profile does plan (the control above is meaningful).
+  const auto glm = glm_tokenizer_for(glm_prompt + "OK");
+  expect(std::holds_alternative<secure_frontend::ChatGenerationPlan>(
+             secure_frontend::make_glm53_chat_generation_plan({"glm-local", {{"user", "Hi"}}, 2U}, glm)),
+         "the GLM pack plans under glm53");
+}
+
 // SP5 M2 Task 6 (D-8): the GLM profile end to end over the maya_118 wire dialect.
 // Identical token payloads yield an identical visible stream under the maya framing
 // (NOTE/STAT/5-field PP — the Task-5 consumed records) as under the strata framing:
@@ -1009,6 +1032,7 @@ int main(int argc, char** argv) {
       {"rejects_context_and_output_limits_before_generation", rejects_context_and_output_limits_before_generation},
       {"fails_closed_on_invalid_engine_output", fails_closed_on_invalid_engine_output},
       {"executes_glm53_only_when_explicitly_selected", executes_glm53_only_when_explicitly_selected},
+      {"executes_gemma4_only_when_explicitly_selected", executes_gemma4_only_when_explicitly_selected},
       {"glm_profile_generation_completes_over_maya_dialect", glm_profile_generation_completes_over_maya_dialect},
       {"maya_dialect_cancellation_round_trips", maya_dialect_cancellation_round_trips},
       {"chat_recovers_after_generation_timeout", chat_recovers_after_generation_timeout},

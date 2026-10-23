@@ -149,11 +149,21 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
   std::optional<ChatGenerationPlan> plan;
   std::vector<std::uint32_t> prompt_ids;
   if (!vision_request) {
-    const auto plan_result = config_.profile == NativeChatProfile::qwen
-                                 ? make_qwen_chat_generation_plan(request, tokenizer_, config_.max_prompt_tokens, 1U,
-                                                                  config_.sampling_default, {}, thinking, effort)
-                                 : make_glm53_chat_generation_plan(request, tokenizer_, config_.max_prompt_tokens, 1U,
-                                                                  config_.sampling_default);
+    // Gemma 4 plan 1 Task 3: an exhaustive switch, so a profile never takes another's plan
+    // (Task 10 gives gemma4 its own thinking mapping).
+    const auto plan_result = [&]() -> ChatGenerationPlanResult {
+      switch (config_.profile) {
+        case NativeChatProfile::qwen:
+          return make_qwen_chat_generation_plan(request, tokenizer_, config_.max_prompt_tokens, 1U, config_.sampling_default, {},
+                                                thinking, effort);
+        case NativeChatProfile::glm53:
+          return make_glm53_chat_generation_plan(request, tokenizer_, config_.max_prompt_tokens, 1U, config_.sampling_default);
+        case NativeChatProfile::gemma4:
+          return make_gemma4_chat_generation_plan(request, tokenizer_, config_.max_prompt_tokens, 1U, config_.sampling_default,
+                                                  thinking);
+      }
+      return ChatGenerationPlanError{ChatGenerationPlanErrorCode::invalid_request, "unknown chat profile"};
+    }();
     if (const auto* plan_error = std::get_if<ChatGenerationPlanError>(&plan_result)) {
       return make_error_response(plan_error->code == ChatGenerationPlanErrorCode::prompt_too_large ? ApiError::context_length_exceeded
                                                                                                    : ApiError::invalid_request);
