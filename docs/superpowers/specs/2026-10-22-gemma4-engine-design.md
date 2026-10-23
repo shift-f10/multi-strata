@@ -1,12 +1,19 @@
 # Gemma 4 engine path (`gemma4` family) and frontend profile
 
-Date: 2026-10-22. **Status: DECISIONS ACCEPTED; plan 1 (the frontend profile) executed on
-branch `gemma4-plan1-frontend` (see `docs/AGENT_HANDOFF.md`); the engine (plans 2-3) and the
-integration (plan 4) are not done.** The binding inputs are the
+Date: 2026-10-22. **Status: DECISIONS ACCEPTED; plan 1 (the frontend profile) and plans 2-3
+(the engine, `engines/gemma4/`, with the reconciliations R1-R7 of
+`docs/superpowers/plans/2026-10-22-gemma4-plan2-3-engine.md`) executed on branch
+`gemma4-plan1-frontend`; the engine matches llama.cpp at its own backend floor and serves the
+owner's Q8 file behind the 8080 page in expert mode (2026-10-23,
+`docs/validation/gemma4/`). Plan 4 (managed manifests, `engine.executables.gemma4`, the gate
+opening, the full acceptance battery) is not done.** The binding inputs are the
 owner's decisions of 2026-10-22: "Port Gemma 4 into a Strata-style engine path: write the
 design spec for a gemma4 family modelled on the Qwen3.6 path, plus the frontend profile",
-and "Accept the recommendations for D1-D11 in the Gemma 4 spec" (§11). No plan has been
-written and no code exists. The model facts were confirmed against the owner's download's
+and "Accept the recommendations for D1-D11 in the Gemma 4 spec" (§11). Where the plans
+departed from this text they say so (plan 1's reconciliation list; plans 2-3's R1-R7: no
+upstream libraries compiled, cold experts read over PCIe instead of a CPU pool (owner ruling
+wanted), llama.cpp as the only reference, a 2,048-row ring with common-prefix reuse,
+`--native`, `--kv f32` refused, no `cmake/` wrapper). The model facts were confirmed against the owner's download's
 header on 2026-10-22 (§2.6); each further quant's header is read before it is relied on, and
 a fact a header contradicts is corrected here and, if it changes a decision, goes back to the
 owner.

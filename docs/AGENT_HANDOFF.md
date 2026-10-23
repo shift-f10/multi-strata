@@ -360,10 +360,11 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
     the template's effort sentence (`QwenEffortPlacement`; high is the default, low has
     its own sentence, medium none, `effort_position` "end" as upstream #458). Before, every
     thinking prompt lacked the template's xhigh sentence. The page offers the four levels.
-  - **Gemma 4 (owner request 2026-10-22): plan 1 (the frontend `gemma4` profile) done on
-    branch `gemma4-plan1-frontend` (Tasks 1-12, not pushed, not merged), proven on the fake
-    engine and against llama.cpp's tokenizer on the real vocabulary; the engine itself (plans
-    2-3) is the controller's, in progress; nothing GPU-verified.** Upstream cannot
+  - **Gemma 4 (owner request 2026-10-22): plan 1 (the frontend `gemma4` profile) and plans
+    2-3 (our engine, `engines/gemma4/`) done on branch `gemma4-plan1-frontend` (not pushed, not
+    merged); the engine matches llama.cpp at its own CPU-vs-CUDA floor and the owner's Q8 file
+    is served behind the 8080 page in expert mode on the owner's box (RTX 4080 SUPER, Windows 11,
+    2026-10-23). Plan 4 (managed launch, the engine gate, the full §9.4 battery) not done.** Upstream cannot
     load `gemma4` (only `qwen4exp`/`qwen35moe`; the Qwen3.6 driver takes head 256 only).
     Owner chose a Strata-style port and accepted decisions D1-D11 (2026-10-22): spec
     `docs/superpowers/specs/2026-10-22-gemma4-engine-design.md` (our `engines/gemma4/`
@@ -508,7 +509,28 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
       "gemma-4-26B-A4B-it-UD-Q8_K_XL"` (the `.gguf` stem), `roots.tokenizer_pack =
       C:\multi-strata\out\gemma4-pack\tokenizer` (owner-only), `engine.args` from the
       `strata_gemma4` allowlist (e.g. `["--max-context","32768","--kv","f16"]`),
-      `engine.gpu = "0"`, served with `--expert`. Not proven yet: anything with the real engine.
+      `engine.gpu = "0"`, served with `--expert`.
+    - **Plans 2-3 (the engine), by the controller:** `strata-gemma4-engine`
+      (`engines/gemma4/`, build `engines/gemma4/build-windows.bat` → `out/gemma4-engine`), plan
+      `docs/superpowers/plans/2026-10-22-gemma4-plan2-3-engine.md` with reconciliations R1-R7
+      (nothing of `upstream/` compiled; own Q8_0/BF16/F32 kernels + cuBLAS; cold experts read by
+      the GPU from 23.5 GiB of pinned RAM over PCIe — the CPU pool of D4 not built, **owner
+      ruling wanted**; llama.cpp the only reference; a 2,048-row sliding ring with
+      common-prefix reuse; `--native`; `--kv f32` refused). Results
+      `docs/validation/gemma4/2026-10-22-engine-parity-and-speed.md`: against llama.cpp
+      `3cf03257` (test-only `engines/gemma4/tools/g4_llama_dump.cpp`) mean KL 0.040 where
+      llama.cpp's own CPU-vs-CUDA floor is 0.042 (top-1 22/24 vs 21/24); 4,911-token prompt KL
+      0.034, same answer; decode 47-60 tok/s greedy (llama.cpp: 24-30 here), 36 tok/s with
+      sampling; prompts 860-1,110 tok/s; load 11-30 s, 54-57 of 128 experts a layer in VRAM.
+      Gates: `ctest --test-dir out/gemma4-engine` 23/23 (12 host, 9 GPU kernel cases, 2
+      real-model cases), MSVC `/W4 /WX` and nvcc `-Werror=all-warnings` clean.
+    - **Serving for testing (2026-10-23):** session log step 18 item 53 — the API and the page
+      chat with Gemma (thinking Off and High, streamed and not, follow-ups, Stop, the Monitor);
+      the serve config (`out/serve/config-gemma4-lan.json`, not committed) sets the model
+      card's sampling defaults (temperature 1.0, top_p 0.95, top_k 64): greedy decoding made the
+      model deliberate for minutes. Open: the sampler runs on the host (1 MB of logits a token,
+      36 tok/s vs 47-60 greedy); the encode index is rebuilt per request (about 0.2 s); the
+      `/apply-template` cross-check; the CPU pool ruling; plan 4.
 - The `windows-runtime`-labelled cases run under the MSVC preset on the owner's box; the
   supported Windows toolchains (MSYS2 clang, llvm-mingw) are still not installed (issue 3).
 
