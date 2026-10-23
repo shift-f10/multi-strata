@@ -106,13 +106,18 @@ std::string catalog_text() {
          "\"}],\"prepare\":\"iq_pack\",\"pack_args\":[],\"expert_profile\":\"expert-profile.bin\",\"mmproj\":null},"
          "{\"id\":\"glm-small\",\"name\":\"GLM small\",\"source\":\"maya\",\"family\":\"glm53\",\"engine\":\"glm53\","
          "\"about\":\"\",\"repo\":\"acme/GLM-GGUF\",\"revision\":\"main\",\"files\":[{\"path\":\"S/g-00001-of-00001.gguf\",\"size\":null,"
-         "\"sha256\":\"" + kShaA + "\"}],\"prepare\":\"unsupported\",\"pack_args\":[],\"expert_profile\":null,\"mmproj\":null}]}";
+         "\"sha256\":\"" + kShaA + "\"}],\"prepare\":\"unsupported\",\"pack_args\":[],\"expert_profile\":null,\"mmproj\":null},"
+         "{\"id\":\"qwen36-small\",\"name\":\"Qwen3.6 small\",\"source\":\"strata\",\"family\":\"qwen36\",\"engine\":\"qwen\","
+         "\"about\":\"gguf-direct\",\"repo\":\"acme/Qwen36-GGUF\",\"revision\":\"" + std::string{kCommit} +
+         "\",\"files\":[{\"path\":\"Q36/m.gguf\",\"size\":500,\"sha256\":\"" + kShaA +
+         "\"}],\"prepare\":\"none\",\"pack_args\":[],\"expert_profile\":null,\"mmproj\":null}]}";
 }
 
 struct Fixture final {
   std::filesystem::path dir = secure_frontend_test::make_scratch_directory();
   Spawner spawner;
   std::unique_ptr<DownloadManager> manager;
+  bool with_prepare = false;  // set before start(): configures the prepare step + a card template
   void start(const std::uint64_t free_bytes) {
     for (const char* name : {"downloads", "work", "cards"}) secure_frontend_test::make_private_directory(dir / name);
     secure_frontend::DownloadSettings settings;
@@ -125,6 +130,14 @@ struct Fixture final {
     settings.child_environment = {{"SystemRoot", "C:\\Windows"}};
     settings.margin_bytes = 100;
     settings.log = [](std::string_view) {};
+    if (with_prepare) {
+      settings.prepare_python = dir / "python.exe";
+      settings.prepare_tools = dir / "tools";
+      settings.prepare_script = dir / "prepare.py";
+      secure_frontend::DownloadCardTemplate tmpl;
+      tmpl.engine_executable = secure_frontend::path_to_utf8(dir / "engine.exe");
+      settings.card_template = tmpl;
+    }
     settings.seams = spawner.seams(free_bytes);
     manager = std::make_unique<DownloadManager>(std::move(settings));
   }
@@ -339,6 +352,28 @@ void pasted_links() {
 // the partial files (SP4's pull resumes from them); Resume is a start of the same manifest (the
 // same digest, so the same staging); Cancel stops and discards the partials (`strata rm
 // --partials <id>:download`).
+// Owner 2026-10-23: "why does qwen 3.6 35B says download only ... it is the same engine as qwen 3.8
+// flash next". Qwen3.6 (family qwen36) reads the GGUF directly (OWN_PATH); with the prepare step
+// configured it is runnable, and its note says a card is made (only the tokenizer is prepared).
+void qwen36_is_runnable_with_a_tokenizer_note() {
+  Fixture f;
+  f.with_prepare = true;
+  f.start(1U << 30U);
+  const std::string listed = f.manager->list_json();
+  const auto at = listed.find("\"id\":\"qwen36-small\"");
+  expect(at != std::string::npos, "the Qwen3.6 card is listed");
+  const std::string card = at == std::string::npos ? std::string{} : listed.substr(at, listed.find('}', at) - at);
+  expect(has(card, "\"runnable\":true"), "Qwen3.6 is runnable (same engine, GGUF-direct): " + card);
+  expect(has(card, "its tokenizer is prepared"), "its note says a card is made from the tokenizer: " + card);
+  // The iq_pack card still says a pack is built, and the GLM card is still download-only.
+  const auto qw = listed.find("\"id\":\"qwen-small\"");
+  expect(has(listed.substr(qw, listed.find('}', qw) - qw), "\"runnable\":true") &&
+             has(listed.substr(qw, listed.find('}', qw) - qw), "the pack is built"),
+         "the iq_pack card is unchanged");
+  const auto glm = listed.find("\"id\":\"glm-small\"");
+  expect(has(listed.substr(glm, listed.find('}', glm) - glm), "\"runnable\":false"), "the GLM card is still download only");
+}
+
 void pause_resume_and_cancel_discards() {
   Fixture f;
   f.spawner.pulls.push_back(Script{{"MANIFEST qwen-small:download x", "FILE Q/m-00001-of-00002.gguf 1000",
@@ -444,6 +479,7 @@ int main(int argc, char** argv) {
       {"a_resume_counts_its_rate_from_the_kept_bytes", a_resume_counts_its_rate_from_the_kept_bytes},
       {"maya_sizes_meet_the_free_space_and_resume_keeps_the_commit", maya_sizes_meet_the_free_space_and_resume_keeps_the_commit},
       {"pause_resume_and_cancel_discards", pause_resume_and_cancel_discards},
+      {"qwen36_is_runnable_with_a_tokenizer_note", qwen36_is_runnable_with_a_tokenizer_note},
       {"download_routes_answer_the_contract", download_routes_answer_the_contract},
   }, failures);
 }

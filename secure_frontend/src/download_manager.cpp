@@ -407,13 +407,16 @@ std::string DownloadManager::list_json() {
     const std::uint64_t remaining = card.total > card.bytes ? card.total - card.bytes : 0U;
     const std::uint64_t needed = remaining + settings_.margin_bytes;
     const bool fits = !space || space->free_bytes >= needed || card.state == State::ready || card.state == State::installed;
-    const bool qwen_ready = e.engine == "qwen" && e.prepare == "iq_pack" && settings_.prepare_python && settings_.prepare_tools &&
-                            settings_.prepare_script && settings_.card_template;
+    // Qwen3.6-35B-A3B (OWN_PATH): the engine reads the GGUF itself, so no iq_pack - only its tokenizer
+    // is prepared, then a card is written (its prepare field is "none" but it still runs here).
+    const bool gguf_direct = e.engine == "qwen" && e.family == "qwen36";
+    const bool qwen_ready = e.engine == "qwen" && (e.prepare == "iq_pack" || gguf_direct) && settings_.prepare_python &&
+                            settings_.prepare_tools && settings_.prepare_script && settings_.card_template;
     std::string note;
     if (e.engine == "glm53") note = "download only: the GLM-5.3 engine is not built here yet";
     else if (e.source == "custom") note = "download only: files are kept in the model store; a card for it is written by hand";
-    else if (e.prepare == "none") note = "download only: this model needs no pack, but its card is not made automatically yet";
     else if (!qwen_ready) note = "download only: the prepare step is not configured (models.prepare_python, models.prepare_tools)";
+    else if (gguf_direct) note = "after the download its tokenizer is prepared (a few seconds) and a card appears in Models";
     else note = "after the download the pack is built (a few minutes) and a card appears in Models";
     out += i != 0U ? "," : "";
     out += "{\"id\":" + json_text(e.id) + ",\"name\":" + json_text(e.name) + ",\"source\":" + json_text(e.source) + ",\"family\":" +
@@ -778,7 +781,8 @@ void DownloadManager::run_card(const std::size_t index) {
     return;
   }
   log("[strata] downloads: " + card.entry.id + " installed");
-  const bool can_prepare = card.entry.engine == "qwen" && card.entry.prepare == "iq_pack" && settings_.prepare_python &&
+  const bool can_prepare = card.entry.engine == "qwen" && (card.entry.prepare == "iq_pack" || card.entry.family == "qwen36") &&
+                           settings_.prepare_python &&
                            settings_.prepare_tools && settings_.prepare_script && settings_.card_template;
   if (!can_prepare) {
     set_state(index, State::installed);
@@ -912,9 +916,11 @@ bool DownloadManager::prepare(const std::size_t index, const HfDownload& downloa
   const std::string first = gguf_shard_set(entry.files.front().path).front();
   const std::filesystem::path shard = version / path_from_utf8(first);
   const std::filesystem::path pack = settings_.downloads_root / "packs" / entry.id;
+  const bool gguf_direct = entry.family == "qwen36";  // Qwen3.6: tokenizer only, the engine reads the GGUF (--native)
   std::vector<std::string> args{"-I", path_to_utf8(*settings_.prepare_script), "--gguf", path_to_utf8(shard), "--out", path_to_utf8(pack),
                                 "--tools", path_to_utf8(*settings_.prepare_tools)};
-  for (const auto& arg : entry.pack_args) args.push_back("--pack-arg=" + arg);
+  if (gguf_direct) args.emplace_back("--tokenizer-only");
+  else for (const auto& arg : entry.pack_args) args.push_back("--pack-arg=" + arg);
   auto child = spawn(std::move(args), *settings_.prepare_python);
   if (!child) {
     error = "the prepare step could not start";
@@ -953,12 +959,17 @@ bool DownloadManager::prepare(const std::size_t index, const HfDownload& downloa
   const std::filesystem::path models_root = shard.parent_path();
   std::string model_id = path_to_utf8(shard.filename());
   if (model_id.size() > 5U) model_id.resize(model_id.size() - 5U);  // the inventory id is the stem
-  std::string args_json = "[\"--pack\"," + json_text(path_to_utf8(pack));
-  if (ple != nullptr && ple->if_string() != nullptr && !ple->if_string()->empty()) args_json += ",\"--ple-gguf\"," + json_text(*ple->if_string());
-  if (entry.expert_profile) {
-    args_json += ",\"--expert-profile\"," + json_text(path_to_utf8(settings_.prepare_tools->parent_path() / "data" / *entry.expert_profile));
+  std::string args_json;
+  if (gguf_direct) {
+    args_json = "[\"--mtp\",\"2\"]";  // Unsloth's qwen35moe GGUFs carry the MTP block; 2 drafts (upstream OWN_PATH_FAMILIES)
+  } else {
+    args_json = "[\"--pack\"," + json_text(path_to_utf8(pack));
+    if (ple != nullptr && ple->if_string() != nullptr && !ple->if_string()->empty()) args_json += ",\"--ple-gguf\"," + json_text(*ple->if_string());
+    if (entry.expert_profile) {
+      args_json += ",\"--expert-profile\"," + json_text(path_to_utf8(settings_.prepare_tools->parent_path() / "data" / *entry.expert_profile));
+    }
+    args_json += "]";
   }
-  args_json += "]";
   std::string lib_dirs = "[";
   for (std::size_t i = 0; i < tmpl.engine_lib_dirs.size(); ++i) lib_dirs += (i ? "," : "") + json_text(tmpl.engine_lib_dirs[i]);
   lib_dirs += "]";
@@ -969,9 +980,12 @@ bool DownloadManager::prepare(const std::size_t index, const HfDownload& downloa
                            ",\"args\":" + args_json + "},\"roots\":{\"models\":" + json_text(path_to_utf8(models_root)) +
                            ",\"tokenizer_pack\":" + json_text(path_to_utf8(pack / "tokenizer")) +
                            "},\"limits\":{\"chat\":{\"max_prompt_tokens\":1048576,\"max_completion_tokens\":1048576}}}," +
-                           "\"options\":{\"max_context\":{\"default\":131072,\"min\":4096,\"max\":1048576},\"kv\":{\"default\":\"int8\"}," +
-                           "\"kv_resident\":{\"default\":32768,\"max\":262144},\"spec\":{\"default\":4},\"expert_cache\":{\"default\":\"auto\"}," +
-                           "\"prefill\":{\"default\":\"auto\"},\"thinking\":{\"default\":\"high\"}}}\n";
+                           (gguf_direct
+                                ? std::string{"\"options\":{\"max_context\":{\"default\":32768,\"min\":4096,\"max\":262144},"} +
+                                      "\"mtp\":{\"default\":true},\"prefill\":{\"default\":\"auto\"},\"thinking\":{\"default\":\"high\"}}}\n"
+                                : std::string{"\"options\":{\"max_context\":{\"default\":131072,\"min\":4096,\"max\":1048576},\"kv\":{\"default\":\"int8\"},"} +
+                                      "\"kv_resident\":{\"default\":32768,\"max\":262144},\"spec\":{\"default\":4},\"expert_cache\":{\"default\":\"auto\"}," +
+                                      "\"prefill\":{\"default\":\"auto\"},\"thinking\":{\"default\":\"high\"}}}\n");
   auto cards_root = open_root(settings_.cards_dir);
   const auto card_file = parse_relative_path(entry.id + ".json");
   if (!std::holds_alternative<CanonicalRoot>(cards_root) || !std::holds_alternative<RelativePath>(card_file) ||

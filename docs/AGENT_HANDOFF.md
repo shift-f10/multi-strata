@@ -263,7 +263,14 @@ worktrees and integrated as patches.
   `iq_pack.py` and `strata_tokenizer.py` from `models.prepare_tools`), then the server writes
   `<roots.state>/cards/<id>.json` with `models.download_engine_card`'s engine settings and the
   launcher adds it (`ModelLauncher::add_card`, up to `kMaxLauncherCards` = 64; such cards also
-  load at boot). Four new error rows: `download_in_progress`, `upstream_unavailable`,
+  load at boot). Qwen3.6-35B-A3B (family `qwen36`, `prepare: none`) runs on the same qwen engine
+  by its own path (upstream `OWN_PATH_FAMILIES`): `prepare_download.py --tokenizer-only` builds
+  only the tokenizer (no `iq_pack`, no PLE), and the written card reads the GGUF directly
+  (`--native` composed from `model_id` + `roots.models` by the expert launcher path, engine args
+  `["--mtp","2"]` — the qwen35moe draft count, not a draft-layer directory), with the qwen35
+  options (max_context default 32768, prefill auto, thinking high, an mtp toggle). It is text-only:
+  the expert launcher path takes no `mmproj`, so the family's vision encoder is not wired (the same
+  limit as every other launcher card). Four new error rows: `download_in_progress`, `upstream_unavailable`,
   `insufficient_storage`, `download_not_active`.
 - **Page:** the Models tab's Downloads section: the drive's free/total space, a card per catalog
   model (Strata, Project Maya) and per pasted link, Download / Pause / Resume / Cancel, a
@@ -273,11 +280,14 @@ worktrees and integrated as patches.
   (`pull_progress_lines_are_machine_readable`, `hf_info_resolves_a_link`), the store config 1,
   typed config 1, the error rows, the manager 10 (catalog and disk, pull and progress, failure
   and cancel, Maya `main` resolved and checked, Maya sizes against the free space and a resume
-  keeping the commit, a resume's rate, pasted links, pause/resume/cancel, the routes' JSON), the
+  keeping the commit, a resume's rate, pasted links, pause/resume/cancel, a Qwen3.6 gguf-direct
+  card runnable with its tokenizer note, the routes' JSON), the
   router 1, the page 3, the launcher end to end 2 (the catalog served, the folders made, a
   download's card loaded at boot; cards added while serving) plus the downloads-off 404s. The
   manager runs against a scripted `strata` child and a fake disk; no test reaches the network.
-  Python: 27 pytest cases for the catalog generator and the prepare script; `download_catalog.py
+  Python: 29 pytest cases for the catalog generator and the prepare script (the prepare script's
+  `--tokenizer-only` mode adds 2: a gguf-direct run skips the pack, and `--tokenizer-only` with a
+  `--pack-arg` is refused); `download_catalog.py
   --check` reports the committed catalog current (23 models). Full MSVC suite: 1010 cases, 1009 passed, 1 skipped (cfg03), 0 failed, with the real Gemma pack set (`out/ctest-downloads-pause-2.log`).
   Box run (session log item 59): a real pasted-link pull from Hugging Face (415 MB) paused at
   83.8 MB, resumed from there and installed with the pinned SHA-256; Cancel deleted a partial;
@@ -293,8 +303,10 @@ worktrees and integrated as patches.
   min(6, workers) (B11 amended for page servers). The signed-in header now takes two rows below
   640 px; every view fits 320 px (session log item 60).
 - **Open:** a paused card shows as `available` after a server restart (a Download then continues
-  from the kept partial files); the image encoders (`mmproj`) are not downloaded; Qwen3.6 and
-  pasted-link cards are not made automatically; GLM-5.3 files are download-only (no GLM engine
+  from the kept partial files); the image encoders (`mmproj`) are not downloaded (so Qwen3.6 and
+  the other vision families run text-only); pasted-link cards are not made automatically yet (a
+  profile-matched custom-download flow — the user picks the engine family a pasted GGUF maps to,
+  with multipart-GGUF support — is the next task); GLM-5.3 files are download-only (no GLM engine
   here); `--compat-bf16` packs need `STRATA_GGUF_PY` in the server's environment; Windows CI
   (`windows-msys2-clang`) has not run.
 

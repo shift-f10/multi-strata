@@ -1548,7 +1548,8 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_download_manager_tests
         catalog_cards_and_the_disk_check pull_runs_strata_and_tracks_progress failures_and_cancel maya_main_is_resolved_and_checked
         pasted_links pause_resume_and_cancel_discards download_routes_answer_the_contract
-        maya_sizes_meet_the_free_space_and_resume_keeps_the_commit a_resume_counts_its_rate_from_the_kept_bytes LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+        maya_sizes_meet_the_free_space_and_resume_keeps_the_commit a_resume_counts_its_rate_from_the_kept_bytes
+        qwen36_is_runnable_with_a_tokenizer_note LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     # Model downloads (plan 2026-10-23-model-downloads Task 1): the link rules and the manifests (O4).
     secure_frontend_add_test_executable(secure_frontend_hf_source_tests tests/hf_source_test.cpp

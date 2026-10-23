@@ -128,6 +128,27 @@ def test_no_ple_tensor_is_recorded_as_null(tmp_path):
     assert json.loads((pack / "prepared.json").read_text(encoding="ascii"))["ple"] is None
 
 
+def test_tokenizer_only_skips_the_pack_for_a_gguf_direct_model(tmp_path):
+    # Qwen3.6 (OWN_PATH): only the tokenizer is prepared; the engine reads the GGUF itself (--native).
+    tools = fake_tools(tmp_path)
+    (only,) = shards(tmp_path / "m", "Qwen3.6-35B-A3B-Q8_0", ["output.weight per_layer_token_embd.weight"])
+    pack = tmp_path / "packs" / "qwen3.6-35b-a3b-q8_0"
+    result = prepare("--gguf", str(only), "--out", str(pack), "--tools", str(tools), "--tokenizer-only")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["STEP tokenizer", "DONE"]        # no STEP pack / STEP ple
+    assert [c[0] for c in calls(tools)] == ["strata_tokenizer"]            # iq_pack is not run
+    assert json.loads((pack / "prepared.json").read_text(encoding="ascii")) == {
+        "pack": None, "tokenizer": str(pack / "tokenizer"), "ple": None, "shards": 1}
+
+
+def test_tokenizer_only_with_a_pack_arg_is_refused(tmp_path):
+    tools = fake_tools(tmp_path)
+    (only,) = shards(tmp_path / "m", "X", ["a.weight"])
+    pack = tmp_path / "pack"
+    result = prepare("--gguf", str(only), "--out", str(pack), "--tools", str(tools), "--tokenizer-only", "--pack-arg", "--compat-bf16")
+    assert result.returncode != 0 and "bad_arguments" in result.stdout
+
+
 def test_paths_with_shell_characters_pass_as_argv(tmp_path):
     root = tmp_path / "a & b; $(echo x) 'q'"
     tools = fake_tools(root)

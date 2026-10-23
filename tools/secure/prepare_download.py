@@ -60,12 +60,18 @@ class Refusal(Exception):
         self.reason = reason
 
 
-def parse(argv: list[str]) -> tuple[dict[str, str], list[str]]:
+def parse(argv: list[str]) -> tuple[dict[str, str], list[str], bool]:
     values: dict[str, str] = {}
     pack_args: list[str] = []
+    tokenizer_only = False
     i = 0
     while i < len(argv):
         name, joined, value = argv[i].partition("=")
+        if name == "--tokenizer-only" and not joined:
+            # Qwen3.6 (OWN_PATH): the engine reads the GGUF itself, only the tokenizer is prepared.
+            tokenizer_only = True
+            i += 1
+            continue
         if name not in (*OPTIONS, "--pack-arg"):
             raise Refusal("bad_arguments")
         if not joined:
@@ -84,7 +90,9 @@ def parse(argv: list[str]) -> tuple[dict[str, str], list[str]]:
         i += 1
     if any(o not in values for o in OPTIONS):
         raise Refusal("bad_arguments")
-    return values, pack_args
+    if tokenizer_only and pack_args:
+        raise Refusal("bad_arguments")
+    return values, pack_args, tokenizer_only
 
 
 def shard_list(first: Path) -> list[Path]:
@@ -142,7 +150,7 @@ def step(name: str) -> None:
 
 
 def prepare(argv: list[str]) -> None:
-    values, pack_args = parse(argv)
+    values, pack_args, tokenizer_only = parse(argv)
     first = Path(os.path.abspath(values["--gguf"]))
     out = Path(os.path.abspath(values["--out"]))
     tools = Path(os.path.abspath(values["--tools"]))
@@ -155,16 +163,20 @@ def prepare(argv: list[str]) -> None:
         record.unlink(missing_ok=True)
     except OSError:
         raise Refusal("write_failed") from None
-    step("pack")
-    run([sys.executable, "-I", str(tools / "iq_pack.py"), "--gguf", str(first), "--out", str(out), *pack_args],
-        "pack_failed")
+    if not tokenizer_only:
+        step("pack")
+        run([sys.executable, "-I", str(tools / "iq_pack.py"), "--gguf", str(first), "--out", str(out), *pack_args],
+            "pack_failed")
     step("tokenizer")
     run([sys.executable, "-I", str(tools / "strata_tokenizer.py"), "--gguf", str(first), "--out", str(out)],
         "tokenizer_failed")
-    step("ple")
-    ple = find_ple(tools, shards)
-    data = json.dumps({"pack": str(out), "tokenizer": str(out / "tokenizer"), "ple": str(ple) if ple else None,
-                       "shards": len(shards)}, indent=2, ensure_ascii=True) + "\n"
+    ple = None
+    if not tokenizer_only:
+        step("ple")
+        ple = find_ple(tools, shards)
+    # tokenizer_only (Qwen3.6): pack null, no PLE; the engine loads the GGUF directly via --native.
+    data = json.dumps({"pack": None if tokenizer_only else str(out), "tokenizer": str(out / "tokenizer"),
+                       "ple": str(ple) if ple else None, "shards": len(shards)}, indent=2, ensure_ascii=True) + "\n"
     tmp = out / "prepared.json.tmp"
     try:
         tmp.write_bytes(data.encode("ascii"))
