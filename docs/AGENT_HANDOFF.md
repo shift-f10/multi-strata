@@ -428,6 +428,16 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
       and BYTE (one raw byte) only; byte_bpe now refuses BYTE tokens too. Test pack
       `spm_tokenizer()` in `tests/support/test_tokenizer.hpp`. Gates: MSVC build clean; full
       suite 936 passed, 1 skipped.
+    - Task 6 done: `tools/secure/secure_tokenizer.py --profile gemma4 --gguf F --out D`
+      writes `D/tokenizer/{vocab.json, merges.json, token_type.json, tokenizer.json}` through
+      our own header-only GGUF reader (metadata only, bounded; tensor data never read); it
+      accepts only `tokenizer.ggml.model == "gemma4"`, refuses a gemma4 GGUF without the flag,
+      refuses duplicate tokens, mismatched types, merges that are not two vocabulary tokens,
+      and `add_space_prefix` true, and records model, `add_bos`, the special ids and the
+      SHA-256 of the header bytes it read. `tools/secure/spm_bpe.py` (`Encoder`) is the
+      pure-Python reference encoder for Task 7. Gates: pytest 62 passed, 4 skipped, 7 failed —
+      all 7 in `test_build_release.py`, which runs `bash` (on this box WSL's launcher with no
+      distro installed); environmental, not touched here.
 - The `windows-runtime`-labelled cases run under the MSVC preset on the owner's box; the
   supported Windows toolchains (MSYS2 clang, llvm-mingw) are still not installed (issue 3).
 

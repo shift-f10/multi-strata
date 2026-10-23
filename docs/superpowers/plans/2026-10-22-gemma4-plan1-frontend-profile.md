@@ -257,12 +257,12 @@ encoder), tests `tools/secure/test_gemma4_tokenizer.py`.
   the special ids and the source GGUF's SHA-256 of its header bytes). `spm_bpe.Encoder` mirrors
   Task 5's rules in pure Python (the oracle for Task 7).
 
-- [ ] **Step 1: RED** — pytest: a synthetic GGUF header written by the test (stdlib `struct`,
+- [x] **Step 1: RED** — pytest: a synthetic GGUF header written by the test (stdlib `struct`,
   like `test_glm_tokenizer.py`) with a tiny gemma4 vocabulary; extraction writes the four files;
   `merges.json` keeps `\n`/`\t` merges; profile/model mismatches refused; the reference encoder
   matches hand-computed ids. FAIL.
-- [ ] **Step 2:** implement (the GGUF reader stays header-only, our own code).
-- [ ] **Step 3:** GREEN + `pytest -q`; commit `tools: gemma4 tokenizer packs and the spm_bpe reference encoder`.
+- [x] **Step 2:** implement (the GGUF reader stays header-only, our own code).
+- [x] **Step 3:** GREEN + `pytest -q`; commit `tools: gemma4 tokenizer packs and the spm_bpe reference encoder`.
 
 ---
 
