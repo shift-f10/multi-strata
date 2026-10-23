@@ -273,16 +273,16 @@ a test-only ctest case `tokenizer_pack_tests.gemma4_real_pack_matches_the_fixtur
 `gemma4-real-pack` and skipped (with a printed reason) when the pack directory named by
 `SECURE_FRONTEND_GEMMA4_PACK` is absent.
 
-- [ ] **Step 1:** build a pack from the owner's GGUF into `out/gemma4-pack/` with Task 6's tool
+- [x] **Step 1:** build a pack from the owner's GGUF into `out/gemma4-pack/` with Task 6's tool
   (never committed).
-- [ ] **Step 2:** fixture texts: ASCII prose, leading/trailing/double spaces, `\n`, `\n\n`,
+- [x] **Step 2:** fixture texts: ASCII prose, leading/trailing/double spaces, `\n`, `\n\n`,
   `\n\n\n` runs, tabs, code, CJK, emoji, combining marks, RTL, the Gemma marker strings
   *as text* (must be refused), long words. Expected ids come from **llama.cpp's tokenizer at
   the pinned `3cf03257`**: `llama-tokenize -m <gguf> --ids --stdin` (it always loads the
   vocabulary only, `tools/tokenize/tokenize.cpp:146`), built test-only in
   `out/llama-server-3cf03257` like session-log step 17 (owner decision D7). They must equal
   the Python reference's; any disagreement stops the task.
-- [ ] **Step 3: RED → GREEN** — the C++ case against `out/gemma4-pack/` (FAIL before Task 5's
+- [x] **Step 3: RED → GREEN** — the C++ case against `out/gemma4-pack/` (FAIL before Task 5's
   code paths are right, PASS after); record the run in the session log; commit the fixture
   (texts and ids only) `tokenizer: gemma4 real-vocabulary fixture (ids checked against llama.cpp at 3cf03257)`.
 

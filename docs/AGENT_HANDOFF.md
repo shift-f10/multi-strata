@@ -438,6 +438,15 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
       pure-Python reference encoder for Task 7. Gates: pytest 62 passed, 4 skipped, 7 failed —
       all 7 in `test_build_release.py`, which runs `bash` (on this box WSL's launcher with no
       distro installed); environmental, not touched here.
+    - Task 7 done: the real Gemma 4 vocabulary (the owner's UD-Q8_K_XL GGUF, header only) →
+      `out/gemma4-pack/tokenizer` (never committed; folder made owner-only like `out/serve/`).
+      64 texts tokenized by llama.cpp's `llama-tokenize` at `3cf03257` (test-only build, GPU
+      hidden) equal `tools/secure/spm_bpe.py`'s ids, and the C++ encoder's
+      (`tokenizer_pack_tests.gemma4_real_pack_matches_the_fixture`, label `gemma4-real-pack`,
+      skipped with its reason unless `SECURE_FRONTEND_GEMMA4_PACK` names the pack); 27 marker
+      texts refused. Fixture: `secure_frontend/tests/fixtures/gemma4_tokenizer_texts.json`
+      (texts + ids). Session log step 17, item 45. Gates: MSVC build clean; tokenizer cases 18/18
+      with the real pack; the full suite runs once after Tasks 8-9 (controller's batch gate).
 - The `windows-runtime`-labelled cases run under the MSVC preset on the owner's box; the
   supported Windows toolchains (MSYS2 clang, llvm-mingw) are still not installed (issue 3).
 

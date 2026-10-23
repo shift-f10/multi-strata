@@ -991,6 +991,35 @@ that API key".
       the owner ruled it out ("Keep to the Strata-style port in the spec; Gemma joins the
       8080 UI when that engine is done"; spec D12). This llama-server remains a test tool only.
 
+45. **The frontend's Gemma 4 tokenizer agrees with llama.cpp's on the real vocabulary**
+    (Gemma 4 plan 1 Task 7, 2026-10-22). Nothing from the model is committed: the fixture
+    `secure_frontend/tests/fixtures/gemma4_tokenizer_texts.json` holds texts and token ids only.
+    - **Pack:** `tools/secure/secure_tokenizer.py --profile gemma4 --gguf
+      C:\Strata-data\models\gemma4_q8\gemma-4-26B-A4B-it-UD-Q8_K_XL.gguf --out out/gemma4-pack`
+      read the metadata only (15,777,400 header bytes, SHA-256 `9f281a1e…f1143b`; no tensor
+      data) and wrote `out/gemma4-pack/tokenizer/` (262,144 tokens, 514,906 merges; 17 CONTROL,
+      7 USER_DEFINED, 256 BYTE tokens) in under 2 s.
+    - **Folder permission:** like `out/serve/` (issue 18), `out/gemma4-pack` was made
+      owner-only (`icacls … /inheritance:r /grant:r <user>:(OI)(CI)F`, children reset to
+      inherit); with the inherited `Authenticated Users: Modify` the loader refuses it ("must
+      be an existing private directory"), as designed. Only that folder was changed.
+    - **Reference ids:** `llama-tokenize` built test-only in the same out-of-tree build as step
+      17 (`cmake --build out/llama-server-3cf03257 --target llama-tokenize`, 2 of 2 steps; no
+      download), run as `llama-tokenize -m <gguf> -f <text file> --no-escape --ids --no-bos
+      --log-disable` with `CUDA_VISIBLE_DEVICES=-1` (it loads the vocabulary only; with no
+      device visible it never touched the GPU: "no CUDA-capable device is detected").
+    - **Result:** 64 texts (ASCII prose, leading/trailing/double spaces, `\n`/`\n\n`/`\n\n\n`
+      runs, `\r\n`, tabs, code, numbers, CJK, Korean, emoji with ZWJ and skin tone, combining
+      marks, Arabic and Hebrew, NUL/C0/DEL, NBSP, U+2028/2029, U+3000, U+200B, long words,
+      5,000 `x`, the template's own `system\n`/`user\n`/`model\n`/`thought\n`): llama.cpp's
+      ids equal `tools/secure/spm_bpe.py`'s for every one (no disagreement); 27 texts holding
+      a Gemma control literal (all 24 markers, and three injection attempts) are refused by our
+      encoders. The C++ case `tokenizer_pack_tests.gemma4_real_pack_matches_the_fixture`
+      (`SECURE_FRONTEND_GEMMA4_PACK=out\gemma4-pack\tokenizer`, label `gemma4-real-pack`)
+      failed against the pre-spm_bpe tokenizer (`out/ctest-g4-t7-red.log`) and passes now
+      (`out/ctest-g4-t7-green.log`, 21 s: the per-call index over 262,144 tokens and 514,906
+      merges costs about 0.2 s an encode).
+
 ### Not done in this session
 
 - Resume doc §8 item 3 (`qwen35moe` family behaviour): not applicable to these packs (no

@@ -1,4 +1,6 @@
 #include "secure_frontend/tokenizer_pack.hpp"
+#include "secure_frontend/crt_environment.hpp"
+#include "secure_frontend/json.hpp"
 #include "support/test_support.hpp"
 #include "support/test_tokenizer.hpp"
 
@@ -549,6 +551,70 @@ void spm_decoder_maps_u2581_and_byte_tokens() {
   const auto refused = secure_frontend::TokenByteDecoder(byte_level).bytes_for(byte_level.tokens_by_id.size() - 1U);
   expect(std::holds_alternative<secure_frontend::TokenizerPackError>(refused), "a BYTE token in a byte_bpe pack stays refused");
 }
+// ---- Gemma 4 plan 1 Task 7: the real vocabulary (the owner's GGUF, never committed) ----
+
+const secure_frontend::JsonValue* member(const secure_frontend::JsonValue& object, const std::string_view key) {
+  const auto* members = object.if_object();
+  if (members == nullptr) return nullptr;
+  for (const auto& entry : *members) {
+    if (entry.key == key) return &entry.value;
+  }
+  return nullptr;
+}
+
+// The pack built by `secure_tokenizer.py --profile gemma4` from the UD-Q8_K_XL GGUF, named by
+// SECURE_FRONTEND_GEMMA4_PACK (its tokenizer/ directory); skipped, with the reason printed, when
+// unset. The fixture's ids come from llama.cpp's llama-tokenize at 3cf03257 and equal
+// tools/secure/spm_bpe.py's (session log, Gemma step).
+void gemma4_real_pack_matches_the_fixture() {
+  const char* configured = secure_frontend::crt_getenv("SECURE_FRONTEND_GEMMA4_PACK");
+  if (configured == nullptr || *configured == '\0' || !std::filesystem::is_directory(std::filesystem::path{configured})) {
+    std::cout << "SKIPPED: SECURE_FRONTEND_GEMMA4_PACK names no Gemma 4 tokenizer pack directory (build one with "
+                 "tools/secure/secure_tokenizer.py --profile gemma4; it is never committed)\n";
+    return;
+  }
+  const auto loaded = secure_frontend::load_local_tokenizer_pack(std::filesystem::path{configured}, kSpm);
+  const auto* pack = std::get_if<secure_frontend::TokenizerPack>(&loaded);
+  const auto* load_error = std::get_if<secure_frontend::TokenizerPackError>(&loaded);
+  expect(pack != nullptr, "the real Gemma 4 pack loads in spm_bpe mode: " + (load_error ? load_error->message : std::string{}));
+  if (pack == nullptr) return;
+  expect(pack->tokens_by_id.size() == 262144U && pack->merges_by_rank.size() == 514906U,
+         "the UD-Q8_K_XL vocabulary: 262,144 tokens, 514,906 merges");
+  const std::string text = secure_frontend_test::read_file(secure_frontend_test::extra_arguments().at(0));
+  const auto parsed = secure_frontend::parse_json(
+      text, secure_frontend::JsonLimits{.max_bytes = 1U << 20U, .max_depth = 4U, .max_container_entries = 65536U,
+                                        .max_string_bytes = 1U << 16U});
+  const auto* root = std::get_if<secure_frontend::JsonValue>(&parsed);
+  const auto* entries = root != nullptr && member(*root, "texts") != nullptr ? member(*root, "texts")->if_array() : nullptr;
+  expect(entries != nullptr && entries->size() >= 60U, "the fixture parses");
+  if (entries == nullptr) return;
+  std::size_t checked = 0U;
+  for (const auto& entry : *entries) {
+    const auto* input = member(entry, "text") != nullptr ? member(entry, "text")->if_string() : nullptr;
+    expect(input != nullptr, "every fixture entry has a text");
+    if (input == nullptr) continue;
+    const auto encoded = secure_frontend::encode_text(*pack, *input);
+    if (const auto* refused = member(entry, "refused"); refused != nullptr) {
+      const auto* failure = std::get_if<secure_frontend::TokenizerPackError>(&encoded);
+      expect(failure != nullptr && failure->code == secure_frontend::TokenizerPackErrorCode::unsupported_special_token,
+             "a Gemma control literal as text is refused: " + input->substr(0U, 40U));
+      continue;
+    }
+    std::vector<std::size_t> expected;
+    if (const auto* ids = member(entry, "ids") != nullptr ? member(entry, "ids")->if_array() : nullptr) {
+      for (const auto& id : *ids) expected.push_back(static_cast<std::size_t>(*id.if_integer()));
+    }
+    const auto* actual = std::get_if<std::vector<std::size_t>>(&encoded);
+    expect(actual != nullptr && *actual == expected, "llama.cpp's ids for: " + input->substr(0U, 40U));
+    if (actual != nullptr) {
+      const auto decoded = secure_frontend::decode_token_ids(*pack, *actual);
+      expect(std::holds_alternative<std::string>(decoded) && std::get<std::string>(decoded) == *input,
+             "decode(encode(text)) == text: " + input->substr(0U, 40U));
+    }
+    ++checked;
+  }
+  expect(checked >= 60U, "at least 60 texts are compared id for id");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -569,6 +635,7 @@ int main(int argc, char** argv) {
       {"spm_unknown_characters_fall_back_to_byte_tokens", spm_unknown_characters_fall_back_to_byte_tokens},
       {"spm_round_trips_the_upstream_corpus", spm_round_trips_the_upstream_corpus},
       {"spm_decoder_maps_u2581_and_byte_tokens", spm_decoder_maps_u2581_and_byte_tokens},
+      {"gemma4_real_pack_matches_the_fixture", gemma4_real_pack_matches_the_fixture},
 #ifndef _WIN32
       {"rejects_symlinked_assets", rejects_symlinked_assets},
       {"cfg03_tokenizer_file_swapped_to_symlink_rejected", cfg03_tokenizer_file_swapped_to_symlink_rejected},

@@ -1435,6 +1435,13 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     endif()
     secure_frontend_add_cases(secure_frontend_tokenizer_pack_tests ${_tokenizer_cases}
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
+    # Gemma 4 plan 1 Task 7: the real vocabulary against llama.cpp's ids (the fixture holds texts
+    # and ids only). The pack is never committed: SECURE_FRONTEND_GEMMA4_PACK names it; unset, the
+    # case prints its reason and is reported skipped.
+    secure_frontend_add_cases(secure_frontend_tokenizer_pack_tests gemma4_real_pack_matches_the_fixture
+        ARGS ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/gemma4_tokenizer_texts.json LABELS gemma4-real-pack)
+    set_tests_properties(secure_frontend_tokenizer_pack_tests.gemma4_real_pack_matches_the_fixture PROPERTIES
+        SKIP_REGULAR_EXPRESSION "SKIPPED:")
 
     secure_frontend_add_test_executable(secure_frontend_qwen_prompt_renderer_tests tests/qwen_prompt_renderer_test.cpp
         secure_frontend_qwen_prompt_renderer)
