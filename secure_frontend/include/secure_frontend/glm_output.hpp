@@ -72,6 +72,13 @@ class Glm53StreamState final {
   // True exactly when the buffered reasoning must be sent as one content chunk:
   // finish == stop and no </think> was ever seen.
   [[nodiscard]] bool flushes_buffer_on_stop() const noexcept { return flush_buffer_; }
+  // From the first </think> on: the content region has started. The pump routes
+  // a held partial's U+FFFD by this (the Qwen tag rule: the strip ends the channel).
+  [[nodiscard]] bool started_content() const noexcept { return closed_; }
+  // The fixed log literal's key, closed at on_done: a control id was stripped in
+  // text that is returned (a reasoning-region strip counts on the stop-without-
+  // </think> flush, whose whole output becomes content; rule-1 drops never count).
+  [[nodiscard]] bool control_tokens_emitted() const noexcept { return emitted_; }
 
  private:
   std::size_t close_id_;
@@ -80,6 +87,7 @@ class Glm53StreamState final {
   std::size_t stripped_{0};
   std::size_t reasoning_stripped_{0};
   bool flush_buffer_{false};
+  bool emitted_{false};
 };
 
 }  // namespace secure_frontend
