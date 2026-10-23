@@ -1020,6 +1020,20 @@ that API key".
       (`out/ctest-g4-t7-green.log`, 21 s: the per-call index over 262,144 tokens and 514,906
       merges costs about 0.2 s an encode).
 
+46. **The built-in page cannot chat with a GLM model** — open (found by the Gemma 4 plan 1
+    survey, 2026-10-22; owner's call). The page always sends `reasoning_effort`
+    (`secure_frontend/web/app.js`, `reasoning_effort: LEVELS[s.thinking] ? s.thinking : "high"`),
+    and the glm53 schema refuses the field by name (400 `unsupported_parameter`). Plan 1 did not
+    change glm53 (no GLM engine runs on this box yet). Options: the page omits the field for a
+    profile without levels, or glm53 maps it to `glm.reasoning_effort`.
+
+47. **Page chats with a Gemma model think by default** — note (Gemma 4 plan 1 Task 12). D10
+    makes thinking off the default for a request that names no level, but the page always names
+    one and its default is High, so a page chat thinks unless Off is picked; the drawer now says
+    "Gemma models think or answer directly; Low, Medium and High all mean thinking on". API
+    clients that omit `reasoning_effort` get thinking off. If the owner wants Off on the page
+    for Gemma, the page needs to know the profile (today it does not).
+
 ### Not done in this session
 
 - Resume doc §8 item 3 (`qwen35moe` family behaviour): not applicable to these packs (no

@@ -360,7 +360,10 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
     the template's effort sentence (`QwenEffortPlacement`; high is the default, low has
     its own sentence, medium none, `effort_position` "end" as upstream #458). Before, every
     thinking prompt lacked the template's xhigh sentence. The page offers the four levels.
-  - **Gemma 4 (owner request 2026-10-22): design only, nothing built.** Upstream cannot
+  - **Gemma 4 (owner request 2026-10-22): plan 1 (the frontend `gemma4` profile) done on
+    branch `gemma4-plan1-frontend` (Tasks 1-12, not pushed, not merged), proven on the fake
+    engine and against llama.cpp's tokenizer on the real vocabulary; the engine itself (plans
+    2-3) is the controller's, in progress; nothing GPU-verified.** Upstream cannot
     load `gemma4` (only `qwen4exp`/`qwen35moe`; the Qwen3.6 driver takes head 256 only).
     Owner chose a Strata-style port and accepted decisions D1-D11 (2026-10-22): spec
     `docs/superpowers/specs/2026-10-22-gemma4-engine-design.md` (our `engines/gemma4/`
@@ -370,7 +373,8 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
     (`C:\Strata-data\models\gemma4_q8`) confirmed the model facts header-only (§2.6); it
     is the v1 target by the owner's choice ("no use the q8", D8). That reverses D4: experts
     split VRAM/RAM with Q36's hybrid placement and a GELU/BF16 CPU pool, plus BF16 kernels
-    for its 11 BF16 matrices (2.15 GB). No plan written, nothing built. Meanwhile, by the
+    for its 11 BF16 matrices (2.15 GB). (At the spec's writing no plan existed; see the
+    Execution list below for what plan 1 built.) Meanwhile, by the
     owner's decision, a TEST-ONLY llama.cpp `llama-server` (pinned `3cf03257`, offline
     build, not reviewed under the supply-chain contract, not our server) serves that file
     on `0.0.0.0:8081` (session log step 17, issue 44); nothing of it is committed. Owner
@@ -487,6 +491,24 @@ Host: Windows 11, RTX 4080 SUPER 16 GB, 64 GB RAM, CUDA 13.0, MSVC v143.
       `<turn|>` ends the reply as stop, the page and `/metrics` unchanged. One test-only fix
       (the role chunk's empty `content` was taken as the first answer delta). Gates: 4/4;
       **batch full suite after Tasks 10-11: 953 passed, 1 skipped (cfg03), 954 cases.**
+    - Task 12 done (docs truth pass): the page's Thinking control notes "Gemma models think or
+      answer directly; Low, Medium and High all mean thinking on" (router test pins it); the
+      README gains a Gemma 4 profile section (launch, the `spm_bpe` pack, prompt, thinking,
+      what is not yet there); the threat model one line (a third profile, same controls); the
+      spec's §4.8 now says `--native` (Task 3's ruling) and §6.1 records that the per-family
+      executable key and the gate opening move to plan 4; session log items 46 (the page cannot
+      chat with a GLM model: it always sends `reasoning_effort`, glm53 refuses it) and 47 (page
+      chats with Gemma think by default; API default off). Gates: MSVC build clean; **final
+      full suite 953 passed, 1 skipped (cfg03), 954 cases** (`SECURE_FRONTEND_GEMMA4_PACK` set,
+      so the real-vocabulary case ran); pytest 62 passed, 4 skipped, 7 failed (all
+      `test_build_release.py`, `bash` → WSL without a distro on this box, environmental).
+    - **To serve the model for testing** (expert mode, once `strata-gemma4-engine` is built):
+      `engine.profile = "gemma4"`, `engine.executable` = the Gemma engine (absolute, owner-only
+      folder), `roots.models = C:\Strata-data\models\gemma4_q8` with `engine.model_id =
+      "gemma-4-26B-A4B-it-UD-Q8_K_XL"` (the `.gguf` stem), `roots.tokenizer_pack =
+      C:\multi-strata\out\gemma4-pack\tokenizer` (owner-only), `engine.args` from the
+      `strata_gemma4` allowlist (e.g. `["--max-context","32768","--kv","f16"]`),
+      `engine.gpu = "0"`, served with `--expert`. Not proven yet: anything with the real engine.
 - The `windows-runtime`-labelled cases run under the MSVC preset on the owner's box; the
   supported Windows toolchains (MSYS2 clang, llvm-mingw) are still not installed (issue 3).
 

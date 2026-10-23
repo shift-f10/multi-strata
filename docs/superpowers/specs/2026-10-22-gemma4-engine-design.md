@@ -1,6 +1,8 @@
 # Gemma 4 engine path (`gemma4` family) and frontend profile
 
-Date: 2026-10-22. **Status: DECISIONS ACCEPTED — not started.** The binding inputs are the
+Date: 2026-10-22. **Status: DECISIONS ACCEPTED; plan 1 (the frontend profile) executed on
+branch `gemma4-plan1-frontend` (see `docs/AGENT_HANDOFF.md`); the engine (plans 2-3) and the
+integration (plan 4) are not done.** The binding inputs are the
 owner's decisions of 2026-10-22: "Port Gemma 4 into a Strata-style engine path: write the
 design spec for a gemma4 family modelled on the Qwen3.6 path, plus the frontend profile",
 and "Accept the recommendations for D1-D11 in the Gemma 4 spec" (§11). No plan has been
@@ -394,7 +396,9 @@ for full layers, bounded by the ring for sliding ones) is a later optimisation.
 
 ### 4.8 Flags (argument profile `strata_gemma4`)
 
-`--serve` (inserted by the frontend), `--model <gguf>`, `--max-context N`, `--chunk N`,
+`--serve` (inserted by the frontend), `--native <gguf>` (amended 2026-10-22, plan 1 Task 3
+ruling: the frontend appends the model as `--native` last, as for the strata engine; this
+section first said `--model`), `--max-context N`, `--chunk N`,
 `--kv f16|f32` (§11 D3), `--no-graph`, and the hybrid placement flags carried over from Q36:
 `--expert-vram GiB`, `--expert-slots N`, `--hybrid-rows N`, `--cpu-threads N`. Everything
 else is refused by the engine and not
@@ -471,6 +475,15 @@ Touch points (each an enum value plus its tests): `EngineProfile`
 selection. Config: `engine.executables.gemma4` (an absolute path, SP1's executable rules).
 The family-to-executable map is fixed and tested; a `gemma4` manifest never starts
 upstream `strata` and vice versa.
+
+**Amended 2026-10-22 (plan 1 reconciliation):** no per-family executable key exists today
+(the server always spawns the one `engine.executable`), so plan 1 serves Gemma in **expert
+mode**: `engine.profile = "gemma4"` with `engine.executable` naming `strata-gemma4-engine`.
+`engine.executables.gemma4`, the family-to-executable map above and opening the engine gate
+for `gemma4` manifests (refused today as `engine_profile_unavailable`, "the Gemma 4 engine is
+not installed") move to plan 4. The rows above as built in plan 1: argument profile
+`strata_gemma4` is an allowlist (§4.8, with `--native`); protocol `strata_0143`; environment
+family `strata`; tokenizer mode `spm_bpe` (§6.2) chosen by the profile.
 
 ### 6.2 Tokenizer mode `spm_bpe`
 

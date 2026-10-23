@@ -63,6 +63,10 @@ Rulings taken during execution (2026-10-22; each also in its task's commit messa
   sites) — why: the RED cases need it at unit level — cost if wrong: none. `chat_schema_limits`
   derives the per-request `reasoning_effort` flag from the configured profile (the bootstrap
   still re-derives it from the launch) — cost if wrong: none at serve time.
+- **Task 12 (2026-10-23):** spec amended in place with dated notes: §4.8 `--native` (Task 3's
+  ruling), §6.1 the per-family executable key and the engine gate opening → plan 4, the status
+  line. No schema text changed after Task 1, so the README table needed no regeneration
+  (`readme_config_table_matches_schema` passes).
 - **Execution note (2026-10-22):** Tasks 8, 9 and 11 were written by parallel workers in
   detached worktrees and integrated here in plan order (`git apply --3way`); the full suite ran
   per batch (after 7-9, after 10-11, after 12) by the controller's gate change.
@@ -418,9 +422,9 @@ table); `docs/security/threat-model.md` (one line: a third chat profile, same co
 spec amendments (§6.1 executable key → plan 4; reconciliation list above, dated);
 `docs/AGENT_HANDOFF.md`; session log (the glm53 page issue, Task 7's run).
 
-- [ ] **Step 1: RED** — the page assertion for the note; README table check after the schema text change.
-- [ ] **Step 2:** write.
-- [ ] **Step 3:** GREEN + full gates; commit `docs: gemma4 profile truth pass`.
+- [x] **Step 1: RED** — the page assertion for the note; README table check after the schema text change.
+- [x] **Step 2:** write.
+- [x] **Step 3:** GREEN + full gates; commit `docs: gemma4 profile truth pass`.
 
 ## Waits for later plans (not lane tasks)
 

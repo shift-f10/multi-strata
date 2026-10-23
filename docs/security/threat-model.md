@@ -282,6 +282,13 @@ Trust boundaries:
   engine start, so a `MAYA_*` name reaching the glm child would override a
   forced `STRATA_*` safety value; the closed environment allowlist keeps every
   `MAYA_*` name out (`glm_child_env_is_exactly_the_named_typed_set`).
+- (Gemma 4 plan 1) A third chat profile, `gemma4`, adds no new control or surface: its child
+  is the strata family (the same closed environment, the `strata_0143` dialect, private
+  stdio); its argv is the `strata_gemma4` allowlist (unknown flags refused without being
+  echoed); its prompt is a fixed renderer of the GGUF's template that refuses every one of the
+  vocabulary's 24 control literals in client text; its tokenizer mode comes from the profile,
+  never the files; and the thought channel's name line must be exactly `thought` or the reply
+  ends `undecodable`. Managed `gemma4` manifests stay refused by the engine gate until plan 4.
 - PROC-03 on Linux means "other user context": another uid cannot open the
   engine's stdio (`proc03_other_uid_cannot_open_engine_fd`; it runs only in CI,
   which has not yet run SP2 — pending rflores's push). The

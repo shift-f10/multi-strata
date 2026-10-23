@@ -379,6 +379,9 @@ void web_ui_has_the_monitor_and_four_thinking_levels() {
          "the Monitor asks /metrics through the keyed API helper and handles the switch being off");
   expect(js.find("reasoning_effort: LEVELS[s.thinking] ? s.thinking : \"high\"") != std::string::npos,
          "the level is sent as reasoning_effort, high by default");
+  // Gemma 4 plan 1 Task 12 (spec §6.6, D10): the drawer says what the levels mean for Gemma.
+  expect(html.find("Gemma models think or answer directly; Low, Medium and High all mean thinking on") != std::string::npos,
+         "the Thinking control notes that Gemma has no levels");
 }
 
 void keyless_router_answers_without_a_key() {

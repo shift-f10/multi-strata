@@ -1380,8 +1380,8 @@ only through private stdio, and exposes authenticated `GET /health`, `GET
 — complete JSON or streamed SSE (`"stream": true`, SP3 M2) — plus `GET /metrics`
 when `listener.monitor` is on (below). Its
 default fixed native profile uses the local GPT-2-byte-BPE tokenizer pack and
-the fixed Qwen ChatML renderer; the separately selected GLM-5.3 profile is
-documented below. It deliberately rejects tools, MCP and downloads, and a
+the fixed Qwen ChatML renderer; the separately selected GLM-5.3 and Gemma 4
+profiles are documented below. It deliberately rejects tools, MCP and downloads, and a
 request whose `model` is not the one model selected at startup. Images are an
 input path only for a vision-capable model (`vision.enabled` plus the
 manifest `mmproj` artifact, SP5 M1) and only as `data:` URLs — an http(s)
@@ -1423,8 +1423,9 @@ from any other server, and reach no route.
     (polls `/health`) and a light/dark switch.
   - **Composer:** attach text files, save the chat as Markdown, Stop, Send.
   - **Sampling drawer:** Thinking Off, Low, Medium or High (upstream's four levels,
-    sent as `reasoning_effort`; High is the default), temperature, top-p, max tokens,
-    seed, show thinking.
+    sent as `reasoning_effort`; High is the default; a note under it says Gemma models think
+    or answer directly, Low, Medium and High all meaning thinking on), temperature, top-p,
+    max tokens, seed, show thinking.
   - **Monitor** (with `listener.monitor`, below): upstream's dashboard — the model
     state, speed (decode and prefill), GPU load, VRAM, GPU temperature, power, PCIe and
     CPU cards with a minute of history, the context fill, GPU memory, RAM and
@@ -1442,8 +1443,9 @@ from any other server, and reach no route.
   `Cross-Origin-Opener-Policy: same-origin`. Every other response keeps
   `default-src 'none'`.
 
-`reasoning_effort` is also accepted per request on the qwen profile (`none`, `low`,
-`medium`, `high`, the `reasoning.effort` words). Another profile refuses it by name. The
+`reasoning_effort` is also accepted per request on the qwen and gemma4 profiles (`none`,
+`low`, `medium`, `high`, the `reasoning.effort` words; for gemma4 see its section below:
+`none` is off, the three levels all mean thinking on). glm53 refuses it by name. The
 levels write what the model's own template writes (session log step 16): `none` closes the
 think block; `high` (also a request with no level and no `reasoning.effort`) puts the
 template's "Reasoning effort is set to xhigh..." sentence at the top of the system turn,
@@ -1682,3 +1684,55 @@ GLM framing markers as CONTROL tokens.
 The positional-argument example is illustrative. Use the separately audited
 engine's local documentation for its exact required order and values; do not
 expose its own listener or run its network-facing service beside this server.
+
+### Gemma 4 profile
+
+Select `--profile gemma4` (`engine.profile = "gemma4"`) to serve a Gemma 4 26B-A4B GGUF with
+our own `strata-gemma4-engine` (spec `docs/superpowers/specs/2026-10-22-gemma4-engine-design.md`;
+the engine is a separate build and is not in this tree's frontend). It is text only (no
+images, D2), streamed or not, on the same private `strata_0143` stdio protocol as the
+default profile, with the strata family's closed child environment.
+
+- **Launch (expert mode):** `engine.executable` names the Gemma engine; `engine.model_id` is the
+  `.gguf` stem in `roots.models`. The server composes `--serve` (inserted by the launcher), the
+  allowlisted `engine.args` (`--max-context N`, `--chunk N`, `--kv f16|f32`, `--no-graph`,
+  `--expert-vram GiB`, `--expert-slots N`, `--hybrid-rows N`, `--cpu-threads N`; anything else is
+  refused by name or, if unknown, without being echoed), then `--gpu` from `engine.gpu`, then
+  `--native <models_root/file>` last. The qwen-only rows (`engine.vram_*`, `engine.layer_split`,
+  `engine.split_skip_if_fits`, `session.expert_profile_save*`, `replicas.parallel`,
+  `engine.mtp`, `reasoning.effort_position`) are refused by name on this profile.
+- **Tokenizer pack (`spm_bpe`):** `roots.tokenizer_pack` holds `vocab.json`, `merges.json`,
+  `token_type.json` (and `tokenizer.json`), written from the GGUF's metadata by
+  `tools/secure/secure_tokenizer.py --profile gemma4 --gguf <file> --out <dir>` (header only;
+  it refuses any other tokenizer model). `merges.json` is a JSON array of `[left, right]`
+  pairs in rank order, because Gemma's merges hold newlines and tabs; a pack with a
+  `merges.txt` is refused in this mode, and a qwen/glm pack with `merges.json` is refused in
+  theirs. The mode comes from the profile, never from the files. On Windows the pack folder
+  must be owner-only like every root (see the Windows notes).
+- **Prompt:** the GGUF's template, byte for byte: `<bos>`, a system turn only for a leading
+  system message or thinking on (`<|think|>` first), `<|turn>user\n…<turn|>\n`,
+  `<|turn>model\n…<turn|>\n` for earlier answers, and the generation prompt `<|turn>model\n`
+  plus the closed thought channel `<|channel>thought\n<channel|>` when thinking is off. Text is
+  trimmed as Jinja's `trim` does; a Gemma control literal in any message, an empty message, a
+  non-leading system message or a broken user/assistant order is refused (400).
+- **Thinking (`reasoning_effort`):** accepted per request: `none` is thinking off, `low`,
+  `medium` and `high` all mean thinking on (the template has no levels). A request without it
+  takes `reasoning.effort` (`none` or unset: off; any level: on). The thought channel comes
+  back as `reasoning_content`, the answer as `content`; `<turn|>` and `<eos>` end the reply.
+- **Not yet:** managed Gemma models (a `gemma4` manifest installs, but `run`/`serve` refuse it
+  with "the Gemma 4 engine is not installed" until plan 4 opens the gate) and the
+  per-family `engine.executables.gemma4` key (plan 4).
+
+```sh
+./out/build/linux-gcc/strata-secure-server --expert \
+  --profile gemma4 \
+  --models-root /absolute/path/to/models \
+  --model-id gemma-4-26B-A4B-it-UD-Q8_K_XL \
+  --tokenizer-pack /absolute/path/to/gemma4-pack/tokenizer \
+  --engine /absolute/path/to/strata-gemma4-engine \
+  --engine-arg --max-context --engine-arg 32768 \
+  --engine-arg --kv --engine-arg f16 \
+  --gpu 0 \
+  --state-dir /absolute/path/to/owner-only-state-dir \
+  --token-env STRATA_API_TOKEN
+```
