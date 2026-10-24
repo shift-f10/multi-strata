@@ -73,10 +73,35 @@ class HostStubGraph final : public FamilyGraph {
                                                                     std::string& error) {
   error.clear();
 #if defined(STRATA_U_CUDA)
-  // The GPU box links the real per-family graphs here (design §3.2). Not built on the host.
-  (void)geom;
-  (void)context;
-  error = "CUDA family graphs are not part of the host foundation";
+  // The GPU box links the real per-family graphs here (design §3.2, decision 1). Each family
+  // lane implements `make_<fam>_graph` in src/family/<fam>_graph.{hpp,cu}; this branch
+  // forward-declares the six factories (so no family header is required here -- the task's
+  // "prefer forward declarations") and dispatches on the GUARDED arch->family mapping. The
+  // binary selects a family only from the GGUF arch key the geometry guard already re-checked;
+  // nothing is inferred from tensor data (the frontend's "no behavior from model data"
+  // invariant, held on the engine side too). A factory sets `error` and returns nullptr on a
+  // load failure.
+  //
+  // LINKING NOTE: this references all six factories, so the engine executable links only once
+  // every family's <fam>.cu is present. A family lane not yet started should drop a one-line
+  // "unavailable" stub for its factory so incremental box builds (plan T1.3+: GLM/DS4/Raon
+  // first, then qwen, then gemma4) link; the shared substrate (src/kernels/*.cu, u_experts.cu)
+  // compiles independently of any family.
+  extern std::unique_ptr<FamilyGraph> make_glm_graph(const Geometry&, std::uint32_t, std::string&);
+  extern std::unique_ptr<FamilyGraph> make_ds4_graph(const Geometry&, std::uint32_t, std::string&);
+  extern std::unique_ptr<FamilyGraph> make_raon1_graph(const Geometry&, std::uint32_t, std::string&);
+  extern std::unique_ptr<FamilyGraph> make_qwen35moe_graph(const Geometry&, std::uint32_t, std::string&);
+  extern std::unique_ptr<FamilyGraph> make_qwen4exp_graph(const Geometry&, std::uint32_t, std::string&);
+  extern std::unique_ptr<FamilyGraph> make_gemma4_graph(const Geometry&, std::uint32_t, std::string&);
+  switch (geom.family) {
+    case FamilyId::glm5next:  return make_glm_graph(geom, context, error);
+    case FamilyId::ds4:       return make_ds4_graph(geom, context, error);
+    case FamilyId::raon1:     return make_raon1_graph(geom, context, error);
+    case FamilyId::qwen35moe: return make_qwen35moe_graph(geom, context, error);
+    case FamilyId::qwen4exp:  return make_qwen4exp_graph(geom, context, error);
+    case FamilyId::gemma4:    return make_gemma4_graph(geom, context, error);
+  }
+  error = "unknown family";
   return nullptr;
 #else
   return std::make_unique<detail::HostStubGraph>(geom.family, context, geom.arch);

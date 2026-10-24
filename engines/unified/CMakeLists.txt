@@ -35,7 +35,10 @@ target_compile_options(u_host PRIVATE ${U_HOST_WARNINGS})
 # build it links the stub FamilyGraph (u_family.hpp), so it builds and serves without CUDA.
 add_executable(strata-unified-engine src/u_main.cpp)
 target_link_libraries(strata-unified-engine PRIVATE u_host)
-target_compile_options(strata-unified-engine PRIVATE ${U_HOST_WARNINGS})
+# CXX-guarded: identical for the all-C++ host build, and it keeps these C++-only
+# warning flags off the nvcc command line once the STRATA_U_CUDA block below adds
+# .cu sources to this same target (nvcc would reject -Wconversion / permissive-).
+target_compile_options(strata-unified-engine PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${U_HOST_WARNINGS}>)
 
 enable_testing()
 
@@ -57,8 +60,49 @@ foreach(case IN LISTS U_HOST_CASES)
 endforeach()
 
 if(STRATA_U_CUDA)
-    # The GPU box builds the shared kernels and the per-family graphs here (plan 1+). Nothing
-    # to compile in this foundation; the host library and tests above never depend on it.
+    # The GPU-box build (never CI): the shared generic kernels (src/kernels/*.cu, namespace
+    # u::k), the shared expert facility (src/u_experts.cu, u::ExpertTier) and every per-family
+    # graph (src/family/*.cu) compile into the engine target and the real FamilyGraph factories
+    # link in. NVIDIA sm_75+ (Turing and newer, so __dp4a is a hardware instruction); cuBLAS for
+    # the prefill GEMM; --use_fast_math as the pinned llama.cpp MMVQ oracle requires.
+    #
+    # A family LANE just drops src/family/<fam>_graph.hpp + <fam>.cu into the tree -- the globs
+    # below pick the .cu up with no edit to this file. CONFIGURE_DEPENDS re-globs on build so a
+    # newly added family is compiled without re-running cmake by hand.
     enable_language(CUDA)
-    message(STATUS "strata-unified-engine: STRATA_U_CUDA is ON (GPU-box build); no kernels exist yet in Plan 0.")
+    find_package(CUDAToolkit REQUIRED)
+    set(CMAKE_CUDA_STANDARD 20)
+    set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+        # sm_75 (Turing) .. sm_90 (Hopper); the box overrides with -DCMAKE_CUDA_ARCHITECTURES=89
+        # for its own card. sm_75 is the floor (the owner's box is newer).
+        set(CMAKE_CUDA_ARCHITECTURES 75 80 86 89 90)
+    endif()
+    if(MSVC)
+        set(U_CUDA_WARNINGS -Werror=all-warnings --use_fast_math -Xcompiler=/W4,/WX,/utf-8,/EHsc)
+    else()
+        set(U_CUDA_WARNINGS -Werror=all-warnings --use_fast_math -Xcompiler=-Wall,-Wextra,-Werror)
+    endif()
+
+    file(GLOB U_KERNEL_CU CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/*.cu)
+    file(GLOB U_FAMILY_CU CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/family/*.cu)
+
+    # The engine target (u_main.cpp, linking u_host) gains the CUDA substrate and the family
+    # graphs, and is compiled with STRATA_U_CUDA so make_family_graph (u_family.hpp) dispatches
+    # to the real factories instead of the host stub.
+    target_sources(strata-unified-engine PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/u_experts.cu
+        ${U_KERNEL_CU}
+        ${U_FAMILY_CU})
+    target_compile_definitions(strata-unified-engine PRIVATE STRATA_U_CUDA)
+    target_link_libraries(strata-unified-engine PRIVATE CUDA::cudart CUDA::cublas)
+    # The CXX warnings are already attached (CXX-guarded) where the target is
+    # defined; here we add only the CUDA ones for the .cu sources.
+    target_compile_options(strata-unified-engine PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:${U_CUDA_WARNINGS}>)
+    set_target_properties(strata-unified-engine PROPERTIES CUDA_RUNTIME_LIBRARY Static)
+
+    list(LENGTH U_FAMILY_CU U_FAMILY_COUNT)
+    message(STATUS "strata-unified-engine: STRATA_U_CUDA ON; ${U_FAMILY_COUNT} family graph(s) found in src/family/. "
+                   "The engine links once the families reached by make_family_graph are present.")
 endif()

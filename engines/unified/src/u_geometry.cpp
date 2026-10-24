@@ -82,7 +82,7 @@ constexpr std::array<GeometrySpec, 6> kSpecs{{
     {FamilyId::raon1, exact(25), exact(2560), exact(40), exact(128), exact(12032), exact(1088), exact(128),
      exact(6), exact(1), exact(262144), exact(259840), RouterKind::sigmoid, RopeKind::nope},
     {FamilyId::qwen35moe, kBlock, kEmbd, kHeads, kHeadDim, kFf, kFfExp, kExperts, kExpertsUsed, kExpertsShared,
-     kContext, kVocab, RouterKind::sigmoid, RopeKind::rope},
+     kContext, kVocab, RouterKind::softmax, RopeKind::rope},  // softmax top-8 (the sigmoid is only the shared-expert gate)
     {FamilyId::qwen4exp, kBlock, kEmbd, kHeads, kHeadDim, kFf, kFfExp, kExperts, kExpertsUsed, kExpertsShared,
      kContext, kVocab, RouterKind::softmax, RopeKind::rope},
     {FamilyId::gemma4, kBlock, kEmbd, kHeads, kHeadDim, kFf, kFfExp, kExperts, kExpertsUsed, kExpertsShared,
