@@ -353,10 +353,18 @@ Added support target: KRAFTON **Raon-1-mini** (arch `raon1`, a GLM-lineage hybri
   `EngineProfile::deepseek`/`raon1` across every exhaustive switch, the `unified` argument profile,
   and placeholder renderers; MSVC `/WX` clean, affected suites green (the lone
   `raw_profile_rejected_in_release_build` failure is the pre-existing release-only/hooks-ON case).
-- **In progress (box-gated CUDA, written by workers to compile + parity on the box):** the shared
-  kernels + expert facility (`engines/unified/src/kernels/common`, `u_experts`) and the GLM /
-  DeepSeek / Raon-1-mini graph ports (`src/family/*`), faithful ports with TODOs for the deep tails.
-  Not yet runnable.
+- **Landed (box-to-compile CUDA, commit `a418fce4`):** the shared kernels + expert facility
+  (`engines/unified/src/kernels/common.*`, `u_experts.*`) and **all six** family graph ports
+  (`src/family/{glm,ds4,raon1,qwen35moe,qwen4exp,gemma4}_graph` + `src/kernels/<fam>_*`), plus
+  `cmake/unified-engine` (the standalone box build, OFF/never-CI). All CUDA is behind `STRATA_U_CUDA`
+  (OFF); the host foundation stays 7/7 green. Faithful ports from upstream/Maya/our gemma4 with
+  in-file `TODO(box)` for the deep kernels. **Not runnable until the box compiles + parities.** The
+  box guide is [`engines/unified/BUILD-ON-BOX.md`](../engines/unified/BUILD-ON-BOX.md); its first
+  fixes are the shared seams the lanes flagged — the `GgufFile` factory, the `ExpertTier`
+  `run_moe`→`compute`/per-layer reconciliation, the per-layer `head_count_kv` array in `u_geometry`,
+  and the i-quant widening qwen4exp's pack needs. Fixed in passing: `u_geometry` pins qwen35moe's
+  router to `softmax` (the sigmoid is only its shared-expert gate). Frontend `unified` flavor +
+  `deepseek`/`raon1` profiles landed at `49cf0fd6`; host foundation at `42a382a7`.
 
 ### Model launcher: choose, configure and start models from the page (2026-10-23, local `main`, not pushed)
 

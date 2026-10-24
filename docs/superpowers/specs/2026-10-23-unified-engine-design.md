@@ -69,7 +69,7 @@ one weight/expert arena, one serve loop, one deployment, and one frontend contra
 
 | Family | Arch key | Shape | Attention | Experts | Draft | Lineage |
 | --- | --- | --- | --- | --- | --- | --- |
-| Qwen3.8-Flash-Next | `qwen4exp` | MoE | full (softmax) | iq_pack | MTP | upstream |
+| Qwen3.8-Flash-Next | `qwen4exp` | MoE | **GDN linear + QSA sparse** (hybrid, +PLE, +hyper-conn) | iq_pack | MTP | upstream |
 | Qwen3.6-35B-A3B | `qwen35moe` | MoE | **GDN linear** + periodic full | native GGUF | MTP | upstream |
 | Gemma-4-26B-A4B | `gemma4` | **dense** + MoE/layer | sliding + full (softmax) | native | — | gemma4 (standalone) |
 | GLM-5.3-Flash | `glm5next` | MoE | **KDA linear** + DSA/MLA | tiered | DFlash/NextN | MAYA |
