@@ -56,7 +56,10 @@ families and most of Raon, and its linear-attention path is the closest existing
 3. Keep the frontend's fail-closed contract: a typed argument profile, **one** protocol flavor, a
    typed environment allowlist; the family/tokenizer/renderer stay **startup-selected, never inferred
    from a model artifact** (a security invariant — `chat_execution.hpp:20-22`).
-4. NVIDIA first; every GPU claim from the owner's box (CLAUDE.md). AMD/HIP where a lineage already has it.
+4. **One shared expert-placement facility** (VRAM/RAM(/disk) tiering + an expert-hit profile that
+   warm-starts placement and can be saved per model) used by **every** family, replacing each
+   engine's ad-hoc placement — in particular gemma4's arbitrary cold start (§3.5).
+5. NVIDIA first; every GPU claim from the owner's box (CLAUDE.md). AMD/HIP where a lineage already has it.
 
 ### 1.2 Non-goals (v1)
 - A generic, config-driven "architecture registry" that composes any graph from metadata — no engine
@@ -193,10 +196,12 @@ side too (the binary trusts only the GGUF arch key, which it also guards).
   periodic full attention + MoE on the shared expert infra + MTP. **High**, per §2.3.
 - **qwen4exp (Flash-Next):** the dormant `qwen4exp`/`native` path in Maya is the scaffold; iq_pack
   experts vs the tiered cache is the main reconciliation.
-- **gemma4:** dense (skips the MoE substrate) + sliding-window + Gemma norms/soft-cap. Either lift
-  `engines/gemma4/`'s cuBLAS kernels as a self-contained `gemma4` module in the binary (cheapest,
-  keeps the 26/26-verified code) or re-express on the shared kernels (more uniform, more rework).
-  **Decision in §6 Q3.**
+- **gemma4:** dense (skips the MoE substrate for its dense MLP) + sliding-window + Gemma
+  norms/soft-cap. Either lift `engines/gemma4/`'s cuBLAS kernels as a self-contained `gemma4` module
+  in the binary (cheapest, keeps the 26/26-verified code) or re-express on the shared kernels (more
+  uniform, more rework). **Decision in §6 Q3.** Either way its 128 routed experts move onto the shared
+  placement facility (§3.5), so gemma4 gains the expert-hit-profile warm start it lacks today — the
+  standalone `engines/gemma4/` engine is **not** changed; the merge subsumes it.
 
 ### 3.3 Protocol convergence (the single biggest frontend change)
 A merged binary cannot emit both the `strata_0143` record set and the `maya_118` set while the client
@@ -220,6 +225,31 @@ box. GPU selection must unify: today `strata` family uses argv `--gpu`, `glm` us
 mechanism for the merged binary and set `engine_family_for` to one family (or extend the `glm` env
 table to cover it). Recommend argv `--gpu` for all (simpler, matches qwen/gemma4), moving GLM off the
 env mechanism.
+
+### 3.5 Shared expert placement and the expert-hit profile (owner decision, 2026-10-23)
+Today each engine places MoE experts its own way, and gemma4's is the weakest: `place_experts`
+(`engines/gemma4/src/g4_engine.cu`) fills the VRAM slots with experts 0..S-1 — an **arbitrary cold
+start** — and only learns a good slot→expert map live, during decode, via routing-count `rebalance`;
+prefill never benefits and there is no profile. The upstream and MAYA families instead ship a
+committed **expert-hit profile** (`upstream/data/expert-profile*.bin`,
+`engines/maya-ref/data/expert-profile-glm.bin` / `-ds4.bin`) that pre-places the hottest experts at
+load, and the frontend already composes `--expert-profile` / `--expert-profile-save[-every]`
+(`engine_arguments.cpp:333`, `launch_composition.cpp:73,232`) so a per-model profile is learned and saved.
+
+The merged engine makes expert placement **one shared facility** for every family, rather than a new
+optimization per engine:
+- **Warm start:** at load, fill each layer's VRAM slots from a committed-or-saved profile, hottest
+  first, so decode **and prefill** are fast from the first token (not after `rebalance` converges).
+- **Save:** `--expert-profile-save[-every]` dumps the decayed routing scores as a per-model profile;
+  the frontend already owns these flags for the qwen family and extends them to the merged binary.
+- **Online correction:** the live `rebalance` stays, as the correction on top of the warm start.
+- **One format, one path** for qwen35moe, qwen4exp, gemma4, glm53, deepseek and raon1 — so gemma4
+  gains the warm start for free when its graph moves onto the substrate.
+
+The standalone `engines/gemma4/` engine is **not** modified for this (owner decision); the facility is
+built once in the merged engine and gemma4 inherits it through the merge. The frontend's gemma4
+argument profile gains `--expert-profile` only when it points at the merged binary (today
+`kGemma4Flags` omits it).
 
 ## 4. Build, platform, repository layout
 - The merged binary lives in the Maya tree (it needs Maya's libraries + ggml pin). Expose it through
