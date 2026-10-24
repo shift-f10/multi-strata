@@ -142,6 +142,75 @@ std::optional<EngineArgumentsError> validate_gemma4_arguments(const std::vector<
   }
   return std::nullopt;
 }
+
+// unified-engine design §3.3/§3.5: the merged engine's own serve flags, a closed allowlist, each
+// at most once, in the `--flag VALUE` spelling. --native and --gpu are frontend-composed (owned),
+// so the shared owned-flag loop in validate_engine_user_arguments refuses them first; the operator
+// weight sources are refused by name here (they come from the manifest). Values: --max-context and
+// --chunk are decimal integers in range; --expert-profile and --expert-profile-save take a path
+// (any non-empty, non-flag token — NUL is already rejected by the shared loop).
+enum class UnifiedValue { integer, path };
+struct UnifiedFlag final {
+  std::string_view name;
+  UnifiedValue kind;
+  std::int64_t minimum;
+  std::int64_t maximum;
+};
+constexpr std::array<UnifiedFlag, 4> kUnifiedFlags{{{"--max-context", UnifiedValue::integer, 1, 1048576},
+                                                   {"--chunk", UnifiedValue::integer, 1, 32768},
+                                                   {"--expert-profile", UnifiedValue::path, 0, 0},
+                                                   {"--expert-profile-save", UnifiedValue::path, 0, 0}}};
+// The merged engine's weight sources come from the manifest, never the operator: refused by name.
+constexpr std::array<std::string_view, 6> kUnifiedRefusedByName{
+    "--pack", "--ple-gguf", "--embd-gguf", "--native-head-gguf", "--native-dense-gguf", "--mtp"};
+
+EngineArgumentsError unified_refusal(const EngineArgumentsErrorCode code, const std::string_view flag,
+                                     const std::string_view what) {
+  return EngineArgumentsError{code, "engine.profile unified: " + std::string{flag} + " " + std::string{what}};
+}
+
+std::optional<EngineArgumentsError> validate_unified_arguments(const std::vector<std::string>& user_arguments) {
+  std::vector<std::string_view> seen;
+  for (std::size_t i = 0; i < user_arguments.size(); ++i) {
+    const std::string_view argument = user_arguments[i];
+    const auto name = flag_name(argument);
+    const auto flag = std::find_if(kUnifiedFlags.begin(), kUnifiedFlags.end(),
+                                   [name](const UnifiedFlag& entry) { return entry.name == name; });
+    if (flag == kUnifiedFlags.end()) {
+      const auto known = std::find(kUnifiedRefusedByName.begin(), kUnifiedRefusedByName.end(), name);
+      if (known != kUnifiedRefusedByName.end()) {
+        return unified_refusal(EngineArgumentsErrorCode::not_accepted, *known,
+                               "is a weight source from the manifest, not an operator flag");
+      }
+      return EngineArgumentsError{EngineArgumentsErrorCode::not_accepted,
+                                  "engine.profile unified: the engine argument is not one of the merged engine's flags"};
+    }
+    if (name.size() != argument.size()) {
+      return unified_refusal(EngineArgumentsErrorCode::not_accepted, flag->name, "takes its value as the next argument");
+    }
+    if (std::find(seen.begin(), seen.end(), flag->name) != seen.end()) {
+      return unified_refusal(EngineArgumentsErrorCode::invalid_value, flag->name, "is given more than once");
+    }
+    seen.push_back(flag->name);
+    if (i + 1 >= user_arguments.size() || user_arguments[i + 1].rfind("--", 0) == 0) {
+      return unified_refusal(EngineArgumentsErrorCode::invalid_value, flag->name, "needs a value");
+    }
+    const std::string_view value = user_arguments[++i];
+    if (flag->kind == UnifiedValue::integer) {
+      const std::string range = "must be " + std::to_string(flag->minimum) + "-" + std::to_string(flag->maximum);
+      if (value.empty() || !all_digits(value) || (value.size() > 1 && value.front() == '0')) {
+        return unified_refusal(EngineArgumentsErrorCode::invalid_value, flag->name, "takes a decimal integer");
+      }
+      std::int64_t parsed = 0;
+      const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+      if (error != std::errc{} || end != value.data() + value.size() || parsed < flag->minimum || parsed > flag->maximum) {
+        return unified_refusal(EngineArgumentsErrorCode::out_of_range, flag->name, range);
+      }
+    }
+    // path: any non-empty non-flag token (NUL already rejected); no further grammar in schema 1.
+  }
+  return std::nullopt;
+}
 }  // namespace
 
 std::optional<EngineArgumentsError> validate_engine_user_arguments(const EngineArgumentsProfile profile,
@@ -172,6 +241,7 @@ std::optional<EngineArgumentsError> validate_engine_user_arguments(const EngineA
     }
   }
   if (profile == EngineArgumentsProfile::strata_gemma4) return validate_gemma4_arguments(user_arguments);
+  if (profile == EngineArgumentsProfile::unified) return validate_unified_arguments(user_arguments);
   return std::nullopt;
 }
 

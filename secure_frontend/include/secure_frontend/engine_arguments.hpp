@@ -14,8 +14,9 @@
 
 namespace secure_frontend {
 
-// Which engine CLI the argv tail is built for.
-enum class EngineArgumentsProfile { strata_0143, lighttransport_glm53, strata_gemma4 };
+// Which engine CLI the argv tail is built for. `unified` is the merged engine (deepseek, raon1):
+// a closed allowlist of the merged engine's own flags, with --native/--gpu frontend-composed.
+enum class EngineArgumentsProfile { strata_0143, lighttransport_glm53, strata_gemma4, unified };
 
 enum class EngineArgumentsErrorCode { owned_flag, unsupported_mode, invalid_value, model_not_found, not_accepted, out_of_range };
 

@@ -138,6 +138,10 @@ enum class EngineProtocolFlavor {
   maya_118,              // Project Maya's engine, v1.1.8 through v1.1.21 (NOTE, STAT cadence,
                          // 3-6 field PP; v1.1.21's pre-READY VRAM/NOTE records). The name
                          // keeps the first pinned version: the v1.1.21 records are additive.
+  unified,               // the merged unified engine (design §3.3, decision 3): one converged
+                         // superset dialect — READY/GEN/T/DONE plus a strict 4-field PP, an
+                         // optional STAT cadence, and ERR. No NOTE, no RESUME/REUSED; every
+                         // other record (including the other flavors' private ones) fails closed.
 };
 
 // Who asked for a STOP (SP3 D-2). The frontend's own deadline

@@ -17,8 +17,10 @@ namespace secure_frontend {
 // raw: SECURE_FRONTEND_TEST_HOOKS builds only. gguf (model downloads, owner 2026-10-23): .gguf
 // weights (and at most one mmproj) fetched from Hugging Face to be prepared on this machine; no
 // launch keys, never launched as a managed model.
-enum class ManifestProfile { qwen, glm53, gemma4, raw, gguf };
-enum class ManifestFamily { strata, glm, gemma4, none };
+// deepseek and raon1 run on the merged unified engine (unified-engine design §2.5); they are
+// recognized here but gated in engine_gate until the merged engine is installed (plan 4).
+enum class ManifestProfile { qwen, glm53, gemma4, raw, gguf, deepseek, raon1 };
+enum class ManifestFamily { strata, glm, gemma4, none, unified };
 // SP5 M1 Task 11 (D-9): FileRole gains mmproj — the vision encoder artifact, listed like
 // any other file, AT MOST ONE entry, named by the optional launch.mmproj (Ruling T11-bb).
 enum class FileRole { weights, pack, tokenizer, mmproj };

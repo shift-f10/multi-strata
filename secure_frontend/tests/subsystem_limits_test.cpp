@@ -118,6 +118,34 @@ void tokenizer_mode_follows_the_profile() {
   expect(secure_frontend::tokenizer_mode_for(EngineProfile::qwen) == TokenizerMode::byte_bpe, "qwen packs are byte_bpe");
   expect(secure_frontend::tokenizer_mode_for(EngineProfile::glm53) == TokenizerMode::byte_bpe, "glm53 packs are byte_bpe");
   expect(secure_frontend::tokenizer_mode_for(EngineProfile::gemma4) == TokenizerMode::spm_bpe, "gemma4 packs are spm_bpe");
+  expect(secure_frontend::tokenizer_mode_for(EngineProfile::deepseek) == TokenizerMode::byte_bpe, "deepseek packs are byte_bpe");
+  expect(secure_frontend::tokenizer_mode_for(EngineProfile::raon1) == TokenizerMode::byte_bpe, "raon1 packs are byte_bpe");
+}
+
+// Unified-engine design §2.5/§3.3/§3.4: the merged-engine families (deepseek, raon1) select their
+// own chat profile, the one converged `unified` wire flavor, the strata environment family (argv
+// --gpu) and byte_bpe packs; qwen/glm53/gemma4 are unchanged, and no per-request reasoning_effort
+// yet (the placeholder templates carry none). The selection functions are exhaustive switches.
+void supervisor_selection_for_unified_families() {
+  using secure_frontend::EngineProfile;
+  for (const auto profile : {EngineProfile::deepseek, EngineProfile::raon1}) {
+    const char* name = profile == EngineProfile::deepseek ? "deepseek" : "raon1";
+    expect(secure_frontend::native_chat_profile_for(profile) ==
+               (profile == EngineProfile::deepseek ? secure_frontend::NativeChatProfile::deepseek
+                                                    : secure_frontend::NativeChatProfile::raon1),
+           std::string{name} + " selects its own chat profile");
+    expect(secure_frontend::protocol_flavor_for(profile) == secure_frontend::EngineProtocolFlavor::unified,
+           std::string{name} + " speaks the converged unified flavor");
+    expect(secure_frontend::engine_family_for(profile) == secure_frontend::EngineFamily::strata,
+           std::string{name} + " uses the strata environment family (argv --gpu)");
+    expect(!secure_frontend::per_request_reasoning_effort_for(profile),
+           std::string{name} + " admits no per-request reasoning_effort yet");
+  }
+  // qwen/glm53/gemma4 keep their current flavors (today's engines must not change).
+  expect(secure_frontend::protocol_flavor_for(EngineProfile::qwen) == secure_frontend::EngineProtocolFlavor::strata_0143 &&
+             secure_frontend::protocol_flavor_for(EngineProfile::glm53) == secure_frontend::EngineProtocolFlavor::maya_118 &&
+             secure_frontend::protocol_flavor_for(EngineProfile::gemma4) == secure_frontend::EngineProtocolFlavor::strata_0143,
+         "qwen/glm53/gemma4 flavors are unchanged by the merged-engine profiles");
 }
 }  // namespace
 
@@ -129,5 +157,6 @@ int main(int argc, char** argv) {
       {"supervisor_flavor_is_the_maya_dialect_for_glm53", supervisor_flavor_is_the_maya_dialect_for_glm53},
       {"supervisor_profile_and_flavor_for_gemma4", supervisor_profile_and_flavor_for_gemma4},
       {"tokenizer_mode_follows_the_profile", tokenizer_mode_follows_the_profile},
+      {"supervisor_selection_for_unified_families", supervisor_selection_for_unified_families},
   }, failures);
 }

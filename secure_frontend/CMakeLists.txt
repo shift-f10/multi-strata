@@ -1282,6 +1282,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_test_executable(secure_frontend_engine_protocol_client_tests tests/engine_protocol_client_test.cpp
         secure_frontend_engine_protocol_client)
     secure_frontend_add_cases(secure_frontend_engine_protocol_client_tests
+        unified_flavor_grammar_is_a_strict_superset
         info_and_stat_readings_are_captured
         runs_the_solo_protocol gen_line_unchanged_without_embeddings_geni_with_them stop_and_quit_are_explicit write_deadlines_reach_the_transport refuses_stop_when_not_advertised
         rejects_malformed_and_unexpected_engine_output bounds_and_engine_errors_fail_closed
@@ -1332,6 +1333,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
         gpu_and_elastic_rows_reach_the_engine_argv
         expert_profile_flags_reach_launch
         parallel_reaches_the_engine_within_one_child
+        unified_user_arguments_follow_the_allowlist
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
     # Pure parsing, no canonical root: runs under wine too.
     secure_frontend_add_cases(secure_frontend_engine_arguments_tests gpu_list_rejects_malformed_values
@@ -1626,7 +1628,7 @@ if(STRATA_BUILD_SECURE_FRONTEND_TESTS)
     secure_frontend_add_cases(secure_frontend_subsystem_limits_tests
         ready_timeout_defaults_to_900_seconds subsystem_limits_follow_config supervisor_policy_follows_config
         supervisor_flavor_is_the_maya_dialect_for_glm53 supervisor_profile_and_flavor_for_gemma4
-        tokenizer_mode_follows_the_profile
+        tokenizer_mode_follows_the_profile supervisor_selection_for_unified_families
         LABELS ${SECURE_FRONTEND_WINDOWS_RUNTIME})
 
     add_executable(secure_frontend_fake_engine tests/fake_engine_main.cpp)

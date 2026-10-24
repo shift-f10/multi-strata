@@ -43,6 +43,8 @@ std::string runnable_text(const AcquireManifest& m) {
     case ManifestProfile::gguf: return "no (GGUF files to prepare on this machine)";
     case ManifestProfile::glm53: return "no (needs the glm engine, SP6)";
     case ManifestProfile::gemma4: return "no (engine not available: the Gemma 4 engine is not installed)";
+    case ManifestProfile::deepseek:
+    case ManifestProfile::raon1: return "no (engine not available: the unified engine is not installed)";
     case ManifestProfile::qwen: break;
   }
   if (compare_versions(m.min_version, built_engine_version()) > 0) {

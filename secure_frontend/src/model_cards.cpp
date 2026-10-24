@@ -43,6 +43,8 @@ std::string_view profile_name(const EngineProfile profile) noexcept {
     case EngineProfile::qwen: return "qwen";
     case EngineProfile::glm53: return "glm53";
     case EngineProfile::gemma4: return "gemma4";
+    case EngineProfile::deepseek: return "deepseek";
+    case EngineProfile::raon1: return "raon1";
   }
   return "qwen";  // unreachable: every value is a case above
 }
@@ -96,6 +98,11 @@ std::variant<ModelCard, ConfigErrors> parse_model_card(const std::string_view te
       else if (value != nullptr && *value == "glm53") {
         add(errors, "profile", ConfigIssueCode::invalid_value,
             "glm53 cards are not supported yet (they follow the page's GLM chat fix, launcher spec D10)");
+      } else if (value != nullptr && (*value == "deepseek" || *value == "raon1")) {
+        // unified-engine design §2.5: recognized, but the merged engine is gated (engine_gate),
+        // so there is no runnable card for it yet (plan 4 opens the managed/card paths).
+        add(errors, "profile", ConfigIssueCode::invalid_value,
+            "deepseek and raon1 cards are not supported yet (the merged engine is gated until plan 4)");
       } else {
         add(errors, "profile", ConfigIssueCode::invalid_value, "must be qwen or gemma4");
       }

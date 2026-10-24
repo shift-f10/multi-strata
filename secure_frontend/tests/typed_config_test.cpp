@@ -1190,6 +1190,10 @@ void every_profile_selects_its_own_argument_profile() {
          "glm53 selects lighttransport_glm53");
   expect(secure_frontend::arguments_profile_for(EngineProfile::gemma4) == EngineArgumentsProfile::strata_gemma4,
          "gemma4 selects strata_gemma4");
+  expect(secure_frontend::arguments_profile_for(EngineProfile::deepseek) == EngineArgumentsProfile::unified,
+         "deepseek selects the unified allowlist");
+  expect(secure_frontend::arguments_profile_for(EngineProfile::raon1) == EngineArgumentsProfile::unified,
+         "raon1 selects the unified allowlist");
 }
 
 void thinking_budget_default_is_mayas_32768() {

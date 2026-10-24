@@ -23,7 +23,9 @@ namespace secure_frontend {
 enum class NativeChatProfile {
   qwen,
   glm53,
-  gemma4,  // Gemma 4 plan 1 Task 3 (spec §6.1)
+  gemma4,     // Gemma 4 plan 1 Task 3 (spec §6.1)
+  deepseek,   // unified-engine design §3.2/§3.3: merged-engine families, placeholder templates
+  raon1,
 };
 
 // Bounds for the native, non-streaming chat path, derived from FrontendConfig by

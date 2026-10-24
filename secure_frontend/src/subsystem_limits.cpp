@@ -71,36 +71,51 @@ NativeChatProfile native_chat_profile_for(const EngineProfile profile) {
     case EngineProfile::qwen: return NativeChatProfile::qwen;
     case EngineProfile::glm53: return NativeChatProfile::glm53;
     case EngineProfile::gemma4: return NativeChatProfile::gemma4;
+    case EngineProfile::deepseek: return NativeChatProfile::deepseek;
+    case EngineProfile::raon1: return NativeChatProfile::raon1;
   }
   return NativeChatProfile::qwen;  // unreachable: every value is a case above
 }
 
 // Gemma 4 spec §4.7: strata-gemma4-engine speaks upstream's strata_0143 serve protocol.
+// Unified-engine design §3.3 (decision 3): the merged engine (deepseek, raon1) speaks the one
+// converged `unified` dialect; qwen/glm53/gemma4 KEEP their current flavors (today's engines).
 EngineProtocolFlavor protocol_flavor_for(const EngineProfile profile) {
   switch (profile) {
     case EngineProfile::qwen: return EngineProtocolFlavor::strata_0143;
     case EngineProfile::glm53: return EngineProtocolFlavor::maya_118;
     case EngineProfile::gemma4: return EngineProtocolFlavor::strata_0143;
+    case EngineProfile::deepseek: return EngineProtocolFlavor::unified;
+    case EngineProfile::raon1: return EngineProtocolFlavor::unified;
   }
   return EngineProtocolFlavor::strata_0143;  // unreachable
 }
 
 // Gemma 4 spec §6.1, §8: the Gemma engine gets the strata family's closed allowlist.
+// Unified-engine design §3.4: the merged engine selects GPUs by argv --gpu (like qwen/gemma4),
+// so deepseek/raon1 take the strata environment family, not the glm env-variable mechanism.
 EngineFamily engine_family_for(const EngineProfile profile) {
   switch (profile) {
     case EngineProfile::qwen: return EngineFamily::strata;
     case EngineProfile::glm53: return EngineFamily::glm;
     case EngineProfile::gemma4: return EngineFamily::strata;
+    case EngineProfile::deepseek: return EngineFamily::strata;
+    case EngineProfile::raon1: return EngineFamily::strata;
   }
   return EngineFamily::strata;  // unreachable
 }
 
 // Gemma 4 spec §6.6: none is thinking off, low/medium/high thinking on; glm53 refuses the field.
+// deepseek/raon1: the placeholder templates (chat_generation_plan.cpp) carry no per-request
+// reasoning yet (TODO: the real DeepSeek/Raon reasoning arrives with the pinned template), so the
+// schema does not admit reasoning_effort for them — like glm53.
 bool per_request_reasoning_effort_for(const EngineProfile profile) {
   switch (profile) {
     case EngineProfile::qwen: return true;
     case EngineProfile::glm53: return false;
     case EngineProfile::gemma4: return true;
+    case EngineProfile::deepseek: return false;
+    case EngineProfile::raon1: return false;
   }
   return false;  // unreachable
 }
@@ -114,6 +129,8 @@ TokenizerMode tokenizer_mode_for(const EngineProfile profile) {
     case EngineProfile::qwen: return TokenizerMode::byte_bpe;
     case EngineProfile::glm53: return TokenizerMode::byte_bpe;
     case EngineProfile::gemma4: return TokenizerMode::spm_bpe;
+    case EngineProfile::deepseek: return TokenizerMode::byte_bpe;  // unified-engine design §3.4
+    case EngineProfile::raon1: return TokenizerMode::byte_bpe;     // (raon1 vocab confirmed on the box)
   }
   return TokenizerMode::byte_bpe;  // unreachable
 }

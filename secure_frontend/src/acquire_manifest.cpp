@@ -195,6 +195,8 @@ std::string_view profile_name(const ManifestProfile profile) noexcept {
     case ManifestProfile::gemma4: return "gemma4";
     case ManifestProfile::raw: return "raw";
     case ManifestProfile::gguf: return "gguf";
+    case ManifestProfile::deepseek: return "deepseek";
+    case ManifestProfile::raon1: return "raon1";
   }
   return "unknown";
 }
@@ -205,6 +207,7 @@ std::string_view family_name(const ManifestFamily family) noexcept {
     case ManifestFamily::glm: return "glm";
     case ManifestFamily::gemma4: return "gemma4";
     case ManifestFamily::none: return "none";
+    case ManifestFamily::unified: return "unified";
   }
   return "unknown";
 }
@@ -232,6 +235,8 @@ ManifestFamily family_for(const ManifestProfile profile) {
     case ManifestProfile::gemma4: return ManifestFamily::gemma4;
     case ManifestProfile::raw: return ManifestFamily::none;
     case ManifestProfile::gguf: return ManifestFamily::none;
+    case ManifestProfile::deepseek: return ManifestFamily::unified;  // unified-engine design §2.5
+    case ManifestProfile::raon1: return ManifestFamily::unified;
   }
   return ManifestFamily::none;  // unreachable: every value is a case above
 }
@@ -261,7 +266,9 @@ std::optional<ManifestIssue> validate_manifest(const AcquireManifest& m, const M
     return bad("profile", "raw is available only in SECURE_FRONTEND_TEST_HOOKS builds");
   }
   if (m.family != family_for(m.profile)) {
-    return bad("engine.family", "must be strata for qwen, glm for glm53, gemma4 for gemma4, none for raw and gguf");
+    return bad("engine.family",
+               "must be strata for qwen, glm for glm53, gemma4 for gemma4, unified for deepseek and raon1, "
+               "none for raw and gguf");
   }
   if ((m.profile == ManifestProfile::raw || m.profile == ManifestProfile::gguf) &&
       compare_versions(m.min_version, EngineVersion{}) != 0) {
@@ -375,6 +382,19 @@ std::optional<ManifestIssue> validate_manifest(const AcquireManifest& m, const M
       if (launch.pack) return bad("launch.pack", "raw has no launch keys");
       if (launch.tokenizer_pack) return bad("launch.tokenizer_pack", "raw has no launch keys");
       if (launch.mmproj) return bad("launch.mmproj", "raw has no launch keys");
+      break;
+    case ManifestProfile::deepseek:
+    case ManifestProfile::raon1:
+      // unified-engine design §3.2: the MAYA-lineage merged families carry only launch.native in
+      // schema 1, like glm53 (their pack/tokenizer travel with the weights directory); text only.
+      if (launch.ple_gguf) return bad("launch.ple_gguf", "deepseek and raon1 have only launch.native in schema 1");
+      if (launch.pack) return bad("launch.pack", "deepseek and raon1 have only launch.native in schema 1");
+      if (launch.tokenizer_pack) return bad("launch.tokenizer_pack", "deepseek and raon1 have only launch.native in schema 1");
+      if (launch.mmproj) return bad("launch.mmproj", "deepseek and raon1 are text only (no launch.mmproj) in schema 1");
+      if (!weights_file(launch.native)) return bad("launch.native", "must name a listed weights file");
+      if (const auto shard = shard_name(*launch.native); shard && shard->number != 1) {
+        return bad("launch.native", "must be shard 00001");
+      }
       break;
     case ManifestProfile::gemma4:
       // Gemma 4 plan 1 Task 2 (spec §6.1, §7; D2 text only): the weights and the frontend's

@@ -547,6 +547,9 @@ std::span<const ModelOptionSpec> model_options_for(const EngineProfile profile) 
     case EngineProfile::qwen: return kQwenOptions;
     case EngineProfile::gemma4: return kGemmaOptions;
     case EngineProfile::glm53: return {};  // D10: no GLM cards in v1
+    // unified-engine: deepseek/raon1 are gated (no model cards yet); plan 4 adds their options.
+    case EngineProfile::deepseek: return {};
+    case EngineProfile::raon1: return {};
   }
   return {};
 }
@@ -698,6 +701,8 @@ std::span<const std::string_view> option_controlled_flags(const EngineProfile pr
     case EngineProfile::qwen: return kQwenFlags;
     case EngineProfile::gemma4: return kGemmaFlags;
     case EngineProfile::glm53: return {};
+    case EngineProfile::deepseek: return {};  // unified-engine: no model-card flags yet (gated)
+    case EngineProfile::raon1: return {};
   }
   return {};
 }

@@ -82,6 +82,17 @@ ChatGenerationPlanResult select_chat_generation_plan(const NativeChatProfile pro
         return ChatGenerationPlanError{ChatGenerationPlanErrorCode::invalid_request, "the Gemma 4 profile serves text only"};
       }
       return make_gemma4_chat_generation_plan(request, tokenizer, maximum_prompt_tokens, 1U, defaults, thinking);
+    case NativeChatProfile::deepseek:
+      // unified-engine: text-only placeholder (merged engine is gated); an image answer is a wiring bug.
+      if (!image_token_counts.empty()) {
+        return ChatGenerationPlanError{ChatGenerationPlanErrorCode::invalid_request, "the deepseek profile serves text only"};
+      }
+      return make_deepseek_chat_generation_plan(request, tokenizer, maximum_prompt_tokens, 1U, defaults);
+    case NativeChatProfile::raon1:
+      if (!image_token_counts.empty()) {
+        return ChatGenerationPlanError{ChatGenerationPlanErrorCode::invalid_request, "the raon1 profile serves text only"};
+      }
+      return make_raon1_chat_generation_plan(request, tokenizer, maximum_prompt_tokens, 1U, defaults);
   }
   return ChatGenerationPlanError{ChatGenerationPlanErrorCode::invalid_request, "unknown chat profile"};
 }
@@ -135,6 +146,10 @@ RouteResult ChatRoute::handle(const std::string_view body, const RequestContext&
         return request.reasoning_effort.has_value() ? *request.reasoning_effort != "none" : config_.qwen_thinking;
       case NativeChatProfile::gemma4: return gemma4_request_thinks(request.reasoning_effort, config_.gemma4_thinking_default);
       case NativeChatProfile::glm53: return false;  // the GLM profile has no thinking switch
+      // unified-engine: the placeholder templates carry no reasoning yet (per_request_reasoning_effort_for
+      // is false, so the schema never admits reasoning_effort for these); TODO: the real templates.
+      case NativeChatProfile::deepseek:
+      case NativeChatProfile::raon1: return false;
     }
     return false;
   }();

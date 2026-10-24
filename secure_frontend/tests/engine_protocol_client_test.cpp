@@ -821,8 +821,90 @@ void penalty_window_zero_means_no_penalty_on_glm_only() {
          "no penalty keys on the GLM GEN line: " + maya.writes.back());
 }
 
+// Unified-engine design §3.3 (decision 3): the merged engine's one converged dialect, a STRICT
+// SUPERSET, fail-closed. Inbound: T, a strict 4-field PP `PP <done> <total> <ms> <tok_s>` (dropped),
+// an optional STAT cadence (dropped), the 8-field DONE `DONE <produced> <prompt> <prompt_ms>
+// <decode_ms> <finish> <spec_hits> <spec_steps> <reused>` (finish in stop|length|cancel|nonfinite),
+// and ERR. No NOTE, no RESUME/REUSED; every other record (the other flavors' private ones included)
+// fails closed.
+void unified_flavor_grammar_is_a_strict_superset() {
+  using secure_frontend::EngineProtocolFlavor;
+  secure_frontend::EngineReady ready{};
+  // Accepted end to end: READY, the 4-field PP, a STAT cadence, T, and the full 8-field DONE.
+  {
+    FakeTransport t;
+    t.reads = {line("READY 8192 stop"), line("PP 16 32 10.5 1523.8"), line("STAT tok_s=30.1 vram_hit=0.55"),
+               line("T 9"), line("DONE 1 32 300.0 40.5 stop 2 3 16")};
+    EngineProtocolClient client(t, {}, EngineProtocolFlavor::unified);
+    expect(!client.await_ready(std::chrono::seconds(1), ready).has_value() && ready.max_context_tokens == 8192U &&
+               ready.supports_stop,
+           "the unified client starts on READY <ctx> stop");
+    expect(!client.begin_generation(4, {1}, secure_frontend::deadline_after(std::chrono::seconds(5))).has_value(),
+           "the unified generation starts");
+    secure_frontend::EngineGeneration generation;
+    const auto error = client.read_generation(std::chrono::seconds(1), generation);
+    expect(!error.has_value() && generation.token_ids == std::vector<std::uint32_t>({9U}) && !client.closed(),
+           "the unified dialect (4-field PP, STAT, 8-field DONE) is consumed; exactly the token survives");
+    expect(generation.done_line == "DONE 1 32 300.0 40.5 stop 2 3 16", "the full DONE record is kept");
+  }
+  // The 8-field DONE feeds the Monitor figures (prompt tokens, both timings and the reused tail).
+  {
+    FakeTransport t;
+    t.reads = {line("READY 64 stop"), line("T 9"), line("DONE 1 32 300.0 40.5 length 2 3 16")};
+    EngineProtocolClient client(t, {}, EngineProtocolFlavor::unified);
+    (void)client.await_ready(std::chrono::seconds(1), ready);
+    (void)client.begin_generation(4, {1}, secure_frontend::deadline_after(std::chrono::seconds(5)));
+    (void)client.next_event(std::chrono::seconds(1));  // T 9
+    const auto event = client.next_event(std::chrono::seconds(1));
+    const auto* done = std::get_if<secure_frontend::DoneEvent>(&event);
+    expect(done != nullptr && done->finish == "length" && done->figures.prompt_tokens == std::optional<std::size_t>{32U} &&
+               done->figures.prompt_ms == std::optional<double>{300.0} &&
+               done->figures.decode_ms == std::optional<double>{40.5} &&
+               done->figures.reused == std::optional<std::size_t>{16U},
+           "the unified 8-field DONE yields the Monitor figures and keeps the client idle");
+  }
+  // The other flavors' private records fail closed under unified: NOTE (maya), RESUME/REUSED (strata).
+  for (const char* foreign : {"NOTE slots: keeping 2", "RESUME 0", "REUSED 0"}) {
+    FakeTransport t;
+    t.reads = {line("READY 64 stop"), line(foreign), line("DONE 0")};
+    EngineProtocolClient client(t, {}, EngineProtocolFlavor::unified);
+    (void)client.await_ready(std::chrono::seconds(1), ready);
+    (void)client.begin_generation(1, {1}, secure_frontend::deadline_after(std::chrono::seconds(5)));
+    secure_frontend::EngineGeneration generation;
+    const auto error = client.read_generation(std::chrono::seconds(1), generation);
+    expect(error.has_value() && error->code == EngineProtocolErrorCode::unexpected_line && client.closed(),
+           std::string("a foreign-flavor record fails closed under unified: ") + foreign);
+  }
+  // Malformed records fail closed: a PP that is not exactly four fields, a non-numeric or negative PP
+  // field, a bad DONE finish, an empty or malformed STAT, and an unknown prefix.
+  for (const char* bad : {"PP 16 32", "PP 16 32 10", "PP 16 32 10 1523.8 extra", "PP x 32 1 2.0",
+                          "PP 16 32 -1 2.0", "STAT", "STAT =1", "DONE 1 32 300.0 40.5 bogus 2 3 16", "BOGUS 1"}) {
+    FakeTransport t;
+    t.reads = {line("READY 64 stop"), line(bad), line("DONE 0")};
+    EngineProtocolClient client(t, {}, EngineProtocolFlavor::unified);
+    (void)client.await_ready(std::chrono::seconds(1), ready);
+    (void)client.begin_generation(1, {1}, secure_frontend::deadline_after(std::chrono::seconds(5)));
+    secure_frontend::EngineGeneration generation;
+    const auto error = client.read_generation(std::chrono::seconds(1), generation);
+    expect(error.has_value() && client.closed(), std::string("a malformed unified record fails closed: ") + bad);
+  }
+  // Cross-flavor strictness the other way: the unified-only STAT stays unknown to the strata flavor.
+  {
+    FakeTransport t;
+    t.reads = {line("READY 64"), line("STAT tok_s=1"), line("DONE 0")};
+    EngineProtocolClient client(t, {}, EngineProtocolFlavor::strata_0143);
+    (void)client.await_ready(std::chrono::seconds(1), ready);
+    (void)client.begin_generation(1, {1}, secure_frontend::deadline_after(std::chrono::seconds(5)));
+    secure_frontend::EngineGeneration generation;
+    const auto error = client.read_generation(std::chrono::seconds(1), generation);
+    expect(error.has_value() && error->code == EngineProtocolErrorCode::unexpected_line && client.closed(),
+           "STAT stays unknown to the strata flavor");
+  }
+}
+
 int main(int argc, char** argv) {
   return secure_frontend_test::run_cases(argc, argv, {
+      {"unified_flavor_grammar_is_a_strict_superset", unified_flavor_grammar_is_a_strict_superset},
       {"maya_flavor_accepts_vram_and_note_before_ready", maya_flavor_accepts_vram_and_note_before_ready},
       {"info_and_stat_readings_are_captured", info_and_stat_readings_are_captured},
       {"runs_the_solo_protocol", runs_the_solo_protocol},

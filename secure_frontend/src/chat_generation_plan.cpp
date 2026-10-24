@@ -4,6 +4,9 @@
 #include "secure_frontend/glm_prompt_renderer.hpp"
 #include "secure_frontend/gemma4_prompt_renderer.hpp"
 
+#include <array>
+#include <string>
+#include <string_view>
 #include <utility>
 
 namespace secure_frontend {
@@ -178,6 +181,104 @@ ChatGenerationPlanResult make_gemma4_chat_generation_plan(const ChatCompletionRe
   return ChatGenerationPlan{request.model, *token_ids, request.max_tokens.value_or(default_max_tokens),
                             merge_sampling(request.sampling, defaults), ThinkTokens{markers->channel_open, markers->channel_close},
                             false, std::move(stop_tokens), std::string{"thought"}};
+}
+
+namespace {
+
+// unified-engine design §3.2/§3.4: the PLACEHOLDER transcript shared by deepseek and raon1.
+// Minimal, fail-closed, text-only — an optional leading system turn, then alternating
+// user/assistant ending in user, each tagged with a plain-text marker and a final "<|assistant|>"
+// opening the reply. It is encoded as ordinary text by encode_text (which itself fails closed on
+// any real CONTROL/USER_DEFINED vocabulary literal), and content carrying a marker literal is
+// refused here so client text cannot forge a turn. There is no reasoning split in the placeholder.
+// TODO(unified-engine, plan 4): replace with the reviewed DeepSeek / Raon-1 templates and markers.
+constexpr std::size_t kUnifiedMaxMessages = 65536U;
+constexpr std::size_t kUnifiedMaxContentBytes = 256U * 1024U * 1024U;
+constexpr std::size_t kUnifiedMaxPromptBytes = kUnifiedMaxContentBytes + 16U * 1024U * 1024U;
+constexpr std::array<std::string_view, 4U> kUnifiedMarkers{"<|system|>", "<|user|>", "<|assistant|>", "<think>"};
+
+bool unified_safe_content(const std::string_view content) {
+  if (content.empty() || content.size() > kUnifiedMaxContentBytes) return false;
+  for (const auto marker : kUnifiedMarkers) {
+    if (content.find(marker) != std::string_view::npos) return false;
+  }
+  for (const unsigned char byte : content) {
+    if (byte < 0x20U && byte != '\n' && byte != '\r' && byte != '\t') return false;
+  }
+  return true;
+}
+
+bool unified_append(std::string& out, const std::string_view text) {
+  if (text.size() > kUnifiedMaxPromptBytes - out.size()) return false;
+  out.append(text);
+  return true;
+}
+
+std::optional<std::string> render_unified_placeholder_prompt(const std::vector<ChatMessage>& messages) {
+  if (messages.empty() || messages.size() > kUnifiedMaxMessages) return std::nullopt;
+  std::string out;
+  out.reserve(256U);
+  std::size_t index = 0U;
+  if (messages.front().role == "system") {
+    if (!unified_safe_content(messages.front().content) || !unified_append(out, "<|system|>") ||
+        !unified_append(out, messages.front().content)) return std::nullopt;
+    index = 1U;
+  }
+  if (index == messages.size()) return std::nullopt;
+  bool expect_user = true;
+  for (; index < messages.size(); ++index) {
+    const ChatMessage& message = messages[index];
+    if (message.role != (expect_user ? "user" : "assistant") || !unified_safe_content(message.content) ||
+        !unified_append(out, expect_user ? "<|user|>" : "<|assistant|>") || !unified_append(out, message.content)) {
+      return std::nullopt;
+    }
+    expect_user = !expect_user;
+  }
+  if (expect_user || !unified_append(out, "<|assistant|>")) return std::nullopt;
+  return out;
+}
+
+ChatGenerationPlanResult make_unified_placeholder_plan(const ChatCompletionRequest& request, const TokenizerPack& tokenizer,
+                                                       const std::size_t maximum_prompt_tokens,
+                                                       const std::size_t default_max_tokens, const SamplingDefaults& defaults) {
+  if (request.model.empty() || request.messages.empty() || maximum_prompt_tokens == 0U ||
+      (request.max_tokens.has_value() && *request.max_tokens == 0U)) {
+    return error(ChatGenerationPlanErrorCode::invalid_request, "chat generation request is outside native serving limits");
+  }
+  if (count_image_parts(request) != 0U) {
+    return error(ChatGenerationPlanErrorCode::invalid_request, "the merged-engine profile cannot serve image parts");
+  }
+  const auto prompt = render_unified_placeholder_prompt(request.messages);
+  if (!prompt) {
+    return error(ChatGenerationPlanErrorCode::prompt_render_failed,
+                 "chat messages cannot be represented by the placeholder merged-engine template");
+  }
+  const auto encoded = encode_text(tokenizer, *prompt);
+  const auto* token_ids = std::get_if<std::vector<std::size_t>>(&encoded);
+  if (token_ids == nullptr) {
+    return error(ChatGenerationPlanErrorCode::tokenization_failed,
+                 "rendered merged-engine prompt cannot be encoded by the local tokenizer pack");
+  }
+  if (token_ids->empty() || token_ids->size() > maximum_prompt_tokens) {
+    return error(ChatGenerationPlanErrorCode::prompt_too_large, "encoded chat prompt exceeds native serving limits");
+  }
+  return ChatGenerationPlan{request.model, *token_ids, request.max_tokens.value_or(default_max_tokens),
+                            merge_sampling(request.sampling, defaults), std::nullopt, false, std::vector<std::size_t>{},
+                            std::nullopt};
+}
+
+}  // namespace
+
+ChatGenerationPlanResult make_deepseek_chat_generation_plan(const ChatCompletionRequest& request, const TokenizerPack& tokenizer,
+                                                            const std::size_t maximum_prompt_tokens,
+                                                            const std::size_t default_max_tokens, const SamplingDefaults& defaults) {
+  return make_unified_placeholder_plan(request, tokenizer, maximum_prompt_tokens, default_max_tokens, defaults);
+}
+
+ChatGenerationPlanResult make_raon1_chat_generation_plan(const ChatCompletionRequest& request, const TokenizerPack& tokenizer,
+                                                         const std::size_t maximum_prompt_tokens,
+                                                         const std::size_t default_max_tokens, const SamplingDefaults& defaults) {
+  return make_unified_placeholder_plan(request, tokenizer, maximum_prompt_tokens, default_max_tokens, defaults);
 }
 
 }  // namespace secure_frontend

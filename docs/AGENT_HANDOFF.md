@@ -328,6 +328,36 @@ worktrees and integrated as patches.
   here); `--compat-bf16` packs need `STRATA_GGUF_PY` in the server's environment; Windows CI
   (`windows-msys2-clang`) has not run.
 
+### Unified engine: one binary for qwen35moe + gemma4 + glm53 + deepseek + raon1 (2026-10-23, `main`, in progress)
+
+Owner (in chat): a single lightweight, non-bloat, resource-mindful engine that runs the selected
+model **from one verified source** (not tracking several upstreams per release), to remove the
+redundant per-engine code. Design
+[`superpowers/specs/2026-10-23-unified-engine-design.md`](superpowers/specs/2026-10-23-unified-engine-design.md)
+(decisions resolved) + plan
+[`superpowers/plans/2026-10-23-unified-engine-plan.md`](superpowers/plans/2026-10-23-unified-engine-plan.md).
+Added support target: KRAFTON **Raon-1-mini** (arch `raon1`, a GLM-lineage hybrid MoE).
+
+- **Decisions:** one engine = a shared **substrate** + per-family **graph modules ported from
+  upstream/Maya/our gemma4 as references and reviewed in** (never run as third-party binaries); full
+  kernel unification onto one shared set (gemma4 included, no carve-out); one converged
+  `EngineProtocolFlavor::unified`; priority GLM+DeepSeek+Raon first, then qwen, then gemma4; one
+  shared expert-placement facility (VRAM/RAM tiering + expert-hit-profile warm-start, §3.5 of the design).
+- **CI vs box boundary:** host C++ + the frontend are CI-green (agents); the CUDA kernels and every
+  build/run/parity claim are the owner's GPU box (root option `SECURE_STRATA_BUILD_UNIFIED_ENGINE`
+  OFF, never CI). Nothing is runnable/verified until the box builds + parities each family (DoD §1.3).
+- **Landed, CI-green:** `engines/unified/` host foundation — bounded GGUF reader, geometry guards
+  for all six families (raon1 pinned to its published shape), the converged `unified` wire dialect
+  (fail-closed), arch→family dispatch, CLI + serve skeleton over a stubbed `FamilyGraph`; MSVC, 7/7
+  hermetic tests, commit `42a382a7`. The frontend adds `EngineProtocolFlavor::unified` +
+  `EngineProfile::deepseek`/`raon1` across every exhaustive switch, the `unified` argument profile,
+  and placeholder renderers; MSVC `/WX` clean, affected suites green (the lone
+  `raw_profile_rejected_in_release_build` failure is the pre-existing release-only/hooks-ON case).
+- **In progress (box-gated CUDA, written by workers to compile + parity on the box):** the shared
+  kernels + expert facility (`engines/unified/src/kernels/common`, `u_experts`) and the GLM /
+  DeepSeek / Raon-1-mini graph ports (`src/family/*`), faithful ports with TODOs for the deep tails.
+  Not yet runnable.
+
 ### Model launcher: choose, configure and start models from the page (2026-10-23, local `main`, not pushed)
 
 Owner request: "when the web ui is up, I am able to select configure models in the webui then be

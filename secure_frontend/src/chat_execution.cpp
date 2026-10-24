@@ -86,6 +86,10 @@ ChatExecutionOutcome ChatExecutionService::execute(const ChatCompletionRequest& 
         return make_glm53_chat_generation_plan(request, tokenizer, limits_.maximum_prompt_tokens, limits_.default_max_tokens);
       case NativeChatProfile::gemma4:  // the template's default: thinking off (D10)
         return make_gemma4_chat_generation_plan(request, tokenizer, limits_.maximum_prompt_tokens, limits_.default_max_tokens);
+      case NativeChatProfile::deepseek:  // unified-engine placeholder template (merged engine, gated)
+        return make_deepseek_chat_generation_plan(request, tokenizer, limits_.maximum_prompt_tokens, limits_.default_max_tokens);
+      case NativeChatProfile::raon1:
+        return make_raon1_chat_generation_plan(request, tokenizer, limits_.maximum_prompt_tokens, limits_.default_max_tokens);
     }
     return ChatGenerationPlanError{ChatGenerationPlanErrorCode::invalid_request, "unknown chat profile"};
   }();

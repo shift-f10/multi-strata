@@ -754,6 +754,8 @@ std::string_view profile_text(const EngineProfile profile) {
     case EngineProfile::qwen: return "qwen";
     case EngineProfile::glm53: return "glm53";
     case EngineProfile::gemma4: return "gemma4";
+    case EngineProfile::deepseek: return "deepseek";
+    case EngineProfile::raon1: return "raon1";
   }
   return "qwen";  // unreachable: every value is a case above
 }
@@ -764,6 +766,8 @@ EngineArgumentsProfile arguments_profile_for(const EngineProfile profile) {
     case EngineProfile::qwen: return EngineArgumentsProfile::strata_0143;
     case EngineProfile::glm53: return EngineArgumentsProfile::lighttransport_glm53;
     case EngineProfile::gemma4: return EngineArgumentsProfile::strata_gemma4;
+    case EngineProfile::deepseek: return EngineArgumentsProfile::unified;
+    case EngineProfile::raon1: return EngineArgumentsProfile::unified;
   }
   return EngineArgumentsProfile::strata_0143;  // unreachable: every value is a case above
 }
@@ -977,7 +981,9 @@ ConfigValidationResult validate(const FrontendConfigDraft& draft) {
     if (*text == "qwen") profile = EngineProfile::qwen;
     else if (*text == "glm53") profile = EngineProfile::glm53;
     else if (*text == "gemma4") profile = EngineProfile::gemma4;
-    else add(errors, "engine.profile", ConfigIssueCode::invalid_value, "must be qwen, glm53 or gemma4");
+    else if (*text == "deepseek") profile = EngineProfile::deepseek;
+    else if (*text == "raon1") profile = EngineProfile::raon1;
+    else add(errors, "engine.profile", ConfigIssueCode::invalid_value, "must be qwen, glm53, gemma4, deepseek or raon1");
   }
   std::optional<CanonicalFile> executable;
   if (const auto text = read.string("engine.executable")) {

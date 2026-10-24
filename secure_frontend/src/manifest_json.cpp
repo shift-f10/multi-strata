@@ -169,17 +169,20 @@ ManifestParseResult parse_manifest(const std::string_view bytes, const ManifestR
   if (profile == "qwen") m.profile = ManifestProfile::qwen;
   else if (profile == "glm53") m.profile = ManifestProfile::glm53;
   else if (profile == "gemma4") m.profile = ManifestProfile::gemma4;
+  else if (profile == "deepseek") m.profile = ManifestProfile::deepseek;  // unified-engine design §2.5
+  else if (profile == "raon1") m.profile = ManifestProfile::raon1;
   else if (profile == "raw") m.profile = ManifestProfile::raw;
   else if (profile == "gguf") m.profile = ManifestProfile::gguf;  // model downloads (owner, 2026-10-23)
-  else r.fail("profile", "must be qwen, glm53, gemma4 or gguf");
+  else r.fail("profile", "must be qwen, glm53, gemma4, deepseek, raon1 or gguf");
   if (const auto* engine = r.object(Reader::find(*top, "engine"), "engine")) {
     r.only(*engine, {"family", "min_version"}, "engine");
     const auto family = r.text(*engine, "family", "engine", 16).value_or("");
     if (family == "strata") m.family = ManifestFamily::strata;
     else if (family == "glm") m.family = ManifestFamily::glm;
     else if (family == "gemma4") m.family = ManifestFamily::gemma4;
+    else if (family == "unified") m.family = ManifestFamily::unified;  // unified-engine design §2.5
     else if (family == "none") m.family = ManifestFamily::none;
-    else r.fail("engine.family", "must be strata, glm, gemma4 or none");
+    else r.fail("engine.family", "must be strata, glm, gemma4, unified or none");
     const auto version = parse_engine_version(r.text(*engine, "min_version", "engine", 32).value_or(""));
     if (!version) r.fail("engine.min_version", "must be MAJOR.MINOR.PATCH[.N]");
     else m.min_version = *version;

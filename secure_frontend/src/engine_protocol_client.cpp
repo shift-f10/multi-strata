@@ -407,6 +407,11 @@ GenerationEvent EngineProtocolClient::next_event(const std::chrono::milliseconds
     } else if (flavor_ == EngineProtocolFlavor::lighttransport_glm53) {
       accepted = counters_ok && metrics_ok && progress.size() >= 3U && progress.size() <= 5U && progress.size() != 4U &&
                  second != 0U && first <= second;
+    } else if (flavor_ == EngineProtocolFlavor::unified) {
+      // The merged engine's dialect (design §3.3): exactly `PP <done> <total> <ms> <tok_s>` — four
+      // fields, two decimal counters then two non-negative decimal metrics. Strict, fail-closed:
+      // the superset carries no shorter or longer PP, so anything else closes the protocol.
+      accepted = counters_ok && metrics_ok && progress.size() == 5U;
     } else {
       accepted = counters_ok && metrics_ok && progress.size() <= 5U;
     }
@@ -426,11 +431,13 @@ GenerationEvent EngineProtocolClient::next_event(const std::chrono::milliseconds
     }
     return ProgressEvent{};
   }
-  if (flavor_ == EngineProtocolFlavor::maya_118 && response.line.rfind("STAT ", 0) == 0) {
+  if ((flavor_ == EngineProtocolFlavor::maya_118 || flavor_ == EngineProtocolFlavor::unified) &&
+      response.line.rfind("STAT ", 0) == 0) {
     // The GLM engine's live expert-tier counters, `STAT key=value ...` every
     // few tokens (maya-ref src/program/generate.cpp:2014, :2360; the pump's
     // parse at serve/server.py:677-690, consumed for the Monitor and never
-    // output). Cadence record: consumed as a ProgressEvent, and fail-closed
+    // output). The merged engine (design §3.3) emits the same optional cadence.
+    // Cadence record: consumed as a ProgressEvent, and fail-closed
     // on shape — at least one pair, every field carrying a non-empty key
     // before its `=`.
     const auto pairs = fields(response.line);

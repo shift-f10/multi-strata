@@ -102,7 +102,9 @@ struct ConfigIssue final {
 using ConfigErrors = std::vector<ConfigIssue>;
 [[nodiscard]] std::string format_issue(const ConfigIssue& issue);
 
-enum class EngineProfile { qwen, glm53, gemma4 };
+// deepseek and raon1 (unified-engine design §2.5/§3.3) are served by the one merged engine
+// binary over the converged `unified` protocol flavor; qwen/glm53/gemma4 keep their own flavors.
+enum class EngineProfile { qwen, glm53, gemma4, deepseek, raon1 };
 
 enum class EngineArgumentsProfile;  // engine_arguments.hpp
 

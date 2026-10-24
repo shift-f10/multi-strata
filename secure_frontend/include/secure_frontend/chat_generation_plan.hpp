@@ -93,4 +93,22 @@ using ChatGenerationPlanResult = std::variant<ChatGenerationPlan, ChatGeneration
     std::size_t default_max_tokens = static_cast<std::size_t>(config_defaults::kChatDefaultMaxTokens),
     const SamplingDefaults& defaults = {}, bool thinking = false);
 
+// Unified-engine design §3.2/§3.4: PLACEHOLDER chat templates for the merged-engine families
+// deepseek (DeepSeek-V4.1-Flash) and raon1 (Raon-1-mini). Their real prompt templates and control
+// markers are not yet pinned (they arrive with the box bring-up, §1.3); until then each renders a
+// minimal, fail-closed, text-only role transcript encoded as ordinary byte_bpe text, with no
+// reasoning split. An image part is invalid_request (text only). The profile is thereby wired end
+// to end over the `unified` protocol flavor without claiming a format we have not reviewed.
+// TODO(unified-engine, plan 4): replace with the reviewed DeepSeek / Raon templates and markers.
+[[nodiscard]] ChatGenerationPlanResult make_deepseek_chat_generation_plan(
+    const ChatCompletionRequest& request, const TokenizerPack& tokenizer,
+    std::size_t maximum_prompt_tokens = static_cast<std::size_t>(config_defaults::kChatMaxPromptTokens),
+    std::size_t default_max_tokens = static_cast<std::size_t>(config_defaults::kChatDefaultMaxTokens),
+    const SamplingDefaults& defaults = {});
+[[nodiscard]] ChatGenerationPlanResult make_raon1_chat_generation_plan(
+    const ChatCompletionRequest& request, const TokenizerPack& tokenizer,
+    std::size_t maximum_prompt_tokens = static_cast<std::size_t>(config_defaults::kChatMaxPromptTokens),
+    std::size_t default_max_tokens = static_cast<std::size_t>(config_defaults::kChatDefaultMaxTokens),
+    const SamplingDefaults& defaults = {});
+
 }  // namespace secure_frontend

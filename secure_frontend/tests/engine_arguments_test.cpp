@@ -18,6 +18,7 @@ int failures = 0;
 constexpr auto kStrata = secure_frontend::EngineArgumentsProfile::strata_0143;
 constexpr auto kGlm = secure_frontend::EngineArgumentsProfile::lighttransport_glm53;
 constexpr auto kGemma4 = secure_frontend::EngineArgumentsProfile::strata_gemma4;
+constexpr auto kUnified = secure_frontend::EngineArgumentsProfile::unified;
 void expect(bool c, const std::string& m) { if (!c) { ++failures; std::cerr << "FAILED: " << m << '\n'; } }
 
 secure_frontend::ModelManifest manifest() {
@@ -511,6 +512,73 @@ void gemma4_user_arguments_follow_the_strata_gemma4_allowlist() {
   }
 }
 
+// unified-engine design §3.3/§3.5: the `unified` profile admits only the merged engine's own flags
+// (--max-context, --chunk, --expert-profile, --expert-profile-save), each at most once in the
+// `--flag VALUE` spelling; --native/--gpu are frontend-composed (owned, caught by the shared loop)
+// and the operator weight sources are refused by name. build_engine_arguments passes the allowlisted
+// args through, then appends --gpu (from the typed list) and --native from the inventory.
+void unified_user_arguments_follow_the_allowlist() {
+  using Code = secure_frontend::EngineArgumentsErrorCode;
+  const std::vector<std::vector<std::string>> accepted{
+      {},
+      {"--max-context", "1"}, {"--max-context", "1048576"},
+      {"--chunk", "1"}, {"--chunk", "32768"},
+      {"--expert-profile", "profiles/raon1.bin"},
+      {"--expert-profile-save", "profiles/out.bin"},
+      {"--max-context", "32768", "--chunk", "512", "--expert-profile", "p.bin", "--expert-profile-save", "s.bin"}};
+  for (const auto& args : accepted) {
+    const auto rejected = secure_frontend::validate_engine_user_arguments(kUnified, args);
+    expect(!rejected.has_value(), "unified accepts [" + joined(args) + "]" + (rejected ? ": " + rejected->message : ""));
+  }
+  struct Refusal {
+    std::vector<std::string> args;
+    Code code;
+    std::string named;
+  };
+  const std::vector<Refusal> refused{
+      {{"--max-context", "0"}, Code::out_of_range, "--max-context"},
+      {{"--max-context", "1048577"}, Code::out_of_range, "--max-context"},
+      {{"--max-context"}, Code::invalid_value, "--max-context"},
+      {{"--max-context=8192"}, Code::not_accepted, "--max-context"},
+      {{"--max-context", "+5"}, Code::invalid_value, "--max-context"},
+      {{"--max-context", "05"}, Code::invalid_value, "--max-context"},
+      {{"--chunk", "0"}, Code::out_of_range, "--chunk"},
+      {{"--chunk", "32769"}, Code::out_of_range, "--chunk"},
+      {{"--expert-profile"}, Code::invalid_value, "--expert-profile"},
+      {{"--max-context", "1", "--max-context", "2"}, Code::invalid_value, "--max-context"},
+      {{"--native", "x.gguf"}, Code::owned_flag, ""},
+      {{"--gpu", "0"}, Code::owned_flag, ""},
+      {{"--serve"}, Code::owned_flag, ""},
+      {{"--batch", "2"}, Code::unsupported_mode, ""},
+      {{"--vision"}, Code::unsupported_mode, ""},
+      {{"--pack", "pack/full"}, Code::not_accepted, "--pack"},
+      {{"--ple-gguf", "x.gguf"}, Code::not_accepted, "--ple-gguf"},
+      {{"--mtp", "3"}, Code::not_accepted, "--mtp"},
+      {{"--secret-flag-xyz"}, Code::not_accepted, ""},
+      {{"positional-xyz"}, Code::not_accepted, ""}};
+  for (const auto& r : refused) {
+    const auto rejected = secure_frontend::validate_engine_user_arguments(kUnified, r.args);
+    expect(rejected.has_value() && rejected->code == r.code,
+           "unified refuses [" + joined(r.args) + "] with the expected code" + (rejected ? ": " + rejected->message : ""));
+    if (!rejected) continue;
+    if (!r.named.empty()) {
+      expect(rejected->message.find(r.named) != std::string::npos, "the refusal names " + r.named + ": " + rejected->message);
+    }
+    expect(rejected->message.find("xyz") == std::string::npos && rejected->message.find("pack/full") == std::string::npos &&
+               rejected->message.find("x.gguf") == std::string::npos,
+           "the refusal never echoes the operator's text: " + rejected->message);
+  }
+  // build composes the allowlisted args through, then --gpu (typed list), then --native from inventory.
+  const auto root = models_root();
+  const auto built = secure_frontend::build_engine_arguments(kUnified, manifest(), root, {"--max-context", "32768"}, {0U, 1U});
+  const auto* args = std::get_if<std::vector<std::string>>(&built);
+  expect(args != nullptr, "unified build succeeds");
+  if (args != nullptr) {
+    const std::vector<std::string> expected{"--max-context", "32768", "--gpu", "0,1", "--native", native_path(root)};
+    expect(*args == expected, "unified composes the allowlisted args, then --gpu, then --native: " + joined(*args));
+  }
+}
+
 // Ruling R-T3-a: the config accepts glm.* rows while engine.profile is absent because a
 // managed model's manifest decides the profile; the launch refuses the rows for a qwen
 // manifest by name (Task 7).
@@ -829,6 +897,7 @@ int main(int argc, char** argv) {
       {"glm_context_and_parallel_bounds_enforced", glm_context_and_parallel_bounds_enforced},
       {"glm_rejects_every_engine_argument", glm_rejects_every_engine_argument},
       {"gemma4_user_arguments_follow_the_strata_gemma4_allowlist", gemma4_user_arguments_follow_the_strata_gemma4_allowlist},
+      {"unified_user_arguments_follow_the_allowlist", unified_user_arguments_follow_the_allowlist},
       {"managed_glm_rows_refused_for_qwen_manifest", managed_glm_rows_refused_for_qwen_manifest},
       {"gemma4_expert_launch_composes_only_allowlisted_flags", gemma4_expert_launch_composes_only_allowlisted_flags},
       {"reasoning_config_reaches_engine_launch_and_env", reasoning_config_reaches_engine_launch_and_env},

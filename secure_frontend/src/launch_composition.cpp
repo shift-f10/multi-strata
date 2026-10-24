@@ -40,8 +40,12 @@ std::variant<ComposedLaunch, LaunchFailure> expert_launch(const FrontendConfig& 
   // managed path.
   std::vector<unsigned> gpus;
   switch (profile) {
+    // unified-engine design §3.4: the merged engine (deepseek, raon1) selects GPUs by argv --gpu,
+    // like qwen/gemma4 (the engine renders CUDA/HIP from it); only the GLM runner takes none.
     case EngineProfile::qwen:
-    case EngineProfile::gemma4: gpus = effective_gpu_list(config.engine.gpus, config.engine.hip_ordinal); break;
+    case EngineProfile::gemma4:
+    case EngineProfile::deepseek:
+    case EngineProfile::raon1: gpus = effective_gpu_list(config.engine.gpus, config.engine.hip_ordinal); break;
     case EngineProfile::glm53: gpus = config.engine.gpus; break;
   }
   auto args = build_engine_arguments(arguments_profile, *selected, config.roots.models, config.engine.args, gpus,
@@ -56,8 +60,13 @@ std::variant<ComposedLaunch, LaunchFailure> expert_launch(const FrontendConfig& 
   const bool qwen_tails = [profile] {
     switch (profile) {
       case EngineProfile::qwen: return true;
+      // The qwen VRAM/elastic/expert-save/--batch tails are upstream strata's; the merged engine
+      // owns its own flags (unified allowlist). Until it is runnable (gated, plan 4) deepseek/raon1
+      // compose only the unified allowlist + --gpu + --native, like glm53/gemma4.
       case EngineProfile::glm53:
-      case EngineProfile::gemma4: return false;
+      case EngineProfile::gemma4:
+      case EngineProfile::deepseek:
+      case EngineProfile::raon1: return false;
     }
     return false;
   }();

@@ -45,8 +45,11 @@ std::optional<AcquireError> check_layout(const CanonicalRoot& root, const Relati
   switch (m.profile) {
     case ManifestProfile::qwen: break;
     case ManifestProfile::gemma4: return check_gemma4_layout(root, dir, m);
-    // glm53: shard-set rule only, until SP6.
+    // glm53: shard-set rule only, until SP6. deepseek/raon1 (unified-engine): shard-set rule only
+    // too — their layout check arrives with the merged engine (plan 4).
     case ManifestProfile::glm53:
+    case ManifestProfile::deepseek:
+    case ManifestProfile::raon1:
     case ManifestProfile::raw:
     case ManifestProfile::gguf: return std::nullopt;  // the shard-set rule only (validate_manifest)
   }
