@@ -1,10 +1,48 @@
 # Unified engine — one binary for qwen35moe + gemma4 + glm53 + deepseek + raon1
 
-> **STATUS: DRAFT for owner review (2026-10-23).** Owner (in chat) asked to scope a single merged
-> engine binary running all these families as a design doc **before any code**. Research was fanned
-> out to four read-only workers (Maya / upstream-qwen / gemma4 engines + the frontend engine
-> interface) plus a model lookup for KRAFTON Raon-1-mini. No code is written by this doc; §6 lists
-> the decisions it needs from the owner before anything is built.
+> **STATUS: DRAFT — §6 decisions resolved by the owner 2026-10-23; awaiting go-ahead to build.**
+> Owner asked to scope a single merged engine binary running all these families as a design doc
+> **before any code**. Research was fanned out to four read-only workers (Maya / upstream-qwen /
+> gemma4 engines + the frontend engine interface) plus a model lookup for KRAFTON Raon-1-mini. The
+> owner's decisions are in "Decisions resolved" below; §6 records them against the questions. No code
+> has been written; building starts on the owner's go-ahead.
+
+## Goals and decisions (owner, 2026-10-23)
+**Three goals drive this (owner, in the owner's words): a lightweight, non-bloat, resource-mindful
+engine that runs the selected model, from one verified source, not from multiple sources that each
+change on every update.**
+- (i) **Lightweight / non-bloat / resource-mindful:** one lean engine that runs the selected model
+  and nothing more — **trimmed** to the families and features we actually serve (aggressive non-goals,
+  SP6-style, §1.2), while keeping the resource-mindful parts that matter on a 16 GB card: the hybrid
+  VRAM/RAM expert tiering and the expert-profile placement (§3.5).
+- (ii) **Streamline — eliminate redundant code:** the substrate (serve loop, GGUF reader, protocol,
+  sampling, session/KV, expert infra, generic kernels) is written and reviewed **once**, not copied
+  across three+ engines.
+- (iii) **One verified source, not live multi-upstream tracking:** the engine is a single codebase in
+  **our reviewed tree**. Upstream Strata, Maya and our gemma4 are **references we port from
+  deliberately and review**, not live dependencies that change under us with each release. We never
+  run engine binaries pulled unvetted from several sources.
+
+1. **Base: one engine = a shared substrate + per-family graph modules.** The **substrate** (serve
+   loop, GGUF reader, protocol, sampling, session/KV, expert-cache/tiering, and the generic kernels —
+   matmul, router, RoPE, norms) is written and reviewed **once**. Each family's **unique** graph
+   (GLM's KDA/DSA, DeepSeek's MLA, qwen35moe's GDN, gemma4's dense+sliding, raon1's RDA+Gated-MLA) is
+   a module that is **ported and reviewed** — copied from upstream/Maya/our gemma4 as the *reference*
+   and reviewed into our tree, reusing the shared generic kernels — **streamlined, not rewritten from
+   scratch, and not run as an opaque third-party binary**. This serves both goals: one substrate (no
+   redundancy) and all-reviewed code. It **rules out** a thin launcher over N near-upstream engines
+   run as-is — that keeps N redundant substrates and runs unverified code, against both goals.
+2. **gemma4: unified like every other family** — re-expressed on the shared kernel set, **no
+   carve-out**. Its 26/26-verified, llama.cpp-parity-checked cuBLAS engine (`engines/gemma4/`) is the
+   **reference to port against** and the parity oracle, not shipped as-is. Full unification (decision
+   1) applies to all families uniformly, gemma4 included.
+3. **Protocol: one converged flavor** — add `EngineProtocolFlavor::unified`, a strict superset, used
+   for every merged-engine profile (§3.3 option a).
+4. **Priority: GLM + DeepSeek + Raon-1-mini first** (Plan 1, the Maya lineage — highest kernel reuse,
+   proves the dispatch, delivers Raon soonest), then qwen (Plan 2), then gemma4 (Plan 3).
+5. **Expert placement: one shared facility with profile warm-start** (§3.5, decided earlier the same day).
+
+These set the plan below; building starts on the owner's go-ahead.
 
 Builds on and does not supersede the accepted engine designs
 [`2026-10-14-sp6-glm-engine-design.md`](2026-10-14-sp6-glm-engine-design.md) (GLM via MAYA) and
@@ -51,8 +89,9 @@ families and most of Raon, and its linear-attention path is the closest existing
 1. **One engine binary** that, given a GGUF of any supported family, reads `general.architecture`,
    dispatches to that family's graph, and serves it over **one wire protocol** — behind one
    `engine.executable` the frontend already points every card at.
-2. Preserve every current capability per family (qwen MTP + hybrid experts; gemma4 sliding/full +
-   dense+MoE; GLM/DeepSeek as Maya ships them) and **add Raon-1-mini** (`raon1`).
+2. Preserve the capabilities we **serve** per family (qwen MTP + hybrid experts; gemma4 sliding/full +
+   dense+MoE; the GLM/DeepSeek chat/serve path) and **add Raon-1-mini** (`raon1`) — trimmed of
+   features we don't serve (goal i).
 3. Keep the frontend's fail-closed contract: a typed argument profile, **one** protocol flavor, a
    typed environment allowlist; the family/tokenizer/renderer stay **startup-selected, never inferred
    from a model artifact** (a security invariant — `chat_execution.hpp:20-22`).
@@ -64,10 +103,14 @@ families and most of Raon, and its linear-attention path is the closest existing
 ### 1.2 Non-goals (v1)
 - A generic, config-driven "architecture registry" that composes any graph from metadata — no engine
   has one and building one is a research project; v1 is five **hand-written** graphs behind a dispatch.
-- Rewriting kernels that already work: gemma4's cuBLAS graph and Maya's/upstream's kernels are reused
-  in place, not re-derived.
-- EXL3 quant paths, multi-GPU tensor parallelism for families that lack it, and vision for families
-  that are text-only (qwen35moe here is text-only; gemma4 is text-only; Raon preview is text-only).
+- Re-deriving model math from scratch: each family's graph is **ported from its reference**
+  (upstream/Maya/our gemma4) and reviewed, reusing the shared generic kernels — streamlined, not
+  reinvented.
+- **Anything we don't serve, carried only because an upstream has it** (keeps the engine lean): EXL3
+  quant paths, multi-GPU tensor parallelism, vision towers for text-only families (qwen35moe, gemma4
+  and the Raon preview are text-only), exotic/unused quant layouts, and drafter variants we don't use.
+- Live multi-upstream tracking: we do not add Strata/Maya/other engine binaries as dependencies that
+  update under us; ports are deliberate and reviewed (goal iii).
 - Merging the Python `serve/` orchestration layers — the frontend is the server; the engine stays
   "token ids in, text/ids out".
 
@@ -176,12 +219,14 @@ Maya's libraries), reusing `strata_artifact` + `strata_core` + `strata_kernels(+
 `strata_prefill` + the expert-tiering + the serve loop. At `main()` it reads
 `general.architecture` from the GGUF header (the pattern already in `maya.py`/`server.py` and the
 per-family geometry readers) and dispatches to one of five graph modules:
-`glm5next`, `ds4`, `raon1`, `qwen35moe`, `gemma4` (+ `qwen4exp`). Three of these (GLM, DeepSeek) are
-Maya's existing graphs moved behind the dispatch instead of living in two `main()`s; `raon1` is new
-but GLM-shaped; `qwen35moe`/`qwen4exp` are ported from upstream onto the substrate; `gemma4` is lifted
-from `engines/gemma4/`. Dispatch is **static per family** (no config-built graph) — matching how every
-engine already works and keeping the frontend's "no behavior from model data" invariant on the engine
-side too (the binary trusts only the GGUF arch key, which it also guards).
+`glm5next`, `ds4`, `raon1`, `qwen35moe`, `gemma4` (+ `qwen4exp`). Under **full kernel unification**
+(decision 1) every graph is re-expressed on **one shared kernel set**: GLM and DeepSeek move from
+Maya's two `main()`s onto the shared kernels; `raon1` is new but GLM-shaped; `qwen35moe`/`qwen4exp`
+are ported from upstream; and `gemma4` is **re-expressed from `engines/gemma4/`'s cuBLAS reference
+onto the shared kernels** (decision 2 — not lifted). Dispatch is **static per family** (no
+config-built graph) — matching how every engine already works and keeping the frontend's "no behavior
+from model data" invariant on the engine side too (the binary trusts only the GGUF arch key, which it
+also guards).
 
 ### 3.2 Per-family graph plan and kernel reuse
 - **GLM-5.3 (`glm5next`)** and **DeepSeek (ds4):** move the existing `maya`/`maya-ds4` graphs behind
@@ -196,20 +241,21 @@ side too (the binary trusts only the GGUF arch key, which it also guards).
   periodic full attention + MoE on the shared expert infra + MTP. **High**, per §2.3.
 - **qwen4exp (Flash-Next):** the dormant `qwen4exp`/`native` path in Maya is the scaffold; iq_pack
   experts vs the tiered cache is the main reconciliation.
-- **gemma4:** dense (skips the MoE substrate for its dense MLP) + sliding-window + Gemma
-  norms/soft-cap. Either lift `engines/gemma4/`'s cuBLAS kernels as a self-contained `gemma4` module
-  in the binary (cheapest, keeps the 26/26-verified code) or re-express on the shared kernels (more
-  uniform, more rework). **Decision in §6 Q3.** Either way its 128 routed experts move onto the shared
-  placement facility (§3.5), so gemma4 gains the expert-hit-profile warm start it lacks today — the
-  standalone `engines/gemma4/` engine is **not** changed; the merge subsumes it.
+- **gemma4:** dense MLP + sliding-window + Gemma norms/soft-cap, 128 routed experts. **Re-expressed
+  on the shared kernels** (decision 2 — no cuBLAS-module carve-out), with `engines/gemma4/`'s
+  26/26-verified cuBLAS engine as the port reference and the llama.cpp-parity oracle. Its routed
+  experts join the shared placement facility (§3.5), gaining the expert-hit-profile warm start it
+  lacks today. The standalone `engines/gemma4/` engine stays in-tree as the reference; the merge
+  subsumes it. This is more rework than lifting it, but keeps one uniform kernel set (the owner's choice).
 
 ### 3.3 Protocol convergence (the single biggest frontend change)
 A merged binary cannot emit both the `strata_0143` record set and the `maya_118` set while the client
 is pinned to one flavor. Choose one:
-- **(a) One flavor for the merged engine:** the binary emits a single superset dialect; add
-  `EngineProtocolFlavor::unified` (and a matching `EngineArgumentsProfile`), make `protocol_flavor_for`
-  return it for all merged-engine profiles, and implement its `await_ready`/`next_event` grammar as the
-  union the binary actually emits. **Recommended** — one grammar to test, fail-closed.
+- **(a) One flavor for the merged engine — CHOSEN (decision 3):** the binary emits a single superset
+  dialect; add `EngineProtocolFlavor::unified` (and a matching `EngineArgumentsProfile`), make
+  `protocol_flavor_for` return it for all merged-engine profiles, and implement its
+  `await_ready`/`next_event` grammar as the union the binary actually emits. One grammar to test,
+  fail-closed.
 - **(b) Keep per-family flavors, one binary:** the binary emits each family's existing dialect; the
   frontend keeps choosing the flavor by profile. No new grammar, but the binary must switch its own
   output dialect per loaded family — more surface, and it reintroduces three grammars.
@@ -281,17 +327,12 @@ argument profile gains `--expert-profile` only when it points at the merged bina
   layout; future Maya bumps (v1.1.27+) get harder to track. Keep the graphs as verbatim-as-possible
   modules and record the bump runbook (SP6 §3.4 pattern).
 
-## 6. Open questions / owner decisions
-1. **Base (§3.1):** confirm Maya's substrate + one dispatch binary with five hand-written graphs
-   (recommended), vs a from-scratch engine core, vs staying multi-binary-behind-one-frontend.
-2. **Depth (§5):** full kernel unification into one binary, vs a lighter "one dispatch binary that
-   reuses each engine's existing kernels/graphs" that still ships one executable. The latter gets Raon
-   + the deployment win far sooner.
-3. **gemma4 (§3.2):** lift `engines/gemma4/`'s cuBLAS kernels as a module (keep the verified code) vs
-   re-express on the shared kernels.
-4. **Protocol (§3.3):** one converged `unified` flavor (recommended) vs per-family flavors behind one
-   binary.
-5. **Raon-1-mini scope:** text-only preview now (it ships a DFlash draft — include speculative
-   decoding from the start, or follow once the base graph parities?).
-6. **Priority order:** Plan 1 (GLM+DeepSeek+**Raon**) first is recommended since it is highest-reuse
-   and delivers Raon; confirm, or front-load qwen/gemma4.
+## 6. Decisions (resolved 2026-10-23) and the one remaining detail
+1. **Base (§3.1):** RESOLVED — Maya's substrate, one dispatch binary (see "Decisions resolved" #1).
+2. **Depth (§5):** RESOLVED — **full kernel unification** (#1), not the lighter reuse path.
+3. **gemma4 (§3.2):** RESOLVED — **re-express on the shared kernels** (#2), no cuBLAS-module carve-out.
+4. **Protocol (§3.3):** RESOLVED — **one converged `unified` flavor** (#3).
+5. **Raon-1-mini scope — the one detail left:** the preview is text-only and ships a DFlash draft.
+   Default is to include speculative decoding from the start (it reuses GLM's NextN/DFlash), settled
+   inside Plan 1; flip to "base graph parities first, drafting follows" if preferred.
+6. **Priority (§1.4):** RESOLVED — **GLM + DeepSeek + Raon first** (#4), then qwen, then gemma4.
